@@ -1,0 +1,5 @@
+Go 1.27.0 heap-corruption crash in TestP3_RepackCrashPointsWithPipelinedStaging (unchanged since origin/main)
+- Seen once in a root_race attempt on an earlier tree, and ~1 in 25-40 isolated -race runs of this branch: "fatal error: found pointer to free object" / "found bad pointer in Go heap".
+- Same crash on unmodified origin/main with GOGC=5: 6/20 (race), 2/30 (no race); also with GOEXPERIMENT=nogreenteagc: 8/20. 0/65 at default GOGC on main.
+- The program has no unsafe, cgo or mmap; stacks are in stdlib flate, sync and the repack workers.
+- The qualification attempt recorded here passed root_race (834 s) and conventional_race (2837 s) with this test passing.

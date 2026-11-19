@@ -1,1778 +1,1604 @@
 {
- "tests_run": 1250,
- "failing_top_level": 166,
- "causes": {
-  "hook": 10,
-  "corruption": 51,
-  "layout": 46,
-  "revive": 2,
-  "accounting": 9,
-  "storelevel": 22,
-  "cdcref": 26
+ "cdc_specific_tests": 169,
+ "classes": {
+  "accounting": {
+   "tests": [
+    "TestDeleteObjects_HistoryPruneGC",
+    "TestIngestCrash_Matrix",
+    "TestP3_ReachabilityMatchesReference_Healthy",
+    "TestP3_RepackCrashPointsWithPipelinedStaging",
+    "TestPrune_PackedHistoryReclaimedByRepack",
+    "TestPrune_SharedAndRestoredRootsStayPinned",
+    "TestPrune_SnapshotSurvivesPruneThenGC",
+    "TestRepack_GCCrashDuringDeadPackRemoval",
+    "TestSnapshotGC_PinsOtherwiseUnreachableChunks"
+   ],
+   "tags": [
+    "gc-counts-components",
+    "maintenance-crash-converges",
+    "missing-component-refused",
+    "snapshot-pins-after-gc",
+    "verify-deep-finds-corruption"
+   ]
+  },
+  "cdcref": {
+   "tests": [
+    "TestModelOrdinaryPutCrashPublication",
+    "TestRepAnalysisBudgets",
+    "TestRepCodecAnalysisDepth",
+    "TestRepConcurrentReadsMixedTiers",
+    "TestRepCopyObjectAndMultipart",
+    "TestRepCrashMatrix",
+    "TestRepGitHostileFallback",
+    "TestRepGitProductionPackAndIdx",
+    "TestRepHostileObjectsNeverFailPut",
+    "TestRepKindLifecycleMatrix",
+    "TestRepLateCreationAndRetirementLeaveNamespaceUntouched",
+    "TestRepLifecycleChain",
+    "TestRepLiveRootFaultsFailClosed",
+    "TestRepManagedOrdinaryPutCrashFloor",
+    "TestRepMerkleRevisionChainSections",
+    "TestRepMerkleVirtualSectionReuse",
+    "TestRepOffModeMaintenanceKeepsRoots",
+    "TestRepSharedChildAcrossFormatsAndRootLifecycle",
+    "TestRepSharedVirtualComponentAcrossRoots",
+    "TestRepSourceCorruptionClassified",
+    "TestRepStructuredFallbackAndLifecycle",
+    "TestRepStructuredOrdinaryPutCrashFloor",
+    "TestRepTempFilesAreNeverRootsOrLiveness",
+    "TestRepVirtualComponentDescriptor",
+    "TestRepZ4ModelBaseSurvivesRootRetirement",
+    "TestRepZ4ModelGGUFAndUnsupportedModel"
+   ],
+   "tags": [
+    "damage-fails-closed",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "maintenance-crash-converges",
+    "missing-component-refused",
+    "rep-crash-publication",
+    "rep-hostile-fallback",
+    "rep-lifecycle-exact",
+    "rep-model-base-survives-retirement",
+    "rep-shared-components",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "corruption": {
+   "tests": [
+    "TestBulkFetch_ServerSideFailures",
+    "TestBulkRepair_PartialSuccessSurvivesBatchFailure",
+    "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting",
+    "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload",
+    "TestBundle_ExportIsDeterministicAndAtomic",
+    "TestCLI_Repair_EndToEndSmoke",
+    "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved",
+    "TestCLI_Repair_RealProcessKillThenResume",
+    "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify",
+    "TestFork_RepairComposesAcrossSharedCorruptChunk",
+    "TestGC_RefusesOnCorruptLiveRoot_K7",
+    "TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt",
+    "TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks",
+    "TestP1C_BundleExportRefusesCorruptChunk",
+    "TestP1C_MaintenanceRefusesCorruptLiveRecord",
+    "TestP2_CachedEntriesAreRevalidatedAgainstStorage",
+    "TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics",
+    "TestP2_PipelinedStreamsFailSafeAndLeakNothing",
+    "TestP3_DeepVerifyFindsCorruptionBetweenPasses",
+    "TestP3_ReachabilityMatchesReference_Damage",
+    "TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption",
+    "TestPackCompression_RepackAbortsOnDamagedCompressedData",
+    "TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes",
+    "TestPackRun_HTTPCorruptionNeverReachesClient",
+    "TestPack_DuplicateCopiesCorruptionPreference",
+    "TestPack_PayloadAndRecordHeaderDamageFailSafely",
+    "TestPack_RepairReplacesCorruptPackedChunkFromPeer",
+    "TestReachability_DetectsCorruptionAmongLiveRoots",
+    "TestRepairFromPeer_IncompatiblePeerFailsClearly",
+    "TestRepair_CorruptChunkContentMismatchDetected",
+    "TestRepair_CorruptExistingChunkAtomicallyReplaced",
+    "TestRepair_HighWorkerCount_RaceAndCorrectness",
+    "TestRepair_LocalRestartResumesNaturally",
+    "TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats",
+    "TestRepair_ManyMissingChunks_Concurrent",
+    "TestRepair_MissingChunkDetected",
+    "TestRepair_MissingChunkRestoredEndToEnd",
+    "TestRepair_MixedCorruptAndMissing_Concurrent",
+    "TestRepair_MultipleCorruptChunksDetected",
+    "TestRepair_OnePeerFailureAmongManySuccesses_Concurrent",
+    "TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly",
+    "TestRepair_PeerRestartBetweenAttempts",
+    "TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining",
+    "TestRepair_RetainedHistoricalVersionChunkRepaired",
+    "TestRepair_SharedCorruptDigestAffectsAllReferencingObjects",
+    "TestRepair_StatsExactAccounting",
+    "TestRepair_WrongLengthChunkDetectedAsCorrupt",
+    "TestRepair_WrongPeerBytesAmongMany_Concurrent",
+    "TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed",
+    "TestRestore_MissingHistoricalChunk_NoPartialMutation",
+    "TestStreamingGet_Corruption",
+    "TestVerify_DetectsCorruptChunkOnlyUnderDeep",
+    "TestVerify_DetectsMissingChunk"
+   ],
+   "tags": [
+    "cache-revalidated",
+    "damage-fails-closed",
+    "damage-is-isolated",
+    "export-refuses-corrupt",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "gc-counts-components",
+    "gc-refuses-corrupt-record",
+    "layout-compact-tier-repack-exact",
+    "missing-component-refused",
+    "repair-concurrent",
+    "repair-partial-honest",
+    "repair-peer-exact-stats",
+    "repair-resume",
+    "repair-shared-digest",
+    "restore-missing-no-mutation",
+    "stream-failsafe",
+    "verify-deep-finds-corruption"
+   ]
+  },
+  "hook": {
+   "tests": [
+    "TestAWSChunked_LargeObjectBoundedMemory",
+    "TestP4DeferredBuildsAfterAcknowledgement",
+    "TestP4ReadCacheServesExactBytesAndStillVerifiesData",
+    "TestRepBundleBackfillFullDeltaAndReuse",
+    "TestRepCodecNestedProduction",
+    "TestRepCodecUnsupportedFallsBack",
+    "TestRepKindMatrixRoundTrip",
+    "TestRepModesAndFallbackCounters",
+    "TestRepZ4ModelStreamingModelLifecycle",
+    "TestStreamingPut_LargeObjectBoundedMemory"
+   ],
+   "tags": [
+    "large-streaming-put-bounded-memory",
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "layout": {
+   "tests": [
+    "TestBundle_ExportIndependentOfPhysicalRepresentation",
+    "TestDirectPackLife_CrashMatrixConverges",
+    "TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder",
+    "TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged",
+    "TestDirectPack_ExistingCopiesInAnyTierAreReused",
+    "TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload",
+    "TestDirectPack_MultiplePacksAndPackSizes",
+    "TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce",
+    "TestDirectPack_TailBelowMinimumStaysLoose",
+    "TestLocality_CompactLayoutsEndToEnd",
+    "TestLocality_PackBoundariesAndTailFolding",
+    "TestLocality_RootObservationOrder",
+    "TestLocality_SingleChunkEmptyAndSharedObjects",
+    "TestP1B_CrashMatrix_ConcurrentGroups",
+    "TestP1B_MediumPack_DeadPacksCollectedByGC",
+    "TestP1B_MediumPack_SameManifestAsLoose",
+    "TestP1C_SmallPutUsesSegmentAndSurvivesRestart",
+    "TestP2_PipeliningIsAdaptiveToActiveStreams",
+    "TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance",
+    "TestPackCompression_AdaptivePolicyByDataClass",
+    "TestPackCompression_CrashPoints",
+    "TestPackCompression_MixedObjectReadsAndRanges",
+    "TestPackCompression_RepackSelectionUsesPhysicalBytes",
+    "TestPackRun_BadPackStopsFurtherRuns",
+    "TestPackRun_LocalityCoalescesDigestDoesNot",
+    "TestPackRun_NoncontiguousAndSingleChunk",
+    "TestPackRun_RangeFetchesOnlyNeededChunks",
+    "TestPackRun_RangesMatchOrdinaryReads",
+    "TestPackRun_TiersAndLooseCopyPreference",
+    "TestPack_CompactCLI",
+    "TestPack_CompactCrashPoints",
+    "TestPack_GCNeverTouchesPacks",
+    "TestPack_LogicalFeaturesOverPackedStore",
+    "TestPack_MixedManifestSpansLooseAndPacked",
+    "TestPack_PhysicalMatrix",
+    "TestPack_StoreFormatVersionGate",
+    "TestRepLargeObjectComponentsGoToPacks",
+    "TestTierPolicy_HottestReferenceWins",
+    "TestTierRebalance_CrashPointsConverge",
+    "TestTierRebalance_DriftAndDuplicatesConverge",
+    "TestTierRebalance_MinMisplacedDefersCostlyRewrites",
+    "TestTierRebalance_MixedPacksAreRewritten",
+    "TestTierRebalance_SharedCheckpointBlocksStayHot",
+    "TestTier_GCRemovesDeadPackFromItsTier",
+    "TestTier_InitSafety",
+    "TestTier_RepackGCPreserveTiersAndPaths"
+   ],
+   "tags": [
+    "export-refuses-corrupt",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "range-reads-bounded",
+    "repair-peer-exact-stats"
+   ]
+  },
+  "revive": {
+   "tests": [
+    "TestBundle_PartialOverlapImportsOnlyMissingContent",
+    "TestCASBatch_IngestDuplicateAndLocalizedEdit"
+   ],
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "revive-on-write"
+   ]
+  },
+  "storelevel": {
+   "tests": [
+    "TestDirectPack_AdaptiveCompressionOptionStillValidPackV1",
+    "TestModelNestedPublicationRaisesFloor",
+    "TestP1C_FormatRaiseIsRaceFreeAgainstReaders",
+    "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot",
+    "TestP1C_OldStoreAndPolicyChangesCoexist",
+    "TestP1C_SharedOpenerNeverDisturbsALiveWriter",
+    "TestPackCompression_StoreFormatBoundary",
+    "TestRepCrashAfterFormatRaiseBeforeFirstRoot",
+    "TestRepManagedCumulativeCompatibility",
+    "TestRepManagedNestedPublicationFloor",
+    "TestRepNegativeFormatControls",
+    "TestRepOptionalFailureNeverFailsPut",
+    "TestRepSmokeSQLiteRoundTrip",
+    "TestRepStructuredCumulativeModelCompatibility",
+    "TestRepSubstrateStoreRoundTrip",
+    "TestRepUpgradeLevelsDoNotMoveUntilFirstRoot",
+    "TestRepZ4ManagedDefaultAndMalformedFallback",
+    "TestRepZ4ManagedLifecycleAndCapability",
+    "TestTierRebalance_DryRunThenApplyOnLooseChunks",
+    "TestTier_CLI",
+    "TestTier_CompactIntoColdCrashPoints",
+    "TestTier_LifecycleCompactMoveReads",
+    "TestTier_MoveCrashPoints"
+   ],
+   "tags": [
+    "damage-fails-closed",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "rep-crash-publication",
+    "rep-hostile-fallback"
+   ]
+  }
  },
- "records": [
-  {
-   "test": "TestAWSChunked_LargeObjectBoundedMemory",
-   "subtests_failed": 1,
-   "cause": "hook",
-   "stack": [],
-   "expected": "heap growth bounded while streaming a large body",
-   "observed": "zeros3_test.go:30102: uploaded 160 MiB in 508ms; peak heap growth 204 MiB",
-   "equivalent": "TestAuthorityLargeCheck + run_large.sh (RSS of independent processes)"
-  },
-  {
-   "test": "TestBulkFetch_ServerSideFailures",
-   "subtests_failed": 4,
-   "cause": "corruption",
-   "stack": [
-    "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*Store).casReadOrVirtual < (*Server).handleBulkFetch",
-    "(*Store).casStatLocked < (*Store).casStat < (*Store).casStatOrVirtual < (*Server).handleBulkFetch < (*Server).handleBulk"
-   ],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:34475: chunk b5351d3af2a382262e4d28c1cf0480c5a319f094774bec71f2804d76afc00ab6 is not packed",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestBulkRepair_PartialSuccessSurvivesBatchFailure",
-   "subtests_failed": 3,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:35211: stats = {Source:http://127.0.0.1:34807 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [
-    "(*Store).casStatLocked < (*Store).casStat < (*bundleImporter).chunk < readDeltaBundle < (*Store).importDeltaBundle",
-    "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < looseSink.Put < (*Store).ingestStream"
-   ],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:42038: import = {SnapshotID:01a1ec3c-5d10-70a1-8d7b-b1032e9cdc2a Objects:4 ManifestsImported:3 ManifestsReused:1 ChunksImported:6 ChunksReused:0 ChunksRepaired:0 SnapshotReused:false LogicalBytes:300302 PayloadBytesRead:30030",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [
-    "(*Store).casStatLocked < (*Store).casStat < (*bundleImporter).chunk < readBundle < (*Store).importBundle",
-    "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < (*bundleImporter).chunk < readBundle"
-   ],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:39460: expected one repaired chunk: {SnapshotID:01a1ec3b-cdf7-7f9c-8b47-2886c4ee0fd5 Objects:1 ManifestsImported:1 ManifestsReused:0 ChunksImported:4 ChunksReused:0 ChunksRepaired:0 SnapshotReused:false LogicalBytes:200000 Pa",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestBundle_ExportIndependentOfPhysicalRepresentation",
-   "subtests_failed": 3,
-   "cause": "layout",
-   "stack": [
-    "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < looseSink.Put < (*Store).ingestStream"
-   ],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:39192: variant not realised: loose 9 tiers [0 0 3]",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestBundle_PartialOverlapImportsOnlyMissingContent",
-   "subtests_failed": 1,
-   "cause": "revive",
-   "stack": [
-    "(*Store).casStatLocked < (*Store).casStat < (*bundleImporter).chunk < readBundle < (*Store).importBundle",
-    "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < (*bundleImporter).chunk < readBundle"
-   ],
-   "expected": "dedup against a chunk that no longer exists writes it again (revive-on-write, by design)",
-   "observed": "zeros3_test.go:39431: imported 20 reused 0, want imported 4 of 20: {SnapshotID:01a1ec3b-cc96-7ec4-ad6b-579d879abbcf Objects:5 ManifestsImported:5 ManifestsReused:0 ChunksImported:20 ChunksReused:0 ChunksRepaired:0 SnapshotReused:false Logic",
-   "equivalent": "TestAuthorityRetireEverythingSubprocess (re-PUT, sync and import of retired content stay exact)"
-  },
-  {
-   "test": "TestCASBatch_IngestDuplicateAndLocalizedEdit",
-   "subtests_failed": 1,
-   "cause": "revive",
-   "stack": [],
-   "expected": "dedup against a chunk that no longer exists writes it again (revive-on-write, by design)",
-   "observed": "zeros3_test.go:38106: duplicate PUT staged 93 chunks",
-   "equivalent": "TestAuthorityRetireEverythingSubprocess (re-PUT, sync and import of retired content stay exact)"
-  },
-  {
-   "test": "TestCLI_Repair_EndToEndSmoke",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17780: unexpected repair output:",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17831: expected a nonzero exit code when repair cannot resolve every finding, stdout=Repair source:       http://127.0.0.1:35555",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17895: unexpected verify -repair-from output:",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestDeleteObjects_HistoryPruneGC",
-   "subtests_failed": 1,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:36214: gc before prune must keep history-reachable chunks: {Applied:true CurrentRootCount:1 HistoricalRootCount:2 MultipartRootCount:0 SnapshotRootCount:0 LiveSetOK:true Issues:[] ChunksScanned:32 ChunksReachable:22 ChunksUnr",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestDirectPackLife_CrashMatrixConverges",
-   "subtests_failed": 2,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:43374: an interrupted PUT is visible: <nil>",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:43730: repack: <nil> {DryRun:false LiveSetOK:true Issues:[] PackCount:6 PackedChunkCount:32 PackFileBytes:6295008 PacksSelected:6 PacksFullyDead:6 PacksRewritten:0 Selected:[{idx:0 tier:0 Tier:hot ID:0be5b1d2609faebc3ee78a948",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:43658: chunk c00f0fdc9561be3b24a1a3eb809001a2a19bfbc815e6aa2117354fe0dff36389 packed 3 times after compact",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestDirectPack_AdaptiveCompressionOptionStillValidPackV1",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_test.go:43767: compressed direct packs must raise the store to format 3: {",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestDirectPack_ExistingCopiesInAnyTierAreReused",
-   "subtests_failed": 4,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:43150: existing content was rewritten: loose 46->46 hot packs 1->3 records 98->144",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:43111: shifted copy wrote too much: loose 161->322 packs 3->4",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestDirectPack_MultiplePacksAndPackSizes",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [
-    "(*Store).casStatLocked < (*Store).casStat"
-   ],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:43050: stat /tmp/TestDirectPack_MultiplePacksAndPackSizes3341043806/001/chunks/0c/ac/0cacca99907000936fa96ab528572cbb715b7f63bf5a3a95aaa21fb239fdec5e: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:42948: expected a single pack and no loose chunks, got packs=1 loose=93",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestDirectPack_TailBelowMinimumStaysLoose",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:43002: v1 should be one pack: loose=65 packs=1",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestFork_RepairComposesAcrossSharedCorruptChunk",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:19888: expected pre-repair deep verify to fail after corrupting a shared chunk",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestGC_RefusesOnCorruptLiveRoot_K7",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_test.go:9119: expected dry-run to detect the corrupt live root",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestIngestCrash_Matrix",
-   "subtests_failed": 1,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:28933: gc after crash: <nil> {Applied:true CurrentRootCount:1 HistoricalRootCount:0 MultipartRootCount:0 SnapshotRootCount:0 LiveSetOK:true Issues:[] ChunksScanned:17 ChunksReachable:11 ChunksUnreachable:6 ManifestsScanned:1 ",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt",
-   "subtests_failed": 8,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_layout_matrix_test.go:93: findings = []",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks",
-   "subtests_failed": 8,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_layout_matrix_test.go:58: missing chunk not detected: <nil> {Deep:false JournalFramesChecked:3 JournalOK:true ManifestsChecked:2 ChunksChecked:10 PacksChecked:0 CurrentRootCount:2 HistoricalRootCount:0 MultipartRootCount:0 SnapshotRo",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestLocality_CompactLayoutsEndToEnd",
-   "subtests_failed": 2,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40247: pack holds a record outside the expected set",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestLocality_PackBoundariesAndTailFolding",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40333: pack holds a record outside the expected set",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestLocality_RootObservationOrder",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40210: current objects not in key order: [b/cur-a b/cur-a b/cur-b b/cur-b]",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestLocality_SingleChunkEmptyAndSharedObjects",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40364: pack holds a record outside the expected set",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestModelNestedPublicationRaisesFloor",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_model_test.go:128: ordinary off-mode PUT raised format",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestModelOrdinaryPutCrashPublication",
-   "subtests_failed": 5,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_model_test.go:200: ordinary Model PUT recovery: model CDC: chunk read failed: open /tmp/TestModelOrdinaryPutCrashPublicationrep-before-namespace-commit4049973417/001/chunks/6e/71/6e71df5f1e3d857f6e79a9b9d3772c5420aa29e0b358b4069e74e7",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestP1B_CrashMatrix_ConcurrentGroups",
-   "subtests_failed": 18,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_p1b_crash_test.go:375: verify -deep after retries: <nil> {Deep:true JournalFramesChecked:14 JournalOK:true ManifestsChecked:13 ChunksChecked:55 PacksChecked:0 CurrentRootCount:13 HistoricalRootCount:0 MultipartRootCount:0 SnapshotRoo",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestP1B_MediumPack_DeadPacksCollectedByGC",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_p1b_test.go:967: packs before gc 4, after 0 ({Applied:true CurrentRootCount:1 HistoricalRootCount:0 MultipartRootCount:0 SnapshotRootCount:0 LiveSetOK:true Issues:[] ChunksScanned:33 ChunksReachable:33 ChunksUnreachable:0 ManifestsSc",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestP1B_MediumPack_SameManifestAsLoose",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_p1b_test.go:743: size 262144: want packed chunks, got 1 packs, 9 loose",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestP1C_BundleExportRefusesCorruptChunk",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_p1c_test.go:959: export of a store with a corrupt chunk succeeded",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestP1C_FormatRaiseIsRaceFreeAgainstReaders",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_p1c_test.go:1096: level not raised",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_p1c_test.go:135: level after first small write = 12, want 11",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestP1C_MaintenanceRefusesCorruptLiveRecord",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_p1c_test.go:998: repack rewrote packs over a corrupt live chunk: {DryRun:false LiveSetOK:true Issues:[] PackCount:3 PackedChunkCount:20 PackFileBytes:174778 PacksSelected:3 PacksFullyDead:0 PacksRewritten:3 Selected:[{idx:0 tier:0 Ti",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestP1C_OldStoreAndPolicyChangesCoexist",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_p1c_test.go:689: old store level 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestP1C_SmallPutUsesSegmentAndSurvivesRestart",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_p1c_test.go:175: small chunks must not be loose",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestP2_CachedEntriesAreRevalidatedAgainstStorage",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_p2_read_test.go:814: damaged chunk still served after the revalidation interval",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics",
-   "subtests_failed": 3,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_p2_read_test.go:464: chunk was not cached: {Entries:0 Bytes:0 Budget:33554432 Hits:0 Misses:8 Admits:0 Evictions:0 StaleDrop:0 Revalidations:0 MaxThrottle:0}",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestP2_PipelinedStreamsFailSafeAndLeakNothing",
-   "subtests_failed": 3,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_p2_read_test.go:565: a damaged object was delivered whole",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestP2_PipeliningIsAdaptiveToActiveStreams",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [
-    "(*manifestReader).chunk < (*manifestReader).next"
-   ],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_p2_read_test.go:872: chunk read failed: open /tmp/TestP2_PipeliningIsAdaptiveToActiveStreams314543357/001/chunks/44/b0/44b0183cbf762cb324a809b55a1ae11a90818eea8c00f78360d599bc4fe06a69: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestP3_DeepVerifyFindsCorruptionBetweenPasses",
-   "subtests_failed": 2,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_p3_test.go:762: damage between the chunk pass and the whole-object pass went unnoticed",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestP3_ReachabilityMatchesReference_Damage",
-   "subtests_failed": 12,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_p3_test.go:474: corrupt chunk (deep=false): counters differ:",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestP3_ReachabilityMatchesReference_Healthy",
-   "subtests_failed": 2,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_p3_test.go:407: healthy (deep=false): counters differ:",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestP3_RepackCrashPointsWithPipelinedStaging",
-   "subtests_failed": 2,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:2413: expected the test hook to panic (simulating a crash), but it did not",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestP4DeferredBuildsAfterAcknowledgement",
-   "subtests_failed": 1,
-   "cause": "hook",
-   "stack": [],
-   "expected": "representation counters assume CDC-served reads",
-   "observed": "zeros3_p4_test.go:128: prefer mode did not range-read through a deferred representation (0)",
-   "equivalent": "the body, not the sidecar root, serves the read: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestP4ReadCacheServesExactBytesAndStillVerifiesData",
-   "subtests_failed": 1,
-   "cause": "hook",
-   "stack": [],
-   "expected": "representation counters assume CDC-served reads",
-   "observed": "zeros3_p4_test.go:581: the cache was never hit",
-   "equivalent": "the body, not the sidecar root, serves the read: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_p4_test.go:830: 22 loose files: small-object components bypassed the segment",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackCompression_AdaptivePolicyByDataClass",
-   "subtests_failed": 2,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:32452: duplicate chunks   records raw=37 deflate=0 logical=1155265 stored=1155265 file=1159217 saved=0.0%",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackCompression_CrashPoints",
-   "subtests_failed": 5,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:33244: rerun should converge to compressed packs: {PackCount:4 PackedChunkCount:31 PackFileBytes:683701 PackedLiveManifestRecords:0 OpenSegments:0 OpenSegmentBytes:0 OpenSegmentRecords:0 PackedRawRecords:20 PackedCompressedRe",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_test.go:32898: fixture chunk is codec 0",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestPackCompression_MixedObjectReadsAndRanges",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [
-    "(*manifestReader).chunk < (*manifestReader).next"
-   ],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:32501: chunk read failed: open /tmp/TestPackCompression_MixedObjectReadsAndRanges4173108085/001/chunks/4e/88/4e8840bc1f8bacc5b5114b7455daf30b19c7079b7a194f87f937216531cf35d6: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackCompression_RepackAbortsOnDamagedCompressedData",
-   "subtests_failed": 2,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_test.go:33131: source record is codec 0",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestPackCompression_RepackSelectionUsesPhysicalBytes",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:33006: fixture should be about half live by logical bytes: {PackCount:1 PackedChunkCount:15 PackFileBytes:357496 PackedLiveManifestRecords:0 OpenSegments:0 OpenSegmentBytes:0 OpenSegmentRecords:0 PackedRawRecords:8 PackedComp",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackCompression_StoreFormatBoundary",
-   "subtests_failed": 3,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_test.go:32572: loose store version 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestPackRun_BadPackStopsFurtherRuns",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [
-    "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead"
-   ],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40963: open /tmp/TestPackRun_BadPackStopsFurtherRuns2593858366/001/chunks/23/6f/236f12ba4e32d1435047b6b0817a76f467af31fd567d0c55aafa74ef1eefa5f7: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes",
-   "subtests_failed": 12,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:40874: not packed",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestPackRun_HTTPCorruptionNeverReachesClient",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:41096: damaged object downloaded successfully",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestPackRun_LocalityCoalescesDigestDoesNot",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40700: locality: runs served 0 chunks, want 21",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackRun_NoncontiguousAndSingleChunk",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:41037: not packed",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackRun_RangeFetchesOnlyNeededChunks",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40774: {0 99}: run reads covered 0 chunks, range needs 1",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackRun_RangesMatchOrdinaryReads",
-   "subtests_failed": 4,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40673: chunk not packed",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPackRun_TiersAndLooseCopyPreference",
-   "subtests_failed": 2,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:40796: cold tier did not coalesce: 0 ReadAts for 0 chunks",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPack_CompactCLI",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:31097: stats: \"ZeroS3 stats\\nscope            (whole store)\\nbuckets          1\\nobjects          2 current | 2 versions (0 historical)\\nlogical          1740000 bytes current | 1740000 bytes versions (0 historical)\\nmultipar",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPack_CompactCrashPoints",
-   "subtests_failed": 9,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:30987: rerun should converge to fully packed: loose=36 packs=12",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPack_DuplicateCopiesCorruptionPreference",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [
-    "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead"
-   ],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:30753: open /tmp/TestPack_DuplicateCopiesCorruptionPreference4189357789/001/chunks/29/b2/29b2201a5056e62d39e78d4aa92f37816fa5625805a572a74c65989caf8827f7: file does not exist",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestPack_GCNeverTouchesPacks",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:30862: dry-run gc result: {Applied:false CurrentRootCount:2 HistoricalRootCount:0 MultipartRootCount:0 SnapshotRootCount:0 LiveSetOK:true Issues:[] ChunksScanned:33 ChunksReachable:0 ChunksUnreachable:33 ManifestsScanned:2 Ma",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPack_LogicalFeaturesOverPackedStore",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:31024: fixture should be fully packed: {ScopeBucket: ScopePrefix: ScopeKey: BucketCount:2 CurrentObjectCount:1 VersionCount:1 LogicalCurrentBytes:900000 LogicalVersionBytes:900000 LogicalChunkReferenceBytes:900000 LogicalChun",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPack_MixedManifestSpansLooseAndPacked",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:30273: manifest should span both representations, loose=19 packed=0",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPack_PayloadAndRecordHeaderDamageFailSafely",
-   "subtests_failed": 2,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:30710: neighbor chunk: open /tmp/TestPack_PayloadAndRecordHeaderDamageFailSafelypayload1883337495/001/chunks/79/f9/79f910cf7167f1180537af17784b632a813fe6e0875e2f8e04be4aa16b24e18a: file does not exist",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestPack_PhysicalMatrix",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:30209: packed mode stats: packs=12 loose=36",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPack_RepairReplacesCorruptPackedChunkFromPeer",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:30811: findings = [], <nil>",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestPack_StoreFormatVersionGate",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:30495: loose store version = 10",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestPrune_PackedHistoryReclaimedByRepack",
-   "subtests_failed": 1,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:10366: history should pin every packed record: {Applied:false CurrentRootCount:1 HistoricalRootCount:3 MultipartRootCount:0 SnapshotRootCount:0 LiveSetOK:true Issues:[] ChunksScanned:0 ChunksReachable:0 ChunksUnreachable:0 Ma",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestPrune_SharedAndRestoredRootsStayPinned",
-   "subtests_failed": 1,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:10317: shared manifest lost its pin: {Applied:false CurrentRootCount:2 HistoricalRootCount:2 MultipartRootCount:0 SnapshotRootCount:0 LiveSetOK:true Issues:[] ChunksScanned:50 ChunksReachable:33 ChunksUnreachable:17 Manifests",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestPrune_SnapshotSurvivesPruneThenGC",
-   "subtests_failed": 1,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:10223: before prune: {Applied:false CurrentRootCount:0 HistoricalRootCount:3 MultipartRootCount:0 SnapshotRootCount:1 LiveSetOK:true Issues:[] ChunksScanned:45 ChunksReachable:33 ChunksUnreachable:12 ManifestsScanned:3 Manife",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestReachability_DetectsCorruptionAmongLiveRoots",
-   "subtests_failed": 2,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_test.go:8852: expected a missing chunk referenced by the current root to be detected",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestRepAnalysisBudgets",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [
-    "(*manifestReader).chunk < (*manifestReader).next"
-   ],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2816: budgets: tar CDC: chunk read failed: open /tmp/TestRepAnalysisBudgets269826957/001/chunks/a1/ee/a1ee3f19022b43c0e075174674edf3af64e7f423d4e24deaf84e2e2e7f61b488: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepBundleBackfillFullDeltaAndReuse",
-   "subtests_failed": 2,
-   "cause": "hook",
-   "stack": [],
-   "expected": "representation counters assume CDC-served reads",
-   "observed": "zeros3_rep_runtime_test.go:176: roots=1 want 2",
-   "equivalent": "the body, not the sidecar root, serves the read: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestRepCodecAnalysisDepth",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [
-    "(*manifestReader).chunk < (*manifestReader).next"
-   ],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_codec_test.go:389: bounded nesting: nested CDC: chunk read failed: open /tmp/TestRepCodecAnalysisDepth179363093/001/chunks/1f/53/1f5390df79a68d73d6f60c66807032ca01714e6c7d97087523356958813bdfc5: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepCodecNestedProduction",
-   "subtests_failed": 2,
-   "cause": "hook",
-   "stack": [],
-   "expected": "representation counters assume CDC-served reads",
-   "observed": "zeros3_codec_test.go:209: gzip child=3 bytes=4096 cold logical amplification=2.40x",
-   "equivalent": "the body, not the sidecar root, serves the read: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestRepCodecUnsupportedFallsBack",
-   "subtests_failed": 5,
-   "cause": "hook",
-   "stack": [],
-   "expected": "representation counters assume CDC-served reads",
-   "observed": "zeros3_codec_test.go:250: unsupported input published optional state",
-   "equivalent": "the body, not the sidecar root, serves the read: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestRepConcurrentReadsMixedTiers",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2610: car {0 319450}: chunk read failed: open /tmp/TestRepConcurrentReadsMixedTiers1602059191/001/chunks/c3/1b/c31b83c3aa85c5fed772ed8c6d4a13a3a196519a9930bb8b467657287e197555: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepCopyObjectAndMultipart",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2334: copy: src CDC: chunk read failed: open /tmp/TestRepCopyObjectAndMultipart4249620348/001/chunks/f7/80/f780beed1cd533817084850d51cca7465cd52d515820ac780cbb99d27f8552d3: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepCrashAfterFormatRaiseBeforeFirstRoot",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_rep_test.go:2933: level 6, first root later: ok CDC: chunk read failed: open /tmp/TestRepCrashAfterFormatRaiseBeforeFirstRoot1477781330/001/chunks/89/3b/893b39a410a51bff6a8d3c1f5ba4116adc5cc8269e716ab64222082a805ec1c3: file does not ",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepCrashMatrix",
-   "subtests_failed": 7,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:1452: before crash: base CDC: chunk read failed: open /tmp/TestRepCrashMatrixC1_before_components_publish2986232393/001/chunks/76/6a/766a558338808a02c0606067ab940bac72136ba4be2f30c2bd16169db27a08dd: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepGitHostileFallback",
-   "subtests_failed": 3,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_git_test.go:287: hostile Git CDC fallback: hostile CDC: chunk read failed: open /tmp/TestRepGitHostileFallbackchecksum1088151205/001/chunks/5f/50/5f5092523df8215abe271bf87c9778341cc6d83ef19cf9faf6379ecaeab019ac: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepGitProductionPackAndIdx",
-   "subtests_failed": 14,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_git_test.go:149: idx v2 sections: idx CDC: chunk read failed: open /tmp/TestRepGitProductionPackAndIdxsha1-ofs.idx3925262604/001/chunks/f0/b2/f0b2425b1c78e0ac8d75df78cea417238c8405939ed3a2738ecc56e696ef9da6: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepHostileObjectsNeverFailPut",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2760: hostile: car2-13 CDC: chunk read failed: open /tmp/TestRepHostileObjectsNeverFailPut3288790608/001/chunks/d4/b1/d4b1a8e7a8be7cccffa961b0a7c7b34b7abed6afd406349f4b180a93e74253b2: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepKindLifecycleMatrix",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:3582: loose: sqlite-8k CDC: chunk read failed: open /tmp/TestRepKindLifecycleMatrix1855037554/001/chunks/9e/fa/9efa594c2f296d79ddf18f669604dd416fbf356756bd2f36033ded33bbd31392: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepKindMatrixRoundTrip",
-   "subtests_failed": 2,
-   "cause": "hook",
-   "stack": [
-    "(*Store).casReadH < (*Store).checkChunk < (*Store).checkChunksParallel.func3 < parallelForState[...].func1"
-   ],
-   "expected": "deep verify of a representation store whose sidecar roots still reference the CDC chunks the hook hid",
-   "observed": "zeros3_rep_test.go:428: verify (deep=true) not OK: [{Kind:missing Subject:chunk f28b0301b589903701cf0cb56a9f634429afe65b4a4190fc4b963be9e725c707 Detail:open /tmp/TestRepKindMatrixRoundTripprefer1537223841/001/chunks/f2/8b/f28b0301b589903701",
-   "equivalent": "the hook retires chunks that additive representation roots keep live; gc never would: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestRepLargeObjectComponentsGoToPacks",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_rep_test.go:3639: 376 loose files: components were not streamed into packs",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestRepLateCreationAndRetirementLeaveNamespaceUntouched",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2858: late root: db CDC: chunk read failed: open /tmp/TestRepLateCreationAndRetirementLeaveNamespaceUntouched3972761147/001/chunks/1a/cc/1acc605dff769d6c2bc91ef498980179c20a98034519443a2e01e57fb60fe381: file does not exis",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepLifecycleChain",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:1298: initial: db CDC: chunk read failed: open /tmp/TestRepLifecycleChain601559763/001/chunks/0e/53/0e531b231379fefb6b02aa427c68227d22d5210770ff13c18ee7715d34bd6aaf: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepLiveRootFaultsFailClosed",
-   "subtests_failed": 9,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:1725: healthy: db CDC: chunk read failed: open /tmp/TestRepLiveRootFaultsFailClosedbit_flip2313999553/001/chunks/75/b8/75b882c84cf67d1a8dd9cfef1099042f38e8951bf02ec76ac1680a874a6cc7b7: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepManagedCumulativeCompatibility",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_managed_port_test.go:461: Model floor before structured integration",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepManagedNestedPublicationFloor",
-   "subtests_failed": 5,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_managed_port_test.go:536: ordinary off-mode PUT raised format",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepManagedOrdinaryPutCrashFloor",
-   "subtests_failed": 10,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_managed_port_test.go:374: managed retry: new CDC: chunk read failed: open /tmp/TestRepManagedOrdinaryPutCrashFloorkind11rep-before-namespace-1787200681/001/chunks/fc/dc/fcdc4c80a1f4ba2c9c87a60a1e63fc9fbc3a0538074569a016fc97143e71790f",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepMerkleRevisionChainSections",
-   "subtests_failed": 2,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2186: chain: rev0 CDC: chunk read failed: open /tmp/TestRepMerkleRevisionChainSectionshash-12812903687/001/chunks/26/35/2635f4beb631fdbf8322fdcdd4fc705e1b6489ef657747f5e5836babbcf248ec: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepMerkleVirtualSectionReuse",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:3676: three revisions: rev0 CDC: chunk read failed: open /tmp/TestRepMerkleVirtualSectionReuse3601613905/001/chunks/52/dc/52dcbc04c793f27e88b36267c624b7d3c4a9352b1d063667e2ae2b66dbad740f: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepModesAndFallbackCounters",
-   "subtests_failed": 1,
-   "cause": "hook",
-   "stack": [],
-   "expected": "representation counters assume CDC-served reads",
-   "observed": "zeros3_rep_test.go:1850: prefer: reads=0 range=0",
-   "equivalent": "the body, not the sidecar root, serves the read: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestRepNegativeFormatControls",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_rep_test.go:2719: no root was published, yet the format level moved to 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepOffModeMaintenanceKeepsRoots",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:3055: gc: db CDC: chunk read failed: open /tmp/TestRepOffModeMaintenanceKeepsRoots3781116704/001/chunks/ef/40/ef40a202f9aa5ef940dcf4f6b6c7d6db61afebd1a17e99a5ec05e09f065ac68f: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepOptionalFailureNeverFailsPut",
-   "subtests_failed": 4,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_rep_test.go:1632: off mode created representation state (format 10)",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepSharedChildAcrossFormatsAndRootLifecycle",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:1953: initial: tarA CDC: chunk read failed: open /tmp/TestRepSharedChildAcrossFormatsAndRootLifecycle2905516379/001/chunks/21/f9/21f933fdb44991182286ab005ff9e560659c6875bdfc307647d645d28bf14291: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepSharedVirtualComponentAcrossRoots",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2156: one root removed: t2 CDC: chunk read failed: open /tmp/TestRepSharedVirtualComponentAcrossRoots2568345068/001/chunks/94/08/9408d1bcfad354fabb695a02f86802261ddd88194b092b42968073c4ff73ecf6: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepSmokeSQLiteRoundTrip",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_rep_test.go:315: format 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepSourceCorruptionClassified",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2378: representation: reading dd76fa87adcd: representation: object not in source: 01e22cb6cc23: open /tmp/TestRepSourceCorruptionClassified1105164983/001/chunks/01/e2/01e22cb6cc23dcd110ee9a403e56dd461c6d16d181c8390d489ee5",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepStructuredCumulativeModelCompatibility",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_structured_test.go:358: Model floor before structured integration",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepStructuredFallbackAndLifecycle",
-   "subtests_failed": 3,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_structured_test.go:162: fallback: unsupported CDC: chunk read failed: open /tmp/TestRepStructuredFallbackAndLifecycletesting-harnessesz3parqu246826600/001/chunks/e7/fc/e7fc1aaca3f5e70a8f42a4b14b05c843b5d48b6c686a1ae31fce11434c59b9ea:",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepStructuredOrdinaryPutCrashFloor",
-   "subtests_failed": 10,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_structured_test.go:347: structured retry: new CDC: chunk read failed: open /tmp/TestRepStructuredOrdinaryPutCrashFloorkind10rep-before-namespa2671675683/001/chunks/c3/23/c323d0a458dd7c5971aed248c10ba3a1d1d28e6e03f5a8c93e52a233d0bf5fe",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepSubstrateStoreRoundTrip",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_rep_test.go:3767: level after the first root: 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepTempFilesAreNeverRootsOrLiveness",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:1887: with leftovers: db CDC: chunk read failed: open /tmp/TestRepTempFilesAreNeverRootsOrLiveness2397854546/001/chunks/3d/6f/3d6f669cd54dba129dd5623bbb367b1a959e4240d68c45193a87b9f64beb2b0b: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepUpgradeLevelsDoNotMoveUntilFirstRoot",
-   "subtests_failed": 5,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_rep_test.go:2977: setup produced level 10, wanted 1",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepVirtualComponentDescriptor",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [
-    "(*Store).casStatLocked < (*Store).casStat"
-   ],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_rep_test.go:2060: descriptor chunk missing: stat /tmp/TestRepVirtualComponentDescriptor3043609596/001/chunks/59/b4/59b4e6eb4e451462eb1672552a0f06f6e8fb7393375606ee28998eb4cc795930: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepZ4ManagedDefaultAndMalformedFallback",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_managed_port_test.go:298: off mode raised managed capability",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepZ4ManagedLifecycleAndCapability",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_managed_port_test.go:253: managed capability floor 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestRepZ4ModelBaseSurvivesRootRetirement",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_model_port_test.go:303: base object retired, derived tensor retained: derived CDC: chunk read failed: open /tmp/TestRepZ4ModelBaseSurvivesRootRetirement3923136048/001/chunks/0a/9d/0a9da159a065cf7a7c474cd4743e681ff50debaf7fa9d3f43faeb",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepZ4ModelGGUFAndUnsupportedModel",
-   "subtests_failed": 1,
-   "cause": "cdcref",
-   "stack": [],
-   "expected": "the CDC chunk list is read as the reference for a representation result",
-   "observed": "zeros3_model_port_test.go:166: gguf: gguf CDC: chunk read failed: open /tmp/TestRepZ4ModelGGUFAndUnsupportedModel4239946048/001/chunks/f9/6c/f96cbc99ef610d944493336bc4d98caf300dcc90276e8f8940c10c1ae05c3c5e: file does not exist",
-   "equivalent": "TestAuthorityRepFormAcrossStructuralKinds + TestAuthorityRetireEverythingSubprocess (representation/body read through the production reader)"
-  },
-  {
-   "test": "TestRepZ4ModelStreamingModelLifecycle",
-   "subtests_failed": 1,
-   "cause": "hook",
-   "stack": [],
-   "expected": "derivation hop counts read through the representation root",
-   "observed": "zeros3_model_port_test.go:130: revision0 tensor hops1",
-   "equivalent": "the body serves the read, so no derivation hop: TestAuthorityRepFormAcrossStructuralKinds"
-  },
-  {
-   "test": "TestRepack_GCCrashDuringDeadPackRemoval",
-   "subtests_failed": 1,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:2413: expected the test hook to panic (simulating a crash), but it did not",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestRepairFromPeer_IncompatiblePeerFailsClearly",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17059: err = <nil>, want a clear peer capability discovery failure",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_CorruptChunkContentMismatchDetected",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:16872: findings = [], want exactly one corrupt finding for f96cdb71682b55b705a230403fa2f6267c90e1bd12ee1d1be7353b1641ced1aa",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_CorruptExistingChunkAtomicallyReplaced",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17126: stats = {Source:http://127.0.0.1:45609 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_HighWorkerCount_RaceAndCorrectness",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:26855: stats = {Source:http://127.0.0.1:34901 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_LocalRestartResumesNaturally",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [
-    "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead"
-   ],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17431: open /tmp/TestRepair_LocalRestartResumesNaturally4016306834/002/chunks/78/d3/78d38c223c2e799c9f3c21263eb8841355569389e5fca405592016b0233871d8: file does not exist",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats",
-   "subtests_failed": 5,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:26660: stats = {Source:http://127.0.0.1:46597 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_ManyMissingChunks_Concurrent",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:26679: stats = {Source:http://127.0.0.1:38431 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_MissingChunkDetected",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:16849: findings = [], want exactly one missing finding for 60afc485beca3b85e2b951673aff6ec5ceece4ab0cb76453fb38a3451ad48065",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_MissingChunkRestoredEndToEnd",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17086: expected pre-repair deep verify to fail",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_MixedCorruptAndMissing_Concurrent",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:26701: stats = {Source:http://127.0.0.1:41737 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_MultipleCorruptChunksDetected",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:16910: findings = [], want exactly 2",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_OnePeerFailureAmongManySuccesses_Concurrent",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:26737: BadChunks = 0, want 43",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [
-    "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead"
-   ],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17309: open /tmp/TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly3172963347/001/chunks/30/73/30734864cd3cb97d18d1d0259c634804ebf08bbee1f3c6ef07f20a188ed0547a: file does not exist",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_PeerRestartBetweenAttempts",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17483: expected a clear error when the peer is unreachable",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17364: open /tmp/TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining3190051107/001/chunks/3a/ce/3acec743efa2c2bfd200a2036d56983b144fb29bfb7098ec4ea7460e24ad11c7: file does not exist",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_RetainedHistoricalVersionChunkRepaired",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17621: open /tmp/TestRepair_RetainedHistoricalVersionChunkRepaired796337097/001/chunks/f6/4d/f64d10136607289e4258a5a19d43b29c41a476eeab4733fd23ca36c84bbdfb98: file does not exist",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_SharedCorruptDigestAffectsAllReferencingObjects",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:16929: findings = [], want exactly one deduplicated finding (fetch/repair once, not per-object)",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_StatsExactAccounting",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:17275: stats = {Source:http://127.0.0.1:36385 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_WrongLengthChunkDetectedAsCorrupt",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:16890: findings = [], want exactly one corrupt (wrong-length) finding for 2e1d80594700b468b426fea458aa267d7d180de7f05caed2b1e65fc7f6f1eac1",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestRepair_WrongPeerBytesAmongMany_Concurrent",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "a damaged/missing chunk is found and repaired from a peer; stats exact",
-   "observed": "zeros3_test.go:26782: stats = {Source:http://127.0.0.1:33429 BadChunks:0 Repaired:0 Unresolved:0 PayloadFetched:0 AffectedObjects:0 ObjectsRepaired:0 Failures:[] PostRepairOK:true PostRepairResult:{Deep:true JournalFramesChecked:2 JournalOK",
-   "equivalent": "TestAuthorityRetiredEquivalents/peer repair + AuthorityPeerAssistedComponentRepair + subprocess repair"
-  },
-  {
-   "test": "TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:18602: result = {Discovered:2 Replicated:2 Failed:0 Failures:[] Stats:{LogicalBytes:60000 TotalChunks:3 ChunksReused:0 MissingChunkOccur:3 UniqueChunksUploaded:3 UploadedBytes:60000 BytesAvoided:0 FellBackToPlainPut:false}}",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestRestore_MissingHistoricalChunk_NoPartialMutation",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_test.go:9485: expected restore to fail when a historical chunk is missing",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestSnapshotGC_PinsOtherwiseUnreachableChunks",
-   "subtests_failed": 1,
-   "cause": "accounting",
-   "stack": [],
-   "expected": "gc/reachability counters count CDC chunks of body-owned objects",
-   "observed": "zeros3_test.go:20904: snapshot-pinned chunk df1a94e95ac23ddd5bfa1db12518917cd4c4990ac68641c50a92a19242cf5016 missing after GC: open /tmp/TestSnapshotGC_PinsOtherwiseUnreachableChunks1910723066/001/chunks/df/1a/df1a94e95ac23ddd5bfa1db1251891",
-   "equivalent": "TestAuthorityRetiredEquivalents/snapshots pin retired content + BaseRetentionAfterNamespacePruning"
-  },
-  {
-   "test": "TestStreamingGet_Corruption",
-   "subtests_failed": 12,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damaged bytes never reach a client or destination",
-   "observed": "zeros3_test.go:29519: full: status 200 with 2097152 body bytes, want an S3 error",
-   "equivalent": "TestAuthorityRetiredEquivalents/corrupt component (never wrong bytes) + CorruptComponentFailsClosed"
-  },
-  {
-   "test": "TestStreamingPut_LargeObjectBoundedMemory",
-   "subtests_failed": 1,
-   "cause": "hook",
-   "stack": [],
-   "expected": "heap growth bounded while streaming a large body",
-   "observed": "zeros3_test.go:29161: uploaded 288 MiB in 617ms; peak heap growth 11 MiB",
-   "equivalent": "TestAuthorityLargeCheck + run_large.sh (RSS of independent processes)"
-  },
-  {
-   "test": "TestTierPolicy_HottestReferenceWins",
-   "subtests_failed": 4,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:37138: targets differ from the model: got 45 chunks, want 18",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTierRebalance_CrashPointsConverge",
-   "subtests_failed": 14,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:37666: chunk e08dd0e9fa8d: open /tmp/TestTierRebalance_CrashPointsConvergebefore-loose-delete#1_loos465321576/001/chunks/e0/8d/e08dd0e9fa8df153556b3a4c68ae027f9c8892658882970ab227756806091a96: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTierRebalance_DriftAndDuplicatesConverge",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:37529: chunk e08dd0e9fa8d: open /tmp/TestTierRebalance_DriftAndDuplicatesConverge3685473899/001/chunks/e0/8d/e08dd0e9fa8df153556b3a4c68ae027f9c8892658882970ab227756806091a96: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTierRebalance_DryRunThenApplyOnLooseChunks",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_test.go:37342: dry-run raised FORMAT to 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestTierRebalance_MinMisplacedDefersCostlyRewrites",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:37487: chunk e08dd0e9fa8d: open /tmp/TestTierRebalance_MinMisplacedDefersCostlyRewrites2139865360/001/chunks/e0/8d/e08dd0e9fa8df153556b3a4c68ae027f9c8892658882970ab227756806091a96: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTierRebalance_MixedPacksAreRewritten",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:37467: chunk e08dd0e9fa8d: open /tmp/TestTierRebalance_MixedPacksAreRewritten879664163/001/chunks/e0/8d/e08dd0e9fa8df153556b3a4c68ae027f9c8892658882970ab227756806091a96: file does not exist",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTierRebalance_SharedCheckpointBlocksStayHot",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:37768: vacuous: the checkpoints share no blocks",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTier_CLI",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_test.go:35968: tier status: code=0 \"{\\n  \\\"store_format_version\\\": 10,\\n  \\\"loose_chunks\\\": 22,\\n  \\\"loose_bytes\\\": 1740000,\\n  \\\"tiers\\\": [\\n    {\\n      \\\"tier\\\": \\\"hot\\\",\\n      \\\"root\\\": \\\"/tmp/TestTier_CLI3926128650/002\\\",\\n    ",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestTier_CompactIntoColdCrashPoints",
-   "subtests_failed": 8,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_test.go:35574: pack-before-publish: cold publication reached with FORMAT below 5",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestTier_GCRemovesDeadPackFromItsTier",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:35900: cold packs 8 -> 8: dead pack not removed from the cold directory",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTier_InitSafety",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:36348: pre-v5 store: <nil>",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestTier_LifecycleCompactMoveReads",
-   "subtests_failed": 1,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_test.go:35340: hot-only store must not reach format 5, got 10",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestTier_MoveCrashPoints",
-   "subtests_failed": 5,
-   "cause": "storelevel",
-   "stack": [],
-   "expected": "store level moves only with the first record of a kind",
-   "observed": "zeros3_test.go:35538: a cold pack exists but FORMAT is below 5",
-   "equivalent": "TestAuthorityFiveGenerationMatrix + RevertAllLowersFloor + TestAuthorityOldBinaryRefuses (levels 10/12 recorded by FORMAT.json)"
-  },
-  {
-   "test": "TestTier_RepackGCPreserveTiersAndPaths",
-   "subtests_failed": 1,
-   "cause": "layout",
-   "stack": [],
-   "expected": "CDC physical layout (loose/packs/tiers/locality/compression)",
-   "observed": "zeros3_test.go:35855: tier hot packs 7 -> 9: replacements must stay in their tier (gc {Applied:true CurrentRootCount:3 HistoricalRootCount:0 MultipartRootCount:0 SnapshotRootCount:0 LiveSetOK:true Issues:[] ChunksScanned:75 ChunksReachable:",
-   "equivalent": "original test, unchanged, in default mode (CDC contract) + TestAuthorityRetireEverythingSubprocess (physical state after real retirement)"
-  },
-  {
-   "test": "TestVerify_DetectsCorruptChunkOnlyUnderDeep",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_test.go:4691: deep verify must detect content corruption that preserves file length",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
-  },
-  {
-   "test": "TestVerify_DetectsMissingChunk",
-   "subtests_failed": 1,
-   "cause": "corruption",
-   "stack": [],
-   "expected": "damage to a live chunk is detected and refuses destructive maintenance/export",
-   "observed": "zeros3_test.go:4646: expected a missing chunk to fail verify",
-   "equivalent": "TestAuthorityRetiredEquivalents/missing, corrupt component"
+ "tests": {
+  "TestAWSChunked_LargeObjectBoundedMemory": {
+   "class": "hook",
+   "tags": [
+    "large-streaming-put-bounded-memory"
+   ]
+  },
+  "TestBulkFetch_ServerSideFailures": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest"
+   ]
+  },
+  "TestBulkRepair_PartialSuccessSurvivesBatchFailure": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest"
+   ]
+  },
+  "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats"
+   ]
+  },
+  "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats"
+   ]
+  },
+  "TestBundle_ExportIndependentOfPhysicalRepresentation": {
+   "class": "layout",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestBundle_ExportIsDeterministicAndAtomic": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats"
+   ]
+  },
+  "TestBundle_PartialOverlapImportsOnlyMissingContent": {
+   "class": "revive",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "revive-on-write"
+   ]
+  },
+  "TestCASBatch_IngestDuplicateAndLocalizedEdit": {
+   "class": "revive",
+   "tags": [
+    "revive-on-write"
+   ]
+  },
+  "TestCLI_Repair_EndToEndSmoke": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestCLI_Repair_RealProcessKillThenResume": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestDeleteObjects_HistoryPruneGC": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestDirectPackLife_CrashMatrixConverges": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_AdaptiveCompressionOptionStillValidPackV1": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestDirectPack_ExistingCopiesInAnyTierAreReused": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_MultiplePacksAndPackSizes": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestDirectPack_TailBelowMinimumStaysLoose": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestFork_RepairComposesAcrossSharedCorruptChunk": {
+   "class": "corruption",
+   "tags": [
+    "repair-shared-digest"
+   ]
+  },
+  "TestGC_RefusesOnCorruptLiveRoot_K7": {
+   "class": "corruption",
+   "tags": [
+    "gc-refuses-corrupt-record"
+   ]
+  },
+  "TestIngestCrash_Matrix": {
+   "class": "accounting",
+   "tags": [
+    "maintenance-crash-converges",
+    "gc-counts-components",
+    "snapshot-pins-after-gc"
+   ]
+  },
+  "TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestLocality_CompactLayoutsEndToEnd": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestLocality_PackBoundariesAndTailFolding": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestLocality_RootObservationOrder": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestLocality_SingleChunkEmptyAndSharedObjects": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestModelNestedPublicationRaisesFloor": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestModelOrdinaryPutCrashPublication": {
+   "class": "cdcref",
+   "tags": [
+    "rep-crash-publication"
+   ]
+  },
+  "TestP1B_CrashMatrix_ConcurrentGroups": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestP1B_MediumPack_DeadPacksCollectedByGC": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestP1B_MediumPack_SameManifestAsLoose": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestP1C_BundleExportRefusesCorruptChunk": {
+   "class": "corruption",
+   "tags": [
+    "export-refuses-corrupt",
+    "repair-peer-exact-stats",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_FormatRaiseIsRaceFreeAgainstReaders": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_MaintenanceRefusesCorruptLiveRecord": {
+   "class": "corruption",
+   "tags": [
+    "gc-refuses-corrupt-record",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_OldStoreAndPolicyChangesCoexist": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_SharedOpenerNeverDisturbsALiveWriter": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP1C_SmallPutUsesSegmentAndSurvivesRestart": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestP2_CachedEntriesAreRevalidatedAgainstStorage": {
+   "class": "corruption",
+   "tags": [
+    "cache-revalidated"
+   ]
+  },
+  "TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics": {
+   "class": "corruption",
+   "tags": [
+    "cache-revalidated"
+   ]
+  },
+  "TestP2_PipelinedStreamsFailSafeAndLeakNothing": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed"
+   ]
+  },
+  "TestP2_PipeliningIsAdaptiveToActiveStreams": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestP3_DeepVerifyFindsCorruptionBetweenPasses": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestP3_ReachabilityMatchesReference_Damage": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused",
+    "gc-counts-components"
+   ]
+  },
+  "TestP3_ReachabilityMatchesReference_Healthy": {
+   "class": "accounting",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused",
+    "gc-counts-components"
+   ]
+  },
+  "TestP3_RepackCrashPointsWithPipelinedStaging": {
+   "class": "accounting",
+   "tags": [
+    "maintenance-crash-converges",
+    "gc-counts-components",
+    "snapshot-pins-after-gc"
+   ]
+  },
+  "TestP4DeferredBuildsAfterAcknowledgement": {
+   "class": "hook",
+   "tags": [
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestP4ReadCacheServesExactBytesAndStillVerifiesData": {
+   "class": "hook",
+   "tags": [
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_AdaptivePolicyByDataClass": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_CrashPoints": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_MixedObjectReadsAndRanges": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_RepackAbortsOnDamagedCompressedData": {
+   "class": "corruption",
+   "tags": [
+    "gc-refuses-corrupt-record",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_RepackSelectionUsesPhysicalBytes": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackCompression_StoreFormatBoundary": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestPackRun_BadPackStopsFurtherRuns": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_HTTPCorruptionNeverReachesClient": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_LocalityCoalescesDigestDoesNot": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestPackRun_NoncontiguousAndSingleChunk": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPackRun_RangeFetchesOnlyNeededChunks": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestPackRun_RangesMatchOrdinaryReads": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "range-reads-bounded"
+   ]
+  },
+  "TestPackRun_TiersAndLooseCopyPreference": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_CompactCLI": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_CompactCrashPoints": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPack_DuplicateCopiesCorruptionPreference": {
+   "class": "corruption",
+   "tags": [
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_GCNeverTouchesPacks": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_LogicalFeaturesOverPackedStore": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_MixedManifestSpansLooseAndPacked": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_PayloadAndRecordHeaderDamageFailSafely": {
+   "class": "corruption",
+   "tags": [
+    "damage-fails-closed",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_PhysicalMatrix": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_RepairReplacesCorruptPackedChunkFromPeer": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused",
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestPack_StoreFormatVersionGate": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records"
+   ]
+  },
+  "TestPrune_PackedHistoryReclaimedByRepack": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPrune_SharedAndRestoredRootsStayPinned": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestPrune_SnapshotSurvivesPruneThenGC": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestReachability_DetectsCorruptionAmongLiveRoots": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepAnalysisBudgets": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepBundleBackfillFullDeltaAndReuse": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepCodecAnalysisDepth": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed",
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepCodecNestedProduction": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepCodecUnsupportedFallsBack": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepConcurrentReadsMixedTiers": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepCopyObjectAndMultipart": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepCrashAfterFormatRaiseBeforeFirstRoot": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepCrashMatrix": {
+   "class": "cdcref",
+   "tags": [
+    "maintenance-crash-converges",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepGitHostileFallback": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepGitProductionPackAndIdx": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepHostileObjectsNeverFailPut": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepKindLifecycleMatrix": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepKindMatrixRoundTrip": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepLargeObjectComponentsGoToPacks": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestRepLateCreationAndRetirementLeaveNamespaceUntouched": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepLifecycleChain": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepLiveRootFaultsFailClosed": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepManagedCumulativeCompatibility": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepManagedNestedPublicationFloor": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepManagedOrdinaryPutCrashFloor": {
+   "class": "cdcref",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepMerkleRevisionChainSections": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepMerkleVirtualSectionReuse": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepModesAndFallbackCounters": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepNegativeFormatControls": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepOffModeMaintenanceKeepsRoots": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepOptionalFailureNeverFailsPut": {
+   "class": "storelevel",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepSharedChildAcrossFormatsAndRootLifecycle": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepSharedVirtualComponentAcrossRoots": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepSmokeSQLiteRoundTrip": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepSourceCorruptionClassified": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepStructuredCumulativeModelCompatibility": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepStructuredFallbackAndLifecycle": {
+   "class": "cdcref",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepStructuredOrdinaryPutCrashFloor": {
+   "class": "cdcref",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance",
+    "rep-lifecycle-exact",
+    "rep-shared-components",
+    "rep-crash-publication"
+   ]
+  },
+  "TestRepSubstrateStoreRoundTrip": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepTempFilesAreNeverRootsOrLiveness": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepUpgradeLevelsDoNotMoveUntilFirstRoot": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepVirtualComponentDescriptor": {
+   "class": "cdcref",
+   "tags": [
+    "rep-lifecycle-exact",
+    "rep-shared-components"
+   ]
+  },
+  "TestRepZ4ManagedDefaultAndMalformedFallback": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepZ4ManagedLifecycleAndCapability": {
+   "class": "storelevel",
+   "tags": [
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestRepZ4ModelBaseSurvivesRootRetirement": {
+   "class": "cdcref",
+   "tags": [
+    "rep-model-base-survives-retirement"
+   ]
+  },
+  "TestRepZ4ModelGGUFAndUnsupportedModel": {
+   "class": "cdcref",
+   "tags": [
+    "rep-hostile-fallback",
+    "damage-fails-closed"
+   ]
+  },
+  "TestRepZ4ModelStreamingModelLifecycle": {
+   "class": "hook",
+   "tags": [
+    "rep-lifecycle-exact",
+    "writes-and-reads-stay-exact-under-migration"
+   ]
+  },
+  "TestRepack_GCCrashDuringDeadPackRemoval": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestRepairFromPeer_IncompatiblePeerFailsClearly": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest"
+   ]
+  },
+  "TestRepair_CorruptChunkContentMismatchDetected": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_CorruptExistingChunkAtomicallyReplaced": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_HighWorkerCount_RaceAndCorrectness": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_LocalRestartResumesNaturally": {
+   "class": "corruption",
+   "tags": [
+    "repair-resume",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_ManyMissingChunks_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MissingChunkDetected": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MissingChunkRestoredEndToEnd": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MixedCorruptAndMissing_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_MultipleCorruptChunksDetected": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_OnePeerFailureAmongManySuccesses_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "repair-partial-honest",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly": {
+   "class": "corruption",
+   "tags": [
+    "repair-partial-honest",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_PeerRestartBetweenAttempts": {
+   "class": "corruption",
+   "tags": [
+    "repair-resume",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining": {
+   "class": "corruption",
+   "tags": [
+    "repair-resume",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_RetainedHistoricalVersionChunkRepaired": {
+   "class": "corruption",
+   "tags": [
+    "repair-shared-digest",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_SharedCorruptDigestAffectsAllReferencingObjects": {
+   "class": "corruption",
+   "tags": [
+    "repair-shared-digest",
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_StatsExactAccounting": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_WrongLengthChunkDetectedAsCorrupt": {
+   "class": "corruption",
+   "tags": [
+    "repair-peer-exact-stats",
+    "missing-component-refused"
+   ]
+  },
+  "TestRepair_WrongPeerBytesAmongMany_Concurrent": {
+   "class": "corruption",
+   "tags": [
+    "repair-concurrent",
+    "repair-peer-exact-stats",
+    "repair-partial-honest",
+    "missing-component-refused"
+   ]
+  },
+  "TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed": {
+   "class": "corruption",
+   "tags": [
+    "damage-is-isolated"
+   ]
+  },
+  "TestRestore_MissingHistoricalChunk_NoPartialMutation": {
+   "class": "corruption",
+   "tags": [
+    "restore-missing-no-mutation"
+   ]
+  },
+  "TestSnapshotGC_PinsOtherwiseUnreachableChunks": {
+   "class": "accounting",
+   "tags": [
+    "gc-counts-components",
+    "snapshot-pins-after-gc",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestStreamingGet_Corruption": {
+   "class": "corruption",
+   "tags": [
+    "stream-failsafe",
+    "damage-fails-closed"
+   ]
+  },
+  "TestStreamingPut_LargeObjectBoundedMemory": {
+   "class": "hook",
+   "tags": [
+    "large-streaming-put-bounded-memory"
+   ]
+  },
+  "TestTierPolicy_HottestReferenceWins": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_CrashPointsConverge": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges"
+   ]
+  },
+  "TestTierRebalance_DriftAndDuplicatesConverge": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_DryRunThenApplyOnLooseChunks": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTierRebalance_MinMisplacedDefersCostlyRewrites": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_MixedPacksAreRewritten": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTierRebalance_SharedCheckpointBlocksStayHot": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact"
+   ]
+  },
+  "TestTier_CLI": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_CompactIntoColdCrashPoints": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_GCRemovesDeadPackFromItsTier": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_InitSafety": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_LifecycleCompactMoveReads": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_MoveCrashPoints": {
+   "class": "storelevel",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "maintenance-crash-converges",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestTier_RepackGCPreserveTiersAndPaths": {
+   "class": "layout",
+   "tags": [
+    "layout-compact-tier-repack-exact",
+    "format-level-moves-with-records",
+    "format-stable-under-maintenance"
+   ]
+  },
+  "TestVerify_DetectsCorruptChunkOnlyUnderDeep": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
+  },
+  "TestVerify_DetectsMissingChunk": {
+   "class": "corruption",
+   "tags": [
+    "verify-deep-finds-corruption",
+    "missing-component-refused"
+   ]
   }
+ },
+ "required_tags": [
+  "cache-revalidated",
+  "damage-fails-closed",
+  "damage-is-isolated",
+  "differential-errors",
+  "differential-metadata",
+  "differential-reads",
+  "export-refuses-corrupt",
+  "format-level-moves-with-records",
+  "format-stable-under-maintenance",
+  "gc-counts-components",
+  "gc-refuses-corrupt-record",
+  "large-streaming-put-bounded-memory",
+  "layout-compact-tier-repack-exact",
+  "maintenance-crash-converges",
+  "missing-component-refused",
+  "range-reads-bounded",
+  "rep-crash-publication",
+  "rep-hostile-fallback",
+  "rep-lifecycle-exact",
+  "rep-model-base-survives-retirement",
+  "rep-shared-components",
+  "repair-concurrent",
+  "repair-partial-honest",
+  "repair-peer-exact-stats",
+  "repair-resume",
+  "repair-shared-digest",
+  "restore-missing-no-mutation",
+  "retirement-physical",
+  "revive-on-write",
+  "snapshot-pins-after-gc",
+  "stream-failsafe",
+  "verify-deep-finds-corruption",
+  "writes-and-reads-stay-exact-under-migration"
  ],
- "retired_chunk_paths": [
-  {
-   "hits": 4,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*bundleImporter).chunk < readDeltaBundle < (*Store).importDeltaBundle",
-   "tests": "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 1696,
-   "chain": "(*segSink).Put < (*Store).ingestStream",
-   "tests": ",TestAWSChunked_ConditionalHistoryRestart,TestBundleDeltaLife_BrowserSiteRevision,TestBundleDelta_BaseIdentityFailsClosed,+55 more",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 70,
-   "chain": "(*manifestReader).chunk < (*manifestReader).next < (*Store).manifestBytes < (*Store).repAfterCommit < (*Store).commitIngested",
-   "tests": "TestP",
-   "verdict": "hook ordering artifact",
-   "reason": "a CDC-authoritative manifest read a chunk the hook hid because another manifest sharing it committed first; physical retirement happens only in offline gc after liveness is recomputed (TestAuthorityRetireEverythingSubprocess)"
-  },
-  {
-   "hits": 16,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*packSink).Put < (*repBuilder).putStream < (*repBuilder).encodeTar",
-   "tests": "TestP",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 2,
-   "chain": "(*manifestReader).chunk < (*manifestReader).next < (*Store).manifestBytes < (*bundleImporter).publish < (*Store).importDeltaBundle",
-   "tests": "func1",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 108,
-   "chain": "(*Store).casReadH < (*Store).checkChunk < (*Store).checkChunksParallel.func3 < parallelForState[...].func1",
-   "tests": "TestP,TestRepKindMatrixRoundTripprefer,TestRepKindMatrixRoundTripshadow",
-   "verdict": "maintenance, authority-aware at the root",
-   "reason": "chunk checks run only for chunks of CDC-authoritative roots or authoritative components; the hook also hid chunks of additive representation roots, which gc would keep"
-  },
-  {
-   "hits": 1,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*storeRepSource).chunk < (*storeRepSource).ReadAt",
-   "tests": "func1",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 26,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead",
-   "tests": "TestPackRun_BadPackStopsFurtherRuns,TestPack_DuplicateCopiesCorruptionPreference,TestRepair_LocalRestartResumesNaturally,TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly,+7 more",
-   "verdict": "repair/pack tests reading CDC directly",
-   "reason": "tests that read or corrupt a CDC chunk on purpose (ledger: corruption/layout)"
-  },
-  {
-   "hits": 4,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < (*Server).handleBulkUpload < (*Server).handleBulk",
-   "tests": "TestBulkUpload_PresentAndPackedChunksAreNoOps",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 398,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*Store).casReadOrVirtual < (*Server).handleSyncChunkDownload",
-   "tests": "TestBulkReplicate_FallsBackToV,TestBulkReplicate_NewToNewUsesBulkAndCollapsesRequests,TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure,TestReplicate_DestinationConflict_AbsentBecomesPresentDuringRepl,+8 more",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 885,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*Store).casReadOrVirtual < (*Store).exportBundle",
-   "tests": "TestBundleDeltaLife_RealProcessKillDuringDeltaImport,TestBundleDelta_ChainOfDeltasAndOutOfOrderFailure,TestBundleDelta_CorruptBaseReferenceFailsThenConverges,TestBundleDelta_ExportImportRestoresTargetOverBase,+30 more",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 1085,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*Store).casReadOrVirtual < (*Server).handleBulkFetch",
-   "tests": "TestBulkFetch_ClientRejectsDishonestResponses,TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation,TestBulkFetch_ServerSideFailurescorrupt_first_chunk_is_refused_,TestBulkFetch_ServerSideFailurescorrupt_loose_chunk_after_valid,+34 more",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 296,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*Store).casReadOrVirtual < (*Store).exportDelta.func1",
-   "tests": "TestBundleDelta_BaseIdentityFailsClosed,TestBundleDelta_ChainOfDeltasAndOutOfOrderFailure,TestBundleDelta_CorruptBaseReferenceFailsThenConverges,TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation,+7 more",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 16,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*Store).casReadOrVirtual < (*Store).checkBaseRef",
-   "tests": "TestBundleDelta_ExportImportRestoresTargetOverBase,func1",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 1,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*packSink).Put < (*Store).ingestStream < (*Store).CompleteMultipartUpload",
-   "tests": "TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 109,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*Server).handleSyncNegotiate < (*Server).handleZeroS3Sync < (*Server).ServeHTTP",
-   "tests": "TestBulkNegotiate_MatchesV,TestSync_ConflictConcurrentPUTDuringSyncCausesCommitConflict",
-   "verdict": "virtual-aware",
-   "reason": "negotiation counts a virtual chunk as present; handleSyncCommit materializes it before publishing a CDC manifest"
-  },
-  {
-   "hits": 20,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*bundleImporter).chunk < readBundle < (*Store).importBundle",
-   "tests": "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload,TestBundle_PartialOverlapImportsOnlyMissingContent",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 542,
-   "chain": "(*Store).casReadH < (*Store).casReadExcluding < (*Store).casRead < (*Store).casReadOrVirtual < (*Server).handleSyncCommit",
-   "tests": "TestDryRun_PredictionMatchesActualExecutionAllPresent,TestFork_DeepVerifyGreenAfterFork,TestFork_DestinationEditedAfterFork_SourceUnchanged_OnlyNewChunk,TestFork_GCPreservesBothNamespacesAfterDivergence,+16 more",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 707,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*Store).casStatOrVirtual < (*Server).handleBulkNegotiate < (*Server).handleBulk",
-   "tests": "TestBulkNegotiate_MatchesV,TestDryRun_PredictionMatchesActualExecutionAllPresent,TestFork_DeepVerifyGreenAfterFork,TestFork_DestinationEditedAfterFork_SourceUnchanged_OnlyNewChunk,+16 more",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 1087,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*Store).casStatOrVirtual < (*Server).handleBulkFetch < (*Server).handleBulk",
-   "tests": "TestBulkFetch_ClientRejectsDishonestResponses,TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation,TestBulkFetch_ServerSideFailurescorrupt_first_chunk_is_refused_,TestBulkFetch_ServerSideFailurescorrupt_loose_chunk_after_valid,+36 more",
-   "verdict": "virtual-aware",
-   "reason": "presence/read falls back to the authoritative body of a live object that lists the chunk"
-  },
-  {
-   "hits": 2,
-   "chain": "(*manifestReader).chunk < (*manifestReader).next < (*manifestReaderAt).ReadAt < repReadFullAt < sqliteEncode",
-   "tests": "func1",
-   "verdict": "hook ordering artifact",
-   "reason": "a CDC-authoritative manifest read a chunk the hook hid because another manifest sharing it committed first; physical retirement happens only in offline gc after liveness is recomputed (TestAuthorityRetireEverythingSubprocess)"
-  },
-  {
-   "hits": 20,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < (*bundleImporter).chunk < readBundle",
-   "tests": "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload,TestBundle_PartialOverlapImportsOnlyMissingContent",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 4724,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < looseSink.Put < (*Store).ingestStream",
-   "tests": "1,TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting,TestBundle_ExportIndependentOfPhysicalRepresentation,TestBundle_ExportIsDeterministicAndAtomic,+20 more",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 2,
-   "chain": "(*Store).casStatLocked < (*Store).casStat",
-   "tests": "TestDirectPack_MultiplePacksAndPackSizes,TestRepVirtualComponentDescriptor",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 165,
-   "chain": "(*segSink).Put < (*Store).ingestStream < (*Server).ingestRequestBody < (*Server).handlePutObject < (*Server).ServeHTTP",
-   "tests": "TestAWSChunked_Matrix,TestRepS,TestStreamingPut_HTTPMatrix",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 2,
-   "chain": "(*manifestReader).chunk < (*manifestReader).next < (*Server).streamObject < (*Server).handleGetObject < (*Server).ServeHTTP",
-   "tests": "TestStreamingGet_HeadAndConditionalsSkipPayload",
-   "verdict": "hook ordering artifact",
-   "reason": "a CDC-authoritative manifest read a chunk the hook hid because another manifest sharing it committed first; physical retirement happens only in offline gc after liveness is recomputed (TestAuthorityRetireEverythingSubprocess)"
-  },
-  {
-   "hits": 4,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < (*bundleImporter).chunk < readDeltaBundle",
-   "tests": "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 148,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*packSink).Put < (*Store).ingestStream < (*Server).ingestRequestBody",
-   "tests": "TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes,TestRepS",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 545,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*casBatch).add < (*casBatch).Add < (*Store).casWrite",
-   "tests": "TestDryRun_PredictionMatchesActualExecutionAllPresent,TestFork_DeepVerifyGreenAfterFork,TestFork_DestinationEditedAfterFork_SourceUnchanged_OnlyNewChunk,TestFork_GCPreservesBothNamespacesAfterDivergence,+17 more",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 137,
-   "chain": "(*manifestReader).chunk < (*manifestReader).next",
-   "tests": "TestP2_PipeliningIsAdaptiveToActiveStreams,TestPackCompression_MixedObjectReadsAndRanges,TestRepAnalysisBudgets,TestRepCodecAnalysisDepth,+18 more",
-   "verdict": "hook ordering artifact",
-   "reason": "a CDC-authoritative manifest read a chunk the hook hid because another manifest sharing it committed first; physical retirement happens only in offline gc after liveness is recomputed (TestAuthorityRetireEverythingSubprocess)"
-  },
-  {
-   "hits": 5515,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*packSink).Put < (*Store).ingestStream",
-   "tests": ",1,2,TestBundleLife_CheckpointSharesChunksOnce,+19 more",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 56,
-   "chain": "(*Store).casStatLocked < (*Store).casStat < (*packSink).Put < (*repBuilder).putStream < (*repBuilder).putBlob",
-   "tests": "TestP",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  },
-  {
-   "hits": 1,
-   "chain": "(*segSink).Put < (*Store).ingestStream < (*Server).ingestRequestBody < (*Server).handleUploadPart < (*Server).ServeHTTP",
-   "tests": "TestMultipart_ETag_DiffersFromOrdinarySinglePutETag",
-   "verdict": "write-side probe (revive-on-write)",
-   "reason": "a retired chunk reads as absent, so the writer stores it again; never relies on a virtual copy for a CDC-authoritative manifest"
-  }
- ]
+ "declared": {
+  "cache-revalidated": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "damage-fails-closed": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "damage-is-isolated": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "differential-errors": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "differential-metadata": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "differential-reads": [
+   "TestAuthorityEquivDifferential"
+  ],
+  "export-refuses-corrupt": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "format-level-moves-with-records": [
+   "TestAuthorityEquivStoreLevel"
+  ],
+  "format-stable-under-maintenance": [
+   "TestAuthorityEquivMaintenanceKeepsFormat"
+  ],
+  "gc-counts-components": [
+   "TestAuthorityEquivAccounting"
+  ],
+  "gc-refuses-corrupt-record": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "large-streaming-put-bounded-memory": [
+   "TestAuthorityEquivStreamingPutAndReadBoundedMemory"
+  ],
+  "layout-compact-tier-repack-exact": [
+   "TestAuthorityEquivPhysicalLayouts"
+  ],
+  "maintenance-crash-converges": [
+   "TestAuthorityEquivMaintenanceCrashPoints"
+  ],
+  "missing-component-refused": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "range-reads-bounded": [
+   "TestAuthorityEquivRangeReadsFetchOnlyWhatTheyNeed"
+  ],
+  "rep-crash-publication": [
+   "TestAuthorityCrashMatrix"
+  ],
+  "rep-hostile-fallback": [
+   "TestAuthorityEquivHostileObjectsStayExact"
+  ],
+  "rep-lifecycle-exact": [
+   "TestAuthorityRepFormAcrossStructuralKinds"
+  ],
+  "rep-model-base-survives-retirement": [
+   "TestAuthorityZN7BaseRetentionRevertAndFeature"
+  ],
+  "rep-shared-components": [
+   "TestAuthorityRepFormAcrossStructuralKinds"
+  ],
+  "repair-concurrent": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "repair-partial-honest": [
+   "TestAuthorityRepairCrashQualification"
+  ],
+  "repair-peer-exact-stats": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "repair-resume": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "repair-shared-digest": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "restore-missing-no-mutation": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "retirement-physical": [
+   "TestAuthorityEquivRetirementIsPhysical"
+  ],
+  "revive-on-write": [
+   "TestAuthorityEquivRetirementIsPhysical"
+  ],
+  "snapshot-pins-after-gc": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "stream-failsafe": [
+   "TestAuthorityEquivCorruptionClasses"
+  ],
+  "verify-deep-finds-corruption": [
+   "TestAuthorityRetiredEquivalents"
+  ],
+  "writes-and-reads-stay-exact-under-migration": [
+   "TestAuthorityConcurrentOperations"
+  ]
+ }
 }

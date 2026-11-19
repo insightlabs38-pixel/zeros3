@@ -1,0 +1,23 @@
+    zeros3_authority_test.go:2369: v0 put 2.097257829s
+    zeros3_authority_test.go:2369: v1 put 1.616346307s
+    zeros3_authority_test.go:2369: v2 put 1.481332787s
+--- PASS: TestAuthorityLargeFixture (5.20s)
+PASS
+1092951435	/tmp/claude-0/qual-scratch/large/store
+migrate rc=0 wall=52.70s rss=86940KB
+status rc=0 wall=0.02s rss=18460KB
+gc rc=0 wall=0.06s rss=23756KB
+repack rc=0 wall=0.03s rss=22936KB
+compact rc=0 wall=0.06s rss=27828KB
+gc rc=0 wall=0.03s rss=24260KB
+1080907913	/tmp/claude-0/qual-scratch/large/store
+    zeros3_authority_test.go:2427: v0 exact 1073741824 bytes at 443 MiB/s, peak RSS so far 43 MiB
+    zeros3_authority_test.go:2427: v1 exact 1073741824 bytes at 330 MiB/s, peak RSS so far 56 MiB
+    zeros3_authority_test.go:2427: v2 exact 1073741824 bytes at 246 MiB/s, peak RSS so far 65 MiB
+    zeros3_authority_test.go:2440: 64 random 4 KiB ranges of v1: 5.129134ms each
+--- PASS: TestAuthorityLargeCheck (13.87s)
+PASS
+verify rc=0 wall=9.76s rss=55964KB
+integrity        0 missing | 0 corrupt | 0 invalid
+reclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes
+result           OK

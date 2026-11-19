@@ -1,0 +1,107 @@
+[
+ {
+  "file": "py_chunk10k_q8.br",
+  "producer": "python-brotli 1.2.0 Compressor",
+  "params": {
+   "quality": 8,
+   "lgwin": 22
+  },
+  "pattern": "process 10000-byte chunks, finish",
+  "size": 70970,
+  "sha256": "6197ad82bfde49c640c467d074c08efca955a504a7a72065789328677887be52",
+  "decoded_size": 300000,
+  "decoded_sha256": "bc3e620153394598da917fbce992449a40885406cb66cb0dda25c5eed69c7dde"
+ },
+ {
+  "file": "py_flush_q9.br",
+  "producer": "python-brotli 1.2.0 Compressor",
+  "params": {
+   "quality": 9,
+   "lgwin": 22
+  },
+  "pattern": "process 7000-byte chunks, flush every 5th, finish",
+  "size": 69950,
+  "sha256": "e1453b0b740b3439551f76ff4638fdf817ba7c8ed255f02c55d43710beea2adb",
+  "decoded_size": 300000,
+  "decoded_sha256": "bc3e620153394598da917fbce992449a40885406cb66cb0dda25c5eed69c7dde"
+ },
+ {
+  "file": "py_exact2blocks_q8.br",
+  "producer": "python-brotli 1.2.0 Compressor",
+  "params": {
+   "quality": 8,
+   "lgwin": 22
+  },
+  "pattern": "process 131072 bytes (two full blocks), finish with no data",
+  "size": 30893,
+  "sha256": "0035abbba41674b3eec5c1dea54e9a79f90ac1c5649737e3518f7e6a657715da",
+  "decoded_size": 131072,
+  "decoded_sha256": "0a02a919fb3340794aebb1f143ce2a99beb6fbf6e926fa2d6e52b9afd76d7666"
+ },
+ {
+  "file": "py_chunk32k_q9_big.br",
+  "producer": "python-brotli 1.2.0 Compressor",
+  "params": {
+   "quality": 9,
+   "lgwin": 22
+  },
+  "pattern": "process 32768-byte chunks, finish (first block sees a small hint)",
+  "size": 375698,
+  "sha256": "22e09e717e92d0c8a1c32ed34bb6d95fd322fa1d0e51308df82c6fe7e5012893",
+  "decoded_size": 1500000,
+  "decoded_sha256": "b1ea5b2c5bccbc443cb4d1b9c3c8c45069bbd7104d1b14da5e422fc763ef4933"
+ },
+ {
+  "file": "py_oneshot_q8_w18_wrap.br",
+  "producer": "python-brotli 1.2.0 compress()",
+  "params": {
+   "quality": 8,
+   "lgwin": 18
+  },
+  "pattern": "compress() of 700001 bytes (ring of 2^19 wraps)",
+  "size": 165210,
+  "sha256": "19e57bce2e6dc3dda694b3fe551f13974720e504eee28f5cb4012db54e42c47f",
+  "decoded_size": 700001,
+  "decoded_sha256": "a581063aac0751a01187d7394db062bc2e89ce885b17d2fc4acb1df612c83cc6"
+ },
+ {
+  "file": "py_lgblock18_q7.br",
+  "producer": "python-brotli 1.2.0 Compressor",
+  "params": {
+   "quality": 7,
+   "lgwin": 20,
+   "lgblock": 18
+  },
+  "pattern": "process 50000-byte chunks, finish, lgblock 18",
+  "size": 67133,
+  "sha256": "de2889e4630608d1e12af5ac88497fe1afada2b67943b738410b72cff98709d2",
+  "decoded_size": 250000,
+  "decoded_sha256": "6ae3d2c08d3eb515dd42bdc77eead8871d9e1e857fe0d7bcdb177bea24cf18ee"
+ },
+ {
+  "file": "arrow_stream_16k.br",
+  "producer": "pyarrow 26.0.1 CompressedOutputStream('brotli')",
+  "params": {
+   "quality": 8,
+   "lgwin": 22
+  },
+  "pattern": "write 16384-byte chunks, close",
+  "size": 94623,
+  "sha256": "8561b85d4cf5ef84b3db21e281950a83f332b2d7e08e40ceb3dadbcf25937f50",
+  "decoded_size": 400000,
+  "decoded_sha256": "c64c95db96fd953de587331e2d17fcb49d3fd3841ddb02f8ee6554e6a91b2c44"
+ },
+ {
+  "file": "arrow_stream_flush.br",
+  "producer": "pyarrow 26.0.1 CompressedOutputStream('brotli')",
+  "params": {
+   "quality": 8,
+   "lgwin": 22
+  },
+  "pattern": "write 40000-byte chunks, flush after every second, close",
+  "size": 61405,
+  "sha256": "915340714d8da3cc6590c97e079483f86604373f9f37e119ff052c25fae04435",
+  "decoded_size": 260000,
+  "decoded_sha256": "865981f3a3366d1ea04951441c2a907bbfc353a04a1dd7fb10055e284755021d"
+ }
+]

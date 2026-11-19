@@ -20,6 +20,7 @@ run verify_after verify -store "$W/store"
 run gc_apply gc -store "$W/store" -apply
 run repack repack -store "$W/store" -apply
 run verify_final verify -store "$W/store" -deep
-cp -a "$W/store" "$W/store_revert"
+mv "$W/store" "$W/store_revert"   # the store is not read again: no second copy (the fixture is the largest file set of the qualification)
 run revert_all authority revert -all -store "$W/store_revert"
 run verify_reverted verify -store "$W/store_revert"
+rm -rf "$W/store_revert"   # evidence is the text outputs; free the space for the next step

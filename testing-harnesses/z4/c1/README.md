@@ -4,7 +4,8 @@ Production code: `zeros3.go` sections 16e (authority) and 16f (extracted `dcore`
 
 | Script | Gate |
 |---|---|
-| `ZEROS3_G1_RETIRE_ALL=1 ZEROS3_G1_STACKS=out.txt go test -skip TestAuthority -json . > run.json` then `g1_ledger.py run.json out.txt results/g1_ledger.json` | G1 hook run and its failure ledger (cause, chain, expected, observed, equivalent proof) |
+| `scripts/validate.sh authority` | G1: every non-authority root test under the retire-everything hook (`ZEROS3_G1_RETIRE_ALL=1`), the authority suite natively; tests of the CDC layout itself call `g1CDCSpecific(t, class)` and run with CDC authoritative, their authority-mode equivalents are `TestAuthorityEquiv*` and the C1 equivalents. `g1_ledger.py OUT.json` regenerates `results/g1_ledger.json` from the sources; `results/g1_ledger_c1_hook_run.json` is the failing hook run this replaced |
+| `go test -run 'TestAuthorityEquiv\|TestAuthorityRetiredEquivalents' .` | G1 audit: physical retirement, the CDC-versus-authority differential, damage classes, maintenance crash points, bounded memory, hostile objects; every exempt test's invariants must be declared by a `g1Cover` call of a passing authority test (`g1_ledger.py OUT.json --evidence t1-authority_native.json`) |
 | `go test -run 'TestAuthorityRetireEverythingSubprocess\|TestAuthorityRetiredEquivalents' .` | G1 physical retirement through the real binary, and the logical guarantees after it |
 | `go test -run TestAuthorityRepairCrashQualification .` | G8 repair under SIGKILL, restarts, concurrent maintenance |
 | `ZEROS3_C1_MODELS=DIR go test -run TestAuthorityZN7RealModels .` | ZN7 on Pythia-14M and SmolLM2 (f16, imatrix, Q4_0) in fresh processes |
@@ -21,3 +22,14 @@ Production code: `zeros3.go` sections 16e (authority) and 16f (extracted `dcore`
 | `p7/scripts/extract_all.sh OUT` | P7 numeric/hard-codec extraction onto the current tree (nothing is written to the repository) |
 
 `results/`: `economics.json` (all families, physical bytes / CDC), `scale_1m_*`, `large_*`, `g1_retired_chunk_paths.txt` (distinct production call chains that touched a retired chunk), `p7_*`.
+
+Z4-C1/T1 completion (tools beside this file):
+
+| Script | Gate |
+|---|---|
+| `fetch_models.py DIR` | the pinned real-model files (Pythia-14M checkpoints, SmolLM2 f16, Q4_0, IQ3_M, IQ3_XS, imatrix), hash-verified; `ZEROS3_C1_MODELS=DIR` |
+| `gen_parquet_chain.py DIR` | the pinned pyarrow 26.0.1 Brotli chain (8 revisions, 221 MB); `ZEROS3_C1_PQCHAIN=DIR go test -run TestAuthorityHardCorpusEconomics .` measures CDC against the exact Brotli replay through the production authority (gc, repack with recompression, compact on both) |
+| `go test -run 'TestAuthorityTier' .` | the read-cost gate: `-tier hot\|warm\|cold` prices every admitted form by its measured replay throughput, 4 KiB amplification, depth and modeled memory; hard-codec and quantizer forms only in cold; `-no-read-cost` lifts it for testing |
+| `go test -run TestRepParquetParallelReplayIsExact .` | parallel Parquet page replay (`ZEROS3_PQ_WORKERS`, default 4, process-wide cap 8): exact bytes at every worker count, exact prefix on a failing page |
+| `go test -run TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds .` | store features `zn7iq3s` and `hardstream`: the previous build refuses and names them, revert-all clears them |
+| `p7/scripts/reextract_hard.sh WORK`, `p7/scripts/port_iq3.py` | regenerate the Brotli/LZ4 body of section 16i and the IQ3_S block of 16g from `testing-harnesses/z3` |

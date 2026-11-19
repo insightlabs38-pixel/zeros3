@@ -82,44 +82,45 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      534    Content-defined chunking (CDC)
-//      721    Content-addressed chunk storage (CAS)
-//     2464    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4346    Small-object segments (inline manifests, store level 11)
-//     5586    Manifests (immutable, JSON)
-//     6382    Visibility journal (append-only, checksummed)
-//     6877    Store: format, namespace, and object CRUD
-//     8332    Version history/restore, history pruning, ListObjectsV2
-//     8813    SigV4 authentication (header and presigned-URL)
-//     9790    Request payload checksums and S3-shaped XML error/response types
-//    10007    HTTP routing and S3 operation handlers
-//    10423    Conditional operations (PUT/GET/HEAD preconditions)
-//    11118    CopyObject
-//    11423    Multipart upload
-//    12363    Stats and reachability scanning
-//    13838    Verify
-//    14051    Store locking and safe offline GC
-//    14354    Offline compaction (`zeros3 compact`)
-//    15420    Pack reclamation and repacking (`zeros3 repack`)
-//    15905    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16418    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17483    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18287    Delta sync client, credentials, and parallel transfer
-//    20281    Bulk logical-chunk transport (v2)
-//    21192    Recursive directory sync
-//    21497    Remote replication (`zeros3 replicate`)
-//    22256    Peer-assisted corruption repair (`zeros3 repair`)
-//    22824    Namespace (prefix/bucket) replication
-//    23131    Copy-on-write namespace fork (`zeros3 fork`)
-//    23339    Snapshots and restore
-//    24500    Structural diff and inspect (introspection)
-//    25839    Portable snapshot bundles (`zeros3 bundle`)
-//    27036    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    27671    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44564    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    48580    Windowed and estimated similarity deltas (extracted dcore)
-//    50082    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    57227    CLI dispatch, HTTP server/startup, and main
+//      535    Content-defined chunking (CDC)
+//      722    Content-addressed chunk storage (CAS)
+//     2465    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     4347    Small-object segments (inline manifests, store level 11)
+//     5587    Manifests (immutable, JSON)
+//     6383    Visibility journal (append-only, checksummed)
+//     6878    Store: format, namespace, and object CRUD
+//     8333    Version history/restore, history pruning, ListObjectsV2
+//     8814    SigV4 authentication (header and presigned-URL)
+//     9791    Request payload checksums and S3-shaped XML error/response types
+//    10008    HTTP routing and S3 operation handlers
+//    10424    Conditional operations (PUT/GET/HEAD preconditions)
+//    11119    CopyObject
+//    11424    Multipart upload
+//    12364    Stats and reachability scanning
+//    13839    Verify
+//    14052    Store locking and safe offline GC
+//    14355    Offline compaction (`zeros3 compact`)
+//    15421    Pack reclamation and repacking (`zeros3 repack`)
+//    15906    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16419    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17484    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18288    Delta sync client, credentials, and parallel transfer
+//    20282    Bulk logical-chunk transport (v2)
+//    21193    Recursive directory sync
+//    21498    Remote replication (`zeros3 replicate`)
+//    22257    Peer-assisted corruption repair (`zeros3 repair`)
+//    22825    Namespace (prefix/bucket) replication
+//    23132    Copy-on-write namespace fork (`zeros3 fork`)
+//    23340    Snapshots and restore
+//    24501    Structural diff and inspect (introspection)
+//    25840    Portable snapshot bundles (`zeros3 bundle`)
+//    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    44565    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    48780    Windowed and estimated similarity deltas (extracted dcore)
+//    50288    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    57902    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64174    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -33319,6 +33320,10 @@ func parseRepMode(v string) (repMode, error) {
 // is correctness state; it is rebuilt from the live roots.
 type repState struct {
 	mode atomic.Int32
+	// hardCodecs admits Brotli and LZ4_RAW Parquet pages (and LZ4 SST blocks) to structured analysis. It is
+	// raised only while an archive migration holds the store: the records it produces carry the
+	// "hardcodec" store feature, which no inline build writes.
+	hardCodecs atomic.Bool
 
 	buildMu sync.Mutex
 	// formatMu serializes the one-time raise to format 6 across concurrent root publishers.
@@ -33528,14 +33533,13 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 				}
 				m.sm = sm
 			}
-			// A read that does not continue the previous one is a probe (a tar header, a
-			// table, a footer): fetch exactly the chunks it needs. An open-ended reader
-			// would plan a run of up to 64 contiguous chunks, decode and SHA-256 all of
-			// them, and drop all but the first at the next probe. The read that continues
-			// a probe (or any sequential scan) opens the open-ended, run-coalescing reader.
+			// A read that does not continue the previous one (a tar header, a table, a footer, an
+			// index probe) fetches exactly the chunks it needs: an open-ended reader would decode and
+			// SHA-256 a run of up to 64 chunks, and a prefetch pipeline behind it, then drop them at
+			// the next jump. Only the read that continues one opens the run-coalescing reader.
 			end := m.size - 1
-			if off != m.lastEnd && int64(len(p)-n) <= repProbeMax {
-				end = min(end, off+int64(len(p)-n)-1)
+			if off != m.lastEnd {
+				end = min(end, off+int64(len(p)-n)-1) // a jump reads what it asked for, however large
 			}
 			m.rd = m.s.openServedReader(m.sm, byteRange{start: off, end: end})
 			m.streamEnd, m.rdEnd = off, end
@@ -33575,9 +33579,6 @@ func (m *manifestReaderAt) initAuthBody() {
 		m.abody = b
 	}
 }
-
-// repProbeMax is the largest read treated as a probe after a jump.
-const repProbeMax = 64 << 10
 
 // ---- building and publishing ---------------------------------------------------
 
@@ -45453,6 +45454,27 @@ func (s *Store) authPublish(rec *authRecord) error {
 			if err := s.ensureFeature(authZN7Feature); err != nil {
 				return err
 			}
+			if s.zn7DerivesIQ3(rec.Pieces) {
+				if err := s.ensureFeature(authIQ3Feature); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if rec.Form == authFormRep && rec.Root != nil {
+		hard, stream, err := s.repRootHard(rec.Root)
+		if err != nil {
+			return err
+		}
+		if hard {
+			if err := s.ensureFeature(authHardFeature); err != nil {
+				return err
+			}
+		}
+		if stream {
+			if err := s.ensureFeature(authStreamFeature); err != nil {
+				return err
+			}
 		}
 	}
 	fireTestHook(hookAuthAfterFormat)
@@ -45584,6 +45606,7 @@ type authCtx struct {
 	fetched int64
 	// pieces is a request-local FIFO of verified chunks shared by every body of
 	// the closure (a base chunk is often read through several dependents).
+	pmu        sync.Mutex // guards pieces, pieceOrder, pieceBytes and fetched
 	pieces     map[[32]byte][]byte
 	pieceOrder [][32]byte
 	pieceBytes int64
@@ -45664,8 +45687,13 @@ func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authReco
 	return b, rec, nil
 }
 
+// readPiece may be called by concurrent bodies of one closure (ZN7 window workers): the chunk cache
+// is guarded, the chunk read itself is not.
 func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
-	if d, ok := c.pieces[p.SHA]; ok {
+	c.pmu.Lock()
+	d, ok := c.pieces[p.SHA]
+	c.pmu.Unlock()
+	if ok {
 		return d, nil
 	}
 	data, err := c.s.casRead(p.SHA)
@@ -45674,6 +45702,11 @@ func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
 	}
 	if int64(len(data)) != p.Len {
 		return nil, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
+	}
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	if _, dup := c.pieces[p.SHA]; dup {
+		return data, nil
 	}
 	c.fetched += p.Len
 	if c.pieces == nil {
@@ -45923,12 +45956,16 @@ var (
 	authWindowSize int64 = 1 << 20  // target bytes per independently authenticated frame
 )
 
+// authMaxAnchors caps the anchor table at 16 MiB however large the base is: past 1 GiB the content
+// sampling rate drops instead (long identical regions are still found from sparser anchors).
+const authMaxAnchors = 1 << 20
+
 // authWParams bounds the working set: the anchor table follows the base size (one anchor
-// per KiB, 256 Ki to 4 Mi anchors) and each worker caches 2 MiB of base pages.
+// per KiB, 256 Ki to 1 Mi anchors) and each worker caches 2 MiB of base pages.
 func authWParams(workers int, baseSize int64) dwDcoreWParams {
 	p := dwDcoreDefaultWParams()
 	p.Window, p.Workers, p.CachePages = authWindowSize, workers, 32
-	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), 4<<20))
+	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), authMaxAnchors))
 	return p
 }
 
@@ -46419,17 +46456,27 @@ type AuthPolicy struct {
 	// MinReadRatio refuses a hybrid admission (MaxReadAmp > 0) whose measured whole-object read
 	// throughput is below this fraction of the CDC read of the same object (0 = not measured).
 	MinReadRatio float64 `json:"min_read_ratio"`
+	// Tier prices the read of every admitted form against what its tier may spend: "hot", "warm", "cold", or
+	// "archive"/"" (no read-cost gate, the archive behaviour). The cost is measured on the candidate itself
+	// (whole-object replay throughput, 4 KiB amplification) and modeled for memory; see authTierLimits.
+	// NoReadCost lifts the gate so a form a tier would refuse can still be admitted for testing.
+	Tier       string `json:"tier,omitempty"`
+	NoReadCost bool   `json:"no_read_cost,omitempty"`
 	// Bucket and Prefix scope the migration ("" = everything). Contents outside the scope
 	// are neither migrated nor bases, but their chunks still count as CDC-owned.
-	Bucket      string `json:"bucket,omitempty"`
-	Prefix      string `json:"prefix,omitempty"`
-	Strategy    string `json:"strategy"` // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
-	AllowRep    bool   `json:"allow_rep"`
-	AllowDelta  bool   `json:"allow_delta"`
-	MinObject   int64  `json:"min_object"`
-	MinRepGroup int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
-	FrameSpan   int64  `json:"frame_span"`
-	Apply       bool   `json:"apply"`
+	Bucket     string `json:"bucket,omitempty"`
+	Prefix     string `json:"prefix,omitempty"`
+	Strategy   string `json:"strategy"` // "" or "best": plan delta-only and rep-only, apply the cheaper; "mixed": per-object choice
+	AllowRep   bool   `json:"allow_rep"`
+	AllowDelta bool   `json:"allow_delta"`
+	MinObject  int64  `json:"min_object"`
+	// HardCodecs lets structured analysis replay Brotli and LZ4_RAW Parquet pages and LZ4 SST blocks
+	// exactly (archive use: reading them re-runs the page encoder). Records that use them carry the
+	// "hardcodec" feature, which builds without the replay refuse.
+	HardCodecs  bool  `json:"hard_codecs"`
+	MinRepGroup int   `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan   int64 `json:"frame_span"`
+	Apply       bool  `json:"apply"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
 	// representation for a kind group whose delta plan already costs at most this
 	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
@@ -46445,9 +46492,10 @@ type authPlanCache struct {
 	deltaAdd  map[[32]byte]int64 // plan-only added bytes of the best delta per object
 	repC      map[[32]byte]*authRepCand
 	repAbort  map[repKind]bool
-	rejected  int                // rep objects never constructed because the group was abandoned
-	winAdded  map[[32]byte]int64 // plan-only added bytes of windowed deltas
-	znAdded   map[[32]byte]int64 // plan-only added bytes of ZN7 containers
+	rejected  int                   // rep objects never constructed because the group was abandoned
+	winAdded  map[[32]byte]int64    // plan-only added bytes of windowed deltas
+	winSketch map[[32]byte][]uint64 // similarity sketch of a windowed object: the applying pass reuses the plan pass's full read
+	znAdded   map[[32]byte]int64    // plan-only added bytes of ZN7 containers
 	reuseHits int
 	// stale is set when apply-time gating (proof failure, read-amplification
 	// refusal) rejected an object the plan-only pass had admitted: later cached
@@ -46464,7 +46512,7 @@ type authDeltaPlan struct {
 }
 
 func newAuthPlanCache() *authPlanCache {
-	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, znAdded: map[[32]byte]int64{}}
+	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, winSketch: map[[32]byte][]uint64{}, znAdded: map[[32]byte]int64{}}
 }
 
 // workers bounds the parallel window workers: resident memory grows by roughly 30 MiB per worker on a 1 GiB base.
@@ -46506,18 +46554,109 @@ func (p AuthPolicy) norm() AuthPolicy {
 
 // AuthPlan is the admission decision for one distinct object content.
 type AuthPlan struct {
-	SHA        string   `json:"sha256"`
-	Size       int64    `json:"size"`
-	Form       string   `json:"form"` // cdc | pin | rep | delta
-	Bases      []string `json:"bases,omitempty"`
-	Depth      int      `json:"depth"`
-	CDCBytes   int64    `json:"cdc_unshared_bytes"`
-	AddedBytes int64    `json:"added_bytes"`
-	Saving     float64  `json:"saving"`
-	ReadAmp    float64  `json:"read_amp_4k,omitempty"`
-	CDCAmp     float64  `json:"cdc_amp_4k,omitempty"`
-	ReadRatio  float64  `json:"read_ratio,omitempty"` // whole-object read throughput relative to CDC (hybrid admissions)
-	Reason     string   `json:"reason,omitempty"`
+	SHA        string    `json:"sha256"`
+	Size       int64     `json:"size"`
+	Form       string    `json:"form"` // cdc | pin | rep | delta
+	Bases      []string  `json:"bases,omitempty"`
+	Depth      int       `json:"depth"`
+	CDCBytes   int64     `json:"cdc_unshared_bytes"`
+	AddedBytes int64     `json:"added_bytes"`
+	Saving     float64   `json:"saving"`
+	ReadAmp    float64   `json:"read_amp_4k,omitempty"`
+	CDCAmp     float64   `json:"cdc_amp_4k,omitempty"`
+	ReadRatio  float64   `json:"read_ratio,omitempty"` // whole-object read throughput relative to CDC (hybrid admissions)
+	Cost       *AuthCost `json:"read_cost,omitempty"`  // what reading the candidate costs (tiered migrations)
+	Reason     string    `json:"reason,omitempty"`
+}
+
+// AuthCost is the measured and modeled price of reading an admitted form.
+type AuthCost struct {
+	ReplayMiBs float64 `json:"replay_mib_s"` // measured whole-object read, warm, all workers
+	Ratio      float64 `json:"ratio_vs_cdc"`
+	Amp4K      float64 `json:"amp_4k"`
+	Depth      int     `json:"depth"`
+	PeakMemMiB int     `json:"peak_mem_mib"` // modeled: workers x per-worker working set of the form
+	Replay     string  `json:"replay"`       // "plain" | "zn7" | "hard" (exact Brotli/LZ4 re-encoding) | "zn7+quant"
+}
+
+// authTierLimits is what a read from each tier may cost. Replay is the floor on measured whole-object
+// throughput, Amp the ceiling on 4 KiB amplification relative to the CDC read, Depth the dependency nesting,
+// Mem the modeled resident working set of one read, Hard whether forms that re-run a producer's encoder may be
+// admitted at all (they price every read at encoder speed, so only tiers that are rarely read take them).
+var authTierLimits = map[string]struct {
+	Replay, Amp float64
+	Depth, Mem  int
+	Hard        bool
+}{
+	"hot":  {Replay: 100, Amp: 1.5, Depth: 1, Mem: 64},
+	"warm": {Replay: 20, Amp: 4, Depth: 2, Mem: 256},
+	"cold": {Replay: 4, Amp: 16, Depth: 4, Mem: 1024, Hard: true},
+}
+
+// authCostOf measures the candidate's read and classifies its replay path.
+func (s *Store) authCostOf(rec *authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
+	dAuth, dCDC, err := s.authReadTiming(rec, man)
+	if err != nil {
+		return nil, err
+	}
+	c := &AuthCost{Amp4K: amp, Depth: depth, Replay: "plain", PeakMemMiB: 8}
+	if dAuth > 0 {
+		c.ReplayMiBs = float64(man.TotalLength) / (1 << 20) / dAuth.Seconds()
+		c.Ratio = float64(dCDC) / float64(dAuth)
+	}
+	switch {
+	case rec.Form == authFormRep && rec.Root != nil:
+		hard, _, err := s.repRootHard(rec.Root)
+		if err != nil {
+			return nil, err
+		}
+		if hard {
+			c.Replay, c.PeakMemMiB = "hard", repPQreplayWorkers()*24
+		}
+	case rec.Form == authFormDelta && len(rec.Pieces) > 0:
+		if first, err := s.casRead(rec.Pieces[0].SHA); err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
+			c.Replay, c.PeakMemMiB = "zn7", authZN7DecodeWorkers()*30
+			if s.zn7DerivesQuant(rec.Pieces) {
+				c.Replay = "zn7+quant"
+			}
+		}
+	}
+	return c, nil
+}
+
+// zn7DerivesQuant reports whether the container derives any tensor by re-running a quantizer.
+func (s *Store) zn7DerivesQuant(ps []authPiece) bool {
+	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: newPieceSeq(s.newAuthCtx(), ps)}, pieceTotal(ps))
+	if err != nil {
+		return false
+	}
+	for i := range obj.T {
+		if obj.T[i].Q != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// authTierRefusal is why the tier will not take the candidate ("" = admitted).
+func authTierRefusal(tier string, c *AuthCost, ampRel float64) string {
+	l, ok := authTierLimits[tier]
+	if !ok {
+		return ""
+	}
+	switch {
+	case (c.Replay == "hard" || c.Replay == "zn7+quant") && !l.Hard:
+		return fmt.Sprintf("%s tier: the form re-runs a producer's encoder on every read (%s)", tier, c.Replay)
+	case c.ReplayMiBs < l.Replay:
+		return fmt.Sprintf("%s tier: replay %.1f MiB/s is below the %.0f MiB/s floor", tier, c.ReplayMiBs, l.Replay)
+	case ampRel > l.Amp:
+		return fmt.Sprintf("%s tier: 4 KiB amplification %.1fx CDC exceeds %.1fx", tier, ampRel, l.Amp)
+	case c.Depth > l.Depth:
+		return fmt.Sprintf("%s tier: dependency depth %d exceeds %d", tier, c.Depth, l.Depth)
+	case c.PeakMemMiB > l.Mem:
+		return fmt.Sprintf("%s tier: a read needs about %d MiB, the tier allows %d", tier, c.PeakMemMiB, l.Mem)
+	}
+	return ""
 }
 
 type AuthReport struct {
@@ -46549,9 +46688,16 @@ type liveMan struct {
 // snapshot) names, with unreadable ones skipped (reachability reports those).
 func (s *Store) liveManifests() []liveMan {
 	var out []liveMan
+	s.eachLiveManifest(nil, func(lm liveMan) { out = append(out, lm) })
+	return out
+}
+
+// eachLiveManifest is liveManifests without retaining the manifests: fn sees every manifest once (want, when set,
+// is asked first for the root's bucket and key and spares the read of the manifests it declines).
+func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liveMan)) {
 	seen := map[string]bool{}
 	add := func(bucket, key, uuid string, sha [32]byte) {
-		if seen[uuid] {
+		if seen[uuid] || want != nil && !want(bucket, key) {
 			return
 		}
 		man, err := s.readVerifiedManifest(uuid, sha)
@@ -46559,7 +46705,7 @@ func (s *Store) liveManifests() []liveMan {
 			return
 		}
 		seen[uuid] = true
-		out = append(out, liveMan{bucket, key, man})
+		fn(liveMan{bucket, key, man})
 	}
 	for _, o := range s.snapshotNamespace() {
 		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
@@ -46575,7 +46721,6 @@ func (s *Store) liveManifests() []liveMan {
 			}
 		}
 	}
-	return out
 }
 
 // physChunk is the stored size of a chunk: its pack record when packed, else a
@@ -46792,6 +46937,15 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 // authReadRatio is the whole-object read throughput of a candidate body relative to
 // the CDC read of the same object (best of two warm passes each; above 1 is faster).
 func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) {
+	dAuth, dCDC, err := s.authReadTiming(rec, man)
+	if err != nil || dAuth <= 0 {
+		return 0, err
+	}
+	return float64(dCDC) / float64(dAuth), nil
+}
+
+// authReadTiming is the best warm whole-object read of the candidate and of the CDC chunks of the same content.
+func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
 	timed := func(read func() error) (time.Duration, error) {
 		best := time.Duration(math.MaxInt64)
 		for i := 0; i < 2; i++ {
@@ -46805,13 +46959,13 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 	}
 	data, err := rec.marshal()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	cand, err := unmarshalAuthRecord(data)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	dAuth, err := timed(func() error {
+	dAuth, err = timed(func() error {
 		ctx := s.newAuthScanCtx()
 		ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
 		body, _, err := ctx.body(cand.SHA, 0, 1)
@@ -46829,9 +46983,9 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	dCDC, err := timed(func() error {
+	dCDC, err = timed(func() error {
 		rd := s.newManifestReader(man, byteRange{0, man.TotalLength - 1})
 		defer rd.close()
 		for {
@@ -46842,10 +46996,7 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 			}
 		}
 	})
-	if err != nil || dAuth <= 0 {
-		return 0, err
-	}
-	return float64(dCDC) / float64(dAuth), nil
+	return dAuth, dCDC, err
 }
 
 // cdcAmp4K is the expected logical bytes of CAS chunks touched by a random
@@ -46884,6 +47035,9 @@ type authMigrator struct {
 // (components for rep candidates may be staged and are collectible garbage).
 func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	pol = pol.norm()
+	if pol.HardCodecs { // nested planning passes restore what the outer pass set
+		defer s.rep.hardCodecs.Store(s.rep.hardCodecs.Swap(true))
+	}
 	if (pol.Strategy == "" || pol.Strategy == "best") && pol.AllowRep && pol.AllowDelta {
 		// The comparator uses the union rule of the planner: a kept object retains
 		// ALL its chunks (shared ones included), an admitted one costs its added bytes.
@@ -46933,33 +47087,49 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	t0 := time.Now()
 	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
-	lms := s.liveManifests()
-	var outside []liveMan
-	inScope := func(lm liveMan) bool {
-		return (pol.Bucket == "" || lm.bucket == pol.Bucket) && strings.HasPrefix(lm.key, pol.Prefix)
-	}
+	// Only the contents in scope are kept; the chunk sharing of everything else is counted as the manifests stream by
+	// (a store of a million objects must not be held in memory to migrate a prefix of it).
+	scopedRun := pol.Bucket != "" || pol.Prefix != ""
 	scoped := map[[32]byte]bool{}
-	if pol.Bucket != "" || pol.Prefix != "" {
-		for _, lm := range lms {
-			if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil && inScope(lm) {
+	if scopedRun {
+		s.eachLiveManifest(func(bucket, key string) bool {
+			return (pol.Bucket == "" || bucket == pol.Bucket) && strings.HasPrefix(key, pol.Prefix)
+		}, func(lm liveMan) {
+			if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil {
 				scoped[sha] = true
 			}
-		}
+		})
 	}
-	for _, lm := range lms {
+	outSeen := map[[32]byte]bool{}
+	var scanErr error
+	s.eachLiveManifest(nil, func(lm liveMan) {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
-		if err != nil || lm.man.TotalLength < 1 {
-			continue
+		if scanErr != nil || err != nil || lm.man.TotalLength < 1 {
+			return
 		}
-		if (pol.Bucket != "" || pol.Prefix != "") && !scoped[sha] {
-			outside = append(outside, lm)
-			continue
+		if scopedRun && !scoped[sha] { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
+			if outSeen[sha] {
+				return
+			}
+			outSeen[sha] = true
+			if rec, err := s.authLoad(sha); err != nil || rec != nil {
+				return
+			}
+			seen := map[[32]byte]bool{}
+			for _, c := range lm.man.Chunks {
+				if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+					seen[sum] = true
+					m.refs[sum]++
+				}
+			}
+			return
 		}
 		o := m.objs[sha]
 		if o == nil {
 			rec, rerr := s.authLoad(sha)
 			if rerr != nil {
-				return m.rep, rerr
+				scanErr = rerr
+				return
 			}
 			o = &authObj{sha: sha, man: lm.man, bucket: lm.bucket, key: lm.key, t: lm.man.CreatedAt, hasRec: rec != nil}
 			m.objs[sha] = o
@@ -46968,6 +47138,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		if lm.man.CreatedAt.Before(o.t) {
 			o.t = lm.man.CreatedAt
 		}
+	})
+	if scanErr != nil {
+		return m.rep, scanErr
 	}
 	sort.Slice(m.order, func(i, j int) bool {
 		a, b := m.order[i], m.order[j]
@@ -46977,25 +47150,6 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		}
 		return c < 0
 	})
-	// Chunk sharing among CDC-authoritative contents (bodied contents hold their own closures).
-	outSeen := map[[32]byte]bool{}
-	for _, lm := range outside {
-		sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
-		if outSeen[sha] {
-			continue
-		}
-		outSeen[sha] = true
-		if rec, err := s.authLoad(sha); err != nil || rec != nil {
-			continue
-		}
-		seen := map[[32]byte]bool{}
-		for _, c := range lm.man.Chunks {
-			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
-				seen[sum] = true
-				m.refs[sum]++
-			}
-		}
-	}
 	for _, o := range m.order {
 		if o.hasRec {
 			continue
@@ -47535,6 +47689,26 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		m.addBase(i)
 		return nil
 	}
+	if _, tiered := authTierLimits[pol.Tier]; tiered && !pol.NoReadCost {
+		cost, err := m.s.authCostOf(rec, o.man, probe, plan.Depth)
+		if err != nil {
+			return err
+		}
+		plan.Cost, plan.ReadRatio = cost, cost.Ratio
+		ampRel := 0.0
+		if plan.CDCAmp > 0 {
+			ampRel = probe / plan.CDCAmp
+		}
+		if why := authTierRefusal(pol.Tier, cost, ampRel); why != "" {
+			plan.Reason, plan.Form = why, "cdc"
+			if pol.cache != nil {
+				pol.cache.stale = true
+			}
+			finish(plan)
+			m.addBase(i)
+			return nil
+		}
+	}
 	if pol.MaxReadAmp > 0 && pol.MinReadRatio > 0 {
 		ratio, err := m.s.authReadRatio(rec, o.man)
 		if err != nil {
@@ -47570,6 +47744,19 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 // the index table, per-worker page caches and one window per worker resident.
 // Plan-only passes measure the record without storing it; the applying pass
 // streams it into CAS pieces, so no pass buffers the record.
+func (c *authPlanCache) sketchOf(sha [32]byte) []uint64 {
+	if c == nil {
+		return nil
+	}
+	return c.winSketch[sha]
+}
+
+func (c *authPlanCache) putSketch(sha [32]byte, sk []uint64) {
+	if c != nil {
+		c.winSketch[sha] = sk
+	}
+}
+
 func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish func(AuthPlan)) error {
 	pol := m.pol
 	keep := func(why string) error {
@@ -47591,11 +47778,15 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	}
 	tgt := m.s.newAuthObjAt(o.man)
 	defer tgt.close()
-	sk, err := authSketchAt(tgt, o.man.TotalLength, 16)
-	if err != nil {
-		plan.Reason = "unreadable: " + err.Error()
-		finish(plan)
-		return nil
+	sk := pol.cache.sketchOf(o.sha)
+	if sk == nil {
+		var err error
+		if sk, err = authSketchAt(tgt, o.man.TotalLength, 16); err != nil {
+			plan.Reason = "unreadable: " + err.Error()
+			finish(plan)
+			return nil
+		}
+		pol.cache.putSketch(o.sha, sk)
 	}
 	m.sketch[i] = sk
 	cands := m.candidates(i, sk, true)
@@ -47612,7 +47803,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	defer base.close()
 	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
-	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers)
+	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers, &bo.sha)
 	if err != nil {
 		return keep("base unreadable: " + err.Error())
 	}
@@ -48487,6 +48678,8 @@ func runAuthority(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	apply := fs.Bool("apply", false, "commit the plan (default: plan only)")
 	order := fs.String("order", "newest", "newest|oldest: which versions serve as delta bases (newest keeps the latest version in CDC)")
+	tier := fs.String("tier", "", "price reads against a tier: hot, warm, cold (archive or empty: no read-cost gate)")
+	noCost := fs.Bool("no-read-cost", false, "admit forms the tier's read-cost gate would refuse (testing)")
 	archive := fs.Bool("archive", false, "archive-only: oldest versions are bases, no read-cost gates (explicitly slower reads)")
 	depth := fs.Int("max-depth", 2, "delta nesting bound (hard maximum 4)")
 	bases := fs.Int("max-bases", 2, "bases per delta (hard maximum 4)")
@@ -48496,6 +48689,7 @@ func runAuthority(args []string) {
 	noRep := fs.Bool("no-rep", false, "do not consider structural representations")
 	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
 	noZN7 := fs.Bool("no-zn7", false, "do not consider ZN7 containers for model files")
+	hard := fs.Bool("hard-codecs", false, "migrate: replay Brotli / LZ4_RAW Parquet pages and LZ4 SST blocks exactly (archive tier: every read re-runs the page encoder; raises the store feature \"hardcodec\")")
 	workers := fs.Int("workers", 2, "migrate: parallel window workers for large objects and ZN7, and the process's CPU parallelism (resident memory grows by about 30 MiB per worker)")
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
@@ -48539,9 +48733,15 @@ func runAuthority(args []string) {
 	enc.SetIndent("", "  ")
 	switch sub {
 	case "migrate":
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, Workers: *workers, Apply: *apply}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost}
 		if *archive {
 			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
+		}
+		if *tier != "" { // the tier's measured read-cost gate replaces the legacy amplification and ratio gates
+			pol.MaxReadAmp, pol.MinReadRatio = 0, 0
+			if *tier == "cold" || *tier == "archive" {
+				pol.Order = "oldest"
+			}
 		}
 		rep, err := store.AuthorityMigrate(pol)
 		if err != nil {
@@ -49299,7 +49499,7 @@ type dwDcoreWIndex struct {
 // BuildWIndex indexes base with `workers` parallel range scanners and hashes
 // it in one concurrent sequential pass. Peak memory: the table plus
 // workers*2*chunk bytes of read buffers.
-func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers int) (*dwDcoreWIndex, error) {
+func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers int, known *[32]byte) (*dwDcoreWIndex, error) {
 	if !p.valid() || workers < 1 || workers > 256 {
 		return nil, dwDcoreErrParams
 	}
@@ -49368,26 +49568,32 @@ func dwDcoreBuildWIndex(base io.ReaderAt, size int64, p dwDcoreParams, workers i
 			}
 		}()
 	}
-	// Sequential hashing pass, concurrent with indexing.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		hh := sha256.New()
-		buf := make([]byte, 1<<20)
-		for off := int64(0); off < size; {
-			n := int64(len(buf))
-			if size-off < n {
-				n = size - off
+	// Sequential hashing pass, concurrent with indexing. A caller that already knows the base's
+	// SHA-256 (the manifest's object digest, over chunks that were each verified when read) skips
+	// the second full read; the proof decode of the finished record checks the target against it.
+	if known != nil {
+		x.SHA = *known
+	} else {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hh := sha256.New()
+			buf := make([]byte, 1<<20)
+			for off := int64(0); off < size; {
+				n := int64(len(buf))
+				if size-off < n {
+					n = size - off
+				}
+				if _, err := dwDcore_readFull(base, buf[:n], off); err != nil {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
+				hh.Write(buf[:n])
+				off += n
 			}
-			if _, err := dwDcore_readFull(base, buf[:n], off); err != nil {
-				firstErr.CompareAndSwap(nil, err)
-				return
-			}
-			hh.Write(buf[:n])
-			off += n
-		}
-		copy(x.SHA[:], hh.Sum(nil))
-	}()
+			copy(x.SHA[:], hh.Sum(nil))
+		}()
+	}
 	wg.Wait()
 	if e := firstErr.Load(); e != nil {
 		return nil, e.(error)
@@ -51285,6 +51491,365 @@ func ncQcore_rowQ41Q51Impl(fm bool, t ncQcoreType, x []float32, y []byte, qw []f
 	}
 }
 
+// IQ3_S (ggml quantize_iq3_s, block 32, D4 lattice grid of 512 points). The grid, the 12-bit index
+// map and the neighbour lists are rebuilt from the 512 grid seeds exactly as iq3xs_init_impl does.
+
+var ncQcore_kgrid512 = [512]uint16{
+	0, 1, 2, 5, 7, 8, 9, 10, 12, 14, 16, 17, 21, 27, 32, 34,
+	37, 39, 41, 43, 48, 50, 57, 60, 63, 64, 65, 66, 68, 72, 73, 77,
+	80, 83, 87, 89, 93, 100, 113, 117, 122, 128, 129, 133, 135, 136, 139, 142,
+	145, 149, 152, 156, 162, 165, 167, 169, 171, 184, 187, 195, 201, 205, 208, 210,
+	217, 219, 222, 228, 232, 234, 247, 249, 253, 256, 267, 271, 273, 276, 282, 288,
+	291, 297, 312, 322, 324, 336, 338, 342, 347, 353, 357, 359, 374, 379, 390, 393,
+	395, 409, 426, 441, 448, 450, 452, 464, 466, 470, 475, 488, 492, 512, 513, 514,
+	516, 520, 521, 523, 525, 527, 528, 530, 537, 540, 542, 556, 558, 561, 570, 576,
+	577, 579, 582, 584, 588, 593, 600, 603, 609, 616, 618, 632, 638, 640, 650, 653,
+	655, 656, 660, 666, 672, 675, 685, 688, 698, 705, 708, 711, 712, 715, 721, 727,
+	728, 732, 737, 754, 760, 771, 773, 778, 780, 793, 795, 802, 806, 808, 812, 833,
+	840, 843, 849, 856, 858, 873, 912, 916, 919, 932, 934, 961, 963, 968, 970, 977,
+	989, 993, 1010, 1016, 1024, 1025, 1027, 1029, 1031, 1032, 1034, 1036, 1038, 1041, 1043, 1047,
+	1048, 1050, 1057, 1059, 1061, 1064, 1066, 1079, 1080, 1083, 1085, 1088, 1090, 1096, 1099, 1103,
+	1106, 1109, 1113, 1116, 1122, 1129, 1153, 1156, 1159, 1169, 1171, 1176, 1183, 1185, 1195, 1199,
+	1209, 1212, 1216, 1218, 1221, 1225, 1234, 1236, 1241, 1243, 1250, 1256, 1270, 1281, 1287, 1296,
+	1299, 1306, 1309, 1313, 1338, 1341, 1348, 1353, 1362, 1375, 1376, 1387, 1400, 1408, 1410, 1415,
+	1425, 1453, 1457, 1477, 1481, 1494, 1496, 1507, 1512, 1538, 1545, 1547, 1549, 1551, 1554, 1561,
+	1563, 1565, 1570, 1572, 1575, 1577, 1587, 1593, 1601, 1603, 1605, 1612, 1617, 1619, 1632, 1648,
+	1658, 1662, 1664, 1674, 1680, 1690, 1692, 1704, 1729, 1736, 1740, 1745, 1747, 1751, 1752, 1761,
+	1763, 1767, 1773, 1787, 1795, 1801, 1806, 1810, 1817, 1834, 1840, 1844, 1857, 1864, 1866, 1877,
+	1882, 1892, 1902, 1915, 1934, 1953, 1985, 1987, 2000, 2002, 2013, 2048, 2052, 2058, 2064, 2068,
+	2071, 2074, 2081, 2088, 2104, 2114, 2119, 2121, 2123, 2130, 2136, 2141, 2147, 2153, 2157, 2177,
+	2179, 2184, 2189, 2193, 2203, 2208, 2223, 2226, 2232, 2244, 2249, 2251, 2256, 2258, 2265, 2269,
+	2304, 2306, 2324, 2335, 2336, 2361, 2373, 2375, 2385, 2418, 2443, 2460, 2480, 2504, 2509, 2520,
+	2531, 2537, 2562, 2568, 2572, 2578, 2592, 2596, 2599, 2602, 2614, 2620, 2625, 2627, 2629, 2634,
+	2641, 2650, 2682, 2688, 2697, 2707, 2712, 2718, 2731, 2754, 2759, 2760, 2775, 2788, 2793, 2805,
+	2811, 2817, 2820, 2832, 2842, 2854, 2890, 2902, 2921, 2923, 2978, 3010, 3012, 3026, 3081, 3083,
+	3085, 3097, 3099, 3120, 3136, 3152, 3159, 3188, 3210, 3228, 3234, 3245, 3250, 3256, 3264, 3276,
+	3281, 3296, 3349, 3363, 3378, 3392, 3395, 3420, 3440, 3461, 3488, 3529, 3531, 3584, 3588, 3591,
+	3600, 3602, 3614, 3616, 3628, 3634, 3650, 3657, 3668, 3683, 3685, 3713, 3716, 3720, 3726, 3729,
+	3736, 3753, 3778, 3802, 3805, 3819, 3841, 3845, 3851, 3856, 3880, 3922, 3938, 3970, 3993, 4032,
+}
+
+type ncQcore_iq3Tables struct {
+	gq    [512][4]float32 // grid points as floats
+	grid  [512]uint32
+	kmap  [4096]int32
+	neigh []uint16
+}
+
+var (
+	ncQcore_iq3Once sync.Once
+	ncQcore_iq3Tab  ncQcore_iq3Tables
+)
+
+func ncQcore_iq3Init() *ncQcore_iq3Tables {
+	ncQcore_iq3Once.Do(func() {
+		t := &ncQcore_iq3Tab
+		for k := 0; k < 512; k++ {
+			var g uint32
+			for i := 0; i < 4; i++ {
+				l := uint32(ncQcore_kgrid512[k]>>(3*uint(i))) & 7
+				g |= (2*l + 1) << (8 * uint(i))
+			}
+			t.grid[k] = g
+			for i := 0; i < 4; i++ {
+				t.gq[k][i] = float32(int8(g >> (8 * uint(i))))
+			}
+		}
+		for i := range t.kmap {
+			t.kmap[i] = -1
+		}
+		for i := 0; i < 512; i++ {
+			t.kmap[ncQcore_kgrid512[i]] = int32(i)
+		}
+		type dj struct{ d, j int32 }
+		order := func(pos *[4]int32) []dj {
+			ds := make([]dj, 512)
+			for j := 0; j < 512; j++ {
+				var d2 int32
+				for k := 0; k < 4; k++ {
+					pg := int32(int8(t.grid[j] >> (8 * uint(k))))
+					d2 += (pg - pos[k]) * (pg - pos[k])
+				}
+				ds[j] = dj{d2, int32(j)}
+			}
+			sort.Slice(ds, func(a, b int) bool { return ds[a].d < ds[b].d || ds[a].d == ds[b].d && ds[a].j < ds[b].j })
+			return ds
+		}
+		const nwant = 3
+		for i := 0; i < 4096; i++ {
+			if t.kmap[i] >= 0 {
+				continue
+			}
+			var pos [4]int32
+			for k := 0; k < 4; k++ {
+				pos[k] = 2*int32(i>>(3*uint(k))&7) + 1
+			}
+			ds := order(&pos)
+			t.kmap[i] = -int32(len(t.neigh) + 1)
+			start := len(t.neigh)
+			t.neigh = append(t.neigh, 0)
+			d2, nhave, n := ds[0].d, 1, 0
+			for j := 0; j < 512; j++ {
+				if ds[j].d > d2 {
+					if nhave == nwant {
+						break
+					}
+					d2 = ds[j].d
+					nhave++
+				}
+				t.neigh = append(t.neigh, uint16(ds[j].j))
+				n++
+			}
+			t.neigh[start] = uint16(n)
+		}
+	})
+	return &ncQcore_iq3Tab
+}
+
+// Contraction sites of the IQ3_S quantizer (see ncQcore_rowIQ3S): a set bit means the site is a fused multiply-add.
+const (
+	ncQcore_fx3Sumx2   = 1 << iota // sumx2 += x*x
+	ncQcore_fx3Sigma               // sigma2 + x*x
+	ncQcore_fx3Scale               // 15 + is*0.2f
+	ncQcore_fx3Round               // id*x - 1 inside nearest_int(0.5f*(...))
+	ncQcore_fx3Dist                // scale*q - x in the neighbour search
+	ncQcore_fx3DistAcc             // d2 += (w*diff)*diff
+	ncQcore_fx3Qx                  // sumqx += (w*x)*q
+	ncQcore_fx3Q2                  // sumq2 += (w*q)*q
+	ncQcore_fx3All     = 1<<iota - 1
+)
+
+// ncQcore_iq3Abort is the producer's GGML_ABORT / GGML_ASSERT: no file of that producer holds such a block.
+type ncQcore_iq3Abort struct{}
+
+type ncQcore_iq3Scratch struct { // the C arrays live across rows and blocks: stale L is observable
+	L [32]int8
+}
+
+func ncQcore_iq3Find(t *ncQcore_iq3Tables, start int32, xval, waux []float32, scale float32, L []int8, fx uint32) int {
+	nb := t.neigh[start:]
+	n := int(nb[0])
+	best := float32(3.4028234663852886e+38)
+	gi := -1
+	for j := 1; j <= n; j++ {
+		var d2 float32
+		g := &t.gq[nb[j]]
+		for i := 0; i < 4; i++ {
+			q := g[i]
+			var diff float32
+			if fx&ncQcore_fx3Dist != 0 {
+				diff = ncQcore_fma32(scale, q, -xval[i])
+			} else {
+				diff = ncQcore_mul(scale, q) - xval[i]
+			}
+			if fx&ncQcore_fx3DistAcc != 0 {
+				d2 = ncQcore_fma32(ncQcore_mul(waux[i], diff), diff, d2)
+			} else {
+				d2 += ncQcore_mul(ncQcore_mul(waux[i], diff), diff)
+			}
+		}
+		if d2 < best {
+			best, gi = d2, int(nb[j])
+		}
+	}
+	if gi < 0 {
+		panic(ncQcore_iq3Abort{}) // GGML_ASSERT(grid_index >= 0): every distance was NaN or infinite
+	}
+	for i := 0; i < 4; i++ {
+		L[i] = (int8(t.grid[gi]>>(8*uint(i))) - 1) / 2
+	}
+	return gi
+}
+
+// ncQcore_iq3Ni is nearest_int(0.5f*(id*x-1)).
+func ncQcore_iq3Ni(fx uint32, id, x float32) int32 {
+	var t float32
+	if fx&ncQcore_fx3Round != 0 {
+		t = ncQcore_fma32(id, x, -1)
+	} else {
+		t = ncQcore_mul(id, x) - 1
+	}
+	return ncQcore_nearestInt(ncQcore_mul(0.5, t))
+}
+
+func ncQcore_rowIQ3S(st *ncQcore_iq3Scratch, fx uint32, x []float32, y []byte, qw []float32) {
+	const bsz, bs4, bs8, kMaxQ = 32, 8, 4, 8
+	t := ncQcore_iq3Init()
+	L := &st.L
+	var scales [8]float32
+	var weight, xval, waux [32]float32
+	var Laux [32]int8
+	var onGrid, onGridAux [8]bool
+	var blockSigns [4]uint8
+	for ibl := 0; ibl*256 < len(x); ibl++ {
+		xbl, yb := x[ibl*256:(ibl+1)*256], y[ibl*110:(ibl+1)*110]
+		clear(yb)
+		qs, qh, signs, scl := yb[2:66], yb[66:74], yb[74:106], yb[106:110]
+		qo, so := 0, 0
+		var maxScale, sumx2 float32
+		for i := 0; i < 256; i++ {
+			sumx2 = ncQcore_madd(fx&ncQcore_fx3Sumx2 != 0, xbl[i], xbl[i], sumx2)
+		}
+		sigma2 := ncQcore_mul(2, sumx2) / 256
+		for ib := 0; ib < 8; ib++ {
+			xb := xbl[ib*bsz : (ib+1)*bsz]
+			if qw != nil {
+				q := qw[ibl*256+ib*bsz:]
+				for i := 0; i < bsz; i++ {
+					weight[i] = ncQcore_mul(q[i], ncQcore_sqrt(ncQcore_madd(fx&ncQcore_fx3Sigma != 0, xb[i], xb[i], sigma2)))
+				}
+			} else {
+				for i := 0; i < bsz; i++ {
+					weight[i] = ncQcore_mul(xb[i], xb[i])
+				}
+			}
+			for i := 0; i < bsz; i++ {
+				waux[i] = ncQcore_sqrt(weight[i])
+			}
+			for k := 0; k < bs8; k++ {
+				var s uint8
+				for i := 0; i < 8; i++ {
+					if xb[8*k+i] >= 0 {
+						xval[8*k+i] = xb[8*k+i]
+					} else {
+						xval[8*k+i] = -xb[8*k+i]
+						s |= 1 << uint(i)
+					}
+				}
+				blockSigns[k] = s
+			}
+			max := xval[0]
+			for i := 1; i < bsz; i++ {
+				if !(max > xval[i]) { // C's MAX(max, x) = (max > x ? max : x): a NaN is not skipped
+					max = xval[i]
+				}
+			}
+			if max == 0 {
+				scales[ib] = 0
+				continue // the C code skips the qs/signs advance here as well
+			}
+			var best float32
+			scale := max / (2*kMaxQ - 1)
+			for k := 0; k < bs4; k++ {
+				onGrid[k] = false
+			}
+			for is := -9; is <= 9; is++ {
+				id := ncQcore_madd(fx&ncQcore_fx3Scale != 0, float32(is), 0.2, 2*kMaxQ-1) / max
+				thisScale := 1 / id
+				for k := 0; k < bs4; k++ {
+					for i := 0; i < 4; i++ {
+						Laux[4*k+i] = int8(ncQcore_clamp(ncQcore_iq3Ni(fx, id, xval[4*k+i]), 0, kMaxQ-1))
+					}
+					var u uint16
+					for i := 0; i < 4; i++ {
+						u |= uint16(Laux[4*k+i]) << (3 * uint(i))
+					}
+					onGridAux[k] = true
+					if gi := t.kmap[u]; gi < 0 {
+						onGridAux[k] = false
+						ncQcore_iq3Find(t, -gi-1, xval[4*k:], waux[4*k:], thisScale, Laux[4*k:], fx)
+					}
+				}
+				var sumqx, sumq2 float32
+				for i := 0; i < bsz; i++ {
+					w := weight[i]
+					q := float32(2*int32(Laux[i]) + 1)
+					sumqx = ncQcore_madd(fx&ncQcore_fx3Qx != 0, ncQcore_mul(w, xval[i]), q, sumqx)
+					sumq2 = ncQcore_madd(fx&ncQcore_fx3Q2 != 0, ncQcore_mul(w, q), q, sumq2)
+				}
+				if sumq2 > 0 && ncQcore_mul(sumqx, sumqx) > ncQcore_mul(best, sumq2) {
+					scale = sumqx / sumq2
+					best = ncQcore_mul(scale, sumqx)
+					copy(L[:], Laux[:])
+					onGrid = onGridAux
+				}
+			}
+			notOn := 0
+			for k := 0; k < bs4; k++ {
+				if !onGrid[k] {
+					notOn++
+				}
+			}
+			if notOn > 0 && scale > 0 {
+				id := 1 / scale
+				for k := 0; k < bs4; k++ {
+					var u uint16
+					for i := 0; i < 4; i++ {
+						l := ncQcore_clamp(ncQcore_iq3Ni(fx, id, xval[4*k+i]), 0, kMaxQ-1)
+						u |= uint16(l) << (3 * uint(i))
+					}
+					gi := t.kmap[u]
+					var idx int
+					if gi < 0 {
+						idx = ncQcore_iq3Find(t, -gi-1, xval[4*k:], waux[4*k:], scale, L[4*k:], fx)
+					} else {
+						idx = int(gi)
+					}
+					for i := 0; i < 4; i++ {
+						L[4*k+i] = (int8(t.grid[idx]>>(8*uint(i))) - 1) / 2
+					}
+				}
+				var sumqx, sumq2 float32
+				for i := 0; i < bsz; i++ {
+					w := weight[i]
+					q := float32(2*int32(L[i]) + 1)
+					sumqx = ncQcore_madd(fx&ncQcore_fx3Qx != 0, ncQcore_mul(w, xval[i]), q, sumqx)
+					sumq2 = ncQcore_madd(fx&ncQcore_fx3Q2 != 0, ncQcore_mul(w, q), q, sumq2)
+				}
+				if sumq2 > 0 {
+					scale = sumqx / sumq2
+				}
+			}
+			if scale < 0 {
+				scale = -scale
+				for k := 0; k < bs8; k++ {
+					blockSigns[k] = ^blockSigns[k]
+				}
+			}
+			for k := 0; k < bs4; k++ {
+				var u uint16
+				for i := 0; i < 4; i++ {
+					u |= uint16(L[4*k+i]) << (3 * uint(i))
+				}
+				gi := t.kmap[u]
+				if gi < 0 {
+					panic(ncQcore_iq3Abort{}) // GGML_ABORT in the producer
+				}
+				qs[qo+k] = byte(gi)
+				qh[(ib*bs4+k)/8] |= byte(gi>>8) << uint((ib*bs4+k)%8)
+			}
+			qo += bs4
+			copy(signs[so:], blockSigns[:])
+			so += bs8
+			scales[ib] = scale
+			if !(maxScale > scale) {
+				maxScale = scale
+			}
+		}
+		if maxScale == 0 {
+			continue
+		}
+		d := maxScale / 31
+		ncQcore_put16(yb, ncQcoreF16(ncQcore_mul(d, 1.033)))
+		id := 1 / d
+		for ib := 0; ib < 8; ib += 2 {
+			l1 := ncQcore_clamp(ncQcore_iq3Ni(fx, id, scales[ib]), 0, 15)
+			l2 := ncQcore_clamp(ncQcore_iq3Ni(fx, id, scales[ib+1]), 0, 15)
+			scl[ib/2] = byte(l1 | l2<<4)
+		}
+	}
+}
+
+// ncQcore_iq3FMA is the set of contracted sites of the GCC -O3 -mfma build (derived against the compiled producer).
+var ncQcore_iq3FMA uint32 = ncQcore_fx3All &^ ncQcore_fx3Sumx2
+
+func ncQcore_iq3Mask(fm bool) uint32 {
+	if fm {
+		return ncQcore_iq3FMA
+	}
+	return 0
+}
+
 // Type is the ggml tensor type id.
 type ncQcoreType uint8
 
@@ -51300,6 +51865,7 @@ const (
 	ncQcoreQ5_K   ncQcoreType = 13
 	ncQcoreQ6_K   ncQcoreType = 14
 	ncQcoreIQ4_NL ncQcoreType = 20
+	ncQcoreIQ3_S  ncQcoreType = 21
 	ncQcoreIQ4_XS ncQcoreType = 23
 )
 
@@ -51311,7 +51877,7 @@ type ncQcore_geom struct {
 var ncQcore_geoms = map[ncQcoreType]ncQcore_geom{
 	ncQcoreQ4_0: {32, 18, "Q4_0"}, ncQcoreQ4_1: {32, 20, "Q4_1"}, ncQcoreQ5_0: {32, 22, "Q5_0"}, ncQcoreQ5_1: {32, 24, "Q5_1"}, ncQcoreQ8_0: {32, 34, "Q8_0"},
 	ncQcoreQ2_K: {256, 84, "Q2_K"}, ncQcoreQ3_K: {256, 110, "Q3_K"}, ncQcoreQ4_K: {256, 144, "Q4_K"}, ncQcoreQ5_K: {256, 176, "Q5_K"}, ncQcoreQ6_K: {256, 210, "Q6_K"},
-	ncQcoreIQ4_NL: {32, 18, "IQ4_NL"}, ncQcoreIQ4_XS: {256, 136, "IQ4_XS"},
+	ncQcoreIQ4_NL: {32, 18, "IQ4_NL"}, ncQcoreIQ4_XS: {256, 136, "IQ4_XS"}, ncQcoreIQ3_S: {256, 110, "IQ3_S"},
 }
 
 // Block returns the elements and bytes of one block of t (0, 0 if unsupported).
@@ -51364,14 +51930,25 @@ func ncQcore_fusedPath(t ncQcoreType, weighted bool) bool {
 	if t == ncQcoreQ8_0 {
 		return false
 	}
-	return weighted || t == ncQcoreQ6_K || t == ncQcoreIQ4_NL || t == ncQcoreIQ4_XS
+	return weighted || t == ncQcoreQ6_K || t == ncQcoreIQ4_NL || t == ncQcoreIQ4_XS || t == ncQcoreIQ3_S
 }
 
 var ncQcoreErrArith = errors.New("qcore: arithmetic profile not available for this quantizer path")
 
+// ErrAbort: the producer's quantizer aborts on this input (non-finite data), so no producer file holds this tensor.
+var ncQcoreErrAbort = errors.New("qcore: the producer's quantizer aborts on this input")
+
 // Quantize writes ggml_quantize_chunk(t, x, rows of nPerRow, qw) into dst. qw is the per-column
 // importance vector (len nPerRow) or nil for the reference (non-imatrix) quantizer.
-func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []float32, ar ncQcoreArith) error {
+func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []float32, ar ncQcoreArith) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(ncQcore_iq3Abort); !ok {
+				panic(r)
+			}
+			err = ncQcoreErrAbort
+		}
+	}()
 	n, err := ncQcoreOutLen(t, len(x), nPerRow)
 	if err != nil {
 		return err
@@ -51384,6 +51961,7 @@ func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []f
 		return ncQcoreErrSize
 	}
 	g := ncQcore_geoms[t]
+	var st ncQcore_iq3Scratch
 	rowBytes := nPerRow / g.elems * g.bytes
 	for r := 0; r*nPerRow < len(x); r++ {
 		row, y := x[r*nPerRow:(r+1)*nPerRow], dst[r*rowBytes:(r+1)*rowBytes]
@@ -51424,6 +52002,8 @@ func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []f
 			ncQcore_rowIQ4(fm, row, y, qw, 32)
 		case ncQcoreIQ4_XS:
 			ncQcore_rowIQ4(fm, row, y, qw, 256)
+		case ncQcoreIQ3_S:
+			ncQcore_rowIQ3S(&st, ncQcore_iq3Mask(fm), row, y, qw)
 		}
 	}
 	return nil
@@ -51431,9 +52011,19 @@ func ncQcoreQuantize(dst []byte, t ncQcoreType, x []float32, nPerRow int, qw []f
 
 func ncQcore_mul(a, b float32) float32 { return float32(a * b) }
 
-// fma32 is the correctly rounded float32 a*b+c: the product is exact in float64; the sum is
-// rounded to odd in float64 (TwoSum error decides), which makes the final rounding to float32 exact.
+// fma32 is the correctly rounded float32 a*b+c. The product is exact in float64 and the hardware fused
+// multiply-add rounds the sum once; rounding that to float32 again is wrong only when the float64 result is
+// exactly a float32 midpoint (or the float32 result is subnormal), which takes the exact path below.
 func ncQcore_fma32(a, b, c float32) float32 {
+	r := math.FMA(float64(a), float64(b), float64(c))
+	if u := math.Float64bits(r); u&(1<<29-1) != 1<<28 && math.Abs(r) >= 0x1p-120 || r == 0 {
+		return float32(r)
+	}
+	return ncQcore_fma32Exact(a, b, c)
+}
+
+// fma32Exact rounds the float64 sum to odd (TwoSum error decides), which makes the final rounding to float32 exact.
+func ncQcore_fma32Exact(a, b, c float32) float32 {
 	p, q := float64(a)*float64(b), float64(c)
 	s := p + q
 	if s-s != 0 { // Inf/NaN: nothing to correct
@@ -52620,6 +53210,7 @@ func (o *ncNumcoreObject) ReadRange(ctx context.Context, off, n int64, rv ncNumc
 	end := off + n
 	var gaps []byte
 	gp, prev := int64(0), int64(0)
+	var jobs []func() error
 	fill := func(lo, hi int64, src func(a, b int64) ([]byte, error)) error { // file span [lo,hi)
 		a, b := lo, hi
 		if a < off {
@@ -52681,19 +53272,73 @@ func (o *ncNumcoreObject) ReadRange(ctx context.Context, off, n int64, rv ncNumc
 			if hi <= off || lo >= end {
 				continue
 			}
-			err := fill(lo, hi, func(a, b int64) ([]byte, error) {
-				win, err := s.window(ctx, o, 0, ti, int64(k))
-				if err != nil {
-					return nil, err
-				}
-				return win[a:b], nil
+			ti, k := ti, k
+			jobs = append(jobs, func() error {
+				return fill(lo, hi, func(a, b int64) ([]byte, error) {
+					win, err := s.window(ctx, o, 0, ti, int64(k))
+					if err != nil {
+						return nil, err
+					}
+					return win[a:b], nil
+				})
 			})
-			if err != nil {
-				return nil, s.stats(o), err
-			}
 		}
 	}
+	// Windows are independent and authenticated one by one; each writes its own span of out, so they
+	// decode concurrently (bounded by opt.Workers and the process-wide token pool) and the result is
+	// the same bytes in the same order as the serial loop.
+	if err := ncNumcore_runJobs(ctx, jobs, opt.Workers); err != nil {
+		return nil, s.stats(o), err
+	}
 	return out, s.stats(o), nil
+}
+
+// ncNumcoreDecodeTokens bounds the window decoders running at once in the whole process, however many
+// requests are reading: each one holds at most one window (plus the bases it derives from) in memory.
+var ncNumcoreDecodeTokens = make(chan struct{}, ncNumcoreDecodeWorkersMax)
+
+const ncNumcoreDecodeWorkersMax = 8
+
+func ncNumcore_runJobs(ctx context.Context, jobs []func() error, workers int) error {
+	workers = min(workers, len(jobs), ncNumcoreDecodeWorkersMax)
+	if workers <= 1 {
+		for _, j := range jobs {
+			if err := j(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var next atomic.Int64
+	var first atomic.Value
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				i := int(next.Add(1) - 1)
+				if i >= len(jobs) {
+					return
+				}
+				ncNumcoreDecodeTokens <- struct{}{}
+				err := jobs[i]()
+				<-ncNumcoreDecodeTokens
+				if err != nil {
+					first.CompareAndSwap(nil, err)
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if e := first.Load(); e != nil {
+		return e.(error)
+	}
+	return ctx.Err()
 }
 
 // DType is the element type of a tensor payload.
@@ -52717,10 +53362,11 @@ const (
 	ncNumcoreDQ3_K
 	ncNumcoreDIQ4_NL
 	ncNumcoreDIQ4_XS
+	ncNumcoreDIQ3_S
 )
 
 var ncNumcore_dtNames = map[ncNumcoreDType]string{ncNumcoreDRaw: "RAW", ncNumcoreDF32: "F32", ncNumcoreDF16: "F16", ncNumcoreDBF16: "BF16", ncNumcoreDQ8_0: "Q8_0", ncNumcoreDQ4_0: "Q4_0", ncNumcoreDQ5_0: "Q5_0", ncNumcoreDQ4_1: "Q4_1", ncNumcoreDQ5_1: "Q5_1",
-	ncNumcoreDQ4_K: "Q4_K", ncNumcoreDQ6_K: "Q6_K", ncNumcoreDQ5_K: "Q5_K", ncNumcoreDQOther: "QOTHER", ncNumcoreDQ2_K: "Q2_K", ncNumcoreDQ3_K: "Q3_K", ncNumcoreDIQ4_NL: "IQ4_NL", ncNumcoreDIQ4_XS: "IQ4_XS"}
+	ncNumcoreDQ4_K: "Q4_K", ncNumcoreDQ6_K: "Q6_K", ncNumcoreDQ5_K: "Q5_K", ncNumcoreDQOther: "QOTHER", ncNumcoreDQ2_K: "Q2_K", ncNumcoreDQ3_K: "Q3_K", ncNumcoreDIQ4_NL: "IQ4_NL", ncNumcoreDIQ4_XS: "IQ4_XS", ncNumcoreDIQ3_S: "IQ3_S"}
 
 func (d ncNumcoreDType) String() string { return ncNumcore_dtNames[d] }
 
@@ -52741,7 +53387,7 @@ func (d ncNumcoreDType) IsFloat() bool {
 }
 
 var ncNumcore_qtypes = map[ncNumcoreDType]ncQcoreType{ncNumcoreDQ8_0: ncQcoreQ8_0, ncNumcoreDQ4_0: ncQcoreQ4_0, ncNumcoreDQ4_1: ncQcoreQ4_1, ncNumcoreDQ5_0: ncQcoreQ5_0, ncNumcoreDQ5_1: ncQcoreQ5_1, ncNumcoreDQ2_K: ncQcoreQ2_K, ncNumcoreDQ3_K: ncQcoreQ3_K,
-	ncNumcoreDQ4_K: ncQcoreQ4_K, ncNumcoreDQ5_K: ncQcoreQ5_K, ncNumcoreDQ6_K: ncQcoreQ6_K, ncNumcoreDIQ4_NL: ncQcoreIQ4_NL, ncNumcoreDIQ4_XS: ncQcoreIQ4_XS}
+	ncNumcoreDQ4_K: ncQcoreQ4_K, ncNumcoreDQ5_K: ncQcoreQ5_K, ncNumcoreDQ6_K: ncQcoreQ6_K, ncNumcoreDIQ4_NL: ncQcoreIQ4_NL, ncNumcoreDIQ4_XS: ncQcoreIQ4_XS, ncNumcoreDIQ3_S: ncQcoreIQ3_S}
 
 // QType is the ggml quantization type of a block dtype.
 func (d ncNumcoreDType) QType() (ncQcoreType, bool) { t, ok := ncNumcore_qtypes[d]; return t, ok }
@@ -56734,9 +57380,12 @@ func ncNumcore_rebuild(ctx context.Context, t *ncNumcoreTDir, wd *ncNumcoreWDir,
 // =============================================================================
 
 const (
-	authZN7Feature   = "zn7"
-	authZN7MaxAux    = 64 << 20
-	authZN7ReadChunk = 4 << 20 // decoded span a body keeps between ReadAt calls
+	authHardFeature   = "hardcodec"
+	authZN7Feature    = "zn7"
+	authStreamFeature = "hardstream" // Parquet recipes with streaming-Brotli pages (recipe version 3)
+	authIQ3Feature    = "zn7iq3s"    // containers that derive IQ3_S tensors: builds without the quantizer refuse the store
+	authZN7MaxAux     = 64 << 20
+	authZN7ReadChunk  = 4 << 20 // decoded span a body keeps between ReadAt calls
 )
 
 func authZN7GGMLType(t uint32) ncNumcoreDType {
@@ -56769,6 +57418,8 @@ func authZN7GGMLType(t uint32) ncNumcoreDType {
 		return ncNumcoreDQ6_K
 	case 20:
 		return ncNumcoreDIQ4_NL
+	case 21:
+		return ncNumcoreDIQ3_S
 	case 23:
 		return ncNumcoreDIQ4_XS
 	}
@@ -56818,6 +57469,20 @@ func authZN7Layout(r io.ReaderAt, size int64) (*ncNumcoreLayout, error) {
 }
 
 // authZN7Locked serializes ReadAt on a reader that is not safe for concurrent use (the window workers share it).
+// zn7DerivesIQ3 reports whether the container made of ps holds a tensor of a type only this quantizer set can derive.
+func (s *Store) zn7DerivesIQ3(ps []authPiece) bool {
+	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: newPieceSeq(s.newAuthCtx(), ps)}, pieceTotal(ps))
+	if err != nil {
+		return false
+	}
+	for i := range obj.T {
+		if obj.T[i].DT == ncNumcoreDIQ3_S {
+			return true
+		}
+	}
+	return false
+}
+
 type authZN7Locked struct {
 	mu sync.Mutex
 	r  io.ReaderAt
@@ -56881,6 +57546,8 @@ func (r *authZN7Res) Open(ctx context.Context, id ncNumcoreID) (ncNumcoreStored,
 }
 
 func (r *authZN7Res) Aux(ctx context.Context, id ncNumcoreID) ([]byte, error) {
+	r.mu.Lock() // the body behind an auxiliary object is not safe for concurrent readers
+	defer r.mu.Unlock()
 	rec, err := r.c.s.authLoad([32]byte(id))
 	if err != nil {
 		return nil, err
@@ -56955,7 +57622,15 @@ func (c *authCtx) newZN7(rec *authRecord, blob *pieceSeq, depth int) (authBody, 
 	if int(rec.Depth) < maxDepth+1 {
 		return nil, fmt.Errorf("%w: recorded depth %d below the bases' %d", errAuthCorrupt, rec.Depth, maxDepth+1)
 	}
-	return &authZN7Body{c: c, rec: rec, obj: obj, res: &authZN7Res{c: c, depth: depth + 1}, opt: ncNumcoreDecOpts{Workers: 1, CacheBytes: 16 << 20}, boff: -1}, nil
+	return &authZN7Body{c: c, rec: rec, obj: obj, res: &authZN7Res{c: c, depth: depth + 1}, opt: ncNumcoreDecOpts{Workers: authZN7DecodeWorkers(), CacheBytes: 16 << 20}, boff: -1}, nil
+}
+
+// authZN7DecodeWorkers is the window parallelism of one read: ZEROS3_ZN7_WORKERS, else up to four.
+func authZN7DecodeWorkers() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_ZN7_WORKERS")); err == nil && v >= 1 {
+		return min(v, ncNumcoreDecodeWorkersMax)
+	}
+	return min(4, runtime.GOMAXPROCS(0))
 }
 
 func (b *authZN7Body) Size() int64 { return b.rec.Size }
@@ -57193,7 +57868,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature {
 			return x
 		}
 	}
@@ -57221,6 +57896,6278 @@ func (s *Store) ensureFeature(name string) error {
 	}
 	s.format = f
 	return nil
+}
+
+// =============================================================================
+// 16i. Exact Brotli and LZ4 replay (Z4-P7; mechanically extracted from
+// zeros3-z3/brotliz3 and zeros3-z3/lz4z3)
+//
+// The Go port of the google/brotli one-shot encoder (qualities 5-9, windows 17-24) with a
+// bounded decoder, and the LZ4 substrate: block predictors for the standard fast encoder,
+// the optimal-parser HC levels, linked frames and the pierrec/lz4 variants. A page or block
+// produced by one of these encoders is stored as its decoded body plus a recipe (the encoder
+// parameters, or the explicit sequences of the stream) and rebuilt byte for byte. A recipe
+// is recorded only after the replay was compared with the original (the Z3-30 rule).
+// =============================================================================
+
+// hcBrotliDictFlate is the RFC 7932 static dictionary (122,784 bytes), raw-deflated and base64 coded: the
+// production binary is one source file and cannot embed the file the research module links in. It is
+// installed on first use and checked against hcBrotliz3DictionarySHA256.
+const hcBrotliDictFlate = "" +
+	"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"
+
+var hcBrotliDictOnce sync.Once
+var hcBrotliDictErr error
+
+// hcBrotliEnsureDict installs the dictionary once; every encoder entry point calls it.
+func hcBrotliEnsureDict() error {
+	hcBrotliDictOnce.Do(func() {
+		raw, err := base64.StdEncoding.DecodeString(hcBrotliDictFlate)
+		if err != nil {
+			hcBrotliDictErr = err
+			return
+		}
+		dict, err := io.ReadAll(flate.NewReader(bytes.NewReader(raw)))
+		if err != nil {
+			hcBrotliDictErr = err
+			return
+		}
+		hcBrotliDictErr = hcBrotliz3SetDictionary(dict)
+	})
+	return hcBrotliDictErr
+}
+
+type hcBrotliz3_bitReader struct {
+	b    []byte
+	pos  int
+	acc  uint64
+	nacc uint
+	bad  bool
+}
+
+func (r *hcBrotliz3_bitReader) fill() {
+	for r.nacc <= 56 && r.pos < len(r.b) {
+		r.acc |= uint64(r.b[r.pos]) << r.nacc
+		r.pos++
+		r.nacc += 8
+	}
+}
+
+func (r *hcBrotliz3_bitReader) bits(n uint) uint32 {
+	if n == 0 {
+		return 0
+	}
+	if r.nacc < n {
+		r.fill()
+		if r.nacc < n {
+			r.bad = true
+			return 0
+		}
+	}
+	v := uint32(r.acc & (1<<n - 1))
+	r.acc >>= n
+	r.nacc -= n
+	return v
+}
+
+// peek returns up to n bits without consuming (missing bits read as zero).
+func (r *hcBrotliz3_bitReader) peek(n uint) uint32 {
+	if r.nacc < n {
+		r.fill()
+	}
+	return uint32(r.acc & (1<<n - 1))
+}
+
+func (r *hcBrotliz3_bitReader) drop(n uint) {
+	if r.nacc < n {
+		r.bad = true
+		return
+	}
+	r.acc >>= n
+	r.nacc -= n
+}
+
+// alignByte discards the padding bits, which must be zero.
+func (r *hcBrotliz3_bitReader) alignByte() {
+	if k := r.nacc & 7; k != 0 && r.bits(k) != 0 {
+		r.bad = true
+	}
+}
+
+// huff is one prefix code: an 8-bit root table plus canonical decoding for longer codes.
+type hcBrotliz3_huff struct {
+	root   [256]uint16 // len<<10 | symbol; 0 = longer than 8 bits
+	single int         // >= 0: zero-length code for this symbol
+	count  [16]uint16
+	sorted []uint16
+}
+
+func hcBrotliz3_revBits(v uint32, n uint) uint32 {
+	var r uint32
+	for i := uint(0); i < n; i++ {
+		r = r<<1 | v&1
+		v >>= 1
+	}
+	return r
+}
+
+// build makes the decoder for code lengths (0 = unused). Returns false for an invalid code.
+func (h *hcBrotliz3_huff) build(lens []uint8) bool {
+	h.single = -1
+	h.count = [16]uint16{}
+	nz, last := 0, 0
+	for s, l := range lens {
+		if l != 0 {
+			h.count[l]++
+			nz++
+			last = s
+		}
+	}
+	if nz == 0 {
+		return false
+	}
+	if nz == 1 {
+		h.single = last
+		return true
+	}
+	space := 0
+	for l := 1; l <= 15; l++ {
+		space += int(h.count[l]) << uint(15-l)
+	}
+	if space != 1<<15 {
+		return false
+	}
+	var offs [17]uint16
+	for l := 1; l <= 15; l++ {
+		offs[l+1] = offs[l] + h.count[l]
+	}
+	h.sorted = make([]uint16, nz)
+	o := offs
+	for s, l := range lens {
+		if l != 0 {
+			h.sorted[o[l]] = uint16(s)
+			o[l]++
+		}
+	}
+	h.root = [256]uint16{}
+	code := uint32(0)
+	idx := 0
+	for l := uint(1); l <= 8; l++ {
+		for k := 0; k < int(h.count[l]); k++ {
+			sym := h.sorted[idx]
+			idx++
+			r := hcBrotliz3_revBits(code, l)
+			for x := r; x < 256; x += 1 << l {
+				h.root[x] = uint16(l)<<10 | sym
+			}
+			code++
+		}
+		code <<= 1
+	}
+	return true
+}
+
+func (h *hcBrotliz3_huff) decode(r *hcBrotliz3_bitReader) int {
+	if h.single >= 0 {
+		return h.single
+	}
+	if e := h.root[r.peek(8)]; e != 0 {
+		r.drop(uint(e >> 10))
+		return int(e & 1023)
+	}
+	// canonical walk for codes longer than 8 bits
+	code, first, idx := 0, 0, 0
+	for l := 1; l <= 15; l++ {
+		code |= int(r.bits(1))
+		c := int(h.count[l])
+		if code-first < c {
+			return int(h.sorted[idx+code-first])
+		}
+		idx += c
+		first = (first + c) << 1
+		code <<= 1
+	}
+	r.bad = true
+	return 0
+}
+
+func hcBrotliz3_alphabetBits(n int) uint {
+	b := uint(0)
+	for n--; n > 0; n >>= 1 {
+		b++
+	}
+	return b
+}
+
+// readHuff reads a prefix code over an alphabet of n symbols.
+func hcBrotliz3_readHuff(r *hcBrotliz3_bitReader, n int, h *hcBrotliz3_huff) bool {
+	hskip := r.bits(2)
+	lens := make([]uint8, n)
+	if hskip == 1 { // simple code
+		nsym := int(r.bits(2)) + 1
+		ab := hcBrotliz3_alphabetBits(n)
+		var sym [4]int
+		for i := 0; i < nsym; i++ {
+			sym[i] = int(r.bits(ab))
+			if sym[i] >= n {
+				return false
+			}
+			for j := 0; j < i; j++ {
+				if sym[j] == sym[i] {
+					return false
+				}
+			}
+		}
+		switch nsym {
+		case 1:
+			h.single = sym[0]
+			return !r.bad
+		case 2:
+			lens[sym[0]], lens[sym[1]] = 1, 1
+		case 3:
+			lens[sym[0]], lens[sym[1]], lens[sym[2]] = 1, 2, 2
+		default:
+			if r.bits(1) == 0 {
+				lens[sym[0]], lens[sym[1]], lens[sym[2]], lens[sym[3]] = 2, 2, 2, 2
+			} else {
+				lens[sym[0]], lens[sym[1]], lens[sym[2]], lens[sym[3]] = 1, 2, 3, 3
+			}
+		}
+		return !r.bad && h.build(lens)
+	}
+	order := [18]uint8{1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	var cl [18]uint8
+	space, num := 32, 0
+	for i := int(hskip); i < 18 && space > 0; i++ {
+		x := r.peek(4)
+		var v uint8
+		var nb uint
+		switch {
+		case x&3 == 0:
+			v, nb = 0, 2
+		case x&3 == 2:
+			v, nb = 3, 2
+		case x&3 == 1:
+			v, nb = 4, 2
+		case x&7 == 3:
+			v, nb = 2, 3
+		case x == 7:
+			v, nb = 1, 4
+		default:
+			v, nb = 5, 4
+		}
+		r.drop(nb)
+		cl[order[i]] = v
+		if v != 0 {
+			space -= 32 >> v
+			num++
+		}
+	}
+	if r.bad || (num != 1 && space != 0) {
+		return false
+	}
+	var clh hcBrotliz3_huff
+	if !clh.build(cl[:]) {
+		return false
+	}
+	sym, prev, repeat, repeatLen := 0, uint8(8), 0, uint8(0)
+	sp := 32768
+	for sym < n && sp > 0 {
+		c := clh.decode(r)
+		if r.bad {
+			return false
+		}
+		if c < 16 {
+			lens[sym] = uint8(c)
+			sym++
+			repeat = 0
+			if c != 0 {
+				prev = uint8(c)
+				sp -= 32768 >> uint(c)
+			}
+			continue
+		}
+		extra := uint(c - 14) // 16: 2 bits, 17: 3 bits
+		nl := uint8(0)
+		if c == 16 {
+			nl = prev
+		}
+		if repeatLen != nl {
+			repeat, repeatLen = 0, nl
+		}
+		old := repeat
+		if repeat > 0 {
+			repeat = (repeat - 2) << extra
+		}
+		repeat += int(r.bits(extra)) + 3
+		d := repeat - old
+		if sym+d > n {
+			return false
+		}
+		for k := 0; k < d; k++ {
+			lens[sym] = repeatLen
+			sym++
+		}
+		if repeatLen != 0 {
+			sp -= d << uint(15-repeatLen)
+		}
+	}
+	if r.bad || sp != 0 {
+		return false
+	}
+	return h.build(lens)
+}
+
+func hcBrotliz3_readVarLen8(r *hcBrotliz3_bitReader) int {
+	if r.bits(1) == 0 {
+		return 0
+	}
+	n := uint(r.bits(3))
+	return int(r.bits(n)) + 1<<n
+}
+
+type hcBrotliz3_blockState struct {
+	n         int
+	typeCode  hcBrotliz3_huff
+	lenCode   hcBrotliz3_huff
+	typ, prev int
+	count     int
+}
+
+func (b *hcBrotliz3_blockState) init(r *hcBrotliz3_bitReader) bool {
+	b.n = hcBrotliz3_readVarLen8(r) + 1
+	b.typ, b.prev, b.count = 0, 1, 1<<28
+	if b.n < 2 {
+		return !r.bad
+	}
+	if !hcBrotliz3_readHuff(r, b.n+2, &b.typeCode) || !hcBrotliz3_readHuff(r, 26, &b.lenCode) {
+		return false
+	}
+	b.count = b.readCount(r)
+	return !r.bad
+}
+
+func (b *hcBrotliz3_blockState) readCount(r *hcBrotliz3_bitReader) int {
+	c := b.lenCode.decode(r)
+	return int(hcBrotliz3_blockLenRanges[c][0]) + int(r.bits(uint(hcBrotliz3_blockLenRanges[c][1])))
+}
+
+func (b *hcBrotliz3_blockState) next(r *hcBrotliz3_bitReader) {
+	c := b.typeCode.decode(r)
+	var t int
+	switch c {
+	case 0:
+		t = b.prev
+	case 1:
+		t = b.typ + 1
+		if t >= b.n {
+			t -= b.n
+		}
+	default:
+		t = c - 2
+	}
+	if t >= b.n {
+		r.bad = true
+		t = 0
+	}
+	b.prev, b.typ = b.typ, t
+	b.count = b.readCount(r)
+}
+
+func hcBrotliz3_readContextMap(r *hcBrotliz3_bitReader, size, ntrees int) []uint8 {
+	cm := make([]uint8, size)
+	if ntrees < 2 {
+		return cm
+	}
+	rlemax := 0
+	if r.bits(1) == 1 {
+		rlemax = int(r.bits(4)) + 1
+	}
+	var h hcBrotliz3_huff
+	if !hcBrotliz3_readHuff(r, ntrees+rlemax, &h) {
+		r.bad = true
+		return cm
+	}
+	for i := 0; i < size && !r.bad; {
+		c := h.decode(r)
+		switch {
+		case c == 0:
+			i++
+		case c <= rlemax:
+			reps := 1<<uint(c) + int(r.bits(uint(c)))
+			if i+reps > size {
+				r.bad = true
+				return cm
+			}
+			i += reps
+		default:
+			cm[i] = uint8(c - rlemax)
+			i++
+		}
+	}
+	if r.bits(1) == 1 { // inverse move-to-front
+		var mtf [256]uint8
+		for i := range mtf {
+			mtf[i] = uint8(i)
+		}
+		for i, v := range cm {
+			x := mtf[v]
+			cm[i] = x
+			copy(mtf[1:int(v)+1], mtf[:v])
+			mtf[0] = x
+		}
+	}
+	return cm
+}
+
+var (
+	hcBrotliz3_cellInsBase  = [11]uint8{0, 0, 0, 0, 8, 8, 0, 16, 8, 16, 16}
+	hcBrotliz3_cellCopyBase = [11]uint8{0, 8, 0, 8, 0, 8, 16, 0, 16, 8, 16}
+)
+
+// transformWord appends dictionary word w under transform t (RFC 7932 appendix B).
+func hcBrotliz3_transformWord(dst []byte, w []byte, t int) []byte {
+	pre, typ, suf := hcBrotliz3_transformsData[3*t], hcBrotliz3_transformsData[3*t+1], hcBrotliz3_transformsData[3*t+2]
+	ps := func(id uint8) string {
+		o := hcBrotliz3_prefixSuffixMap[id]
+		return hcBrotliz3_prefixSuffix[int(o)+1 : int(o)+1+int(hcBrotliz3_prefixSuffix[o])]
+	}
+	dst = append(dst, ps(pre)...)
+	start := len(dst)
+	switch {
+	case typ >= 1 && typ <= 9: // omit last
+		if n := int(typ); n < len(w) {
+			w = w[:len(w)-n]
+		} else {
+			w = nil
+		}
+	case typ >= 12 && typ <= 20: // omit first
+		if n := int(typ) - 11; n < len(w) {
+			w = w[n:]
+		} else {
+			w = nil
+		}
+	}
+	dst = append(dst, w...)
+	if typ == 10 || typ == 11 {
+		p := dst[start:]
+		for len(p) > 0 {
+			step := 1
+			switch {
+			case p[0] < 0xC0:
+				if p[0] >= 'a' && p[0] <= 'z' {
+					p[0] ^= 32
+				}
+			case p[0] < 0xE0:
+				if len(p) > 1 {
+					p[1] ^= 32
+				}
+				step = 2
+			default:
+				if len(p) > 2 {
+					p[2] ^= 5
+				}
+				step = 3
+			}
+			if typ == 10 {
+				break
+			}
+			if step > len(p) {
+				step = len(p)
+			}
+			p = p[step:]
+		}
+	}
+	return append(dst, ps(suf)...)
+}
+
+// Trace is the meta-block structure of a decoded stream: what a recipe has to explain.
+type hcBrotliz3Trace struct {
+	LgWin     int
+	Blocks    []hcBrotliz3TraceBlock // data meta-blocks in stream order
+	Markers   []int                  // decoded offsets of empty metadata blocks (the padding a flush leaves behind)
+	EmptyLast bool                   // the stream ends with an empty last meta-block
+	Cmds      []hcBrotliz3TraceCmd   // the first commands of the stream (insert length, copy length code): a cheap fingerprint of the encoder
+}
+
+// TraceCmd is a decoded command's lengths.
+type hcBrotliz3TraceCmd struct{ Ins, Copy int32 }
+
+// maxTraceCmds bounds the commands a trace keeps.
+const hcBrotliz3_maxTraceCmds = 1 << 17
+
+// TraceBlock is one data meta-block: the decoded range it produced.
+type hcBrotliz3TraceBlock struct {
+	Start, End   int
+	Uncompressed bool
+	Last         bool
+}
+
+// Decode decompresses a complete Brotli stream producing at most maxOut bytes.
+func hcBrotliz3Decode(src []byte, maxOut int) ([]byte, error) {
+	out, _, err := hcBrotliz3DecodeTrace(src, maxOut)
+	return out, err
+}
+
+// DecodeTrace is Decode that also reports the meta-block structure.
+func hcBrotliz3DecodeTrace(src []byte, maxOut int) ([]byte, *hcBrotliz3Trace, error) {
+	tr := &hcBrotliz3Trace{}
+	out, err := hcBrotliz3_decode(src, maxOut, tr)
+	return out, tr, err
+}
+
+func hcBrotliz3_decode(src []byte, maxOut int, tr *hcBrotliz3Trace) ([]byte, error) {
+	d := hcBrotliz3_theDict.Load()
+	if d == nil {
+		return nil, hcBrotliz3ErrDictionary
+	}
+	r := &hcBrotliz3_bitReader{b: src}
+	var wbits uint
+	if r.bits(1) == 0 {
+		wbits = 16
+	} else if n := r.bits(3); n != 0 {
+		wbits = 17 + uint(n)
+	} else if m := r.bits(3); m == 0 {
+		wbits = 17
+	} else if m == 1 {
+		return nil, hcBrotliz3ErrCorrupt // large-window streams are not accepted
+	} else {
+		wbits = 8 + uint(m)
+	}
+	maxDist := 1<<wbits - 16
+	tr.LgWin = int(wbits)
+	var out []byte
+	ring := [4]int{16, 15, 11, 4}
+	ri := 0 // ring[(ri-1)&3] is the last distance
+	for !r.bad {
+		last := r.bits(1) == 1
+		if last && r.bits(1) == 1 {
+			tr.EmptyLast = true
+			break
+		}
+		nib := r.bits(2)
+		if nib == 3 { // metadata block
+			if r.bits(1) != 0 {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+			sb := uint(r.bits(2))
+			n := 0
+			if sb > 0 {
+				n = int(r.bits(8 * sb))
+				if sb > 1 && n>>(8*(sb-1)) == 0 {
+					return nil, hcBrotliz3ErrCorrupt
+				}
+				n++
+			}
+			r.alignByte()
+			for ; n > 0 && !r.bad; n-- {
+				r.bits(8)
+			}
+			tr.Markers = append(tr.Markers, len(out))
+			if last {
+				break
+			}
+			continue
+		}
+		nn := 4 + uint(nib)
+		mlen := int(r.bits(4 * nn))
+		if nn > 4 && mlen>>(4*(nn-1)) == 0 {
+			return nil, hcBrotliz3ErrCorrupt
+		}
+		mlen++
+		if r.bad {
+			break
+		}
+		if mlen > maxOut-len(out) {
+			return nil, hcBrotliz3ErrLimit
+		}
+		bstart := len(out)
+		if !last && r.bits(1) == 1 { // uncompressed
+			r.alignByte()
+			for i := 0; i < mlen && !r.bad; i++ {
+				out = append(out, byte(r.bits(8)))
+			}
+			tr.Blocks = append(tr.Blocks, hcBrotliz3TraceBlock{bstart, len(out), true, false})
+			continue
+		}
+		var bl, bi, bd hcBrotliz3_blockState
+		if !bl.init(r) || !bi.init(r) || !bd.init(r) {
+			return nil, hcBrotliz3ErrCorrupt
+		}
+		npostfix := uint(r.bits(2))
+		ndirect := int(r.bits(4)) << npostfix
+		modes := make([]uint8, bl.n)
+		for i := range modes {
+			modes[i] = uint8(r.bits(2))
+		}
+		ntl := hcBrotliz3_readVarLen8(r) + 1
+		cml := hcBrotliz3_readContextMap(r, 64*bl.n, ntl)
+		ntd := hcBrotliz3_readVarLen8(r) + 1
+		cmd := hcBrotliz3_readContextMap(r, 4*bd.n, ntd)
+		if r.bad {
+			return nil, hcBrotliz3ErrCorrupt
+		}
+		for _, v := range cml {
+			if int(v) >= ntl {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+		}
+		for _, v := range cmd {
+			if int(v) >= ntd {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+		}
+		lt := make([]hcBrotliz3_huff, ntl)
+		it := make([]hcBrotliz3_huff, bi.n)
+		dt := make([]hcBrotliz3_huff, ntd)
+		for i := range lt {
+			if !hcBrotliz3_readHuff(r, 256, &lt[i]) {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+		}
+		for i := range it {
+			if !hcBrotliz3_readHuff(r, 704, &it[i]) {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+		}
+		for i := range dt {
+			if !hcBrotliz3_readHuff(r, 16+ndirect+48<<npostfix, &dt[i]) {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+		}
+		end := len(out) + mlen
+		for len(out) < end && !r.bad {
+			if bi.count == 0 {
+				bi.next(r)
+			}
+			bi.count--
+			c := it[bi.typ].decode(r)
+			cell := c >> 6
+			ic, cc := int(hcBrotliz3_cellInsBase[cell])+(c>>3)&7, int(hcBrotliz3_cellCopyBase[cell])+c&7
+			ins := int(hcBrotliz3_insBase[ic]) + int(r.bits(hcBrotliz3_insExtra[ic]))
+			cp := int(hcBrotliz3_copyBase[cc]) + int(r.bits(hcBrotliz3_copyExtra[cc]))
+			if tr != nil && len(tr.Cmds) < hcBrotliz3_maxTraceCmds {
+				tr.Cmds = append(tr.Cmds, hcBrotliz3TraceCmd{int32(ins), int32(cp)})
+			}
+			if ins > end-len(out) {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+			for ; ins > 0 && !r.bad; ins-- {
+				if bl.count == 0 {
+					bl.next(r)
+				}
+				bl.count--
+				var p1, p2 byte
+				if n := len(out); n > 0 {
+					p1 = out[n-1]
+					if n > 1 {
+						p2 = out[n-2]
+					}
+				}
+				m := int(modes[bl.typ]) << 9
+				ctx := hcBrotliz3_contextLUT[m+int(p1)] | hcBrotliz3_contextLUT[m+256+int(p2)]
+				out = append(out, byte(lt[cml[64*bl.typ+int(ctx)]].decode(r)))
+			}
+			if len(out) >= end {
+				break
+			}
+			dist := 0
+			if c < 128 {
+				dist = ring[(ri-1)&3]
+			} else {
+				if bd.count == 0 {
+					bd.next(r)
+				}
+				bd.count--
+				dctx := 3
+				if cp <= 4 {
+					dctx = cp - 2
+				}
+				s := dt[cmd[4*bd.typ+dctx]].decode(r)
+				switch {
+				case s < 16:
+					base := ring[(ri-1)&3]
+					switch {
+					case s < 4:
+						base = ring[(ri-1-s)&3]
+					case s >= 10:
+						base = ring[(ri-2)&3]
+					}
+					off := [16]int{0, 0, 0, 0, -1, 1, -2, 2, -3, 3, -1, 1, -2, 2, -3, 3}[s]
+					dist = base + off
+					if dist <= 0 {
+						return nil, hcBrotliz3ErrCorrupt
+					}
+				case s < 16+ndirect:
+					dist = s - 15
+				default:
+					v := s - ndirect - 16
+					nb := 1 + uint(v>>(npostfix+1))
+					h, l := v>>npostfix, v&(1<<npostfix-1)
+					off := (2+(h&1))<<nb - 4
+					dist = (off+int(r.bits(nb)))<<npostfix + l + ndirect + 1
+				}
+				md := min(maxDist, len(out))
+				if s != 0 && dist <= md {
+					ring[ri&3] = dist
+					ri++
+				}
+			}
+			md := min(maxDist, len(out))
+			if dist <= md {
+				if cp > end-len(out) {
+					return nil, hcBrotliz3ErrCorrupt
+				}
+				for i := 0; i < cp; i++ {
+					out = append(out, out[len(out)-dist])
+				}
+				continue
+			}
+			// static dictionary reference
+			if cp < 4 || cp > 24 || d.sizeBits[cp] == 0 {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+			id := dist - md - 1
+			idx, tr := id&(1<<d.sizeBits[cp]-1), id>>d.sizeBits[cp]
+			if tr >= 121 {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+			off := int(d.offsets[cp]) + idx*cp
+			out = hcBrotliz3_transformWord(out, d.data[off:off+cp], tr)
+			if len(out) > end {
+				return nil, hcBrotliz3ErrCorrupt
+			}
+		}
+		tr.Blocks = append(tr.Blocks, hcBrotliz3TraceBlock{bstart, len(out), false, last})
+		if last {
+			break
+		}
+	}
+	if r.bad {
+		return nil, hcBrotliz3ErrCorrupt
+	}
+	return out, nil
+}
+
+var (
+	hcBrotliz3ErrUnsupported = errors.New("brotliz3: parameters outside the ported encoder path")
+	hcBrotliz3ErrDictionary  = errors.New("brotliz3: static dictionary not installed or wrong")
+	hcBrotliz3ErrCorrupt     = errors.New("brotliz3: corrupt stream")
+	hcBrotliz3ErrLimit       = errors.New("brotliz3: output limit exceeded")
+)
+
+type hcBrotliz3_encDict struct {
+	data        []byte
+	hashWords   [32768]uint16
+	hashLengths [32768]uint8
+	offsets     [32]uint32
+	sizeBits    [32]uint8
+}
+
+var (
+	hcBrotliz3_dictOffsets  = [32]uint32{0, 0, 0, 0, 0, 4096, 9216, 21504, 35840, 44032, 53248, 63488, 74752, 87040, 93696, 100864, 104704, 106752, 108928, 113536, 115968, 118528, 119872, 121280, 122016, 122784, 122784, 122784, 122784, 122784, 122784, 122784}
+	hcBrotliz3_dictSizeBits = [32]uint8{0, 0, 0, 0, 10, 10, 11, 11, 10, 10, 10, 10, 10, 9, 9, 8, 7, 7, 8, 7, 7, 6, 6, 5, 5}
+	hcBrotliz3_theDict      atomic.Pointer[hcBrotliz3_encDict]
+)
+
+// SetDictionary installs the RFC 7932 static dictionary (122784 bytes, DictionarySHA256). The
+// core carries no data; brotliz3/brdict embeds the file for programs that want it linked in.
+func hcBrotliz3SetDictionary(b []byte) error {
+	sum := sha256.Sum256(b)
+	if len(b) != 122784 || hex.EncodeToString(sum[:]) != hcBrotliz3DictionarySHA256 {
+		return hcBrotliz3ErrDictionary
+	}
+	d := &hcBrotliz3_encDict{data: append([]byte(nil), b...), offsets: hcBrotliz3_dictOffsets, sizeBits: hcBrotliz3_dictSizeBits}
+	// BrotliEncoderInitDictionaryHash
+	global := 0
+	for l := 24; l >= 4; l-- {
+		lt8 := uint32(0)
+		if l < 8 {
+			lt8 = 1
+		}
+		n := 1 << d.sizeBits[l]
+		words := d.data[d.offsets[l]:]
+		for i := 0; i < n; i++ {
+			j := n - 1 - i
+			key := (binary.LittleEndian.Uint32(words[l*j:]) * hcBrotliz3_hashMul32) >> 18
+			idx := key<<1 + lt8
+			if d.hashLengths[idx]&0x80 == 0 {
+				d.hashWords[idx] = uint16(j)
+				v := uint8(l)
+				if hcBrotliz3_dictFrozenIdx[global/8]&(1<<uint(global%8)) != 0 {
+					v |= 0x80
+				}
+				d.hashLengths[idx] = v
+			}
+			global++
+		}
+	}
+	for i := range d.hashLengths {
+		d.hashLengths[i] &= 0x7F
+	}
+	hcBrotliz3_theDict.Store(d)
+	return nil
+}
+
+// maxStream is the longest stream the port models: positions stay below 2^30, where the reference
+// does not wrap them (WrapPosition is the identity).
+const hcBrotliz3_maxStream = 1 << 30
+
+// Params are the encoder parameters a streaming producer sets (BrotliEncoderSetParameter).
+type hcBrotliz3Params struct {
+	Quality  int    // 5..9
+	LgWin    int    // 17..24
+	LgBlock  int    // 0 = automatic, else 16..24
+	SizeHint uint32 // 0 = derived from the first encoded block as the reference does
+	Legacy   bool   // libbrotli <= 1.1.0; false: 1.2.0. They differ where a probe reaches the end of the ring
+}
+
+// Op is a BrotliEncoderOperation.
+type hcBrotliz3Op uint8
+
+const (
+	hcBrotliz3OpProcess hcBrotliz3Op = iota
+	hcBrotliz3OpFlush
+	hcBrotliz3OpFinish
+)
+
+// ringBuf is the reference RingBuffer: the last two bytes, 1<<window_bits data bytes, a copy of the
+// beginning as a tail, and seven bytes of slack. Positions are absolute, bytes live at pos&mask.
+type hcBrotliz3_ringBuf struct {
+	size, mask, tail, total, cur uint32
+	pos                          uint32
+	data                         []byte
+	buf                          []byte // data[2:]
+}
+
+func (r *hcBrotliz3_ringBuf) initBuffer(n uint32) {
+	nd := make([]byte, 2+int(n)+16)
+	if r.data != nil {
+		copy(nd, r.data[:min(len(r.data), 2+int(r.cur)+7)])
+	}
+	r.data, r.cur, r.buf = nd, n, nd[2:]
+	nd[0], nd[1] = 0, 0
+	for i := 0; i < 7; i++ {
+		r.buf[int(n)+i] = 0
+	}
+}
+
+func (r *hcBrotliz3_ringBuf) write(b []byte) {
+	n := uint32(len(b))
+	if r.pos == 0 && n < r.tail {
+		r.pos = n
+		r.initBuffer(n)
+		copy(r.buf, b)
+		return
+	}
+	if r.cur < r.total {
+		// Inside the first lap nothing past the data is ever read (probes stop at the end of the block), so the
+		// buffer grows with the data instead of being allocated at the full window; the bytes beyond are zero
+		// either way.
+		want := r.total
+		if r.pos&(1<<31) == 0 && uint64(r.pos)+uint64(n) < uint64(r.size) {
+			want = min(r.total, (r.pos+n+1<<16-1)&^(1<<16-1)+1<<16)
+		}
+		if want > r.cur {
+			r.initBuffer(want)
+			if want == r.total {
+				r.buf[r.size-2], r.buf[r.size-1] = 0, 0
+				r.buf[r.size] = 241
+				// the tail mirrors the first block(s) written so far (a full-size ring keeps it current)
+				copy(r.buf[r.size:], r.buf[:min(r.tail, r.pos)])
+			}
+		}
+	}
+	masked := r.pos & r.mask
+	if masked < r.tail && r.cur == r.total { // RingBufferWriteTail (a ring still growing has no tail yet)
+		copy(r.buf[r.size+masked:], b[:min(n, r.tail-masked)])
+	}
+	if masked+n <= r.size {
+		copy(r.buf[masked:], b)
+	} else {
+		copy(r.buf[masked:], b[:min(n, r.total-masked)])
+		copy(r.buf[0:], b[r.size-masked:])
+	}
+	notFirst := r.pos&(1<<31) != 0
+	if r.cur == r.total { // the two bytes before the ring mirror its last two; a ring still growing has zeros there
+		r.data[0], r.data[1] = r.buf[r.size-2], r.buf[r.size-1]
+	}
+	r.pos = r.pos&(1<<31-1) + n&(1<<31-1)
+	if notFirst {
+		r.pos |= 1 << 31
+	}
+}
+
+type hcBrotliz3_encoder struct {
+	quality, lgwin, lgblock int
+	legacy                  bool
+	hint                    uint32
+	rb                      hcBrotliz3_ringBuf
+	h                       *hcBrotliz3_hasher
+	distCache               [16]int32
+	savedDist               [4]int32
+	cmds                    []hcBrotliz3_command
+	numLiterals             int
+	lastInsertLen           int
+	inputPos, lastFlush     int
+	lastProcessed           int
+	prev1, prev2            byte
+	w                       hcBrotliz3_bitWriter
+	lin                     []byte // contiguous copy of the metablock: two bytes of left context, then the data
+	failed                  bool
+	stored                  bool // the last meta-block was written uncompressed: its commands are not in the stream
+	probe                   *hcBrotliz3_cmdProbe
+}
+
+func (p hcBrotliz3Params) valid() bool {
+	return p.Quality >= 5 && p.Quality <= 9 && p.LgWin >= 17 && p.LgWin <= 24 && (p.LgBlock == 0 || p.LgBlock >= 16 && p.LgBlock <= 24)
+}
+
+// lgBlock is ComputeLgBlock for qualities 5..9.
+func (p hcBrotliz3Params) lgBlock() int {
+	if p.LgBlock == 0 {
+		if p.Quality >= 9 && p.LgWin > 16 {
+			return min(18, p.LgWin)
+		}
+		return 16
+	}
+	return p.LgBlock
+}
+
+func hcBrotliz3_newEncoder(p hcBrotliz3Params) *hcBrotliz3_encoder {
+	e := &hcBrotliz3_encoder{quality: p.Quality, lgwin: p.LgWin, lgblock: p.lgBlock(), hint: p.SizeHint, legacy: p.Legacy}
+	bits := uint(1 + max(e.lgwin, e.lgblock))
+	e.rb.size, e.rb.mask, e.rb.tail = 1<<bits, 1<<bits-1, 1<<uint(e.lgblock)
+	e.rb.total = e.rb.size + e.rb.tail
+	e.distCache = [16]int32{4, 11, 15, 16}
+	e.savedDist = [4]int32{4, 11, 15, 16}
+	// EncodeWindowBits
+	if e.lgwin == 17 {
+		e.w.write(7, 1)
+	} else {
+		e.w.write(4, uint64((e.lgwin-17)<<1|1))
+	}
+	return e
+}
+
+func (e *hcBrotliz3_encoder) block() int { return 1 << uint(e.lgblock) }
+
+func (e *hcBrotliz3_encoder) unprocessed() int { return e.inputPos - e.lastProcessed }
+
+func (e *hcBrotliz3_encoder) remainingBlock() int {
+	if d := e.unprocessed(); d < e.block() {
+		return e.block() - d
+	}
+	return 0
+}
+
+func (e *hcBrotliz3_encoder) copyInput(b []byte) {
+	e.rb.write(b)
+	e.inputPos += len(b)
+	if int(e.rb.pos) <= int(e.rb.mask) { // first lap: the seven bytes after the data are defined zeros
+		for i := 0; i < 7; i++ {
+			e.rb.buf[int(e.rb.pos)+i] = 0
+		}
+	}
+}
+
+// updateSizeHint is UpdateSizeHint: a producer that set no hint gets the pending input as its hint.
+func (e *hcBrotliz3_encoder) updateSizeHint(availableIn int) {
+	if e.hint == 0 {
+		const limit = 1 << 30
+		d, t := e.unprocessed(), availableIn
+		if d >= limit || t >= limit || d+t >= limit {
+			e.hint = limit
+		} else {
+			e.hint = uint32(d + t)
+		}
+	}
+}
+
+// Stream is BrotliEncoderCompressStream: input is accepted in any chunking, output is written to the sink
+// as complete bytes. Memory is bounded by the window (ring buffer, hash tables and one meta-block).
+type hcBrotliz3Stream struct {
+	e    *hcBrotliz3_encoder
+	out  io.Writer
+	err  error
+	done bool
+	n    int64
+}
+
+// NewStream starts a stream; the sink receives the compressed bytes as they become complete.
+func hcBrotliz3NewStream(p hcBrotliz3Params, out io.Writer) (*hcBrotliz3Stream, error) {
+	if !p.valid() {
+		return nil, hcBrotliz3ErrUnsupported
+	}
+	if hcBrotliz3_theDict.Load() == nil {
+		return nil, hcBrotliz3ErrDictionary
+	}
+	return &hcBrotliz3Stream{e: hcBrotliz3_newEncoder(p), out: out}, nil
+}
+
+// Close releases the hash tables; the stream cannot be used afterwards.
+func (s *hcBrotliz3Stream) Close() {
+	if s.e.h != nil {
+		s.e.h.release()
+		s.e.h = nil
+	}
+}
+
+func (s *hcBrotliz3Stream) emit() {
+	if s.err != nil || len(s.e.w.buf) == 0 {
+		return
+	}
+	_, s.err = s.out.Write(s.e.w.buf)
+	s.e.w.buf = s.e.w.buf[:0]
+}
+
+// Process is OpProcess, Flush OpFlush, Finish OpFinish of the reference.
+func (s *hcBrotliz3Stream) Process(b []byte) error { return s.run(hcBrotliz3OpProcess, b) }
+
+func (s *hcBrotliz3Stream) Flush() error { return s.run(hcBrotliz3OpFlush, nil) }
+
+func (s *hcBrotliz3Stream) Finish() error { return s.run(hcBrotliz3OpFinish, nil) }
+
+// Write feeds a chunk with the given operation (the chunk is consumed as one BrotliEncoderCompressStream call).
+func (s *hcBrotliz3Stream) Write(op hcBrotliz3Op, b []byte) error { return s.run(op, b) }
+
+func (s *hcBrotliz3Stream) run(op hcBrotliz3Op, in []byte) error {
+	e := s.e
+	if s.err != nil {
+		return s.err
+	}
+	if s.done {
+		if len(in) != 0 || op != hcBrotliz3OpFinish {
+			return hcBrotliz3ErrUnsupported
+		}
+		return nil
+	}
+	if int64(e.inputPos)+int64(len(in)) >= hcBrotliz3_maxStream {
+		return hcBrotliz3ErrUnsupported
+	}
+	for {
+		rem := e.remainingBlock()
+		if rem != 0 && len(in) != 0 {
+			n := min(rem, len(in))
+			e.copyInput(in[:n])
+			in = in[n:]
+			continue
+		}
+		if rem == 0 || op != hcBrotliz3OpProcess {
+			isLast := len(in) == 0 && op == hcBrotliz3OpFinish
+			force := len(in) == 0 && op == hcBrotliz3OpFlush
+			e.updateSizeHint(len(in))
+			e.encodeData(isLast, force)
+			if e.failed {
+				s.err = hcBrotliz3_errMismatch
+				return s.err
+			}
+			s.emit()
+			if force && e.w.nacc != 0 { // InjectBytePaddingBlock: an empty metadata block pads to a byte boundary
+				e.w.write(6, 6)
+				e.w.align()
+				s.emit()
+			}
+			if isLast {
+				s.done = true
+				return s.err
+			}
+			if force {
+				return s.err
+			}
+			continue
+		}
+		return s.err
+	}
+}
+
+// Encode returns BrotliEncoderCompress(quality, lgwin, BROTLI_MODE_GENERIC, input) of the
+// reference implementation (v1.0.9 .. v1.2.0 produce the same bytes on this path).
+func hcBrotliz3Encode(input []byte, quality, lgwin int) ([]byte, error) {
+	p := hcBrotliz3Params{Quality: quality, LgWin: lgwin, SizeHint: uint32(len(input))}
+	if !p.valid() || len(input) >= hcBrotliz3_maxStream {
+		return nil, hcBrotliz3ErrUnsupported
+	}
+	if hcBrotliz3_theDict.Load() == nil {
+		return nil, hcBrotliz3ErrDictionary
+	}
+	if len(input) == 0 {
+		return []byte{6}, nil
+	}
+	var sink hcBrotliz3_sliceWriter
+	s, err := hcBrotliz3NewStream(p, &sink)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	if err := s.Write(hcBrotliz3OpFinish, input); err != nil {
+		return nil, err
+	}
+	out := sink.b
+	// BrotliEncoderCompress falls back to a stored stream when the result exceeds the bound
+	if n := len(input); len(out) > n+2+4*(n>>14)+3+1 {
+		return hcBrotliz3_uncompressedStream(input), nil
+	}
+	return out, nil
+}
+
+type hcBrotliz3_sliceWriter struct{ b []byte }
+
+func (w *hcBrotliz3_sliceWriter) Write(p []byte) (int, error) {
+	w.b = append(w.b, p...)
+	return len(p), nil
+}
+
+// uncompressedStream is MakeUncompressedStream.
+func hcBrotliz3_uncompressedStream(in []byte) []byte {
+	out := []byte{0x21, 0x03}
+	for len(in) > 0 {
+		chunk := min(len(in), 1<<24)
+		nib := uint32(0)
+		if chunk > 1<<16 {
+			nib = 1
+			if chunk > 1<<20 {
+				nib = 2
+			}
+		}
+		bits := nib<<1 | uint32(chunk-1)<<3 | 1<<(19+4*nib)
+		out = append(out, byte(bits), byte(bits>>8), byte(bits>>16))
+		if nib == 2 {
+			out = append(out, byte(bits>>24))
+		}
+		out = append(out, in[:chunk]...)
+		in = in[chunk:]
+	}
+	return append(out, 3)
+}
+
+// encodeData is EncodeData for qualities 5..9: it processes the unprocessed input as one block and writes a
+// meta-block when the reference would (always on flush or finish).
+func (e *hcBrotliz3_encoder) encodeData(isLast, forceFlush bool) {
+	bytes := e.unprocessed()
+	pos := e.lastProcessed
+	if bytes == 0 { // no new input; still might want to flush or finish
+		if e.rb.data == nil {
+			if isLast { // complete finalized stream
+				e.w.write(2, 3)
+				e.w.align()
+			}
+			return
+		}
+		if !isLast && !forceFlush {
+			return
+		}
+	}
+	if e.h == nil {
+		e.h = hcBrotliz3_newHasher(e.quality, e.lgwin, int(e.hint), int(e.rb.mask), e.legacy, hcBrotliz3_theDict.Load())
+	}
+	// InitOrStitchToPreviousBlock
+	if bytes >= e.h.typeLen()-1 && pos >= 3 {
+		e.h.store(e.rb.buf, pos-3)
+		e.h.store(e.rb.buf, pos-2)
+		e.h.store(e.rb.buf, pos-1)
+	}
+	if len(e.cmds) > 0 && e.lastInsertLen == 0 {
+		e.extendLastCommand(&bytes, &pos)
+	}
+	e.createBackwardReferences(bytes, pos)
+	if e.probe != nil && !e.probe.check(e.cmds, e.lastFlush) {
+		e.failed = true
+		return
+	}
+	maxLength := 1 << uint(min(1+max(e.lgwin, e.lgblock), 24))
+	processed := e.inputPos - e.lastFlush
+	if !isLast && !forceFlush && processed+e.block() <= maxLength && e.numLiterals < maxLength/8 && len(e.cmds) < maxLength/8 {
+		e.lastProcessed = e.inputPos // merge with the next input block
+		return
+	}
+	if e.lastInsertLen > 0 {
+		e.cmds = append(e.cmds, hcBrotliz3_command{})
+		e.cmds[len(e.cmds)-1].initInsert(uint32(e.lastInsertLen))
+		e.numLiterals += e.lastInsertLen
+		e.lastInsertLen = 0
+	}
+	if !isLast && e.inputPos == e.lastFlush {
+		return // nothing new and the stream continues
+	}
+	e.writeMetaBlock(e.inputPos-e.lastFlush, isLast)
+	if e.probe != nil {
+		if e.stored {
+			e.probe.advance(0)
+		} else {
+			e.probe.advance(len(e.cmds))
+		}
+	}
+	e.lastFlush, e.lastProcessed = e.inputPos, e.inputPos
+	if e.lastFlush > 0 {
+		e.prev1 = e.rb.buf[(e.lastFlush-1)&int(e.rb.mask)]
+	}
+	if e.lastFlush > 1 {
+		e.prev2 = e.rb.buf[(e.lastFlush-2)&int(e.rb.mask)]
+	}
+	e.cmds = e.cmds[:0]
+	e.numLiterals = 0
+	copy(e.savedDist[:], e.distCache[:4])
+}
+
+func (e *hcBrotliz3_encoder) extendLastCommand(bytes, pos *int) {
+	last := &e.cmds[len(e.cmds)-1]
+	maxBackward := uint64(1)<<uint(e.lgwin) - hcBrotliz3_windowGap
+	lastCopy := uint64(last.copyLen & 0x1FFFFFF)
+	lastProcessed := uint64(e.lastProcessed) - lastCopy
+	maxDistance := min(lastProcessed, maxBackward)
+	cmdDist := uint64(int64(e.distCache[0]))
+	code := last.restoreDistanceCode()
+	if code < hcBrotliz3_numDistShort || uint64(code-(hcBrotliz3_numDistShort-1)) == cmdDist {
+		if cmdDist <= maxDistance {
+			m, b := int(e.rb.mask), e.rb.buf
+			for *bytes != 0 && b[*pos&m] == b[(*pos-int(cmdDist))&m] {
+				last.copyLen++
+				*bytes--
+				*pos++
+			}
+		}
+		last.cmdPrefix = hcBrotliz3_lengthCode(last.insertLen, uint32(int32(last.copyLen&0x1FFFFFF)+int32(last.copyLen>>25)), last.distPrefix&0x3FF == 0)
+	}
+}
+
+func (e *hcBrotliz3_encoder) shouldCompress(bytes int, data []byte) bool {
+	if bytes <= 2 {
+		return false
+	}
+	if len(e.cmds) < bytes>>8+2 && float64(e.numLiterals) > float64(0.99*float64(bytes)) {
+		var histo [256]uint32
+		t := (bytes + 12) / 13
+		pos := 0
+		for i := 0; i < t; i++ {
+			histo[data[pos]]++
+			pos += 13
+		}
+		if hcBrotliz3_bitsEntropy(histo[:]) > float64(float64(float64(bytes)*7.92)*(1.0/13.0)) {
+			return false
+		}
+	}
+	return true
+}
+
+// linearize copies the meta-block bytes out of the ring: two bytes of left context, then the data.
+func (e *hcBrotliz3_encoder) linearize(bytes int) []byte {
+	need := 2 + bytes + 16
+	if cap(e.lin) < need {
+		e.lin = make([]byte, need)
+	}
+	l := e.lin[:need]
+	l[0], l[1] = e.prev2, e.prev1
+	m := int(e.rb.mask)
+	start := e.lastFlush & m
+	if start+bytes <= int(e.rb.size) {
+		copy(l[2:], e.rb.buf[start:start+bytes])
+	} else {
+		n := int(e.rb.size) - start
+		copy(l[2:], e.rb.buf[start:start+n])
+		copy(l[2+n:], e.rb.buf[:bytes-n])
+	}
+	return l
+}
+
+// writeMetaBlock is WriteMetaBlockInternal for qualities 4..9.
+func (e *hcBrotliz3_encoder) writeMetaBlock(bytes int, isLast bool) {
+	w := &e.w
+	e.stored = true
+	if bytes == 0 {
+		w.write(2, 3)
+		w.align()
+		return
+	}
+	lin := e.linearize(bytes)
+	data := lin[2 : 2+bytes]
+	if !e.shouldCompress(bytes, data) {
+		copy(e.distCache[:4], e.savedDist[:])
+		w.uncompressedMetaBlock(isLast, data)
+		return
+	}
+	m := w.mark()
+	nctx, ctxMap := hcBrotliz3_decideLiteralContexts(lin, 2, bytes, e.quality, int(e.hint))
+	mb := hcBrotliz3_buildMetaBlockGreedy(lin, 2, e.prev1, e.prev2, nctx, ctxMap, e.cmds)
+	w.storeMetaBlock(lin, 2, bytes, e.prev1, e.prev2, isLast, e.cmds, mb)
+	e.stored = false
+	if bytes+4 < w.bitsSince(m)>>3 {
+		e.stored = true
+		copy(e.distCache[:4], e.savedDist[:])
+		w.reset(m)
+		w.uncompressedMetaBlock(isLast, data)
+	}
+}
+
+var hcBrotliz3_log2Table = func() (t [256]float64) {
+	for i := 2; i < 256; i++ { // the C table holds float-precision literals
+		t[i] = float64(float32(math.Log2(float64(i))))
+	}
+	return
+}()
+
+func hcBrotliz3_fastLog2(v uint64) float64 {
+	if v < 256 {
+		return hcBrotliz3_log2Table[v]
+	}
+	return hcBrotliz3_log2Int(v)
+}
+
+// bitsEntropy is BrotliBitsEntropy. Products are rounded before they are accumulated (no FMA).
+func hcBrotliz3_bitsEntropy(pop []uint32) float64 {
+	var sum uint64
+	var r float64
+	for _, p := range pop {
+		sum += uint64(p)
+		r -= float64(float64(p) * hcBrotliz3_fastLog2(uint64(p)))
+	}
+	if sum != 0 {
+		r += float64(float64(sum) * hcBrotliz3_fastLog2(sum))
+	}
+	if r < float64(sum) {
+		r = float64(sum)
+	}
+	return r
+}
+
+// estimateEntropy is encode.c's EstimateEntropy (Shannon entropy times the total).
+func hcBrotliz3_estimateEntropy(pop []uint32) float64 {
+	var total uint64
+	var r float64
+	for _, p := range pop {
+		total += uint64(p)
+		r += float64(float64(p) * hcBrotliz3_fastLog2(uint64(p)))
+	}
+	return float64(float64(total)*hcBrotliz3_fastLog2(total)) - r
+}
+
+type hcBrotliz3_huffNode struct {
+	count       uint32
+	left, right int16 // right doubles as the symbol of a leaf
+}
+
+func hcBrotliz3_setDepth(p0 int, pool []hcBrotliz3_huffNode, depth []uint8, maxDepth int) bool {
+	var stack [16]int
+	level, p := 0, p0
+	stack[0] = -1
+	for {
+		if pool[p].left >= 0 {
+			level++
+			if level > maxDepth {
+				return false
+			}
+			stack[level] = int(pool[p].right)
+			p = int(pool[p].left)
+			continue
+		}
+		depth[pool[p].right] = uint8(level)
+		for level >= 0 && stack[level] == -1 {
+			level--
+		}
+		if level < 0 {
+			return true
+		}
+		p = stack[level]
+		stack[level] = -1
+	}
+}
+
+var hcBrotliz3_shellGaps = [6]int{132, 57, 23, 10, 4, 1}
+
+func hcBrotliz3_huffLess(a, b *hcBrotliz3_huffNode) bool {
+	if a.count != b.count {
+		return a.count < b.count
+	}
+	return a.right > b.right
+}
+
+func hcBrotliz3_sortHuff(items []hcBrotliz3_huffNode) {
+	n := len(items)
+	if n < 13 {
+		for i := 1; i < n; i++ {
+			tmp := items[i]
+			k := i
+			for j := i - 1; j >= 0 && hcBrotliz3_huffLess(&tmp, &items[j]); j-- {
+				items[k] = items[j]
+				k = j
+			}
+			items[k] = tmp
+		}
+		return
+	}
+	g := 0
+	if n < 57 {
+		g = 2
+	}
+	for ; g < 6; g++ {
+		gap := hcBrotliz3_shellGaps[g]
+		for i := gap; i < n; i++ {
+			j := i
+			tmp := items[i]
+			for ; j >= gap && hcBrotliz3_huffLess(&tmp, &items[j-gap]); j -= gap {
+				items[j] = items[j-gap]
+			}
+			items[j] = tmp
+		}
+	}
+}
+
+// createHuffmanTree is BrotliCreateHuffmanTree: depth[] for data[] limited to treeLimit bits.
+func hcBrotliz3_createHuffmanTree(data []uint32, treeLimit int, tree []hcBrotliz3_huffNode, depth []uint8) {
+	sentinel := hcBrotliz3_huffNode{count: math.MaxUint32, left: -1, right: -1}
+	for limit := uint32(1); ; limit *= 2 {
+		n := 0
+		for i := len(data) - 1; i >= 0; i-- {
+			if data[i] != 0 {
+				tree[n] = hcBrotliz3_huffNode{count: max(data[i], limit), left: -1, right: int16(i)}
+				n++
+			}
+		}
+		if n == 1 {
+			depth[tree[0].right] = 1
+			return
+		}
+		hcBrotliz3_sortHuff(tree[:n])
+		tree[n], tree[n+1] = sentinel, sentinel
+		i, j := 0, n+1
+		for k := n - 1; k != 0; k-- {
+			var left, right int
+			if tree[i].count <= tree[j].count {
+				left = i
+				i++
+			} else {
+				left = j
+				j++
+			}
+			if tree[i].count <= tree[j].count {
+				right = i
+				i++
+			} else {
+				right = j
+				j++
+			}
+			je := 2*n - k
+			tree[je] = hcBrotliz3_huffNode{count: tree[left].count + tree[right].count, left: int16(left), right: int16(right)}
+			tree[je+1] = sentinel
+		}
+		if hcBrotliz3_setDepth(2*n-1, tree, depth, treeLimit) {
+			return
+		}
+	}
+}
+
+func hcBrotliz3_reverseBits(n uint, b uint16) uint16 {
+	var r uint16
+	for i := uint(0); i < n; i++ {
+		r = r<<1 | b&1
+		b >>= 1
+	}
+	return r
+}
+
+// depthsToSymbols is BrotliConvertBitDepthsToSymbols (bit-reversed canonical codes).
+func hcBrotliz3_depthsToSymbols(depth []uint8, out []uint16) {
+	var blCount, next [16]uint16
+	for _, d := range depth {
+		blCount[d]++
+	}
+	blCount[0] = 0
+	code := 0
+	for i := 1; i < 16; i++ {
+		code = (code + int(blCount[i-1])) << 1
+		next[i] = uint16(code)
+	}
+	for i, d := range depth {
+		if d != 0 {
+			out[i] = hcBrotliz3_reverseBits(uint(d), next[d])
+			next[d]++
+		}
+	}
+}
+
+// optimizeHuffmanCountsForRle is BrotliOptimizeHuffmanCountsForRle (size_t arithmetic kept).
+func hcBrotliz3_optimizeHuffmanCountsForRle(counts []uint32, good []uint8) {
+	length := len(counts)
+	nz := 0
+	for _, c := range counts {
+		if c != 0 {
+			nz++
+		}
+	}
+	if nz < 16 {
+		return
+	}
+	for length != 0 && counts[length-1] == 0 {
+		length--
+	}
+	if length == 0 {
+		return
+	}
+	nonzeros, smallest := 0, uint32(1<<30)
+	for i := 0; i < length; i++ {
+		if counts[i] != 0 {
+			nonzeros++
+			if smallest > counts[i] {
+				smallest = counts[i]
+			}
+		}
+	}
+	if nonzeros < 5 {
+		return
+	}
+	if smallest < 4 && length-nonzeros < 6 {
+		for i := 1; i < length-1; i++ {
+			if counts[i-1] != 0 && counts[i] == 0 && counts[i+1] != 0 {
+				counts[i] = 1
+			}
+		}
+	}
+	if nonzeros < 28 {
+		return
+	}
+	for i := 0; i < length; i++ {
+		good[i] = 0
+	}
+	symbol, step := counts[0], 0
+	for i := 0; i <= length; i++ {
+		if i == length || counts[i] != symbol {
+			if (symbol == 0 && step >= 5) || (symbol != 0 && step >= 7) {
+				for k := 0; k < step; k++ {
+					good[i-k-1] = 1
+				}
+			}
+			step = 1
+			if i != length {
+				symbol = counts[i]
+			}
+		} else {
+			step++
+		}
+	}
+	const streak = 1240
+	stride := uint64(0)
+	limit := uint64(256*(counts[0]+counts[1]+counts[2])/3 + 420) // uint32 arithmetic as in C
+	sum := uint64(0)
+	for i := 0; i <= length; i++ {
+		if i == length || good[i] != 0 || (i != 0 && good[i-1] != 0) ||
+			uint64(256*counts[i])-limit+streak >= 2*streak {
+			if stride >= 4 || (stride >= 3 && sum == 0) {
+				count := (sum + stride/2) / stride
+				if count == 0 {
+					count = 1
+				}
+				if sum == 0 {
+					count = 0
+				}
+				for k := uint64(0); k < stride; k++ {
+					counts[i-int(k)-1] = uint32(count)
+				}
+			}
+			stride, sum = 0, 0
+			if i < length-2 {
+				limit = uint64(256*(counts[i]+counts[i+1]+counts[i+2])/3 + 420)
+			} else if i < length {
+				limit = uint64(256 * counts[i])
+			} else {
+				limit = 0
+			}
+		}
+		stride++
+		if i != length {
+			sum += uint64(counts[i])
+			if stride >= 4 {
+				limit = (256*sum + stride/2) / stride
+			}
+			if stride == 4 {
+				limit += 120
+			}
+		}
+	}
+}
+
+func hcBrotliz3_reverseU8(v []uint8) {
+	for i, j := 0, len(v)-1; i < j; i, j = i+1, j-1 {
+		v[i], v[j] = v[j], v[i]
+	}
+}
+
+// writeHuffmanTree is BrotliWriteHuffmanTree: the code-length symbol sequence with RLE codes.
+func hcBrotliz3_writeHuffmanTree(depth []uint8, tree, extra []uint8) ([]uint8, []uint8) {
+	length := len(depth)
+	newLen := length
+	for i := 0; i < length; i++ {
+		if depth[length-i-1] != 0 {
+			break
+		}
+		newLen--
+	}
+	rleNZ, rleZ := false, false
+	if length > 50 {
+		var totZ, totNZ, cntZ, cntNZ = 0, 0, 1, 1
+		for i := 0; i < newLen; {
+			v, reps := depth[i], 1
+			for k := i + 1; k < newLen && depth[k] == v; k++ {
+				reps++
+			}
+			if reps >= 3 && v == 0 {
+				totZ += reps
+				cntZ++
+			}
+			if reps >= 4 && v != 0 {
+				totNZ += reps
+				cntNZ++
+			}
+			i += reps
+		}
+		rleNZ, rleZ = totNZ > cntNZ*2, totZ > cntZ*2
+	}
+	prev := uint8(8)
+	put := func(v, x uint8) {
+		tree = append(tree, v)
+		extra = append(extra, x)
+	}
+	for i := 0; i < newLen; {
+		v, reps := depth[i], 1
+		if (v != 0 && rleNZ) || (v == 0 && rleZ) {
+			for k := i + 1; k < newLen && depth[k] == v; k++ {
+				reps++
+			}
+		}
+		i += reps
+		if v == 0 {
+			if reps == 11 {
+				put(0, 0)
+				reps--
+			}
+			if reps < 3 {
+				for k := 0; k < reps; k++ {
+					put(0, 0)
+				}
+			} else {
+				start := len(tree)
+				reps -= 3
+				for {
+					put(17, uint8(reps&7))
+					reps >>= 3
+					if reps == 0 {
+						break
+					}
+					reps--
+				}
+				hcBrotliz3_reverseU8(tree[start:])
+				hcBrotliz3_reverseU8(extra[start:])
+			}
+			continue
+		}
+		if prev != v {
+			put(v, 0)
+			reps--
+		}
+		if reps == 7 {
+			put(v, 0)
+			reps--
+		}
+		if reps < 3 {
+			for k := 0; k < reps; k++ {
+				put(v, 0)
+			}
+		} else {
+			start := len(tree)
+			reps -= 3
+			for {
+				put(16, uint8(reps&3))
+				reps >>= 2
+				if reps == 0 {
+					break
+				}
+				reps--
+			}
+			hcBrotliz3_reverseU8(tree[start:])
+			hcBrotliz3_reverseU8(extra[start:])
+		}
+		prev = v
+	}
+	return tree, extra
+}
+
+const (
+	hcBrotliz3_numCommandSymbols = 704
+	hcBrotliz3_numDistSymbols    = 64
+	hcBrotliz3_maxBlockTypes     = 256
+	hcBrotliz3_maxStaticContexts = 13
+)
+
+type hcBrotliz3_blockSplit struct {
+	numTypes int
+	types    []uint8
+	lengths  []uint32
+}
+
+type hcBrotliz3_metaBlock struct {
+	lit, cmd, dist       hcBrotliz3_blockSplit
+	litCtxMap            []uint32 // nil: one histogram per literal block type
+	litH, cmdH, distH    []uint32 // flat histograms
+	nLitH, nCmdH, nDistH int
+}
+
+var (
+	hcBrotliz3_ctxMapContinuation = [64]uint32{1, 1, 2, 2}
+	hcBrotliz3_ctxMapSimpleUTF8   = [64]uint32{0, 0, 1, 1}
+	hcBrotliz3_ctxMapComplexUTF8  = [64]uint32{
+		11, 11, 12, 12, 0, 0, 0, 0, 1, 1, 9, 9, 2, 2, 2, 2,
+		1, 1, 1, 1, 8, 3, 3, 3, 1, 1, 1, 1, 2, 2, 2, 2,
+		8, 4, 4, 4, 8, 7, 4, 4, 8, 0, 0, 0, 3, 3, 3, 3,
+		5, 5, 10, 5, 5, 5, 10, 5, 6, 6, 6, 6, 6, 6, 6, 6,
+	}
+)
+
+// utf8Context is BROTLI_CONTEXT(p1, p2, CONTEXT_UTF8).
+func hcBrotliz3_utf8Context(p1, p2 byte) byte {
+	return hcBrotliz3_contextLUT[1024+int(p1)] | hcBrotliz3_contextLUT[1024+256+int(p2)]
+}
+
+// decideLiteralContexts is DecideOverLiteralContextModeling.
+func hcBrotliz3_decideLiteralContexts(data []byte, start, length, quality, sizeHint int) (int, *[64]uint32) {
+	if length < 64 {
+		return 1, nil
+	}
+	end := start + length
+	if sizeHint >= 1<<20 { // ShouldUseComplexStaticContextMap
+		var combined [32]uint32
+		var ctx [32 * hcBrotliz3_maxStaticContexts]uint32
+		total := uint32(0)
+		for p := start; p+64 <= end; p += 4096 {
+			prev2, prev1 := data[p], data[p+1]
+			for pos := p + 2; pos < p+64; pos++ {
+				lit := data[pos]
+				c := hcBrotliz3_ctxMapComplexUTF8[hcBrotliz3_utf8Context(prev1, prev2)]
+				total++
+				combined[lit>>3]++
+				ctx[c<<5+uint32(lit>>3)]++
+				prev2, prev1 = prev1, lit
+			}
+		}
+		e1 := hcBrotliz3_estimateEntropy(combined[:])
+		e2 := 0.0
+		for i := 0; i < hcBrotliz3_maxStaticContexts; i++ {
+			e2 += hcBrotliz3_estimateEntropy(ctx[i<<5 : (i+1)<<5])
+		}
+		e0 := 1.0 / float64(total)
+		e1, e2 = float64(e1*e0), float64(e2*e0)
+		if !(e2 > 3.0 || e1-e2 < 0.2) {
+			return hcBrotliz3_maxStaticContexts, &hcBrotliz3_ctxMapComplexUTF8
+		}
+	}
+	var bigram [9]uint32
+	lut := [4]int{0, 0, 1, 2}
+	for p := start; p+64 <= end; p += 4096 {
+		prev := lut[data[p]>>6] * 3
+		for pos := p + 1; pos < p+64; pos++ {
+			lit := data[pos]
+			bigram[prev+lut[lit>>6]]++
+			prev = lut[lit>>6] * 3
+		}
+	}
+	// ChooseContextMap
+	var mono [3]uint32
+	var two [6]uint32
+	for i := 0; i < 9; i++ {
+		mono[i%3] += bigram[i]
+		two[i%6] += bigram[i]
+	}
+	var ent [4]float64
+	ent[1] = hcBrotliz3_estimateEntropy(mono[:])
+	ent[2] = hcBrotliz3_estimateEntropy(two[:3]) + hcBrotliz3_estimateEntropy(two[3:])
+	for i := 0; i < 3; i++ {
+		ent[3] += hcBrotliz3_estimateEntropy(bigram[3*i : 3*i+3])
+	}
+	total := mono[0] + mono[1] + mono[2]
+	ent[0] = 1.0 / float64(total)
+	ent[1], ent[2], ent[3] = float64(ent[1]*ent[0]), float64(ent[2]*ent[0]), float64(ent[3]*ent[0])
+	if quality < 7 {
+		ent[3] = float64(ent[1] * 10)
+	}
+	switch {
+	case ent[1]-ent[2] < 0.2 && ent[1]-ent[3] < 0.2:
+		return 1, nil
+	case ent[2]-ent[3] < 0.02:
+		return 2, &hcBrotliz3_ctxMapSimpleUTF8
+	}
+	return 3, &hcBrotliz3_ctxMapContinuation
+}
+
+// splitter is the greedy block splitter for one category with nctx histograms per block type
+// (BlockSplitter for nctx == 1, ContextBlockSplitter otherwise).
+type hcBrotliz3_splitter struct {
+	alpha, nctx  int
+	maxTypes     int
+	minBlock     int
+	thr          float64
+	numBlocks    int
+	split        *hcBrotliz3_blockSplit
+	hist         []uint32 // (types+1) * nctx * alpha
+	target, size int
+	cur          int // current histogram index (in histograms)
+	last         [2]int
+	lastEntropy  [2 * hcBrotliz3_maxStaticContexts]float64
+	mergeLast    int
+	combined     []uint32
+	nHist        int
+}
+
+func hcBrotliz3_newSplitter(alpha, nctx, minBlock int, thr float64, numSymbols int, split *hcBrotliz3_blockSplit) *hcBrotliz3_splitter {
+	maxBlocks := numSymbols/minBlock + 1
+	s := &hcBrotliz3_splitter{alpha: alpha, nctx: nctx, minBlock: minBlock, thr: thr, split: split, target: minBlock}
+	s.maxTypes = hcBrotliz3_maxBlockTypes / nctx
+	if nctx == 1 {
+		s.maxTypes = hcBrotliz3_maxBlockTypes
+	}
+	types := min(maxBlocks, s.maxTypes+1)
+	s.nHist = types * nctx
+	s.hist = make([]uint32, (s.nHist+nctx)*alpha)
+	s.combined = make([]uint32, 2*nctx*alpha)
+	split.types = make([]uint8, 0, maxBlocks)
+	split.lengths = make([]uint32, 0, maxBlocks)
+	return s
+}
+
+func (s *hcBrotliz3_splitter) h(i int) []uint32 { return s.hist[i*s.alpha : (i+1)*s.alpha] }
+
+func (s *hcBrotliz3_splitter) clear(i, n int) {
+	if i < s.nHist {
+		c := s.hist[i*s.alpha : (i+n)*s.alpha]
+		for k := range c {
+			c[k] = 0
+		}
+	}
+}
+
+func (s *hcBrotliz3_splitter) add(symbol, ctx int) {
+	s.hist[(s.cur+ctx)*s.alpha+symbol]++
+	s.size++
+	if s.size == s.target {
+		s.finish(false)
+	}
+}
+
+func (s *hcBrotliz3_splitter) finish(final bool) {
+	sp, n := s.split, s.nctx
+	if s.size < s.minBlock {
+		s.size = s.minBlock
+	}
+	if s.numBlocks == 0 {
+		sp.lengths = append(sp.lengths, uint32(s.size))
+		sp.types = append(sp.types, 0)
+		for i := 0; i < n; i++ {
+			s.lastEntropy[i] = hcBrotliz3_bitsEntropy(s.h(i))
+			s.lastEntropy[n+i] = s.lastEntropy[i]
+		}
+		s.numBlocks++
+		sp.numTypes++
+		s.cur += n
+		s.clear(s.cur, n)
+		s.size = 0
+	} else if s.size > 0 {
+		var entropy [hcBrotliz3_maxStaticContexts]float64
+		var combinedEntropy [2 * hcBrotliz3_maxStaticContexts]float64
+		var diff [2]float64
+		for i := 0; i < n; i++ {
+			curH := s.h(s.cur + i)
+			entropy[i] = hcBrotliz3_bitsEntropy(curH)
+			for j := 0; j < 2; j++ {
+				jx := j*n + i
+				c := s.combined[jx*s.alpha : (jx+1)*s.alpha]
+				lastH := s.h(s.last[j] + i)
+				for k := range c {
+					c[k] = curH[k] + lastH[k]
+				}
+				combinedEntropy[jx] = hcBrotliz3_bitsEntropy(c)
+				diff[j] += combinedEntropy[jx] - entropy[i] - s.lastEntropy[jx]
+			}
+		}
+		switch {
+		case sp.numTypes < s.maxTypes && diff[0] > s.thr && diff[1] > s.thr:
+			sp.lengths = append(sp.lengths, uint32(s.size))
+			sp.types = append(sp.types, uint8(sp.numTypes))
+			s.last[1] = s.last[0]
+			s.last[0] = int(uint8(sp.numTypes)) * n
+			if n > 1 {
+				s.last[0] = sp.numTypes * n
+			}
+			for i := 0; i < n; i++ {
+				s.lastEntropy[n+i] = s.lastEntropy[i]
+				s.lastEntropy[i] = entropy[i]
+			}
+			s.numBlocks++
+			sp.numTypes++
+			s.cur += n
+			s.clear(s.cur, n)
+			s.size = 0
+			s.mergeLast = 0
+			s.target = s.minBlock
+		case diff[1] < diff[0]-20.0:
+			sp.lengths = append(sp.lengths, uint32(s.size))
+			sp.types = append(sp.types, sp.types[s.numBlocks-2])
+			s.last[0], s.last[1] = s.last[1], s.last[0]
+			for i := 0; i < n; i++ {
+				copy(s.h(s.last[0]+i), s.combined[(n+i)*s.alpha:(n+i+1)*s.alpha])
+				s.lastEntropy[n+i] = s.lastEntropy[i]
+				s.lastEntropy[i] = combinedEntropy[n+i]
+			}
+			s.numBlocks++
+			s.size = 0
+			s.clearAlways(s.cur, n)
+			s.mergeLast = 0
+			s.target = s.minBlock
+		default:
+			sp.lengths[s.numBlocks-1] += uint32(s.size)
+			for i := 0; i < n; i++ {
+				copy(s.h(s.last[0]+i), s.combined[i*s.alpha:(i+1)*s.alpha])
+				s.lastEntropy[i] = combinedEntropy[i]
+				if sp.numTypes == 1 {
+					s.lastEntropy[n+i] = s.lastEntropy[i]
+				}
+			}
+			s.size = 0
+			s.clearAlways(s.cur, n)
+			if s.mergeLast++; s.mergeLast > 1 {
+				s.target += s.minBlock
+			}
+		}
+	}
+	if final {
+		s.nHist = sp.numTypes * n
+	}
+}
+
+func (s *hcBrotliz3_splitter) clearAlways(i, n int) {
+	c := s.hist[i*s.alpha : (i+n)*s.alpha]
+	for k := range c {
+		c[k] = 0
+	}
+}
+
+// buildMetaBlockGreedy is BrotliBuildMetaBlockGreedy.
+func hcBrotliz3_buildMetaBlockGreedy(data []byte, pos int, prev1, prev2 byte, nctx int, ctxMap *[64]uint32, cmds []hcBrotliz3_command) *hcBrotliz3_metaBlock {
+	mb := &hcBrotliz3_metaBlock{}
+	numLit := 0
+	for i := range cmds {
+		numLit += int(cmds[i].insertLen)
+	}
+	lit := hcBrotliz3_newSplitter(256, nctx, 512, 400.0, numLit, &mb.lit)
+	cmd := hcBrotliz3_newSplitter(hcBrotliz3_numCommandSymbols, 1, 1024, 500.0, len(cmds), &mb.cmd)
+	dist := hcBrotliz3_newSplitter(hcBrotliz3_numDistSymbols, 1, 512, 100.0, len(cmds), &mb.dist)
+	for i := range cmds {
+		c := &cmds[i]
+		cmd.add(int(c.cmdPrefix), 0)
+		for j := c.insertLen; j != 0; j-- {
+			l := data[pos]
+			if nctx == 1 {
+				lit.add(int(l), 0)
+			} else {
+				lit.add(int(l), int(ctxMap[hcBrotliz3_utf8Context(prev1, prev2)]))
+			}
+			prev2, prev1 = prev1, l
+			pos++
+		}
+		pos += int(c.copyLength())
+		if c.copyLength() != 0 {
+			prev2, prev1 = data[pos-2], data[pos-1]
+			if c.cmdPrefix >= 128 {
+				dist.add(int(c.distPrefix&0x3FF), 0)
+			}
+		}
+	}
+	lit.finish(true)
+	cmd.finish(true)
+	dist.finish(true)
+	mb.litH, mb.nLitH = lit.hist, lit.nHist
+	mb.cmdH, mb.nCmdH = cmd.hist, cmd.nHist
+	mb.distH, mb.nDistH = dist.hist, dist.nHist
+	if nctx > 1 {
+		mb.litCtxMap = make([]uint32, mb.lit.numTypes<<6)
+		for i := 0; i < mb.lit.numTypes; i++ {
+			for j := 0; j < 64; j++ {
+				mb.litCtxMap[i<<6+j] = uint32(i*nctx) + ctxMap[j]
+			}
+		}
+	}
+	// BrotliOptimizeHistograms
+	var good [hcBrotliz3_numCommandSymbols]uint8
+	for i := 0; i < mb.nLitH; i++ {
+		hcBrotliz3_optimizeHuffmanCountsForRle(mb.litH[i*256:(i+1)*256], good[:])
+	}
+	for i := 0; i < mb.nCmdH; i++ {
+		hcBrotliz3_optimizeHuffmanCountsForRle(mb.cmdH[i*hcBrotliz3_numCommandSymbols:(i+1)*hcBrotliz3_numCommandSymbols], good[:])
+	}
+	for i := 0; i < mb.nDistH; i++ {
+		hcBrotliz3_optimizeHuffmanCountsForRle(mb.distH[i*hcBrotliz3_numDistSymbols:(i+1)*hcBrotliz3_numDistSymbols], good[:])
+	}
+	return mb
+}
+
+const (
+	hcBrotliz3_hashMul32    = 0x1E35A7BD
+	hcBrotliz3_hashMul64    = 0x1FE35A7BD3579BD3
+	hcBrotliz3_scoreBase    = 30 * 8 * 8
+	hcBrotliz3_windowGap    = 16
+	hcBrotliz3_numDistShort = 16
+)
+
+var hcBrotliz3_h6Mul = func() uint64 { m := uint64(hcBrotliz3_hashMul64); return m << 24 }()
+
+type hcBrotliz3_command struct {
+	insertLen  uint32
+	copyLen    uint32 // low 25 bits length, high 7 bits length-code delta
+	distExtra  uint32
+	cmdPrefix  uint16
+	distPrefix uint16 // low 10 bits code, high 6 bits extra-bit count
+}
+
+func (c *hcBrotliz3_command) copyLength() uint32 { return c.copyLen & 0x1FFFFFF }
+
+func (c *hcBrotliz3_command) copyLenCode() uint32 {
+	mod := c.copyLen >> 25
+	delta := int32(int8(uint8(mod | (mod&0x40)<<1)))
+	return uint32(int32(c.copyLen&0x1FFFFFF) + delta)
+}
+
+func hcBrotliz3_log2Floor(n uint32) uint32 { return uint32(bits.Len32(n)) - 1 }
+
+func hcBrotliz3_insertLenCode(n uint32) uint16 {
+	switch {
+	case n < 6:
+		return uint16(n)
+	case n < 130:
+		nb := hcBrotliz3_log2Floor(n-2) - 1
+		return uint16((nb << 1) + ((n - 2) >> nb) + 2)
+	case n < 2114:
+		return uint16(hcBrotliz3_log2Floor(n-66) + 10)
+	case n < 6210:
+		return 21
+	case n < 22594:
+		return 22
+	}
+	return 23
+}
+
+func hcBrotliz3_copyLenCodeOf(n uint32) uint16 {
+	switch {
+	case n < 10:
+		return uint16(n - 2)
+	case n < 134:
+		nb := hcBrotliz3_log2Floor(n-6) - 1
+		return uint16((nb << 1) + ((n - 6) >> nb) + 4)
+	case n < 2118:
+		return uint16(hcBrotliz3_log2Floor(n-70) + 12)
+	}
+	return 23
+}
+
+func hcBrotliz3_combineLenCodes(ins, cp uint16, useLast bool) uint16 {
+	bits64 := cp&7 | (ins&7)<<3
+	if useLast && ins < 8 && cp < 16 {
+		if cp < 8 {
+			return bits64
+		}
+		return bits64 | 64
+	}
+	off := uint32(2 * ((cp >> 3) + 3*(ins>>3)))
+	off = (off << 5) + 0x40 + ((0x520D40 >> off) & 0xC0)
+	return uint16(off) | bits64
+}
+
+func hcBrotliz3_lengthCode(ins, cp uint32, useLast bool) uint16 {
+	return hcBrotliz3_combineLenCodes(hcBrotliz3_insertLenCode(ins), hcBrotliz3_copyLenCodeOf(cp), useLast)
+}
+
+// prefixEncodeCopyDistance with npostfix = ndirect = 0 (the only parameters of this port).
+func hcBrotliz3_prefixEncodeDistance(code uint32) (uint16, uint32) {
+	if code < hcBrotliz3_numDistShort {
+		return uint16(code), 0
+	}
+	dist := uint32(4) + (code - hcBrotliz3_numDistShort)
+	bucket := hcBrotliz3_log2Floor(dist) - 1
+	prefix := (dist >> bucket) & 1
+	offset := (2 + prefix) << bucket
+	nbits := bucket
+	return uint16(nbits<<10 | (hcBrotliz3_numDistShort + 2*(nbits-1) + prefix)), dist - offset
+}
+
+func (c *hcBrotliz3_command) init(insertLen, copyLen uint32, lenCodeDelta int32, distCode uint32) {
+	c.insertLen = insertLen
+	c.copyLen = copyLen | uint32(uint8(int8(lenCodeDelta)))<<25
+	c.distPrefix, c.distExtra = hcBrotliz3_prefixEncodeDistance(distCode)
+	c.cmdPrefix = hcBrotliz3_lengthCode(insertLen, uint32(int32(copyLen)+lenCodeDelta), c.distPrefix&0x3FF == 0)
+}
+
+func (c *hcBrotliz3_command) initInsert(insertLen uint32) {
+	c.insertLen = insertLen
+	c.copyLen = 4 << 25
+	c.distExtra = 0
+	c.distPrefix = hcBrotliz3_numDistShort
+	c.cmdPrefix = hcBrotliz3_lengthCode(insertLen, 4, false)
+}
+
+// restoreDistanceCode inverts prefixEncodeDistance.
+func (c *hcBrotliz3_command) restoreDistanceCode() uint32 {
+	d := uint32(c.distPrefix & 0x3FF)
+	if d < hcBrotliz3_numDistShort {
+		return d
+	}
+	nbits := uint32(c.distPrefix >> 10)
+	h := d - hcBrotliz3_numDistShort
+	offset := ((2 + (h & 1)) << nbits) - 4
+	return offset + c.distExtra + hcBrotliz3_numDistShort
+}
+
+func (c *hcBrotliz3_command) distanceContext() uint32 {
+	r, k := uint32(c.cmdPrefix>>6), uint32(c.cmdPrefix&7)
+	if (r == 0 || r == 2 || r == 4 || r == 7) && k <= 2 {
+		return k
+	}
+	return 3
+}
+
+type hcBrotliz3_searchResult struct {
+	len, distance uint64
+	score         uint64
+	lenCodeDelta  int32
+}
+
+type hcBrotliz3_hasher struct {
+	h6          bool
+	shift       uint
+	blockBits   uint
+	blockSize   uint32
+	blockMask   uint32
+	nLast       int
+	num         []uint16
+	buckets     []uint32
+	dictLookups uint64
+	dictMatches uint64
+	dict        *hcBrotliz3_encDict
+	t           *hcBrotliz3_hashTables
+	mask        int  // ring-buffer mask: positions are absolute, bytes are read at pos&mask
+	legacy      bool // libbrotli <= 1.1.0: a probe that would leave the ring skips the candidate instead of ending the search
+}
+
+func hcBrotliz3_newHasher(quality, lgwin, sizeHint, mask int, legacy bool, dict *hcBrotliz3_encDict) *hcBrotliz3_hasher {
+	h := &hcBrotliz3_hasher{dict: dict, blockBits: uint(quality - 1), mask: mask, legacy: legacy}
+	bucketBits := uint(15)
+	if sizeHint >= 1<<20 && lgwin >= 19 {
+		h.h6 = true
+	} else if quality < 7 {
+		bucketBits = 14
+	}
+	h.shift = 32 - bucketBits
+	h.blockSize = 1 << h.blockBits
+	h.blockMask = h.blockSize - 1
+	switch {
+	case quality < 7:
+		h.nLast = 4
+	case quality < 9:
+		h.nLast = 10
+	default:
+		h.nLast = 16
+	}
+	// Bucket contents are only read below their counters, so recycled tables need just the
+	// counters cleared (the reference does not initialise the buckets either).
+	if t, ok := hcBrotliz3_hasherPool.Get().(*hcBrotliz3_hashTables); ok && len(t.num) == 1<<bucketBits && len(t.buckets) == (1<<bucketBits)<<h.blockBits {
+		h.t = t
+		for i := range t.num {
+			t.num[i] = 0
+		}
+	} else {
+		h.t = &hcBrotliz3_hashTables{num: make([]uint16, 1<<bucketBits), buckets: make([]uint32, (1<<bucketBits)<<h.blockBits)}
+	}
+	h.num, h.buckets = h.t.num, h.t.buckets
+	return h
+}
+
+type hcBrotliz3_hashTables struct {
+	num     []uint16
+	buckets []uint32
+}
+
+var hcBrotliz3_hasherPool sync.Pool
+
+func (h *hcBrotliz3_hasher) release() {
+	if h.t != nil {
+		hcBrotliz3_hasherPool.Put(h.t)
+		h.t, h.num, h.buckets = nil, nil, nil
+	}
+}
+
+func (h *hcBrotliz3_hasher) typeLen() int {
+	if h.h6 {
+		return 8
+	}
+	return 4
+}
+
+func (h *hcBrotliz3_hasher) key(data []byte, p int) uint32 {
+	p &= h.mask
+	if h.h6 {
+		return uint32((binary.LittleEndian.Uint64(data[p:]) * hcBrotliz3_h6Mul) >> (64 - 15))
+	}
+	return (binary.LittleEndian.Uint32(data[p:]) * hcBrotliz3_hashMul32) >> h.shift
+}
+
+func (h *hcBrotliz3_hasher) store(data []byte, ix int) {
+	key := h.key(data, ix)
+	off := uint32(h.num[key])&h.blockMask + key<<h.blockBits
+	h.num[key]++
+	h.buckets[off] = uint32(ix)
+}
+
+func hcBrotliz3_matchLen(data []byte, a, b int, limit int) int {
+	n := 0
+	for n+8 <= limit {
+		x := binary.LittleEndian.Uint64(data[a+n:]) ^ binary.LittleEndian.Uint64(data[b+n:])
+		if x != 0 {
+			return n + bits.TrailingZeros64(x)>>3
+		}
+		n += 8
+	}
+	for n < limit && data[a+n] == data[b+n] {
+		n++
+	}
+	return n
+}
+
+func hcBrotliz3_prepareDistanceCache(dc *[16]int32, n int) {
+	if n > 4 {
+		l := dc[0]
+		dc[4], dc[5], dc[6], dc[7], dc[8], dc[9] = l-1, l+1, l-2, l+2, l-3, l+3
+		if n > 10 {
+			m := dc[1]
+			dc[10], dc[11], dc[12], dc[13], dc[14], dc[15] = m-1, m+1, m-2, m+2, m-3, m+3
+		}
+	}
+}
+
+func hcBrotliz3_backwardScore(length, backward uint64) uint64 {
+	return hcBrotliz3_scoreBase + 135*length - 30*uint64(hcBrotliz3_log2Floor(uint32(backward)))
+}
+
+// findLongestMatch is FN(FindLongestMatch) of H5/H6; cur and the stored positions are absolute, bytes are read through the ring mask.
+func (h *hcBrotliz3_hasher) findLongestMatch(data []byte, dc *[16]int32, cur int, maxLength, maxBackward, dictDistance, maxDistance uint64, out *hcBrotliz3_searchResult) {
+	minScore, bestScore, bestLen := out.score, out.score, out.len
+	key := h.key(data, cur)
+	cm := cur & h.mask
+	bucket := h.buckets[key<<h.blockBits : (key+1)<<h.blockBits]
+	out.len, out.lenCodeDelta = 0, 0
+	for i := 0; i < h.nLast; i++ {
+		backward := uint64(int64(dc[i])) // size_t conversion of an int
+		prev := uint64(cur) - backward
+		if prev >= uint64(cur) {
+			continue
+		}
+		if backward > maxBackward {
+			continue
+		}
+		p := int(prev) & h.mask
+		if cm+int(bestLen) > h.mask { // where a probe would leave the ring: 1.2.0 ends the search, <= 1.1.0 skips the candidate
+			if h.legacy {
+				continue
+			}
+			break
+		}
+		if p+int(bestLen) > h.mask || data[cm+int(bestLen)] != data[p+int(bestLen)] {
+			continue
+		}
+		l := uint64(hcBrotliz3_matchLen(data, p, cm, int(maxLength)))
+		if l >= 3 || (l == 2 && i < 2) {
+			score := 135*l + hcBrotliz3_scoreBase + 15
+			if bestScore < score {
+				if i != 0 {
+					score -= 39 + uint64((0x1CA10>>(uint(i)&0xE))&0xE)
+				}
+				if bestScore < score {
+					bestScore, bestLen = score, l
+					out.len, out.distance, out.score = l, backward, score
+				}
+			}
+		}
+	}
+	if bestLen < 3 && !h.legacy {
+		bestLen = 3
+	}
+	nk := uint32(h.num[key])
+	down := uint32(0)
+	if nk > h.blockSize {
+		down = nk - h.blockSize
+	}
+	first4 := binary.LittleEndian.Uint32(data[cm:])
+	bl := int(bestLen)
+	var tail uint32
+	if !h.legacy {
+		tail = binary.LittleEndian.Uint32(data[cm+bl-3:]) // the four bytes ending at best_len
+	}
+	for i := nk; i > down; {
+		i--
+		prev := bucket[i&h.blockMask]
+		backward := uint64(cur) - uint64(prev)
+		if backward > maxBackward {
+			break
+		}
+		p := int(prev) & h.mask
+		if h.legacy {
+			if cm+bl > h.mask || p+bl > h.mask || data[cm+bl] != data[p+bl] {
+				continue
+			}
+		} else {
+			if cm+bl > h.mask {
+				break
+			}
+			if p+bl > h.mask || binary.LittleEndian.Uint32(data[p+bl-3:]) != tail {
+				continue
+			}
+		}
+		var l uint64
+		if h.h6 {
+			if binary.LittleEndian.Uint32(data[p:]) != first4 {
+				continue
+			}
+			l = uint64(hcBrotliz3_matchLen(data, p+4, cm+4, int(maxLength)-4)) + 4
+		} else {
+			if l = uint64(hcBrotliz3_matchLen(data, p, cm, int(maxLength))); l < 4 {
+				continue
+			}
+		}
+		if score := hcBrotliz3_backwardScore(l, backward); bestScore < score {
+			bestScore, bestLen = score, l
+			out.len, out.distance, out.score = l, backward, score
+			bl = int(l)
+			if !h.legacy {
+				tail = binary.LittleEndian.Uint32(data[cm+bl-3:])
+			}
+		}
+	}
+	bucket[uint32(h.num[key])&h.blockMask] = uint32(cur)
+	h.num[key]++
+	if minScore == out.score {
+		h.searchStaticDictionary(data, cur, maxLength, dictDistance, maxDistance, out)
+	}
+}
+
+// searchStaticDictionary is SearchInStaticDictionary (deep probe: two buckets).
+func (h *hcBrotliz3_hasher) searchStaticDictionary(data []byte, cur int, maxLength, maxBackward, maxDistance uint64, out *hcBrotliz3_searchResult) {
+	if h.dictMatches < h.dictLookups>>7 {
+		return
+	}
+	d := h.dict
+	cur &= h.mask
+	key := ((binary.LittleEndian.Uint32(data[cur:]) * hcBrotliz3_hashMul32) >> 18) << 1
+	for i := 0; i < 2; i, key = i+1, key+1 {
+		h.dictLookups++
+		l := uint64(d.hashLengths[key])
+		if l == 0 || l > maxLength {
+			continue
+		}
+		wordIdx := uint64(d.hashWords[key])
+		off := int(d.offsets[l]) + int(l)*int(wordIdx)
+		ml := uint64(0)
+		for ml < l && data[cur+int(ml)] == d.data[off+int(ml)] {
+			ml++
+		}
+		if ml+10 <= l || ml == 0 {
+			continue
+		}
+		cut := l - ml
+		tid := cut<<2 + (0x071B520ADA2D3200>>(cut*6))&0x3F
+		backward := maxBackward + 1 + wordIdx + tid<<d.sizeBits[l]
+		if backward > maxDistance {
+			continue
+		}
+		score := hcBrotliz3_backwardScore(ml, backward)
+		if score < out.score {
+			continue
+		}
+		out.len, out.lenCodeDelta, out.distance, out.score = ml, int32(l)-int32(ml), backward, score
+		h.dictMatches++
+	}
+}
+
+func hcBrotliz3_computeDistanceCode(distance, maxDistance uint64, dc *[16]int32) uint32 {
+	if distance <= maxDistance {
+		d3 := distance + 3
+		o0, o1 := d3-uint64(int64(dc[0])), d3-uint64(int64(dc[1]))
+		switch {
+		case distance == uint64(int64(dc[0])):
+			return 0
+		case distance == uint64(int64(dc[1])):
+			return 1
+		case o0 < 7:
+			return (0x9750468 >> (4 * o0)) & 0xF
+		case o1 < 7:
+			return (0xFDB1ACE >> (4 * o1)) & 0xF
+		case distance == uint64(int64(dc[2])):
+			return 2
+		case distance == uint64(int64(dc[3])):
+			return 3
+		}
+	}
+	return uint32(distance) + hcBrotliz3_numDistShort - 1
+}
+
+// createBackwardReferences is BrotliCreateBackwardReferences for one input block.
+func (e *hcBrotliz3_encoder) createBackwardReferences(numBytes, position int) {
+	h, data, dc := e.h, e.rb.buf, &e.distCache
+	maxBackwardLimit := uint64(1)<<uint(e.lgwin) - hcBrotliz3_windowGap
+	insertLength := e.lastInsertLen
+	posEnd := position + numBytes
+	look := h.typeLen()
+	storeEnd := position
+	if numBytes >= look {
+		storeEnd = position + numBytes - look + 1
+	}
+	spree := 64
+	if e.quality >= 9 {
+		spree = 512
+	}
+	applyRandom := position + spree
+	const minScore = hcBrotliz3_scoreBase + 100
+	const maxDist = 0x3FFFFFC
+	hcBrotliz3_prepareDistanceCache(dc, h.nLast)
+	for position+look < posEnd {
+		maxLength := uint64(posEnd - position)
+		maxDistance := min(uint64(position), maxBackwardLimit)
+		sr := hcBrotliz3_searchResult{score: minScore}
+		h.findLongestMatch(data, dc, position, maxLength, maxDistance, maxDistance, maxDist, &sr)
+		if sr.score > minScore {
+			delayed := 0
+			maxLength--
+			for ; ; maxLength-- {
+				sr2 := hcBrotliz3_searchResult{score: minScore}
+				md := min(uint64(position+1), maxBackwardLimit)
+				h.findLongestMatch(data, dc, position+1, maxLength, md, md, maxDist, &sr2)
+				if sr2.score >= sr.score+175 {
+					position++
+					insertLength++
+					sr = sr2
+					if delayed++; delayed < 4 && position+look < posEnd {
+						continue
+					}
+				}
+				break
+			}
+			applyRandom = position + 2*int(sr.len) + spree
+			dictStart := min(uint64(position), maxBackwardLimit)
+			code := hcBrotliz3_computeDistanceCode(sr.distance, dictStart, dc)
+			if sr.distance <= dictStart && code > 0 {
+				dc[3], dc[2], dc[1], dc[0] = dc[2], dc[1], dc[0], int32(sr.distance)
+				hcBrotliz3_prepareDistanceCache(dc, h.nLast)
+			}
+			e.cmds = append(e.cmds, hcBrotliz3_command{})
+			e.cmds[len(e.cmds)-1].init(uint32(insertLength), uint32(sr.len), sr.lenCodeDelta, code)
+			e.numLiterals += insertLength
+			insertLength = 0
+			rs := position + 2
+			re := min(position+int(sr.len), storeEnd)
+			if sr.distance < sr.len>>2 {
+				rs = min(re, max(rs, position+int(sr.len)-int(sr.distance<<2)))
+			}
+			for i := rs; i < re; i++ {
+				h.store(data, i)
+			}
+			position += int(sr.len)
+		} else {
+			insertLength++
+			position++
+			if position > applyRandom {
+				if position > applyRandom+4*spree {
+					margin := max(look-1, 4)
+					jump := min(position+16, posEnd-margin)
+					for ; position < jump; position += 4 {
+						h.store(data, position)
+						insertLength += 4
+					}
+				} else {
+					margin := max(look-1, 2)
+					jump := min(position+8, posEnd-margin)
+					for ; position < jump; position += 2 {
+						h.store(data, position)
+						insertLength += 2
+					}
+				}
+			}
+		}
+	}
+	insertLength += posEnd - position
+	e.lastInsertLen = insertLength
+}
+
+type hcBrotliz3_bitWriter struct {
+	buf  []byte
+	acc  uint64
+	nacc uint
+}
+
+func (w *hcBrotliz3_bitWriter) write(n uint, v uint64) {
+	for n > 32 { // callers stay below 57 bits; split to keep the accumulator in range
+		w.write(32, v&0xffffffff)
+		v >>= 32
+		n -= 32
+	}
+	w.acc |= v << w.nacc
+	w.nacc += n
+	for w.nacc >= 8 {
+		w.buf = append(w.buf, byte(w.acc))
+		w.acc >>= 8
+		w.nacc -= 8
+	}
+}
+
+func (w *hcBrotliz3_bitWriter) align() {
+	if w.nacc > 0 {
+		w.buf = append(w.buf, byte(w.acc))
+		w.acc, w.nacc = 0, 0
+	}
+}
+
+type hcBrotliz3_bitMark struct {
+	n    int
+	acc  uint64
+	nacc uint
+}
+
+func (w *hcBrotliz3_bitWriter) mark() hcBrotliz3_bitMark {
+	return hcBrotliz3_bitMark{len(w.buf), w.acc, w.nacc}
+}
+
+func (w *hcBrotliz3_bitWriter) reset(m hcBrotliz3_bitMark) {
+	w.buf, w.acc, w.nacc = w.buf[:m.n], m.acc, m.nacc
+}
+
+// bitsSince is the reference's storage_ix relative to the mark (carried partial byte included).
+func (w *hcBrotliz3_bitWriter) bitsSince(m hcBrotliz3_bitMark) int {
+	return (len(w.buf)-m.n)*8 + int(w.nacc)
+}
+
+var hcBrotliz3_blockLenRanges = [26][2]uint32{{1, 2}, {5, 2}, {9, 2}, {13, 2}, {17, 3}, {25, 3}, {33, 3}, {41, 3}, {49, 4}, {65, 4}, {81, 4}, {97, 4},
+	{113, 5}, {145, 5}, {177, 5}, {209, 5}, {241, 6}, {305, 6}, {369, 7}, {497, 8}, {753, 9}, {1265, 10}, {2289, 11}, {4337, 12}, {8433, 13}, {16625, 24}}
+
+func hcBrotliz3_blockLenCode(l uint32) int {
+	code := 0
+	switch {
+	case l >= 753:
+		code = 20
+	case l >= 177:
+		code = 14
+	case l >= 41:
+		code = 7
+	}
+	for code < 25 && l >= hcBrotliz3_blockLenRanges[code+1][0] {
+		code++
+	}
+	return code
+}
+
+func (w *hcBrotliz3_bitWriter) varLenUint8(n int) {
+	if n == 0 {
+		w.write(1, 0)
+		return
+	}
+	nb := uint(hcBrotliz3_log2Floor(uint32(n)))
+	w.write(1, 1)
+	w.write(3, uint64(nb))
+	w.write(nb, uint64(n)-1<<nb)
+}
+
+func hcBrotliz3_encodeMlen(length int) (bits uint64, nbits uint, nibbles uint64) {
+	lg := uint(1)
+	if length != 1 {
+		lg = uint(hcBrotliz3_log2Floor(uint32(length-1))) + 1
+	}
+	mn := uint(4)
+	if lg >= 16 {
+		mn = (lg + 3) / 4
+	}
+	return uint64(length - 1), mn * 4, uint64(mn - 4)
+}
+
+func (w *hcBrotliz3_bitWriter) uncompressedMetaBlock(final bool, data []byte) {
+	bits, nb, nib := hcBrotliz3_encodeMlen(len(data))
+	w.write(1, 0)
+	w.write(2, nib)
+	w.write(nb, bits)
+	w.write(1, 1)
+	w.align()
+	w.buf = append(w.buf, data...)
+	if final {
+		w.write(1, 1)
+		w.write(1, 1)
+		w.align()
+	}
+}
+
+type hcBrotliz3_huffScratch struct {
+	tree   [2*hcBrotliz3_numCommandSymbols + 1]hcBrotliz3_huffNode
+	ht, hx []uint8
+}
+
+// storeHuffmanTree is BrotliStoreHuffmanTree (the complex code-length form).
+func (w *hcBrotliz3_bitWriter) storeHuffmanTree(depths []uint8, sc *hcBrotliz3_huffScratch) {
+	sc.ht, sc.hx = hcBrotliz3_writeHuffmanTree(depths, sc.ht[:0], sc.hx[:0])
+	var histo [18]uint32
+	for _, s := range sc.ht {
+		histo[s]++
+	}
+	numCodes, code := 0, 0
+	for i := 0; i < 18; i++ {
+		if histo[i] != 0 {
+			if numCodes == 0 {
+				code, numCodes = i, 1
+			} else if numCodes == 1 {
+				numCodes = 2
+				break
+			}
+		}
+	}
+	var clDepth [18]uint8
+	var clBits [18]uint16
+	hcBrotliz3_createHuffmanTree(histo[:], 5, sc.tree[:], clDepth[:])
+	hcBrotliz3_depthsToSymbols(clDepth[:], clBits[:])
+	// BrotliStoreHuffmanTreeOfHuffmanTreeToBitMask
+	order := [18]uint8{1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	sym := [6]uint64{0, 7, 3, 2, 1, 15}
+	ln := [6]uint{2, 4, 3, 2, 2, 4}
+	skip, store := 0, 18
+	if numCodes > 1 {
+		for ; store > 0; store-- {
+			if clDepth[order[store-1]] != 0 {
+				break
+			}
+		}
+	}
+	if clDepth[order[0]] == 0 && clDepth[order[1]] == 0 {
+		skip = 2
+		if clDepth[order[2]] == 0 {
+			skip = 3
+		}
+	}
+	w.write(2, uint64(skip))
+	for i := skip; i < store; i++ {
+		l := clDepth[order[i]]
+		w.write(ln[l], sym[l])
+	}
+	if numCodes == 1 {
+		clDepth[code] = 0
+	}
+	for i, ix := range sc.ht {
+		w.write(uint(clDepth[ix]), uint64(clBits[ix]))
+		switch ix {
+		case 16:
+			w.write(2, uint64(sc.hx[i]))
+		case 17:
+			w.write(3, uint64(sc.hx[i]))
+		}
+	}
+}
+
+// buildAndStoreHuffmanTree is BuildAndStoreHuffmanTree.
+func (w *hcBrotliz3_bitWriter) buildAndStoreHuffmanTree(histo []uint32, alphabet int, depth []uint8, bits []uint16, sc *hcBrotliz3_huffScratch) {
+	count := 0
+	var s4 [4]int
+	for i, h := range histo {
+		if h != 0 {
+			if count < 4 {
+				s4[count] = i
+			} else if count > 4 {
+				break
+			}
+			count++
+		}
+	}
+	maxBits := uint(0)
+	for c := alphabet - 1; c != 0; c >>= 1 {
+		maxBits++
+	}
+	if count <= 1 {
+		w.write(4, 1)
+		w.write(maxBits, uint64(s4[0]))
+		depth[s4[0]], bits[s4[0]] = 0, 0
+		return
+	}
+	for i := range depth[:len(histo)] {
+		depth[i] = 0
+	}
+	hcBrotliz3_createHuffmanTree(histo, 15, sc.tree[:], depth)
+	hcBrotliz3_depthsToSymbols(depth[:len(histo)], bits)
+	if count > 4 {
+		w.storeHuffmanTree(depth[:len(histo)], sc)
+		return
+	}
+	// StoreSimpleHuffmanTree
+	w.write(2, 1)
+	w.write(2, uint64(count-1))
+	for i := 0; i < count; i++ {
+		for j := i + 1; j < count; j++ {
+			if depth[s4[j]] < depth[s4[i]] {
+				s4[j], s4[i] = s4[i], s4[j]
+			}
+		}
+	}
+	for i := 0; i < count; i++ {
+		w.write(maxBits, uint64(s4[i]))
+	}
+	if count == 4 {
+		v := uint64(0)
+		if depth[s4[0]] == 1 {
+			v = 1
+		}
+		w.write(1, v)
+	}
+}
+
+type hcBrotliz3_typeCodeCalc struct{ last, secondLast int }
+
+func (c *hcBrotliz3_typeCodeCalc) next(t uint8) int {
+	code := int(t) + 2
+	if int(t) == c.last+1 {
+		code = 1
+	} else if int(t) == c.secondLast {
+		code = 0
+	}
+	c.secondLast, c.last = c.last, int(t)
+	return code
+}
+
+// blockEncoder is BlockEncoder: entropy codes per histogram plus the block-switch code.
+type hcBrotliz3_blockEncoder struct {
+	alpha      int
+	split      *hcBrotliz3_blockSplit
+	calc       hcBrotliz3_typeCodeCalc
+	typeDepths [hcBrotliz3_maxBlockTypes + 2]uint8
+	typeBits   [hcBrotliz3_maxBlockTypes + 2]uint16
+	lenDepths  [26]uint8
+	lenBits    [26]uint16
+	blockIx    int
+	blockLen   uint32
+	entropyIx  int
+	depths     []uint8
+	bits       []uint16
+}
+
+func hcBrotliz3_newBlockEncoder(alpha int, split *hcBrotliz3_blockSplit) *hcBrotliz3_blockEncoder {
+	b := &hcBrotliz3_blockEncoder{alpha: alpha, split: split, calc: hcBrotliz3_typeCodeCalc{last: 1}}
+	if len(split.lengths) > 0 {
+		b.blockLen = split.lengths[0]
+	}
+	return b
+}
+
+func (b *hcBrotliz3_blockEncoder) storeSwitch(w *hcBrotliz3_bitWriter, blockLen uint32, blockType uint8, first bool) {
+	tc := b.calc.next(blockType)
+	if !first {
+		w.write(uint(b.typeDepths[tc]), uint64(b.typeBits[tc]))
+	}
+	lc := hcBrotliz3_blockLenCode(blockLen)
+	w.write(uint(b.lenDepths[lc]), uint64(b.lenBits[lc]))
+	w.write(uint(hcBrotliz3_blockLenRanges[lc][1]), uint64(blockLen-hcBrotliz3_blockLenRanges[lc][0]))
+}
+
+// storeSplitCode is BuildAndStoreBlockSplitCode.
+func (b *hcBrotliz3_blockEncoder) storeSplitCode(w *hcBrotliz3_bitWriter, sc *hcBrotliz3_huffScratch) {
+	sp := b.split
+	var typeHisto [hcBrotliz3_maxBlockTypes + 2]uint32
+	var lenHisto [26]uint32
+	calc := hcBrotliz3_typeCodeCalc{last: 1}
+	for i, t := range sp.types {
+		tc := calc.next(t)
+		if i != 0 {
+			typeHisto[tc]++
+		}
+		lenHisto[hcBrotliz3_blockLenCode(sp.lengths[i])]++
+	}
+	w.varLenUint8(sp.numTypes - 1)
+	if sp.numTypes > 1 {
+		w.buildAndStoreHuffmanTree(typeHisto[:sp.numTypes+2], sp.numTypes+2, b.typeDepths[:], b.typeBits[:], sc)
+		w.buildAndStoreHuffmanTree(lenHisto[:], 26, b.lenDepths[:], b.lenBits[:], sc)
+		b.storeSwitch(w, sp.lengths[0], sp.types[0], true)
+	}
+}
+
+func (b *hcBrotliz3_blockEncoder) storeCodes(w *hcBrotliz3_bitWriter, histo []uint32, n, alphabet int, sc *hcBrotliz3_huffScratch) {
+	b.depths = make([]uint8, n*b.alpha)
+	b.bits = make([]uint16, n*b.alpha)
+	for i := 0; i < n; i++ {
+		w.buildAndStoreHuffmanTree(histo[i*b.alpha:(i+1)*b.alpha], alphabet, b.depths[i*b.alpha:(i+1)*b.alpha], b.bits[i*b.alpha:(i+1)*b.alpha], sc)
+	}
+}
+
+func (b *hcBrotliz3_blockEncoder) symbol(w *hcBrotliz3_bitWriter, sym int) {
+	if b.blockLen == 0 {
+		b.blockIx++
+		b.blockLen = b.split.lengths[b.blockIx]
+		t := b.split.types[b.blockIx]
+		b.entropyIx = int(t) * b.alpha
+		b.storeSwitch(w, b.blockLen, t, false)
+	}
+	b.blockLen--
+	ix := b.entropyIx + sym
+	w.write(uint(b.depths[ix]), uint64(b.bits[ix]))
+}
+
+func (b *hcBrotliz3_blockEncoder) symbolCtx(w *hcBrotliz3_bitWriter, sym, ctx int, ctxMap []uint32, ctxBits uint) {
+	if b.blockLen == 0 {
+		b.blockIx++
+		b.blockLen = b.split.lengths[b.blockIx]
+		t := b.split.types[b.blockIx]
+		b.entropyIx = int(t) << ctxBits
+		b.storeSwitch(w, b.blockLen, t, false)
+	}
+	b.blockLen--
+	ix := int(ctxMap[b.entropyIx+ctx])*b.alpha + sym
+	w.write(uint(b.depths[ix]), uint64(b.bits[ix]))
+}
+
+// trivialContextMap is StoreTrivialContextMap.
+func (w *hcBrotliz3_bitWriter) trivialContextMap(numTypes int, ctxBits int, sc *hcBrotliz3_huffScratch) {
+	w.varLenUint8(numTypes - 1)
+	if numTypes <= 1 {
+		return
+	}
+	repeatCode := ctxBits - 1
+	repeatBits := uint64(1)<<uint(repeatCode) - 1
+	alpha := numTypes + repeatCode
+	histo := make([]uint32, alpha)
+	depths := make([]uint8, alpha)
+	bits := make([]uint16, alpha)
+	w.write(1, 1)
+	w.write(4, uint64(repeatCode-1))
+	histo[repeatCode] = uint32(numTypes)
+	histo[0] = 1
+	for i := ctxBits; i < alpha; i++ {
+		histo[i] = 1
+	}
+	w.buildAndStoreHuffmanTree(histo, alpha, depths, bits, sc)
+	for i := 0; i < numTypes; i++ {
+		code := 0
+		if i != 0 {
+			code = i + ctxBits - 1
+		}
+		w.write(uint(depths[code]), uint64(bits[code]))
+		w.write(uint(depths[repeatCode]), uint64(bits[repeatCode]))
+		w.write(uint(repeatCode), repeatBits)
+	}
+	w.write(1, 1)
+}
+
+// encodeContextMap is EncodeContextMap (move-to-front, zero-run coding, Huffman).
+func (w *hcBrotliz3_bitWriter) encodeContextMap(cm []uint32, numClusters int, sc *hcBrotliz3_huffScratch) {
+	w.varLenUint8(numClusters - 1)
+	if numClusters == 1 {
+		return
+	}
+	// MoveToFrontTransform
+	rle := make([]uint32, len(cm))
+	maxV := uint32(0)
+	for _, v := range cm {
+		if v > maxV {
+			maxV = v
+		}
+	}
+	var mtf [256]uint8
+	for i := 0; i <= int(maxV); i++ {
+		mtf[i] = uint8(i)
+	}
+	for i, v := range cm {
+		idx := 0
+		for idx <= int(maxV) && mtf[idx] != uint8(v) {
+			idx++
+		}
+		rle[i] = uint32(idx)
+		val := mtf[idx]
+		copy(mtf[1:idx+1], mtf[:idx])
+		mtf[0] = val
+	}
+	// RunLengthCodeZeros
+	maxPrefix := uint32(6)
+	maxReps := uint32(0)
+	for i := 0; i < len(rle); {
+		reps := uint32(0)
+		for ; i < len(rle) && rle[i] != 0; i++ {
+		}
+		for ; i < len(rle) && rle[i] == 0; i++ {
+			reps++
+		}
+		if reps > maxReps {
+			maxReps = reps
+		}
+	}
+	mp := uint32(0)
+	if maxReps > 0 {
+		mp = hcBrotliz3_log2Floor(maxReps)
+	}
+	if mp < maxPrefix {
+		maxPrefix = mp
+	}
+	out := 0
+	for i := 0; i < len(rle); {
+		if rle[i] != 0 {
+			rle[out] = rle[i] + maxPrefix
+			i++
+			out++
+			continue
+		}
+		reps := uint32(1)
+		for k := i + 1; k < len(rle) && rle[k] == 0; k++ {
+			reps++
+		}
+		i += int(reps)
+		for reps != 0 {
+			if reps < 2<<maxPrefix {
+				p := hcBrotliz3_log2Floor(reps)
+				rle[out] = p + (reps-1<<p)<<9
+				out++
+				break
+			}
+			rle[out] = maxPrefix + (1<<maxPrefix-1)<<9
+			reps -= 2<<maxPrefix - 1
+			out++
+		}
+	}
+	rle = rle[:out]
+	alpha := numClusters + int(maxPrefix)
+	histo := make([]uint32, alpha)
+	depths := make([]uint8, alpha)
+	bits := make([]uint16, alpha)
+	for _, s := range rle {
+		histo[s&511]++
+	}
+	if maxPrefix > 0 {
+		w.write(1, 1)
+		w.write(4, uint64(maxPrefix-1))
+	} else {
+		w.write(1, 0)
+	}
+	w.buildAndStoreHuffmanTree(histo, alpha, depths, bits, sc)
+	for _, s := range rle {
+		sym, extra := s&511, s>>9
+		w.write(uint(depths[sym]), uint64(bits[sym]))
+		if sym > 0 && sym <= maxPrefix {
+			w.write(uint(sym), uint64(extra))
+		}
+	}
+	w.write(1, 1)
+}
+
+var (
+	hcBrotliz3_insBase   = [24]uint32{0, 1, 2, 3, 4, 5, 6, 8, 10, 14, 18, 26, 34, 50, 66, 98, 130, 194, 322, 578, 1090, 2114, 6210, 22594}
+	hcBrotliz3_insExtra  = [24]uint{0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 12, 14, 24}
+	hcBrotliz3_copyBase  = [24]uint32{2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 22, 30, 38, 54, 70, 102, 134, 198, 326, 582, 1094, 2118}
+	hcBrotliz3_copyExtra = [24]uint{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 24}
+)
+
+// storeMetaBlock is BrotliStoreMetaBlock.
+func (w *hcBrotliz3_bitWriter) storeMetaBlock(data []byte, start, length int, prev1, prev2 byte, final bool, cmds []hcBrotliz3_command, mb *hcBrotliz3_metaBlock) {
+	pos := start
+	sc := &hcBrotliz3_huffScratch{}
+	// StoreCompressedMetaBlockHeader
+	if final {
+		w.write(1, 1)
+		w.write(1, 0)
+	} else {
+		w.write(1, 0)
+	}
+	bits, nb, nib := hcBrotliz3_encodeMlen(length)
+	w.write(2, nib)
+	w.write(nb, bits)
+	if !final {
+		w.write(1, 0)
+	}
+	lit := hcBrotliz3_newBlockEncoder(256, &mb.lit)
+	cmd := hcBrotliz3_newBlockEncoder(hcBrotliz3_numCommandSymbols, &mb.cmd)
+	dist := hcBrotliz3_newBlockEncoder(hcBrotliz3_numDistSymbols, &mb.dist)
+	lit.storeSplitCode(w, sc)
+	cmd.storeSplitCode(w, sc)
+	dist.storeSplitCode(w, sc)
+	w.write(2, 0) // NPOSTFIX
+	w.write(4, 0) // NDIRECT >> NPOSTFIX
+	for i := 0; i < mb.lit.numTypes; i++ {
+		w.write(2, 2) // CONTEXT_UTF8
+	}
+	if mb.litCtxMap == nil {
+		w.trivialContextMap(mb.nLitH, 6, sc)
+	} else {
+		w.encodeContextMap(mb.litCtxMap, mb.nLitH, sc)
+	}
+	w.trivialContextMap(mb.nDistH, 2, sc)
+	lit.storeCodes(w, mb.litH, mb.nLitH, 256, sc)
+	cmd.storeCodes(w, mb.cmdH, mb.nCmdH, hcBrotliz3_numCommandSymbols, sc)
+	dist.storeCodes(w, mb.distH, mb.nDistH, hcBrotliz3_numDistSymbols, sc)
+	for i := range cmds {
+		c := &cmds[i]
+		cmd.symbol(w, int(c.cmdPrefix))
+		// StoreCommandExtra
+		clc := c.copyLenCode()
+		ic, cc := hcBrotliz3_insertLenCode(c.insertLen), hcBrotliz3_copyLenCodeOf(clc)
+		ie := hcBrotliz3_insExtra[ic]
+		w.write(ie+hcBrotliz3_copyExtra[cc], uint64(clc-hcBrotliz3_copyBase[cc])<<ie|uint64(c.insertLen-hcBrotliz3_insBase[ic]))
+		if mb.litCtxMap == nil {
+			for j := c.insertLen; j != 0; j-- {
+				lit.symbol(w, int(data[pos]))
+				pos++
+			}
+		} else {
+			for j := c.insertLen; j != 0; j-- {
+				l := data[pos]
+				lit.symbolCtx(w, int(l), int(hcBrotliz3_utf8Context(prev1, prev2)), mb.litCtxMap, 6)
+				prev2, prev1 = prev1, l
+				pos++
+			}
+		}
+		pos += int(c.copyLength())
+		if c.copyLength() != 0 {
+			prev2, prev1 = data[pos-2], data[pos-1]
+			if c.cmdPrefix >= 128 {
+				dist.symbol(w, int(c.distPrefix&0x3FF))
+				w.write(uint(c.distPrefix>>10), uint64(c.distExtra))
+			}
+		}
+	}
+	if final {
+		w.align()
+	}
+}
+
+type hcBrotliz3_dd struct{ hi, lo float64 }
+
+func hcBrotliz3_twoSum(a, b float64) hcBrotliz3_dd {
+	s := a + b
+	bb := s - a
+	return hcBrotliz3_dd{s, (a - (s - bb)) + (b - bb)}
+}
+
+func hcBrotliz3_ddAdd(a, b hcBrotliz3_dd) hcBrotliz3_dd {
+	s := hcBrotliz3_twoSum(a.hi, b.hi)
+	return hcBrotliz3_twoSum(s.hi, s.lo+(a.lo+b.lo))
+}
+
+func hcBrotliz3_ddMul(a, b hcBrotliz3_dd) hcBrotliz3_dd {
+	p := a.hi * b.hi
+	e := math.FMA(a.hi, b.hi, -p)
+	e += math.FMA(a.hi, b.lo, a.lo*b.hi)
+	return hcBrotliz3_twoSum(p, e)
+}
+
+func hcBrotliz3_ddDiv(a, b hcBrotliz3_dd) hcBrotliz3_dd {
+	q1 := a.hi / b.hi
+	r := hcBrotliz3_ddAdd(a, hcBrotliz3_ddMul(hcBrotliz3_dd{-q1, 0}, b))
+	q2 := r.hi / b.hi
+	r = hcBrotliz3_ddAdd(r, hcBrotliz3_ddMul(hcBrotliz3_dd{-q2, 0}, b))
+	q3 := r.hi / b.hi
+	return hcBrotliz3_ddAdd(hcBrotliz3_twoSum(q1, q2), hcBrotliz3_dd{q3, 0})
+}
+
+var hcBrotliz3_invLn2 = hcBrotliz3_dd{1.4426950408889634, 2.0355273740931033e-17}
+
+// log2Small holds log2Int of every v below log2SmallN, built once: the entropy code asks for the same few thousand
+// counts over and over, and the table is read-only afterwards, so concurrent encoders share it without locks.
+const hcBrotliz3_log2SmallN = 1 << 16
+
+var (
+	hcBrotliz3_log2Small     [hcBrotliz3_log2SmallN]float64
+	hcBrotliz3_log2SmallOnce sync.Once
+)
+
+func hcBrotliz3_log2Int(v uint64) float64 {
+	if v < hcBrotliz3_log2SmallN {
+		hcBrotliz3_log2SmallOnce.Do(func() {
+			for i := uint64(0); i < hcBrotliz3_log2SmallN; i++ {
+				hcBrotliz3_log2Small[i] = hcBrotliz3_log2Compute(i)
+			}
+		})
+		return hcBrotliz3_log2Small[v]
+	}
+	return hcBrotliz3_log2Compute(v)
+}
+
+func hcBrotliz3_log2Compute(v uint64) float64 {
+	e := bits.Len64(v) - 1
+	if v == 1<<uint(e) {
+		return float64(e)
+	}
+	// m = v / 2^k in [sqrt(1/2), sqrt(2)); exact for v < 2^53
+	m := math.Ldexp(float64(v), -e)
+	if m > math.Sqrt2 {
+		m = math.Ldexp(m, -1)
+		e++
+	}
+	s := hcBrotliz3_ddDiv(hcBrotliz3_twoSum(m, -1), hcBrotliz3_twoSum(m, 1))
+	s2 := hcBrotliz3_ddMul(s, s)
+	term, sum := s, s
+	for k := 1; k <= 24; k++ {
+		term = hcBrotliz3_ddMul(term, s2)
+		sum = hcBrotliz3_ddAdd(sum, hcBrotliz3_ddDiv(term, hcBrotliz3_dd{float64(2*k + 1), 0}))
+	}
+	l := hcBrotliz3_ddMul(hcBrotliz3_ddAdd(sum, sum), hcBrotliz3_invLn2)
+	r := hcBrotliz3_ddAdd(hcBrotliz3_dd{float64(e), 0}, l)
+	return r.hi
+}
+
+// Recipe is everything a streaming producer's output depends on besides the decoded bytes: the
+// encoder parameters, how the size hint came out, the library generation, where the producer
+// flushed, and whether it finished with an empty call after a full block. Replay re-runs the
+// encoder from the decoded bytes; the caller compares the result with the stored stream.
+type hcBrotliz3Recipe struct {
+	Quality, LgWin, LgBlock int // LgBlock 0 = the encoder's default
+	BigHint                 bool
+	Legacy                  bool
+	EmptyLast               bool
+	Flushes                 []uint64 // ascending offsets in the decoded bytes (0 and the length are allowed)
+}
+
+var hcBrotliz3ErrRecipe = errors.New("brotliz3: malformed recipe")
+
+// MaxFlushes bounds the flush list a recipe may carry.
+const hcBrotliz3MaxFlushes = 1 << 16
+
+func (r hcBrotliz3Recipe) params() hcBrotliz3Params {
+	h := uint32(1)
+	if r.BigHint {
+		h = 1 << 20
+	}
+	return hcBrotliz3Params{Quality: r.Quality, LgWin: r.LgWin, LgBlock: r.LgBlock, SizeHint: h, Legacy: r.Legacy}
+}
+
+// Marshal is byte0 = quality-5 | (lgwin-17)<<3, byte1 = flags | (lgblock-15)<<4 (lgblock 0 -> 0), then the
+// flush count and delta-coded offsets as uvarints.
+func (r hcBrotliz3Recipe) Marshal() []byte {
+	b := []byte{byte(r.Quality-5) | byte(r.LgWin-17)<<3, 0}
+	if r.BigHint {
+		b[1] |= 1
+	}
+	if r.Legacy {
+		b[1] |= 2
+	}
+	if r.EmptyLast {
+		b[1] |= 4
+	}
+	if r.LgBlock != 0 {
+		b[1] |= byte(r.LgBlock-15) << 4
+	}
+	b = binary.AppendUvarint(b, uint64(len(r.Flushes)))
+	prev := uint64(0)
+	for _, f := range r.Flushes {
+		b = binary.AppendUvarint(b, f-prev)
+		prev = f
+	}
+	return b
+}
+
+// UnmarshalRecipe parses a recipe from the front of b and returns the bytes consumed. Offsets are
+// checked against the decoded length n.
+func hcBrotliz3UnmarshalRecipe(b []byte, n int64) (hcBrotliz3Recipe, int, error) {
+	if len(b) < 3 {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	r := hcBrotliz3Recipe{Quality: int(b[0]&7) + 5, LgWin: int(b[0]>>3) + 17, BigHint: b[1]&1 != 0, Legacy: b[1]&2 != 0, EmptyLast: b[1]&4 != 0}
+	if b[1]&8 != 0 || b[0]>>6 != 0 {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	if lb := int(b[1] >> 4); lb != 0 {
+		r.LgBlock = lb + 15
+	}
+	if !(hcBrotliz3Params{Quality: r.Quality, LgWin: r.LgWin, LgBlock: r.LgBlock}).valid() {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	pos := 2
+	cnt, k := binary.Uvarint(b[pos:])
+	if k <= 0 || cnt > hcBrotliz3MaxFlushes || cnt > uint64(len(b)) {
+		return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+	}
+	pos += k
+	var cur uint64
+	for i := uint64(0); i < cnt; i++ {
+		d, k := binary.Uvarint(b[pos:])
+		if k <= 0 || d > uint64(n) || cur+d > uint64(n) {
+			return hcBrotliz3Recipe{}, 0, hcBrotliz3ErrRecipe
+		}
+		pos += k
+		cur += d
+		r.Flushes = append(r.Flushes, cur)
+	}
+	return r, pos, nil
+}
+
+// cmdProbe compares the encoder's commands with the ones decoded from the producer's stream, block by block, so a
+// wrong parameter guess is rejected after one input block instead of after the whole stream.
+type hcBrotliz3_cmdProbe struct {
+	exp     []hcBrotliz3TraceCmd
+	stored  map[int]bool // start offsets of the stream's uncompressed meta-blocks (they carry no commands)
+	base    int          // commands of earlier meta-blocks
+	checked int          // commands of this meta-block already compared
+}
+
+func hcBrotliz3_newCmdProbe(tr *hcBrotliz3Trace) *hcBrotliz3_cmdProbe {
+	p := &hcBrotliz3_cmdProbe{exp: tr.Cmds, stored: map[int]bool{}}
+	for _, b := range tr.Blocks {
+		if b.Uncompressed {
+			p.stored[b.Start] = true
+		}
+	}
+	return p
+}
+
+// check compares the commands of the meta-block starting at start (decoded offset) that are final.
+func (p *hcBrotliz3_cmdProbe) check(cmds []hcBrotliz3_command, start int) bool {
+	if p.stored[start] {
+		return true
+	}
+	for ; p.checked < len(cmds)-1; p.checked++ { // the last command may still be extended by the next block
+		i := p.base + p.checked
+		if i >= len(p.exp) {
+			return true // beyond the recorded prefix
+		}
+		c := &cmds[p.checked]
+		if c.insertLen != uint32(p.exp[i].Ins) || c.copyLenCode() != uint32(p.exp[i].Copy) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *hcBrotliz3_cmdProbe) advance(n int) { p.base += n; p.checked = 0 }
+
+// ReplayTo regenerates the producer's stream from body into w, holding at most the encoder window.
+func (r hcBrotliz3Recipe) ReplayTo(w io.Writer, body []byte) error { return r.replay(w, body, nil) }
+
+func (r hcBrotliz3Recipe) replay(w io.Writer, body []byte, probe *hcBrotliz3_cmdProbe) error {
+	st, err := hcBrotliz3NewStream(r.params(), w)
+	if err != nil {
+		return err
+	}
+	st.e.probe = probe
+	defer st.Close()
+	pos := uint64(0)
+	for _, f := range r.Flushes {
+		if f < pos || f > uint64(len(body)) {
+			return hcBrotliz3ErrRecipe
+		}
+		if f > pos {
+			if err := st.Process(body[pos:f]); err != nil {
+				return err
+			}
+		}
+		if err := st.Flush(); err != nil {
+			return err
+		}
+		pos = f
+	}
+	rest := body[pos:]
+	if r.EmptyLast {
+		if err := st.Process(rest); err != nil {
+			return err
+		}
+		rest = nil
+	}
+	return st.Write(hcBrotliz3OpFinish, rest)
+}
+
+// Replay returns the regenerated stream.
+func (r hcBrotliz3Recipe) Replay(body []byte) ([]byte, error) {
+	var w hcBrotliz3_sliceWriter
+	if err := r.ReplayTo(&w, body); err != nil {
+		return nil, err
+	}
+	return w.b, nil
+}
+
+// errMismatch ends a replay at the first byte that differs from the stored stream.
+var hcBrotliz3_errMismatch = errors.New("brotliz3: replay differs")
+
+// matchWriter compares everything written with the stored stream and fails at the first difference.
+type hcBrotliz3_matchWriter struct{ want []byte }
+
+func (m *hcBrotliz3_matchWriter) Write(p []byte) (int, error) {
+	if len(p) > len(m.want) || !bytes.Equal(p, m.want[:len(p)]) {
+		return 0, hcBrotliz3_errMismatch
+	}
+	m.want = m.want[len(p):]
+	return len(p), nil
+}
+
+// Matches reports whether the recipe reproduces payload from body (early exit on the first difference).
+func (r hcBrotliz3Recipe) Matches(payload, body []byte) bool { return r.matches(payload, body, nil) }
+
+func (r hcBrotliz3Recipe) matches(payload, body []byte, probe *hcBrotliz3_cmdProbe) bool {
+	m := &hcBrotliz3_matchWriter{want: payload}
+	return r.replay(m, body, probe) == nil && len(m.want) == 0
+}
+
+// Derive searches the recipes a streaming producer can leave behind for one that reproduces payload from its
+// decoding body (tr is DecodeTrace's structure). Qualities are tried from the caller's guess first. Every
+// candidate is checked by an early-exit replay, so a wrong guess costs one block of encoding.
+func hcBrotliz3Derive(payload, body []byte, tr *hcBrotliz3Trace, firstQuality int) (hcBrotliz3Recipe, bool) {
+	if tr == nil || tr.LgWin < 17 || tr.LgWin > 24 || len(body) >= hcBrotliz3_maxStream {
+		return hcBrotliz3Recipe{}, false
+	}
+	order := []int{8, 9, 5, 6, 7}
+	if firstQuality >= 5 && firstQuality <= 9 {
+		order = slices.DeleteFunc(order, func(q int) bool { return q == firstQuality })
+		order = append([]int{firstQuality}, order...)
+	}
+	bigFirst := len(body) >= 1<<20
+	for _, fl := range hcBrotliz3_flushCandidates(tr, body) {
+		// stage 1: the encoder's default block size; stage 2: an explicit one. Legacy ring handling only
+		// matters once the data reaches the end of the ring, an empty finish only after a full block.
+		for stage := 0; stage < 2; stage++ {
+			for _, q := range order {
+				for _, big := range []bool{bigFirst, !bigFirst} {
+					for _, legacy := range []bool{false, true} {
+						for _, lb := range hcBrotliz3_lgBlockCandidates(q, tr.LgWin, stage) {
+							ring := 1 << uint(1+max(tr.LgWin, hcBrotliz3Params{Quality: q, LgWin: tr.LgWin, LgBlock: lb}.lgBlock()))
+							if legacy && len(body) <= ring-1<<uint(hcBrotliz3Params{Quality: q, LgWin: tr.LgWin, LgBlock: lb}.lgBlock()) {
+								continue
+							}
+							for _, empty := range []bool{false, true} {
+								r := hcBrotliz3Recipe{Quality: q, LgWin: tr.LgWin, LgBlock: lb, BigHint: big, Legacy: legacy, EmptyLast: empty, Flushes: fl}
+								if empty && !hcBrotliz3_emptyPossible(r, len(body)) {
+									continue
+								}
+								if r.matches(payload, body, hcBrotliz3_newCmdProbe(tr)) {
+									return r, true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return hcBrotliz3Recipe{}, false
+}
+
+func hcBrotliz3_lgBlockCandidates(q, lgwin, stage int) []int {
+	if stage == 0 {
+		return []int{0}
+	}
+	auto := hcBrotliz3Params{Quality: q, LgWin: lgwin}.lgBlock()
+	var out []int
+	for lb := 16; lb <= 24; lb++ {
+		if lb != auto {
+			out = append(out, lb)
+		}
+	}
+	return out
+}
+
+// emptyPossible: a finish with no new bytes ends a stream only after a full, already encoded block.
+func hcBrotliz3_emptyPossible(r hcBrotliz3Recipe, n int) bool {
+	last := uint64(0)
+	if len(r.Flushes) > 0 {
+		last = r.Flushes[len(r.Flushes)-1]
+	}
+	block := uint64(1) << uint(hcBrotliz3Params{Quality: r.Quality, LgWin: r.LgWin, LgBlock: r.LgBlock}.lgBlock())
+	return uint64(n) > last && (uint64(n)-last)%block == 0
+}
+
+// flushCandidates lists the flush sets worth trying: the padding markers plus the meta-block ends no
+// natural block boundary explains; then the same with every remaining boundary forced.
+func hcBrotliz3_flushCandidates(tr *hcBrotliz3Trace, body []byte) [][]uint64 {
+	seen := map[int]bool{}
+	var base []uint64
+	for _, m := range tr.Markers {
+		if !seen[m] {
+			seen[m] = true
+			base = append(base, uint64(m))
+		}
+	}
+	var natural []uint64
+	for _, b := range tr.Blocks {
+		if b.Last || seen[b.End] || b.End >= len(body) {
+			continue
+		}
+		if b.End%65536 != 0 { // not a multiple of the smallest input block: only a flush ends a meta-block here
+			seen[b.End] = true
+			base = append(base, uint64(b.End))
+		} else {
+			natural = append(natural, uint64(b.End))
+		}
+	}
+	slices.Sort(base)
+	sets := [][]uint64{base}
+	if len(natural) > 0 && len(natural) <= 64 {
+		all := append(slices.Clone(base), natural...)
+		slices.Sort(all)
+		sets = append(sets, all)
+	}
+	return sets
+}
+
+// DictionarySHA256 identifies the RFC 7932 static dictionary (122784 bytes).
+const hcBrotliz3DictionarySHA256 = "20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70"
+
+const hcBrotliz3_contextLUT = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x01\x01\x02\x02\x02\x02\x03\x03\x03\x03\x04\x04\x04\x04\x05\x05\x05\x05\x06\x06\x06\x06\x07\x07\x07\x07\x08\x08\x08\x08\x09\x09\x09\x09\x0a\x0a\x0a\x0a\x0b\x0b\x0b\x0b\x0c\x0c\x0c\x0c\x0d\x0d\x0d\x0d\x0e\x0e\x0e\x0e\x0f\x0f\x0f\x0f\x10\x10\x10\x10\x11\x11\x11\x11\x12\x12\x12\x12\x13\x13\x13\x13\x14\x14\x14\x14\x15\x15\x15\x15\x16\x16\x16\x16\x17\x17\x17\x17\x18\x18\x18\x18\x19\x19\x19\x19\x1a\x1a\x1a\x1a\x1b\x1b\x1b\x1b\x1c\x1c\x1c\x1c\x1d\x1d\x1d\x1d\x1e\x1e\x1e\x1e\x1f\x1f\x1f\x1f\x20\x20\x20\x20\x21\x21\x21\x21\x22\x22\x22\x22\x23\x23\x23\x23\x24\x24\x24\x24\x25\x25\x25\x25\x26\x26\x26\x26\x27\x27\x27\x27\x28\x28\x28\x28\x29\x29\x29\x29\x2a\x2a\x2a\x2a\x2b\x2b\x2b\x2b\x2c\x2c\x2c\x2c\x2d\x2d\x2d\x2d\x2e\x2e\x2e\x2e\x2f\x2f\x2f\x2f\x30\x30\x30\x30\x31\x31\x31\x31\x32\x32\x32\x32\x33\x33\x33\x33\x34\x34\x34\x34\x35\x35\x35\x35\x36\x36\x36\x36\x37\x37\x37\x37\x38\x38\x38\x38\x39\x39\x39\x39\x3a\x3a\x3a\x3a\x3b\x3b\x3b\x3b\x3c\x3c\x3c\x3c\x3d\x3d\x3d\x3d\x3e\x3e\x3e\x3e\x3f\x3f\x3f\x3f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x04\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\x0c\x10\x0c\x0c\x14\x0c\x10\x18\x1c\x0c\x0c\x20\x0c\x24\x0c\x2c\x2c\x2c\x2c\x2c\x2c\x2c\x2c\x2c\x2c\x20\x20\x18\x28\x1c\x0c\x0c\x30\x34\x34\x34\x30\x34\x34\x34\x30\x34\x34\x34\x34\x34\x30\x34\x34\x34\x34\x34\x30\x34\x34\x34\x34\x34\x18\x0c\x1c\x0c\x0c\x0c\x38\x3c\x3c\x3c\x38\x3c\x3c\x3c\x38\x3c\x3c\x3c\x3c\x3c\x38\x3c\x3c\x3c\x3c\x3c\x38\x3c\x3c\x3c\x3c\x3c\x18\x0c\x1c\x0c\x00\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x02\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x01\x01\x01\x01\x01\x01\x01\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x01\x01\x01\x01\x01\x01\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x00\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x18\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x28\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x38\x00\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x04\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x05\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x07"
+
+const hcBrotliz3_dictFrozenIdx = "\x00\x00\x08\xa4\x20\x38\x1f\xbf\x24\x04\x80\x51\x44\x84\x91\x81\x00\x00\x00\x1c\x00\x08\x01\x01\x40\x03\x01\x00\x00\x00\x00\x00\x04\x40\x01\x02\x80\x00\x84\x31\x00\x00\x00\x00\x00\x00\x00\x00\x11\x00\x00\x00\x01\x00\x24\x98\x00\x00\x00\x00\x80\x08\x00\x00\x80\x00\x00\x08\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x01\x00\x40\x85\x00\x20\x00\x00\x80\x01\x00\x00\x00\x00\x04\x04\x04\x20\x10\x82\x00\x80\x08\x00\x00\x00\x00\x00\x40\x00\x40\x00\xa0\x00\x94\x35\x00\x00\x00\x00\x00\x80\x00\x82\x00\x00\x00\x08\x00\x00\x00\x00\x00\x30\x00\x00\x00\x00\x00\x00\x20\x01\x20\x81\x00\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x10\x00\x00\x00\x10\x20\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x08\x00\x00\x02\x00\x00\x00\x00\x00\x20\x00\x00\x00\x02\x42\x80\x00\x00\x10\x00\x00\x00\x00\x40\x01\x06\x80\x08\x00\xc0\x18\x20\x00\x00\x08\x04\x80\x80\x02\xa0\x00\xa0\x00\x40\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x20\x01\x00\x00\x40\x00\x00\x00\x00\x00\x00\x20\x00\x42\x00\x02\x00\x04\x00\x08\x00\x02\x00\x00\x21\x08\x00\x00\x00\x08\x00\x80\xa2\x04\x80\x00\x02\x21\x00\xa0\x00\x08\x00\x40\x00\xa0\x00\x81\x04\x00\x00\x20\x00\x00\x20\x00\x02\x00\x00\x00\x00\x00\x00\x80\x00\x00\x00\x00\x00\x40\x0a\x00\x00\x00\x00\x20\x40\x00\x00\x00\x00\x00\x10\x00\x10\x10\x00\x00\x50\x02\x00\x00\x00\x00\x08\x00\x00\x10\x00\x08\x00\x00\x00\x08\x40\x80\x00\x00\x00\x08\xd0\x00\x00\x00\x00\x00\x00\x00\x20\x00\x00\x00\x00\x00\x00\x20\x00\x08\x00\x80\x00\x00\x00\x01\x00\x00\x00\x10\x08\x01\x88\x00\x00\x24\x00\x40\x09\x00\x01\x20\x08\x00\x40\x40\x83\x10\xe0\x20\x04\x00\x04\x05\xa0\x00\x83\x00\x04\x60\x00\x00\xb8\xc0\x00\xb1\xcd\x60\x00\x00\x00\x00\x02\x00\x20\x00\x00\x00\x00\x00\x00\x00\x00\x40\x00\x00\x80\x00\x00\x08\x00\x00\x00\x00\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x04\x00\x00\x40\x45\x00\x00\x08\x02\x42\x20\x40\x00\x00\x00\x00\x00\x01\x00\x80\x11\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x10\x00\x00\x04\x80\x40\x00\x00\x00\x00\x00\x00\x00\x00\xe0\x00\x08\x00\x00\x82\x10\x40\x80\x02\x40\x00\x00\x00\x80\x02\xc0\x40\x00\x41\x00\x00\x00\x10\x00\x00\x00\x20\x04\x02\x02\x4c\x00\x00\x00\x04\x48\x34\x83\x2c\x4c\x00\x00\x00\x00\x40\x01\x10\x94\x04\x00\x10\x0a\x40\x00\x02\x00\x01\x00\x80\x40\x44\x00\x00\x00\x00\x00\x40\x90\x00\x08\x00\x02\x00\x00\x00\x00\x00\x00\x03\x40\x00\x00\x00\x00\x01\x80\x00\x00\x20\x42\x00\x00\x00\x28\x00\x12\x00\x00\x00\x00\x00\x21\x00\x00\x20\x00\x00\x20\x00\x80\x04\x40\x91\x8c\x00\x00\x00\x80\x00\x02\x00\x00\x14\x00\x50\x26\x00\x00\x20\x00\x20\x40\x04\x04\x00\x04\x00\x00\x00\x81\x04\x00\x00\x90\x11\x20\x82\x10\x84\x18\x86\x00\x00\x40\x02\x05\x32\x08\xc2\x21\x01\x44\x75\x01\x08\x20\xa1\x36\x00\x82\x22\x00\x00\x00\x40\x80\x00\x00\x02\x00\x00\x00\x00\x20\x01\x00\x00\x00\x03\x0e\x00\x00\x00\x00\x00\x10\x04\x00\x00\x00\x00\x00\x00\x00\x00\x60\x01\x18\x12\x00\x01\x80\x18\x00\x40\x00\x04\x00\x10\x80\x00\x40\x00\x00\x00\x40\x00\x08\x00\x00\x00\x00\x00\x42\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x00\x40\x02\x00\x00\x00\x00\x06\x00\x08\x08\x02\x00\x40\x00\x00\x00\x00\x80\x02\x02\x0c\x40\x00\x40\x00\x08\x00\x80\x20\x00\x00\x0a\x00\x00\x20\x00\x80\x20\x21\x08\x88\x00\x60\x40\x00\x00\x00\x00\x00\x40\x04\x10\x04\x08\x00\x00\x00\x10\x00\x02\x00\x00\x01\x80\x00\x40\x10\x00\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x02\x00\x10\x00\x04\x00\x08\x00\x00\x00\x00\x00\x14\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\x88\x00\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x02\x00\x00\x00\x40\x00\x00\x01\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00\x00\x00\x00\x04\x00\x00\x00\x00\x41\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x80\x00\x00\x00\x08\x02\x00\x00\x80\x00\x10\x02\x00\x00\x04\x00\x20\x00\x00\x01\x04\x40\x40\x00\x04\x00\x01\x00\x10\x00\x20\x44\x04\x04\x41\x0a\x00\x14\x25\x12\x01\x94\x00\x20\x80\x03\x08\x00\x40\x00\x00\x00\x00\x00\x00\x04\x00\x10\x01\x80\x00\x00\x00\x80\x10\x00\x00\x00\x00\x01\x80\x00\x00\x80\x40\x80\x40\x00\x82\x00\xa4\x08\x00\x00\x01\x40\x80\x00\x12\x00\x02\x96\x00\x08\x00\x00\x40\x00\x51\x00\x00\x10\x80\x02\x08\x24\x20\x81\x04\x90\x0d\x00\x00\x03\x08\x01\x00\x02\x00\x00\x40\x00\x05\x00\x01\x22\x01\x20\x02\x10\x80\x80\x80\x00\x00\x00\x02\x00\x04\x12\x08\x0c\x22\x20\xc0\x06\x40\xe0\x21\x00\x00\x89\x48\x40\x00\x18\x08\x80\x80\x00\x10\x00\x20\x80\x80\x84\x08\x00\x00\x10\x00\x40\x00\x00\x04\x00\x00\x10\x00\x04\x80\x40\x00\x00\x01\x00\x04\x40\x20\x90\x82\x02\x80\x00\xc0\x00\x40\x52\x40\x01\x20\x80\x80\x02\x00\x54\x00\x20\x00\x2c\x18\x48\x50\x20\x10\x00\x00\x2c\x10\x60\x40\x01\x48\x83\x00\x00\x00\x10\x00\x00\xa5\x00\x81\x02\x31\x30\x40\x40\x0c\x40\xb0\x40\x54\x08\x80\x14\x40\xd5\x88\x68\x01\x29\x0f\x53\xaa\x00\x00\x29\x01\x40\x40\x00\xc1\x40\x40\x08\x00\x80\x00\x00\x40\x08\x40\x08\x01\x10\x00\x08\x00\x00\x02\x01\x80\x1c\x54\x8d\x61\x00\x00\x44\x00\x00\x81\x08\x00\x10\x08\x20\x00\x40\x00\x00\x00\x18\x00\x00\x00\xc0\x00\x08\x80\x00\x00\x00\x00\x00\x40\x00\x01\x00\x00\x00\x00\x28\x01\x80\x40\x00\x04\x02\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x20\x08\x00\x20\x00\x00\x00\x10\x11\x00\x02\x04\x00\x00\x21\x80\x02\x00\x00\x00\x00\x81\x00\x02\x00\x00\x00\x24\x00\x20\x02\x00\x00\x00\x00\x00\x00\x20\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x04\x20\x40\x00\x00\x00\x00\x00\x00\x20\x00\x00\x20\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x88\x00\x00\x18\xc0\x80\x03\x00\x11\x12\x02\x00\x42\x00\x04\x18\x00\x09\xd0\xa7\x00\x90\x14\x40\x00\x82\x40\x00\x02\x10\x88\x08\x4a\x20\x00\xa8\x00\x41\x20\x08\x0c\x01\x03\x01\x40\xb4\x03\x00\x40\x00\x08\x00\x00\x20\x41\x00\x04\x10\x04\x10\x44\x20\x40\x24\x20\x18\x21\x01\x80\x00\x00\x08\x00\x20\x40\x51\x00\x01\x0a\x13\x08\x00\x00\x04\x05\x90\x00\x00\x08\x80\x00\x00\x04\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x08\x00\x00\x00\x00\x00\x50\x01\x00\x00\x21\x00\x20\x42\x04\x02\x00\x01\x2b\x02\x00\x00\x04\x20\x10\x00\x40\x00\x03\x20\x00\x02\x40\x40\x74\x00\x41\x34\x40\x00\x11\x40\xc0\x60\x08\x0a\x08\x02\x04\x00\x11\x40\x00\x04\x00\x00\x04\x80\x00\x00\x09\x00\x00\x82\x02\x00\xc0\x00\x30\x80\x40\x00\x60\x00\x40\x00\x01\x10\x20\x00\x01\x20\x06\x80\x02\x20\x00\x0c\x00\x00\x30\x20\x08\x00\x00\x80\x00\x12\x00\x00\x1c\x18\x29\x10\x05\x20\x00\x00\x00\x00\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x10\x00\x00\x00\x00\x40\x00\x00\x00\x00\x08\x00\x00\x00\x00\x10\x80\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x21\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
+const hcBrotliz3_prefixSuffix = "\x01\x20\x02\x2c\x20\x08\x20\x6f\x66\x20\x74\x68\x65\x20\x04\x20\x6f\x66\x20\x02\x73\x20\x01\x2e\x05\x20\x61\x6e\x64\x20\x04\x20\x69\x6e\x20\x01\x22\x04\x20\x74\x6f\x20\x02\x22\x3e\x01\x0a\x02\x2e\x20\x01\x5d\x05\x20\x66\x6f\x72\x20\x03\x20\x61\x20\x06\x20\x74\x68\x61\x74\x20\x01\x27\x06\x20\x77\x69\x74\x68\x20\x06\x20\x66\x72\x6f\x6d\x20\x04\x20\x62\x79\x20\x01\x28\x06\x2e\x20\x54\x68\x65\x20\x04\x20\x6f\x6e\x20\x04\x20\x61\x73\x20\x04\x20\x69\x73\x20\x04\x69\x6e\x67\x20\x02\x0a\x09\x01\x3a\x03\x65\x64\x20\x02\x3d\x22\x04\x20\x61\x74\x20\x03\x6c\x79\x20\x01\x2c\x02\x3d\x27\x05\x2e\x63\x6f\x6d\x2f\x07\x2e\x20\x54\x68\x69\x73\x20\x05\x20\x6e\x6f\x74\x20\x03\x65\x72\x20\x03\x61\x6c\x20\x04\x66\x75\x6c\x20\x04\x69\x76\x65\x20\x05\x6c\x65\x73\x73\x20\x04\x65\x73\x74\x20\x04\x69\x7a\x65\x20\x02\xc2\xa0\x04\x6f\x75\x73\x20\x05\x20\x74\x68\x65\x20\x02\x65\x20\x00"
+
+var hcBrotliz3_prefixSuffixMap = [50]uint16{0, 2, 5, 14, 19, 22, 24, 30, 35, 37, 42, 45, 47, 50, 52, 58, 62, 69, 71, 78, 85, 90, 92, 99, 104, 109, 114, 119, 122, 124, 128, 131, 136, 140, 142, 145, 151, 159, 165, 169, 173, 178, 183, 189, 194, 199, 202, 207, 213, 216}
+
+var hcBrotliz3_transformsData = [363]uint8{49, 0, 49, 49, 0, 0, 0, 0, 0, 49, 12, 49, 49, 10, 0, 49, 0, 47, 0, 0, 49, 4, 0, 0, 49, 0, 3, 49, 10, 49, 49, 0, 6, 49, 13, 49, 49, 1, 49, 1, 0, 0, 49, 0, 1, 0, 10, 0, 49, 0, 7, 49, 0, 9, 48, 0, 0, 49, 0, 8, 49, 0, 5, 49, 0, 10, 49, 0, 11, 49, 3, 49, 49, 0, 13, 49, 0, 14, 49, 14, 49, 49, 2, 49, 49, 0, 15, 49, 0, 16, 0, 10, 49, 49, 0, 12, 5, 0, 49, 0, 0, 1, 49, 15, 49, 49, 0, 18, 49, 0, 17, 49, 0, 19, 49, 0, 20, 49, 16, 49, 49, 17, 49, 47, 0, 49, 49, 4, 49, 49, 0, 22, 49, 11, 49, 49, 0, 23, 49, 0, 24, 49, 0, 25, 49, 7, 49, 49, 1, 26, 49, 0, 27, 49, 0, 28, 0, 0, 12, 49, 0, 29, 49, 20, 49, 49, 18, 49, 49, 6, 49, 49, 0, 21, 49, 10, 1, 49, 8, 49, 49, 0, 31, 49, 0, 32, 47, 0, 3, 49, 5, 49, 49, 9, 49, 0, 10, 1, 49, 10, 8, 5, 0, 21, 49, 11, 0, 49, 10, 10, 49, 0, 30, 0, 0, 5, 35, 0, 49, 47, 0, 2, 49, 10, 17, 49, 0, 36, 49, 0, 33, 5, 0, 0, 49, 10, 21, 49, 10, 5, 49, 0, 37, 0, 0, 30, 49, 0, 38, 0, 11, 0, 49, 0, 39, 0, 11, 49, 49, 0, 34, 49, 11, 8, 49, 10, 12, 0, 0, 21, 49, 0, 40, 0, 10, 12, 49, 0, 41, 49, 0, 42, 49, 11, 17, 49, 0, 43, 0, 10, 5, 49, 11, 10, 0, 0, 34, 49, 10, 33, 49, 0, 44, 49, 11, 5, 45, 0, 49, 0, 0, 33, 49, 10, 30, 49, 11, 30, 49, 0, 46, 49, 11, 1, 49, 10, 34, 0, 10, 33, 0, 11, 30, 0, 11, 1, 49, 11, 33, 49, 11, 21, 49, 11, 12, 0, 11, 5, 49, 11, 34, 0, 11, 12, 0, 10, 30, 0, 11, 34, 0, 10, 34}
+
+// Seq is one LZ4 sequence: Lit literal bytes, then a match of Match bytes (>= 4) at Off.
+// The final sequence of a block has Match == 0 and Off == 0.
+type hcLz4z3Seq struct {
+	Lit, Match, Off int
+}
+
+const (
+	hcLz4z3_minMatch = 4
+	hcLz4z3_maxOff   = 65535
+)
+
+// Decode parses and decodes one raw LZ4 block. want < 0 means the decoded size is unknown;
+// otherwise decoding must end at exactly want bytes. It returns the payload and the exact
+// sequence list. Offsets must lie inside already-produced output (no dictionary).
+func hcLz4z3Decode(block []byte, want int, lim hcLz4z3Limits) ([]byte, []hcLz4z3Seq, error) {
+	return hcLz4z3DecodeH(block, nil, want, lim)
+}
+
+// DecodeH is Decode for a block that may reference up to 64 KiB of preceding history
+// (linked frame blocks). The returned payload excludes the history.
+func hcLz4z3DecodeH(block, hist []byte, want int, lim hcLz4z3Limits) ([]byte, []hcLz4z3Seq, error) {
+	lim = lim.norm()
+	if len(hist) > hcLz4z3_maxOff {
+		hist = hist[len(hist)-hcLz4z3_maxOff:]
+	}
+	nh := len(hist)
+	if want > lim.MaxDecoded {
+		return nil, nil, hcLz4z3ErrLimit
+	}
+	out := make([]byte, nh, nh+max(want, 0))
+	copy(out, hist)
+	var seqs []hcLz4z3Seq
+	ip := 0
+	for {
+		if ip >= len(block) {
+			return nil, nil, hcLz4z3_corrupt("block ends before a token")
+		}
+		tok := block[ip]
+		ip++
+		lit := int(tok >> 4)
+		if lit == 15 {
+			n, k, err := hcLz4z3_extLen(block[ip:])
+			if err != nil {
+				return nil, nil, err
+			}
+			ip += k
+			lit += n
+		}
+		if lit < 0 || lit > len(block)-ip {
+			return nil, nil, hcLz4z3_corrupt("literal run %d exceeds block", lit)
+		}
+		if len(out)-nh+lit > lim.MaxDecoded {
+			return nil, nil, hcLz4z3ErrLimit
+		}
+		out = append(out, block[ip:ip+lit]...)
+		ip += lit
+		if len(seqs) >= lim.MaxSeqs {
+			return nil, nil, hcLz4z3ErrLimit
+		}
+		if ip == len(block) { // final literal-only sequence
+			if tok&15 != 0 {
+				return nil, nil, hcLz4z3_corrupt("final sequence carries a match nibble")
+			}
+			seqs = append(seqs, hcLz4z3Seq{Lit: lit})
+			break
+		}
+		if len(block)-ip < 2 {
+			return nil, nil, hcLz4z3_corrupt("truncated offset")
+		}
+		off := int(block[ip]) | int(block[ip+1])<<8
+		ip += 2
+		if off == 0 || off > len(out) {
+			return nil, nil, hcLz4z3_corrupt("offset %d with %d bytes of history", off, len(out))
+		}
+		ml := int(tok & 15)
+		if ml == 15 {
+			n, k, err := hcLz4z3_extLen(block[ip:])
+			if err != nil {
+				return nil, nil, err
+			}
+			ip += k
+			ml += n
+		}
+		ml += hcLz4z3_minMatch
+		if ml < 0 || len(out)-nh+ml > lim.MaxDecoded {
+			return nil, nil, hcLz4z3ErrLimit
+		}
+		if off >= ml {
+			out = append(out, out[len(out)-off:len(out)-off+ml]...)
+		} else {
+			for i := 0; i < ml; i++ { // overlapping copy repeats the last 'off' bytes
+				out = append(out, out[len(out)-off])
+			}
+		}
+		seqs = append(seqs, hcLz4z3Seq{Lit: lit, Match: ml, Off: off})
+	}
+	if want >= 0 && len(out)-nh != want {
+		return nil, nil, hcLz4z3_corrupt("decoded %d bytes, expected %d", len(out)-nh, want)
+	}
+	return out[nh:], seqs, nil
+}
+
+// extLen reads a 255-extension length. It rejects values that overflow an int32.
+func hcLz4z3_extLen(b []byte) (n, k int, err error) {
+	for {
+		if k >= len(b) {
+			return 0, 0, hcLz4z3_corrupt("truncated length extension")
+		}
+		c := int(b[k])
+		k++
+		n += c
+		if n > 1<<31-1 {
+			return 0, 0, hcLz4z3ErrLimit
+		}
+		if c != 255 {
+			return n, k, nil
+		}
+	}
+}
+
+func hcLz4z3_appendExt(dst []byte, n int) []byte {
+	for ; n >= 255; n -= 255 {
+		dst = append(dst, 255)
+	}
+	return append(dst, byte(n))
+}
+
+// Build rebuilds the exact block from the payload and its sequence list.
+func hcLz4z3Build(plain []byte, seqs []hcLz4z3Seq) ([]byte, error) {
+	return hcLz4z3BuildH(nil, plain, seqs)
+}
+
+// BuildH is Build for a block whose matches may reach into hist (the preceding payload).
+func hcLz4z3BuildH(hist, plain []byte, seqs []hcLz4z3Seq) ([]byte, error) {
+	if len(hist) > hcLz4z3_maxOff {
+		hist = hist[len(hist)-hcLz4z3_maxOff:]
+	}
+	nh := len(hist)
+	out := make([]byte, 0, len(plain)/2+16)
+	pos := 0
+	for i, s := range seqs {
+		last := i == len(seqs)-1
+		if s.Lit < 0 || s.Lit > len(plain)-pos {
+			return nil, hcLz4z3_recipeErr("literal run %d at %d of %d", s.Lit, pos, len(plain))
+		}
+		if last != (s.Match == 0) || (s.Match == 0 && s.Off != 0) {
+			return nil, hcLz4z3_recipeErr("sequence %d: only the final sequence may be literal-only", i)
+		}
+		if !last && (s.Match < hcLz4z3_minMatch || s.Off < 1 || s.Off > hcLz4z3_maxOff) {
+			return nil, hcLz4z3_recipeErr("sequence %d: match %d offset %d", i, s.Match, s.Off)
+		}
+		var tok byte
+		if s.Lit >= 15 {
+			tok = 15 << 4
+		} else {
+			tok = byte(s.Lit) << 4
+		}
+		ml := s.Match - hcLz4z3_minMatch
+		if s.Match > 0 {
+			if ml >= 15 {
+				tok |= 15
+			} else {
+				tok |= byte(ml)
+			}
+		}
+		out = append(out, tok)
+		if s.Lit >= 15 {
+			out = hcLz4z3_appendExt(out, s.Lit-15)
+		}
+		out = append(out, plain[pos:pos+s.Lit]...)
+		pos += s.Lit
+		if s.Match > 0 {
+			if s.Off > pos+nh {
+				return nil, hcLz4z3_recipeErr("sequence %d: offset %d beyond %d bytes of history", i, s.Off, pos+nh)
+			}
+			if s.Match > len(plain)-pos {
+				return nil, hcLz4z3_recipeErr("sequence %d: match runs past the payload", i)
+			}
+			if pos >= s.Off && s.Off >= s.Match {
+				if !bytes.Equal(plain[pos:pos+s.Match], plain[pos-s.Off:pos-s.Off+s.Match]) {
+					return nil, hcLz4z3_recipeErr("sequence %d: payload differs from the match source", i)
+				}
+			} else {
+				for j := 0; j < s.Match; j++ { // the payload must contain the copy the block implies
+					k := pos + j - s.Off
+					src := byte(0)
+					if k >= 0 {
+						src = plain[k]
+					} else {
+						src = hist[nh+k]
+					}
+					if plain[pos+j] != src {
+						return nil, hcLz4z3_recipeErr("sequence %d: payload differs from the match source", i)
+					}
+				}
+			}
+			out = append(out, byte(s.Off), byte(s.Off>>8))
+			if ml >= 15 {
+				out = hcLz4z3_appendExt(out, ml-15)
+			}
+			pos += s.Match
+		}
+	}
+	if len(seqs) == 0 || pos != len(plain) {
+		return nil, hcLz4z3_recipeErr("sequences cover %d of %d bytes", pos, len(plain))
+	}
+	return out, nil
+}
+
+var (
+	// ErrCorrupt reports bytes that violate the LZ4 block or frame grammar.
+	hcLz4z3ErrCorrupt = errors.New("lz4z3: corrupt input")
+	// ErrLimit reports that a configured bound would be exceeded.
+	hcLz4z3ErrLimit = errors.New("lz4z3: limit exceeded")
+	// ErrRecipe reports a malformed or inconsistent recipe.
+	hcLz4z3ErrRecipe = errors.New("lz4z3: bad recipe")
+	// ErrUnsupported reports a well-formed feature this substrate does not express.
+	hcLz4z3ErrUnsupported = errors.New("lz4z3: unsupported")
+)
+
+func hcLz4z3_corrupt(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{hcLz4z3ErrCorrupt}, a...)...)
+}
+
+func hcLz4z3_recipeErr(f string, a ...any) error {
+	return fmt.Errorf("%w: "+f, append([]any{hcLz4z3ErrRecipe}, a...)...)
+}
+
+// Limits bound every parse and replay. The zero value selects the defaults.
+type hcLz4z3Limits struct {
+	MaxDecoded int // per block / frame content (default 64 MiB)
+	MaxSeqs    int // per block (default MaxDecoded/4+1)
+	MaxBlocks  int // per frame (default 1<<20)
+}
+
+func (l hcLz4z3Limits) norm() hcLz4z3Limits {
+	if l.MaxDecoded <= 0 {
+		l.MaxDecoded = 64 << 20
+	}
+	if l.MaxSeqs <= 0 {
+		l.MaxSeqs = l.MaxDecoded/4 + 1
+	}
+	if l.MaxBlocks <= 0 {
+		l.MaxBlocks = 1 << 20
+	}
+	return l
+}
+
+// Predictor ids: deterministic reference encoders. They are re-implementations of the public
+// LZ4 fast algorithm (greedy, one-entry hash table, acceleration skip); they are verified
+// against producer output block by block and never trusted.
+const (
+	hcLz4z3PredNone     = 0
+	hcLz4z3PredDefault  = 1 // lz4 <= 1.9.4 fast_extState: u16 table + 4-byte hash (13 bits) below 64 KiB, u32 + 5-byte hash otherwise
+	hcLz4z3PredContinue = 2 // LZ4_compress_fast_continue on a fresh stream (RocksDB): always u32 table + 5-byte hash
+	hcLz4z3PredDefault5 = 3 // fast_extState with a 5-byte hash (12 bits) in the u16 table too (python-lz4 4.4.x bundled library)
+	hcLz4z3PredHC       = 4 // LZ4HC hash-chain encoder; Accel carries the compression level 3..9 (hc.go)
+)
+
+const (
+	hcLz4z3_mfLimit      = 12
+	hcLz4z3_lastLiterals = 5
+	hcLz4z3_skipTrigger  = 6
+	hcLz4z3_hashLog      = 12
+)
+
+// Predict runs predictor id with the given acceleration (>= 1) and returns the sequences.
+func hcLz4z3Predict(id int, plain []byte, accel int) ([]hcLz4z3Seq, bool) {
+	if accel < 1 {
+		accel = 1
+	}
+	var u16, h4 bool
+	switch id {
+	case hcLz4z3PredDefault:
+		u16 = len(plain) < 65547 // LZ4_64Klimit: 64 KiB + (MFLIMIT-1)
+		h4 = u16
+	case hcLz4z3PredDefault5:
+		u16 = len(plain) < 65547
+	case hcLz4z3PredContinue:
+	case hcLz4z3PredHC:
+		s, ok := hcLz4z3HCSeqs(plain, accel)
+		return s, ok
+	case hcLz4z3PredPierrec:
+		s, _ := hcLz4z3_pierrecSeqs(plain, nil)
+		return s, true
+	default:
+		return nil, false
+	}
+	s, _ := hcLz4z3_fastSeqs(plain, accel, u16, h4, nil)
+	return s, true
+}
+
+// predictPrefix runs the predictor but stops at the first sequence that differs from target,
+// returning the number of leading sequences that agree (len(target) with an exact run).
+func hcLz4z3_predictPrefix(id int, plain []byte, accel int, target []hcLz4z3Seq) (int, bool) {
+	var u16, h4 bool
+	switch id {
+	case hcLz4z3PredDefault:
+		u16 = len(plain) < 65547
+		h4 = u16
+	case hcLz4z3PredDefault5:
+		u16 = len(plain) < 65547
+	case hcLz4z3PredContinue:
+	case hcLz4z3PredHC:
+		s, aborted, ok := hcLz4z3_hcSeqs(plain, accel, target)
+		if !ok {
+			return 0, false
+		}
+		if aborted {
+			return len(s), true
+		}
+		return hcLz4z3_commonPrefix(s, target), true
+	case hcLz4z3PredPierrec:
+		s, aborted := hcLz4z3_pierrecSeqs(plain, target)
+		if aborted {
+			return len(s), true
+		}
+		return hcLz4z3_commonPrefix(s, target), true
+	default:
+		return 0, false
+	}
+	s, aborted := hcLz4z3_fastSeqs(plain, accel, u16, h4, target)
+	if aborted {
+		return len(s), true
+	}
+	return hcLz4z3_commonPrefix(s, target), true
+}
+
+// PredictBlock returns the predicted compressed block, or false for an unknown id.
+func hcLz4z3PredictBlock(id int, plain []byte, accel int) ([]byte, bool) {
+	s, ok := hcLz4z3Predict(id, plain, accel)
+	if !ok {
+		return nil, false
+	}
+	b, err := hcLz4z3Build(plain, s)
+	return b, err == nil
+}
+
+func hcLz4z3_hash5(v uint64, bits uint) uint32 {
+	return uint32(((v << 24) * 889523592379) >> (64 - bits))
+}
+
+// fastSeqs mirrors the structure of LZ4_compress_generic for a single memory segment and a
+// fresh table (noDict).
+func hcLz4z3_fastSeqs(src []byte, accel int, u16, h4 bool, target []hcLz4z3Seq) ([]hcLz4z3Seq, bool) {
+	n := len(src)
+	var seqs []hcLz4z3Seq
+	anchor := 0
+	// diverged reports whether the newest sequence disagrees with target (early exit for sweeps).
+	diverged := func() bool {
+		return target != nil && (len(seqs) > len(target) || seqs[len(seqs)-1] != target[len(seqs)-1])
+	}
+	if n >= hcLz4z3_mfLimit+1 {
+		mflimitPlusOne := n - hcLz4z3_mfLimit + 1
+		matchlimit := n - hcLz4z3_lastLiterals
+		sc := hcLz4z3_fastPool.Get().(*hcLz4z3_fastScratch)
+		defer hcLz4z3_fastPool.Put(sc)
+		sc.gen++
+		if sc.gen == 0 { // stamp wrapped: clear once
+			*sc = hcLz4z3_fastScratch{gen: 1}
+		}
+		gen := sc.gen
+		hashAt := func(p int) uint32 {
+			if h4 {
+				return (binary.LittleEndian.Uint32(src[p:]) * 2654435761) >> (32 - (hcLz4z3_hashLog + 1))
+			}
+			return hcLz4z3_hash5(binary.LittleEndian.Uint64(src[p:]), hcLz4z3_hashLog)
+		}
+		get := func(h uint32) int {
+			if sc.stamp[h] != gen {
+				return 0
+			}
+			if u16 {
+				return int(uint16(sc.pos[h]))
+			}
+			return int(sc.pos[h])
+		}
+		put := func(h uint32, p int) {
+			sc.stamp[h] = gen
+			if u16 {
+				sc.pos[h] = uint32(uint16(p))
+			} else {
+				sc.pos[h] = uint32(p)
+			}
+		}
+		ip := 0
+		put(hashAt(ip), ip)
+		ip++
+		forwardH := hashAt(ip)
+	outer:
+		for {
+			var match int
+			forwardIp, step, search := ip, 1, accel<<hcLz4z3_skipTrigger
+			for {
+				h := forwardH
+				cur := forwardIp
+				mi := get(h)
+				ip = forwardIp
+				forwardIp += step
+				step = search >> hcLz4z3_skipTrigger
+				search++
+				if forwardIp > mflimitPlusOne {
+					break outer
+				}
+				match = mi
+				forwardH = hashAt(forwardIp)
+				put(h, cur)
+				if !u16 && mi+hcLz4z3_maxOff < cur {
+					continue
+				}
+				if binary.LittleEndian.Uint32(src[match:]) == binary.LittleEndian.Uint32(src[ip:]) {
+					break
+				}
+			}
+			for ip > anchor && match > 0 && src[ip-1] == src[match-1] { // catch up
+				ip--
+				match--
+			}
+			lit := ip - anchor
+			for {
+				ml := hcLz4z3_count(src, ip+hcLz4z3_minMatch, match+hcLz4z3_minMatch, matchlimit)
+				seqs = append(seqs, hcLz4z3Seq{Lit: lit, Match: ml + hcLz4z3_minMatch, Off: ip - match})
+				if diverged() {
+					return seqs[:len(seqs)-1], true
+				}
+				ip += ml + hcLz4z3_minMatch
+				anchor = ip
+				if ip >= mflimitPlusOne {
+					break outer
+				}
+				put(hashAt(ip-2), ip-2)
+				h := hashAt(ip)
+				cur := ip
+				mi := get(h)
+				put(h, cur)
+				if (u16 || mi+hcLz4z3_maxOff >= cur) && binary.LittleEndian.Uint32(src[mi:]) == binary.LittleEndian.Uint32(src[ip:]) {
+					match, lit = mi, 0
+					continue
+				}
+				break
+			}
+			ip++
+			forwardH = hashAt(ip)
+		}
+	}
+	return append(seqs, hcLz4z3Seq{Lit: n - anchor}), false
+}
+
+func hcLz4z3_count(src []byte, p, m, limit int) int {
+	c := 0
+	for p+c+8 <= limit { // m < p, so both loads stay inside src
+		if x := binary.LittleEndian.Uint64(src[p+c:]) ^ binary.LittleEndian.Uint64(src[m+c:]); x != 0 {
+			return c + bits.TrailingZeros64(x)>>3
+		}
+		c += 8
+	}
+	for p+c < limit && src[p+c] == src[m+c] {
+		c++
+	}
+	return c
+}
+
+// fastScratch holds the predictor hash table; entries are valid only when their stamp equals the
+// current generation, so a failed attempt costs no table clearing.
+type hcLz4z3_fastScratch struct {
+	pos   [1 << (hcLz4z3_hashLog + 1)]uint32
+	stamp [1 << (hcLz4z3_hashLog + 1)]uint32
+	gen   uint32
+}
+
+var hcLz4z3_fastPool = sync.Pool{New: func() any { return new(hcLz4z3_fastScratch) }}
+
+const (
+	hcLz4z3_magicFrame = 0x184D2204
+	hcLz4z3_magicSkip  = 0x184D2A50 // ..0x184D2A5F
+)
+
+// FrameStats counts what AnalyzeFrames saw.
+type hcLz4z3FrameStats struct {
+	Frames, Skippable, Blocks, Stored int
+	Predicted, Hybrid, Explicit       int
+	Linked                            int // frames with dependent blocks (linked.go predictors)
+	RecipeBytes, ExplicitSeqs         int
+	HeaderBytes, TailBytes            int
+}
+
+func (st *hcLz4z3FrameStats) count(rc hcLz4z3Recipe, nseq int) {
+	switch rc.Kind {
+	case hcLz4z3KindPredicted:
+		st.Predicted++
+	case hcLz4z3KindHybrid:
+		st.Hybrid++
+	default:
+		st.Explicit++
+		st.ExplicitSeqs += nseq
+	}
+}
+
+var hcLz4z3_blockMax = [8]int{0, 0, 0, 0, 64 << 10, 256 << 10, 1 << 20, 4 << 20}
+
+// AnalyzeFrames parses a whole LZ4 frame stream (frames, skippable frames, opaque tail)
+// into the concatenated payload and an exact recipe.
+func hcLz4z3AnalyzeFrames(data []byte, lim hcLz4z3Limits) (plain, recipe []byte, st hcLz4z3FrameStats, err error) {
+	lim = lim.norm()
+	var pb bytes.Buffer
+	var rb []byte
+	pos := 0
+	for pos+4 <= len(data) {
+		magic := binary.LittleEndian.Uint32(data[pos:])
+		if magic&^0xF == hcLz4z3_magicSkip {
+			if pos+8 > len(data) {
+				break
+			}
+			n := int(binary.LittleEndian.Uint32(data[pos+4:]))
+			if n < 0 || n > len(data)-pos-8 {
+				return nil, nil, st, hcLz4z3_corrupt("skippable frame of %d bytes", n)
+			}
+			rb = append(rb, 2)
+			rb = binary.AppendUvarint(rb, uint64(8+n))
+			rb = append(rb, data[pos:pos+8+n]...)
+			pos += 8 + n
+			st.Skippable++
+			continue
+		}
+		if magic != hcLz4z3_magicFrame {
+			break
+		}
+		fr, np, e := hcLz4z3_analyzeFrame(data, pos, &pb, lim, &st)
+		if e != nil {
+			return nil, nil, st, e
+		}
+		rb = append(rb, 1)
+		rb = append(rb, fr...)
+		pos = np
+		st.Frames++
+	}
+	rb = append(rb, 0)
+	rb = binary.AppendUvarint(rb, uint64(len(data)-pos))
+	rb = append(rb, data[pos:]...)
+	st.TailBytes = len(data) - pos
+	st.RecipeBytes = len(rb)
+	return pb.Bytes(), rb, st, nil
+}
+
+type hcLz4z3_descriptor struct {
+	indep, bcks, csize, ccks bool
+	bmax, hl                 int
+}
+
+func hcLz4z3_parseDescriptor(h []byte) (d hcLz4z3_descriptor, err error) {
+	if len(h) < 7 {
+		return d, hcLz4z3_corrupt("truncated frame header")
+	}
+	flg, bd := h[4], h[5]
+	if flg>>6 != 1 || flg&2 != 0 || bd&0x8F != 0 || hcLz4z3_blockMax[(bd>>4)&7] == 0 {
+		return d, hcLz4z3_corrupt("frame descriptor %02x %02x", flg, bd)
+	}
+	if flg&1 != 0 {
+		return d, hcLz4z3ErrUnsupported // dictionary id: external dictionary needed
+	}
+	d = hcLz4z3_descriptor{indep: flg&0x20 != 0, bcks: flg&0x10 != 0, csize: flg&8 != 0, ccks: flg&4 != 0, bmax: hcLz4z3_blockMax[(bd>>4)&7], hl: 7}
+	if d.csize {
+		d.hl += 8
+	}
+	if len(h) < d.hl {
+		return d, hcLz4z3_corrupt("truncated frame header")
+	}
+	return d, nil
+}
+
+func hcLz4z3_analyzeFrame(data []byte, pos int, pb *bytes.Buffer, lim hcLz4z3Limits, st *hcLz4z3FrameStats) ([]byte, int, error) {
+	d, err := hcLz4z3_parseDescriptor(data[pos:])
+	if err != nil {
+		return nil, 0, err
+	}
+	hdr := data[pos : pos+d.hl]
+	st.HeaderBytes += d.hl
+	pos += d.hl
+	fr := binary.AppendUvarint(nil, uint64(d.hl))
+	fr = append(fr, hdr...)
+	if !d.indep {
+		st.Linked++
+	}
+	var content []byte // this frame's payload so far
+	var blocks []byte
+	var la hcLz4z3_linkAnalysis
+	nblocks := 0
+	for {
+		if pos+4 > len(data) {
+			return nil, 0, hcLz4z3_corrupt("truncated block size")
+		}
+		w := binary.LittleEndian.Uint32(data[pos:])
+		pos += 4
+		if w == 0 {
+			break
+		}
+		raw := w&0x80000000 != 0
+		sz := int(w & 0x7FFFFFFF)
+		if sz > d.bmax || sz > len(data)-pos {
+			return nil, 0, hcLz4z3_corrupt("block of %d bytes (max %d, remaining %d)", sz, d.bmax, len(data)-pos)
+		}
+		if nblocks >= lim.MaxBlocks {
+			return nil, 0, hcLz4z3ErrLimit
+		}
+		nblocks++
+		blk := data[pos : pos+sz]
+		pos += sz
+		var ext []byte
+		if d.bcks {
+			if pos+4 > len(data) {
+				return nil, 0, hcLz4z3_corrupt("truncated block checksum")
+			}
+			if c := binary.LittleEndian.Uint32(data[pos:]); c != hcLz4z3XXH32(blk, 0) {
+				ext = data[pos : pos+4]
+			}
+			pos += 4
+		}
+		tag := byte(0)
+		if raw {
+			tag = 1
+		}
+		if ext != nil {
+			tag |= 2
+		}
+		var payload []byte
+		var lseqs []hcLz4z3Seq
+		blocks = append(blocks, tag)
+		if raw {
+			payload = blk
+			blocks = binary.AppendUvarint(blocks, uint64(sz))
+			st.Stored++
+		} else {
+			var hist []byte
+			if !d.indep {
+				hist = content
+				if len(hist) > hcLz4z3_maxOff {
+					hist = hist[len(hist)-hcLz4z3_maxOff:]
+				}
+			}
+			p, seqs, err := hcLz4z3DecodeH(blk, hist, -1, lim)
+			if err != nil {
+				return nil, 0, err
+			}
+			if len(p) > d.bmax {
+				return nil, 0, hcLz4z3_corrupt("block decodes to %d > %d", len(p), d.bmax)
+			}
+			payload = p
+			if !d.indep {
+				if rep, e := hcLz4z3BuildH(hist, p, seqs); e != nil || !bytes.Equal(rep, blk) {
+					return nil, 0, hcLz4z3_recipeErr("sequences do not reproduce the block (%v)", e)
+				}
+				lseqs = seqs
+			} else {
+				rc := hcLz4z3Analyze(p, seqs, true)
+				st.count(rc, len(seqs))
+				if rep, e := rc.Replay(nil, p, lim); e != nil || !bytes.Equal(rep, blk) {
+					return nil, 0, hcLz4z3_recipeErr("recipe does not reproduce the block (%v)", e)
+				}
+				blocks = binary.AppendUvarint(blocks, uint64(len(p)))
+				blocks = append(blocks, rc.Marshal()...)
+			}
+		}
+		st.Blocks++
+		if len(content)+len(payload) > lim.MaxDecoded {
+			return nil, 0, hcLz4z3ErrLimit
+		}
+		content = append(content, payload...)
+		if d.indep {
+			blocks = append(blocks, ext...)
+		} else { // linked frames are emitted once the profile is chosen
+			blocks = blocks[:0]
+			la.block(content, len(payload), lseqs, tag, ext)
+		}
+		pb.Write(payload)
+	}
+	if !d.indep {
+		blocks = la.emit(st)
+	}
+	fr = binary.AppendUvarint(fr, uint64(nblocks))
+	fr = append(fr, blocks...)
+	if !d.ccks {
+		fr = append(fr, 0)
+	} else {
+		if pos+4 > len(data) {
+			return nil, 0, hcLz4z3_corrupt("truncated content checksum")
+		}
+		if got := binary.LittleEndian.Uint32(data[pos:]); got == hcLz4z3XXH32(content, 0) {
+			fr = append(fr, 1)
+		} else {
+			fr = append(append(fr, 2), data[pos:pos+4]...)
+		}
+		pos += 4
+	}
+	if d.csize && binary.LittleEndian.Uint64(hdr[6:]) != uint64(len(content)) {
+		// the declared content size is part of the verbatim header; a mismatch is the producer's
+		// fact, not an error: the header bytes are reproduced as stored.
+		_ = 0
+	}
+	return fr, pos, nil
+}
+
+func hcLz4z3_put(w io.Writer, b []byte) error {
+	n, err := w.Write(b)
+	if err == nil && n != len(b) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
+type hcLz4z3_rd struct {
+	b []byte
+	i int
+}
+
+func (r *hcLz4z3_rd) uv(max uint64) (uint64, error) {
+	v, n := binary.Uvarint(r.b[r.i:])
+	if n <= 0 || v > max {
+		return 0, hcLz4z3_recipeErr("frame recipe integer at %d", r.i)
+	}
+	r.i += n
+	return v, nil
+}
+
+func (r *hcLz4z3_rd) take(n uint64) ([]byte, error) {
+	if n > uint64(len(r.b)-r.i) {
+		return nil, hcLz4z3_recipeErr("frame recipe truncated at %d", r.i)
+	}
+	s := r.b[r.i : r.i+int(n)]
+	r.i += int(n)
+	return s, nil
+}
+
+// ReplayFrames rebuilds the exact frame stream from the recipe and the payload stream.
+func hcLz4z3ReplayFrames(w io.Writer, recipe []byte, plain io.Reader, lim hcLz4z3Limits) error {
+	lim = lim.norm()
+	r := &hcLz4z3_rd{b: recipe}
+	var total int64
+	for {
+		kind, err := r.take(1)
+		if err != nil {
+			return err
+		}
+		switch kind[0] {
+		case 0:
+			n, err := r.uv(1 << 40)
+			if err != nil {
+				return err
+			}
+			t, err := r.take(n)
+			if err != nil {
+				return err
+			}
+			if err := hcLz4z3_put(w, t); err != nil {
+				return err
+			}
+			if r.i != len(r.b) {
+				return hcLz4z3_recipeErr("trailing recipe bytes")
+			}
+			return nil
+		case 2:
+			n, err := r.uv(1 << 40)
+			if err != nil {
+				return err
+			}
+			t, err := r.take(n)
+			if err != nil {
+				return err
+			}
+			if err := hcLz4z3_put(w, t); err != nil {
+				return err
+			}
+		case 1:
+			if err := hcLz4z3_replayFrame(w, r, plain, lim, &total); err != nil {
+				return err
+			}
+		default:
+			return hcLz4z3_recipeErr("stream tag %d", kind[0])
+		}
+	}
+}
+
+func hcLz4z3_replayFrame(w io.Writer, r *hcLz4z3_rd, plain io.Reader, lim hcLz4z3Limits, total *int64) error {
+	hl, err := r.uv(64)
+	if err != nil {
+		return err
+	}
+	hdr, err := r.take(hl)
+	if err != nil {
+		return err
+	}
+	d, err := hcLz4z3_parseDescriptor(hdr)
+	if err != nil || d.hl != len(hdr) {
+		return hcLz4z3_recipeErr("frame header")
+	}
+	if err := hcLz4z3_put(w, hdr); err != nil {
+		return err
+	}
+	nb, err := r.uv(uint64(lim.MaxBlocks))
+	if err != nil {
+		return err
+	}
+	var content []byte
+	var lr hcLz4z3_linkRun
+	for i := uint64(0); i < nb; i++ {
+		tag, err := r.take(1)
+		if err != nil {
+			return err
+		}
+		if tag[0] > 3 || (tag[0]&2 != 0 && !d.bcks) {
+			return hcLz4z3_recipeErr("block tag %d", tag[0])
+		}
+		var n uint64
+		var rc hcLz4z3Recipe
+		if n, err = r.uv(uint64(d.bmax)); err != nil {
+			return err
+		}
+		if tag[0]&1 == 0 {
+			var k int
+			if rc, k, err = hcLz4z3Unmarshal(r.b[r.i:], lim); err != nil {
+				return err
+			}
+			r.i += k
+		}
+		if int64(len(content))+int64(n) > int64(lim.MaxDecoded) {
+			return hcLz4z3ErrLimit
+		}
+		p := make([]byte, n)
+		if _, err := io.ReadFull(plain, p); err != nil {
+			return hcLz4z3_recipeErr("payload ended inside a block: %v", err)
+		}
+		var blk []byte
+		sz := uint32(n)
+		start := len(content)
+		content = append(content, p...)
+		lr.ends = append(lr.ends, len(content))
+		if tag[0]&1 != 0 {
+			blk, sz = p, uint32(n)|0x80000000
+		} else {
+			var hist []byte
+			if !d.indep {
+				hist = content[max(0, start-hcLz4z3_maxOff):start]
+			}
+			if !d.indep && hcLz4z3_isLinkPred(rc) {
+				var sq []hcLz4z3Seq
+				if sq, err = lr.seqs(content, int(i), rc); err != nil {
+					return err
+				}
+				if len(sq) > lim.MaxSeqs {
+					return hcLz4z3ErrLimit
+				}
+				blk, err = hcLz4z3BuildH(hist, p, sq)
+			} else {
+				blk, err = rc.Replay(hist, p, lim)
+			}
+			if err != nil {
+				return err
+			}
+			sz = uint32(len(blk))
+			if len(blk) > d.bmax {
+				return hcLz4z3_recipeErr("replayed block of %d > %d", len(blk), d.bmax)
+			}
+		}
+		var hd [4]byte
+		binary.LittleEndian.PutUint32(hd[:], sz)
+		if err := hcLz4z3_put(w, hd[:]); err != nil {
+			return err
+		}
+		if err := hcLz4z3_put(w, blk); err != nil {
+			return err
+		}
+		if d.bcks {
+			c := hcLz4z3XXH32(blk, 0)
+			if tag[0]&2 != 0 {
+				e, err := r.take(4)
+				if err != nil {
+					return err
+				}
+				c = binary.LittleEndian.Uint32(e)
+			}
+			binary.LittleEndian.PutUint32(hd[:], c)
+			if err := hcLz4z3_put(w, hd[:]); err != nil {
+				return err
+			}
+		}
+		*total += int64(n)
+	}
+	if err := hcLz4z3_put(w, []byte{0, 0, 0, 0}); err != nil {
+		return err
+	}
+	ck, err := r.take(1)
+	if err != nil {
+		return err
+	}
+	if (ck[0] != 0) != d.ccks || ck[0] > 2 {
+		return hcLz4z3_recipeErr("content checksum flag")
+	}
+	var c uint32
+	switch ck[0] {
+	case 1:
+		c = hcLz4z3XXH32(content, 0)
+	case 2:
+		e, err := r.take(4)
+		if err != nil {
+			return err
+		}
+		c = binary.LittleEndian.Uint32(e)
+	}
+	if ck[0] != 0 {
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], c)
+		err = hcLz4z3_put(w, b[:])
+	}
+	return err
+}
+
+// LZ4HC reference encoder re-implementation (lz4 1.9.x): hash-chain parser for levels 3..9 with
+// the repeated-pattern shortcut, optimal parser with chain swap for levels 10..12, and the
+// continued-stream forms used by linked frames (linked.go). Verified against producer output,
+// never trusted.
+const (
+	hcLz4z3_hcHashLog    = 15
+	hcLz4z3_hcStart      = 1 << 16 // the reference starts indices at 64 KiB so that 0 means "empty"
+	hcLz4z3_hcOptimalML  = 18
+	hcLz4z3_hcMaxAttempt = 128 // levels with more attempts enable pattern analysis
+)
+
+// HCAttempts maps a compression level (3..12) to the reference's search depth.
+func hcLz4z3HCAttempts(level int) int {
+	switch {
+	case level >= 3 && level <= 9:
+		return 1 << (level - 1)
+	case level == 10:
+		return 96
+	case level == 11:
+		return 512
+	case level == 12:
+		return 16384
+	}
+	return 0
+}
+
+type hcLz4z3_hcState struct {
+	src      []byte
+	hash     [1 << hcLz4z3_hcHashLog]uint32
+	hstamp   [1 << hcLz4z3_hcHashLog]uint32 // generation of each hash slot: stale slots read as empty
+	chain    [1 << 16]uint16                // always written before it is read within one run
+	gen      uint32
+	next     uint32
+	attempts int
+	pa       bool // pattern analysis (levels with more than 128 attempts)
+	swap     bool // chain swap (optimal parser, levels 10..12)
+	// Linked streams whose previous block is reached through a saved dictionary (hcExtDict):
+	// pfx is where the current prefix starts in src, dlow where the dictionary starts. Both are
+	// 0 for a single segment.
+	pfx, dlow int
+}
+
+// protect mirrors LZ4HC_protectDictEnd: false for the last 3 dictionary positions.
+func (h *hcLz4z3_hcState) protect(mi uint32) bool { return uint32(h.pfx)+hcLz4z3_hcStart-1-mi >= 3 }
+
+func (h *hcLz4z3_hcState) hashAt(p int) uint32 {
+	return (binary.LittleEndian.Uint32(h.src[p:]) * 2654435761) >> (32 - hcLz4z3_hcHashLog)
+}
+
+func (h *hcLz4z3_hcState) insert(ip int) {
+	target := uint32(ip) + hcLz4z3_hcStart
+	for idx := h.next; idx < target; idx++ {
+		hh := h.hashAt(int(idx - hcLz4z3_hcStart))
+		delta := idx - h.head(hh)
+		if delta > hcLz4z3_maxOff {
+			delta = hcLz4z3_maxOff
+		}
+		h.chain[uint16(idx)] = uint16(delta)
+		h.hash[hh], h.hstamp[hh] = idx, h.gen
+	}
+	h.next = target
+}
+
+func (h *hcLz4z3_hcState) head(hh uint32) uint32 {
+	if h.hstamp[hh] != h.gen {
+		return 0
+	}
+	return h.hash[hh]
+}
+
+// wider mirrors LZ4HC_InsertAndGetWiderMatch (prefix and external-dictionary candidates).
+func (h *hcLz4z3_hcState) wider(ip, lowLimit, highLimit, longest int) (best, matchPos, startPos int) {
+	src := h.src
+	ipIndex := uint32(ip) + hcLz4z3_hcStart
+	lowest := uint32(h.dlow) + hcLz4z3_hcStart
+	if lowest+hcLz4z3_maxOff+1 <= ipIndex {
+		lowest = ipIndex - hcLz4z3_maxOff
+	}
+	lookBack := ip - lowLimit
+	attempts := h.attempts
+	pattern := binary.LittleEndian.Uint32(src[ip:])
+	repeat, srcPatLen := hcLz4z3_repUntested, 0
+	h.insert(ip)
+	mi := h.head(h.hashAt(ip))
+	matchPos, startPos = -1, -1
+	chainPos := uint32(0)
+	for mi >= lowest && attempts > 0 {
+		attempts--
+		mp := int(mi - hcLz4z3_hcStart)
+		ml := 0
+		if mp >= h.pfx {
+			if binary.LittleEndian.Uint16(src[lowLimit+longest-1:]) == binary.LittleEndian.Uint16(src[mp-lookBack+longest-1:]) &&
+				binary.LittleEndian.Uint32(src[mp:]) == pattern {
+				back := 0
+				if lookBack != 0 {
+					lim := max(lowLimit-ip, h.pfx-mp)
+					for back > lim && src[ip+back-1] == src[mp+back-1] {
+						back--
+					}
+				}
+				ml = hcLz4z3_minMatch + hcLz4z3_count(src, ip+hcLz4z3_minMatch, mp+hcLz4z3_minMatch, highLimit) - back
+				if ml > longest {
+					longest, matchPos, startPos = ml, mp+back, ip+back
+				}
+			}
+		} else if mp <= h.pfx-4 && binary.LittleEndian.Uint32(src[mp:]) == pattern {
+			// dictionary candidate: no 2-byte pre-filter; the dictionary is the content right
+			// before the prefix, so counting across its end is a contiguous count
+			back := 0
+			if lookBack != 0 {
+				lim := max(lowLimit-ip, h.dlow-mp)
+				for back > lim && src[ip+back-1] == src[mp+back-1] {
+					back--
+				}
+			}
+			ml = hcLz4z3_minMatch + hcLz4z3_count(src, ip+hcLz4z3_minMatch, mp+hcLz4z3_minMatch, highLimit) - back
+			if ml > longest {
+				longest, matchPos, startPos = ml, mp+back, ip+back
+			}
+		}
+		if h.swap && ml == longest && mi+uint32(longest) <= ipIndex { // better match: select a better chain
+			distNext := uint32(1)
+			end := longest - hcLz4z3_minMatch + 1
+			step, accel := 1, 1<<4
+			for pos := 0; pos < end; pos += step {
+				cd := uint32(h.chain[uint16(mi+uint32(pos))])
+				step = accel >> 4
+				accel++
+				if cd > distNext {
+					distNext, chainPos, accel = cd, uint32(pos), 1<<4
+				}
+			}
+			if distNext > 1 {
+				if distNext > mi {
+					break
+				}
+				mi -= distNext
+				continue
+			}
+		}
+		// repeated-pattern shortcut of the reference
+		if h.pa && chainPos == 0 && h.chain[uint16(mi)] == 1 {
+			cand := mi - 1
+			if repeat == hcLz4z3_repUntested {
+				if pattern&0xFFFF == pattern>>16 && pattern&0xFF == pattern>>24 {
+					repeat = hcLz4z3_repConfirmed
+					srcPatLen = hcLz4z3_countPattern(src, ip+4, highLimit, pattern) + 4
+				} else {
+					repeat = hcLz4z3_repNot
+				}
+			}
+			if repeat == hcLz4z3_repConfirmed && cand >= lowest && h.protect(cand) {
+				cp := int(cand - hcLz4z3_hcStart)
+				if binary.LittleEndian.Uint32(src[cp:]) == pattern {
+					fwd := hcLz4z3_countPattern(src, cp+4, highLimit, pattern) + 4
+					// counting stops at the lowest admissible index: the reference clamps to it anyway
+					back := hcLz4z3_reverseCountPattern(src, cp, int(lowest-hcLz4z3_hcStart), pattern)
+					cur := back + fwd
+					if cur >= srcPatLen && fwd <= srcPatLen {
+						if mi = cand + uint32(fwd) - uint32(srcPatLen); !h.protect(mi) {
+							mi = uint32(h.pfx) + hcLz4z3_hcStart
+						}
+					} else if mi = cand - uint32(back); !h.protect(mi) {
+						mi = uint32(h.pfx) + hcLz4z3_hcStart
+					} else if lookBack == 0 {
+						maxML := min(cur, srcPatLen)
+						if longest < maxML {
+							if ip-int(mi-hcLz4z3_hcStart) > hcLz4z3_maxOff {
+								break
+							}
+							longest, matchPos, startPos = maxML, int(mi-hcLz4z3_hcStart), ip
+						}
+						d := uint32(h.chain[uint16(mi)])
+						if d > mi {
+							break
+						}
+						mi -= d
+					}
+					continue
+				}
+			}
+		}
+		mi -= uint32(h.chain[uint16(mi+chainPos)])
+	}
+	return longest, matchPos, startPos
+}
+
+// HCSeqs returns the sequences of the hash-chain encoder at the given level (3..9).
+func hcLz4z3HCSeqs(src []byte, level int) ([]hcLz4z3Seq, bool) {
+	s, _, ok := hcLz4z3_hcSeqs(src, level, nil)
+	return s, ok
+}
+
+// hcSeqs optionally stops at the first sequence that disagrees with target.
+func hcLz4z3_hcSeqs(src []byte, level int, target []hcLz4z3Seq) (seqs []hcLz4z3Seq, aborted, ok bool) {
+	if hcLz4z3HCAttempts(level) == 0 {
+		return nil, false, false
+	}
+	h := hcLz4z3_hcPool.Get().(*hcLz4z3_hcState)
+	defer hcLz4z3_hcPool.Put(h)
+	return hcLz4z3_hcRun(h, src, 0, level, target, false)
+}
+
+// hcRun parses src[start:]. With cont the state (hash chains, insertion cursor) continues from
+// the preceding blocks of the same stream, src[:start]: LZ4_compress_HC_continue on contiguous
+// blocks. Otherwise the state is reset and start must be 0.
+func hcLz4z3_hcRun(h *hcLz4z3_hcState, src []byte, start, level int, target []hcLz4z3Seq, cont bool) (seqs []hcLz4z3Seq, aborted, ok bool) {
+	att := hcLz4z3HCAttempts(level)
+	if att == 0 {
+		return nil, false, false
+	}
+	n := len(src)
+	anchor := start
+	if !cont {
+		h.gen++
+		if h.gen == 0 {
+			*h = hcLz4z3_hcState{gen: 1}
+		}
+		h.next, h.pfx, h.dlow = hcLz4z3_hcStart, 0, 0
+	}
+	h.src = src
+	if n-start >= hcLz4z3_mfLimit+1 {
+		if level >= 10 {
+			return hcLz4z3_hcOptSeqs(h, src, start, level, att, target)
+		}
+		h.attempts, h.pa, h.swap = att, att > hcLz4z3_hcMaxAttempt, false
+		mflimit := n - hcLz4z3_mfLimit
+		matchlimit := n - hcLz4z3_lastLiterals
+		ip := start
+		var ml, ml0, ml2, ml3, start0, ref0, ref, start2, ref2, start3, ref3 int
+		emit := func(mlen, r int) bool {
+			seqs = append(seqs, hcLz4z3Seq{Lit: ip - anchor, Match: mlen, Off: ip - r})
+			ip += mlen
+			anchor = ip
+			return target != nil && (len(seqs) > len(target) || seqs[len(seqs)-1] != target[len(seqs)-1])
+		}
+		for ip <= mflimit {
+			ml, ref, _ = h.wider(ip, ip, matchlimit, hcLz4z3_minMatch-1)
+			if ml < hcLz4z3_minMatch {
+				ip++
+				continue
+			}
+			start0, ref0, ml0 = ip, ref, ml
+		search2:
+			if ip+ml <= mflimit {
+				ml2, ref2, start2 = h.wider(ip+ml-2, ip, matchlimit, ml)
+			} else {
+				ml2 = ml
+			}
+			if ml2 == ml { // no better match: encode ML1
+				if emit(ml, ref) {
+					return seqs[:len(seqs)-1], true, true
+				}
+				continue
+			}
+			if start0 < ip && start2 < ip+ml0 { // ML1 was skipped and ML2 squeezes it: restore
+				ip, ref, ml = start0, ref0, ml0
+			}
+			if start2-ip < 3 { // first match too small: removed
+				ml, ip, ref = ml2, start2, ref2
+				goto search2
+			}
+		search3:
+			if start2-ip < hcLz4z3_hcOptimalML {
+				newML := ml
+				if newML > hcLz4z3_hcOptimalML {
+					newML = hcLz4z3_hcOptimalML
+				}
+				if ip+newML > start2+ml2-hcLz4z3_minMatch {
+					newML = start2 - ip + ml2 - hcLz4z3_minMatch
+				}
+				if corr := newML - (start2 - ip); corr > 0 {
+					start2 += corr
+					ref2 += corr
+					ml2 -= corr
+				}
+			}
+			if start2+ml2 <= mflimit {
+				ml3, ref3, start3 = h.wider(start2+ml2-3, start2, matchlimit, ml2)
+			} else {
+				ml3 = ml2
+			}
+			if ml3 == ml2 { // encode ML1 and ML2
+				if start2 < ip+ml {
+					ml = start2 - ip
+				}
+				if emit(ml, ref) {
+					return seqs[:len(seqs)-1], true, true
+				}
+				ip = start2
+				if emit(ml2, ref2) {
+					return seqs[:len(seqs)-1], true, true
+				}
+				continue
+			}
+			if start3 < ip+ml+3 { // not enough space for match 2: remove it
+				if start3 >= ip+ml { // seq1 can be written now; seq3 becomes seq1
+					if start2 < ip+ml {
+						corr := ip + ml - start2
+						start2 += corr
+						ref2 += corr
+						ml2 -= corr
+						if ml2 < hcLz4z3_minMatch {
+							start2, ref2, ml2 = start3, ref3, ml3
+						}
+					}
+					if emit(ml, ref) {
+						return seqs[:len(seqs)-1], true, true
+					}
+					ip, ref, ml = start3, ref3, ml3
+					start0, ref0, ml0 = start2, ref2, ml2
+					goto search2
+				}
+				start2, ref2, ml2 = start3, ref3, ml3
+				goto search3
+			}
+			// three ascending matches: write the first one
+			if start2 < ip+ml {
+				if start2-ip < hcLz4z3_hcOptimalML {
+					if ml > hcLz4z3_hcOptimalML {
+						ml = hcLz4z3_hcOptimalML
+					}
+					if ip+ml > start2+ml2-hcLz4z3_minMatch {
+						ml = start2 - ip + ml2 - hcLz4z3_minMatch
+					}
+					if corr := ml - (start2 - ip); corr > 0 {
+						start2 += corr
+						ref2 += corr
+						ml2 -= corr
+					}
+				} else {
+					ml = start2 - ip
+				}
+			}
+			if emit(ml, ref) {
+				return seqs[:len(seqs)-1], true, true
+			}
+			ip, ref, ml = start2, ref2, ml2
+			start2, ref2, ml2 = start3, ref3, ml3
+			goto search3
+		}
+	}
+	return append(seqs, hcLz4z3Seq{Lit: n - anchor}), false, true
+}
+
+const (
+	hcLz4z3_repUntested = iota
+	hcLz4z3_repNot
+	hcLz4z3_repConfirmed
+)
+
+// countPattern mirrors LZ4HC_countPattern: how many bytes from p repeat the 4-byte pattern.
+func hcLz4z3_countPattern(src []byte, p, limit int, pattern uint32) int {
+	start := p
+	var pb [4]byte
+	binary.LittleEndian.PutUint32(pb[:], pattern)
+	p64 := uint64(pattern) | uint64(pattern)<<32
+	for p+8 <= limit { // the pattern phase is preserved by 8-byte steps
+		if x := binary.LittleEndian.Uint64(src[p:]) ^ p64; x != 0 {
+			return p - start + bits.TrailingZeros64(x)>>3
+		}
+		p += 8
+	}
+	for i := (p - start) & 3; p < limit; i++ {
+		if src[p] != pb[i&3] {
+			break
+		}
+		p++
+	}
+	return p - start
+}
+
+// reverseCountPattern mirrors LZ4HC_reverseCountPattern: bytes before p that continue the pattern backwards.
+func hcLz4z3_reverseCountPattern(src []byte, p, lowest int, pattern uint32) int {
+	start := p
+	var pb [4]byte
+	binary.LittleEndian.PutUint32(pb[:], pattern)
+	for p-4 >= lowest && binary.LittleEndian.Uint32(src[p-4:]) == pattern {
+		p -= 4
+	}
+	for p > lowest && src[p-1] == pb[(p-1-start)&3+0] {
+		p--
+	}
+	return start - p
+}
+
+var hcLz4z3_hcPool = sync.Pool{New: func() any { return new(hcLz4z3_hcState) }}
+
+// hcOptSeqs is LZ4HC_compress_optimal (levels 10..12 of lz4 1.9.x): price-based parsing over a
+// 4096-position window with the wider-match search in pattern-analysis + chain-swap mode.
+func hcLz4z3_hcOptSeqs(h *hcLz4z3_hcState, src []byte, start, level, attempts int, target []hcLz4z3Seq) (seqs []hcLz4z3Seq, aborted, ok bool) {
+	const optNum, trailing = 1 << 12, 3
+	type optT struct{ price, off, mlen, litlen int }
+	sufficient := map[int]int{10: 64, 11: 128, 12: optNum - 1}[level]
+	full := level == 12
+	h.attempts, h.pa, h.swap = attempts, true, true
+	n := len(src)
+	mflimit, matchlimit := n-hcLz4z3_mfLimit, n-hcLz4z3_lastLiterals
+	litPrice := func(l int) int {
+		if l >= 15 {
+			return l + 1 + (l-15)/255
+		}
+		return l
+	}
+	seqPrice := func(l, m int) int {
+		p := 3 + litPrice(l)
+		if m >= 19 {
+			p += 1 + (m-19)/255
+		}
+		return p
+	}
+	find := func(ip, minLen int) (length, off int) {
+		ml, mp, _ := h.wider(ip, ip, matchlimit, minLen)
+		if ml <= minLen {
+			return 0, 0
+		}
+		return ml, ip - mp
+	}
+	var opt [optNum + trailing]optT
+	ip, anchor := start, start
+	emit := func(ml, off int) bool {
+		seqs = append(seqs, hcLz4z3Seq{Lit: ip - anchor, Match: ml, Off: off})
+		ip += ml
+		anchor = ip
+		return target != nil && (len(seqs) > len(target) || seqs[len(seqs)-1] != target[len(seqs)-1])
+	}
+	for ip <= mflimit {
+		llen := ip - anchor
+		fl, foff := find(ip, hcLz4z3_minMatch-1)
+		if fl == 0 {
+			ip++
+			continue
+		}
+		if fl > sufficient {
+			if emit(fl, foff) {
+				return seqs[:len(seqs)-1], true, true
+			}
+			continue
+		}
+		for r := 0; r < hcLz4z3_minMatch; r++ {
+			opt[r] = optT{price: litPrice(llen + r), mlen: 1, litlen: llen + r}
+		}
+		for m := hcLz4z3_minMatch; m <= fl; m++ {
+			opt[m] = optT{price: seqPrice(llen, m), off: foff, mlen: m, litlen: llen}
+		}
+		last := fl
+		for a := 1; a <= trailing; a++ {
+			opt[last+a] = optT{price: opt[last].price + litPrice(a), mlen: 1, litlen: a}
+		}
+		var bestM, bestOff, cur int
+		direct := false
+		for cur = 1; cur < last; cur++ {
+			cp := ip + cur
+			if cp > mflimit {
+				break
+			}
+			if full {
+				if opt[cur+1].price <= opt[cur].price && opt[cur+hcLz4z3_minMatch].price < opt[cur].price+3 {
+					continue
+				}
+			} else if opt[cur+1].price <= opt[cur].price {
+				continue
+			}
+			var nl, noff int
+			if full {
+				nl, noff = find(cp, hcLz4z3_minMatch-1)
+			} else {
+				nl, noff = find(cp, last-cur)
+			}
+			if nl == 0 {
+				continue
+			}
+			if nl > sufficient || nl+cur >= optNum {
+				bestM, bestOff, last, direct = nl, noff, cur+1, true
+				break
+			}
+			base := opt[cur].litlen
+			for l := 1; l < hcLz4z3_minMatch; l++ {
+				price := opt[cur].price - litPrice(base) + litPrice(base+l)
+				if pos := cur + l; price < opt[pos].price {
+					opt[pos] = optT{price: price, mlen: 1, litlen: base + l}
+				}
+			}
+			for ml := hcLz4z3_minMatch; ml <= nl; ml++ {
+				pos := cur + ml
+				var price, ll int
+				if opt[cur].mlen == 1 {
+					ll = opt[cur].litlen
+					if cur > ll {
+						price = opt[cur-ll].price
+					}
+					price += seqPrice(ll, ml)
+				} else {
+					price = opt[cur].price + seqPrice(0, ml)
+				}
+				if pos > last+trailing || price <= opt[pos].price {
+					if ml == nl && last < pos {
+						last = pos
+					}
+					opt[pos] = optT{price: price, off: noff, mlen: ml, litlen: ll}
+				}
+			}
+			for a := 1; a <= trailing; a++ {
+				opt[last+a] = optT{price: opt[last].price + litPrice(a), mlen: 1, litlen: a}
+			}
+		}
+		if !direct {
+			bestM, bestOff = opt[last].mlen, opt[last].off
+			cur = last - bestM
+		}
+		// reverse traversal: record the chosen path forwards
+		cand, selM, selOff := cur, bestM, bestOff
+		for {
+			nm, no := opt[cand].mlen, opt[cand].off
+			opt[cand].mlen, opt[cand].off = selM, selOff
+			selM, selOff = nm, no
+			if nm > cand {
+				break
+			}
+			cand -= nm
+		}
+		for r := 0; r < last; {
+			ml, off := opt[r].mlen, opt[r].off
+			if ml == 1 {
+				ip++
+				r++
+				continue
+			}
+			r += ml
+			if emit(ml, off) {
+				return seqs[:len(seqs)-1], true, true
+			}
+		}
+	}
+	return append(seqs, hcLz4z3Seq{Lit: n - anchor}), false, true
+}
+
+// Linked-block predictors: LZ4F blockLinked frames at levels < 3 call
+// LZ4_compress_fast_continue once per block on one stream, so the u32 hash table is carried
+// from block to block. Accel is the acceleration (1 for level 0..2, 1-level below 0).
+const (
+	hcLz4z3PredLinkPrefix = 6 // blocks contiguous in memory (LZ4F_compressFrame, python lz4.frame.compress)
+	hcLz4z3PredLinkExt    = 7 // previous block seen through the saved 64 KiB dictionary (one LZ4F_compressUpdate per block)
+	hcLz4z3PredLinkHC     = 8 // LZ4_compress_HC_continue on contiguous blocks (LZ4F levels >= 3); Accel is the level
+	hcLz4z3PredLinkHCExt  = 9 // the same through LZ4_saveDictHC + external dictionary (lz4 CLI -BD at levels >= 3)
+)
+
+// linker is the carried compressor state of one frame: Next predicts content[pos:end].
+type hcLz4z3_linker interface {
+	Next(content []byte, end int) ([]hcLz4z3Seq, bool)
+}
+
+// HCLinked carries the LZ4HC hash chains across the dependent blocks of one frame. The chains
+// depend only on the positions inserted, so stored (overflowed) blocks need no special case.
+type hcLz4z3HCLinked struct {
+	Level int
+	Ext   bool
+	h     *hcLz4z3_hcState
+	pos   int
+	prev  int
+}
+
+func (l *hcLz4z3HCLinked) Next(content []byte, end int) ([]hcLz4z3Seq, bool) {
+	cont := l.h != nil
+	if !cont {
+		l.h = new(hcLz4z3_hcState)
+	}
+	start := l.pos
+	if cont && l.Ext { // LZ4_saveDictHC (last 64 KiB) + LZ4HC_setExternalDict
+		h := l.h
+		h.src = content[:end]
+		d := min(l.prev, 1<<16)
+		if d < 4 {
+			d = 0
+		}
+		if lim := uint32(start-d) + hcLz4z3_hcStart; h.next < lim {
+			h.next = lim
+		}
+		if d >= 4 {
+			h.insert(start - 3) // the last 3 dictionary positions are never referenced
+		}
+		h.next, h.pfx, h.dlow = uint32(start)+hcLz4z3_hcStart, start, start-d
+	}
+	l.pos, l.prev = end, end-start
+	s, _, ok := hcLz4z3_hcRun(l.h, content[:end], start, l.Level, nil, cont)
+	return s, ok
+}
+
+func hcLz4z3_newLinker(pred, accel int) (hcLz4z3_linker, error) {
+	switch pred {
+	case hcLz4z3PredLinkPrefix, hcLz4z3PredLinkExt:
+		if accel < 1 || accel > 65537 {
+			return nil, hcLz4z3_recipeErr("linked acceleration %d", accel)
+		}
+		return &hcLz4z3Linked{Ext: pred == hcLz4z3PredLinkExt, Accel: accel}, nil
+	case hcLz4z3PredLinkHC, hcLz4z3PredLinkHCExt:
+		if hcLz4z3HCAttempts(accel) == 0 {
+			return nil, hcLz4z3_recipeErr("linked LZ4HC level %d", accel)
+		}
+		return &hcLz4z3HCLinked{Level: accel, Ext: pred == hcLz4z3PredLinkHCExt}, nil
+	}
+	return nil, hcLz4z3_recipeErr("linked predictor %d", pred)
+}
+
+// Linked is the carried compressor state of one frame.
+type hcLz4z3Linked struct {
+	Ext   bool
+	Accel int
+	tab   [1 << hcLz4z3_hashLog]uint32
+	pos   int // content bytes consumed
+	prev  int // length of the previous block
+}
+
+// Next predicts the block content[l.pos:end] under LZ4F's output budget (block length - 1).
+// ok is false when the compressor would have overflowed the budget (LZ4F then stores the
+// block raw); the table still advances exactly as far as the real compressor got.
+func (l *hcLz4z3Linked) Next(content []byte, end int) (seqs []hcLz4z3Seq, ok bool) {
+	start := l.pos
+	n := end - start
+	budget := n - 1
+	dictLow, idxLow := 0, 0 // lowest history position reachable by catch-up; lowest valid index
+	if l.Ext {
+		d := min(l.prev, 1<<16)
+		dictLow = start - d
+		if d < 1<<16 && d < start { // dictSmall
+			idxLow = dictLow
+		}
+	}
+	l.pos, l.prev = end, n
+	src := content[:end]
+	accel := max(l.Accel, 1)
+	op, anchor := 0, start
+	if n >= hcLz4z3_mfLimit+1 {
+		mflimitPlusOne := end - hcLz4z3_mfLimit + 1
+		matchlimit := end - hcLz4z3_lastLiterals
+		hashAt := func(p int) uint32 { return hcLz4z3_hash5(binary.LittleEndian.Uint64(src[p:]), hcLz4z3_hashLog) }
+		r32 := func(p int) uint32 { return binary.LittleEndian.Uint32(src[p:]) }
+		ip := start
+		l.tab[hashAt(ip)] = uint32(ip)
+		ip++
+		forwardH := hashAt(ip)
+	outer:
+		for {
+			var match int
+			forwardIp, step, search := ip, 1, accel<<hcLz4z3_skipTrigger
+			for {
+				h := forwardH
+				cur := forwardIp
+				mi := int(l.tab[h])
+				ip = forwardIp
+				forwardIp += step
+				step = search >> hcLz4z3_skipTrigger
+				search++
+				if forwardIp > mflimitPlusOne {
+					break outer
+				}
+				forwardH = hashAt(forwardIp)
+				l.tab[h] = uint32(cur)
+				if mi < idxLow || mi+hcLz4z3_maxOff < cur {
+					continue
+				}
+				if r32(mi) == r32(ip) {
+					match = mi
+					break
+				}
+			}
+			low := 0
+			if l.Ext {
+				low = start
+				if match < start {
+					low = dictLow
+				}
+			}
+			for ip > anchor && match > low && src[ip-1] == src[match-1] {
+				ip--
+				match--
+			}
+			lit := ip - anchor
+			op++
+			if op+lit+8+lit/255 > budget {
+				return nil, false
+			}
+			if lit >= 15 {
+				op += (lit-15)/255 + 1
+			}
+			op += lit
+			for {
+				op += 2
+				ml := hcLz4z3_count(src, ip+hcLz4z3_minMatch, match+hcLz4z3_minMatch, matchlimit)
+				seqs = append(seqs, hcLz4z3Seq{Lit: lit, Match: ml + hcLz4z3_minMatch, Off: ip - match})
+				ip += ml + hcLz4z3_minMatch
+				if op+6+(ml+240)/255 > budget {
+					return nil, false
+				}
+				if ml >= 15 {
+					op += (ml-15)/255 + 1
+				}
+				anchor = ip
+				if ip >= mflimitPlusOne {
+					break outer
+				}
+				l.tab[hashAt(ip-2)] = uint32(ip - 2)
+				h := hashAt(ip)
+				mi := int(l.tab[h])
+				l.tab[h] = uint32(ip)
+				if mi >= idxLow && mi+hcLz4z3_maxOff >= ip && r32(mi) == r32(ip) {
+					op++
+					match, lit = mi, 0
+					continue
+				}
+				break
+			}
+			ip++
+			forwardH = hashAt(ip)
+		}
+	}
+	last := end - anchor
+	if op+last+1+(last+255-15)/255 > budget {
+		return nil, false
+	}
+	return append(seqs, hcLz4z3Seq{Lit: last}), true
+}
+
+// linkRun replays the linked predictor lazily: blocks are fed in order up to the one asked
+// for, so frames without linked recipes cost nothing. One profile per frame.
+type hcLz4z3_linkRun struct {
+	l     hcLz4z3_linker
+	pred  int
+	accel int
+	ends  []int // end offset of every block of the frame so far
+	done  int
+}
+
+func (lr *hcLz4z3_linkRun) seqs(content []byte, k int, rc hcLz4z3Recipe) ([]hcLz4z3Seq, error) {
+	if lr.l == nil {
+		l, err := hcLz4z3_newLinker(rc.Pred, rc.Accel)
+		if err != nil {
+			return nil, err
+		}
+		lr.l, lr.pred, lr.accel = l, rc.Pred, rc.Accel
+	} else if lr.pred != rc.Pred || lr.accel != rc.Accel {
+		return nil, hcLz4z3_recipeErr("linked profile changes inside a frame")
+	}
+	if k < lr.done {
+		return nil, hcLz4z3_recipeErr("linked block order")
+	}
+	var s []hcLz4z3Seq
+	ok := false
+	for ; lr.done <= k; lr.done++ {
+		s, ok = lr.l.Next(content, lr.ends[lr.done])
+	}
+	if !ok {
+		return nil, hcLz4z3_recipeErr("linked predictor overflows the block budget")
+	}
+	if rc.Kind == hcLz4z3KindHybrid {
+		if rc.Prefix > len(s) {
+			return nil, hcLz4z3_recipeErr("prefix %d beyond %d predicted sequences", rc.Prefix, len(s))
+		}
+		s = append(append([]hcLz4z3Seq(nil), s[:rc.Prefix]...), rc.Seqs...)
+	}
+	return s, nil
+}
+
+func hcLz4z3_isLinkPred(rc hcLz4z3Recipe) bool {
+	return rc.Kind != hcLz4z3KindExplicit && rc.Pred >= hcLz4z3PredLinkPrefix && rc.Pred <= hcLz4z3PredLinkHCExt
+}
+
+// linkAnalysis runs the candidate linked profiles over a dependent frame and emits the block
+// recipes of the profile that survives. The first block is an ordinary fresh-stream block: it
+// shows whether the frame is fast mode or LZ4HC (and narrows the level); the contiguous and
+// saved-dictionary variants then compete on the following blocks.
+type hcLz4z3_linkAnalysis struct {
+	recs  []hcLz4z3_linkRec
+	c     []hcLz4z3_linkCand
+	ready bool
+}
+
+type hcLz4z3_linkCand struct {
+	l     hcLz4z3_linker
+	pred  int
+	accel int
+	miss  int
+	died  int // 1 + index of the block at which the profile was dropped (0 = alive)
+	score int
+}
+
+type hcLz4z3_linkRec struct {
+	tag   byte
+	n     int
+	ext   []byte
+	seqs  []hcLz4z3Seq // nil for stored blocks and for blocks every live profile reproduces
+	k     [hcLz4z3_linkSlots]int
+	exact [hcLz4z3_linkSlots]bool
+}
+
+const (
+	hcLz4z3_linkSlots  = 4
+	hcLz4z3_linkGiveUp = 8 // consecutive unpredicted blocks before a profile is dropped
+)
+
+func (la *hcLz4z3_linkAnalysis) init(content []byte, seqs []hcLz4z3Seq) {
+	la.ready = true
+	accel := 1
+	var hc []int
+	for _, ac := range hcLz4z3_accelSweep {
+		if seqs == nil {
+			break
+		}
+		if k, _ := hcLz4z3_predictPrefix(hcLz4z3PredContinue, content, ac, seqs); k == len(seqs) {
+			accel = ac
+			break
+		}
+		if ac == 1 { // not the default fast profile: LZ4HC before the rarer accelerations
+			for lv := 3; lv <= 12; lv++ {
+				if k, _ := hcLz4z3_predictPrefix(hcLz4z3PredHC, content, lv, seqs); k == len(seqs) {
+					hc = append(hc, lv)
+				}
+			}
+			if hc != nil {
+				break
+			}
+		}
+	}
+	if hc == nil {
+		la.c = []hcLz4z3_linkCand{{l: &hcLz4z3Linked{Accel: accel}, pred: hcLz4z3PredLinkPrefix, accel: accel}, {l: &hcLz4z3Linked{Ext: true, Accel: accel}, pred: hcLz4z3PredLinkExt, accel: accel}}
+		return
+	}
+	// neighbouring levels often agree on one block: keep the lowest and the highest
+	for _, lv := range []int{hc[0], hc[len(hc)-1]} {
+		if len(la.c) == 2 && lv == hc[0] {
+			break
+		}
+		la.c = append(la.c, hcLz4z3_linkCand{l: &hcLz4z3HCLinked{Level: lv}, pred: hcLz4z3PredLinkHC, accel: lv}, hcLz4z3_linkCand{l: &hcLz4z3HCLinked{Level: lv, Ext: true}, pred: hcLz4z3PredLinkHCExt, accel: lv})
+	}
+}
+
+// block records one block; content ends with its n payload bytes, seqs is nil for stored blocks.
+func (la *hcLz4z3_linkAnalysis) block(content []byte, n int, seqs []hcLz4z3Seq, tag byte, ext []byte) {
+	rec := hcLz4z3_linkRec{tag: tag, n: n, ext: ext}
+	if !la.ready {
+		la.init(content, seqs)
+	}
+	alive, keep := 0, false
+	for m := range la.c {
+		c := &la.c[m]
+		if c.l == nil {
+			continue
+		}
+		alive++
+		s, ok := c.l.Next(content, len(content))
+		if seqs == nil {
+			continue
+		}
+		if ok {
+			rec.k[m] = hcLz4z3_commonPrefix(s, seqs)
+			rec.exact[m] = rec.k[m] == len(seqs) && len(s) == len(seqs)
+		}
+		if rec.exact[m] {
+			c.miss = 0
+			c.score++
+			continue
+		}
+		keep = true
+		if c.miss++; c.miss >= hcLz4z3_linkGiveUp {
+			c.l, c.died = nil, len(la.recs)+1
+		}
+	}
+	if keep || alive == 0 {
+		rec.seqs = seqs
+	}
+	la.recs = append(la.recs, rec)
+}
+
+func (la *hcLz4z3_linkAnalysis) emit(st *hcLz4z3FrameStats) []byte {
+	// the profile that lived longest has every sequence list it needs; ties go to the score
+	m, life := 0, func(c *hcLz4z3_linkCand) int {
+		if c.died == 0 {
+			return len(la.recs) + 2
+		}
+		return c.died
+	}
+	for i := range la.c {
+		if a, b := life(&la.c[i]), life(&la.c[m]); a > b || (a == b && la.c[i].score > la.c[m].score) {
+			m = i
+		}
+	}
+	var out []byte
+	for _, r := range la.recs {
+		out = append(out, r.tag)
+		out = binary.AppendUvarint(out, uint64(r.n))
+		if r.tag&1 == 0 {
+			rc := hcLz4z3Recipe{Kind: hcLz4z3KindExplicit, Seqs: r.seqs}
+			if r.exact[m] {
+				rc = hcLz4z3Recipe{Kind: hcLz4z3KindPredicted, Pred: la.c[m].pred, Accel: la.c[m].accel}
+			} else if r.k[m] > 0 {
+				h := hcLz4z3Recipe{Kind: hcLz4z3KindHybrid, Pred: la.c[m].pred, Accel: la.c[m].accel, Prefix: r.k[m], Seqs: r.seqs[r.k[m]:]}
+				if len(h.Marshal()) < len(rc.Marshal()) {
+					rc = h
+				}
+			}
+			st.count(rc, len(r.seqs))
+			out = append(out, rc.Marshal()...)
+		}
+		out = append(out, r.ext...)
+	}
+	return out
+}
+
+// PredPierrec models an independent, non-reference producer: the block compressor of
+// github.com/pierrec/lz4/v4 (v4.1.x, internal/lz4block.CompressBlock): 6-byte hash into a
+// 64 Ki-entry uint16 table, three probes per step, adaptive skipping, backward extension and
+// 8-byte-granular forward extension bounded by len-14. Verified against producer output.
+const hcLz4z3PredPierrec = 5
+
+type hcLz4z3_pierrecScratch struct {
+	table [1 << 16]uint16
+	inUse [1 << 11]uint32
+}
+
+var hcLz4z3_pierrecPool = sync.Pool{New: func() any { return new(hcLz4z3_pierrecScratch) }}
+
+func hcLz4z3_pierrecHash(x uint64) uint32 { return uint32(((x << 16) * 227718039650203) >> 48) }
+
+func (c *hcLz4z3_pierrecScratch) get(h uint32, si int) int {
+	i := 0
+	if c.inUse[h/32]&(1<<(h%32)) != 0 {
+		i = int(c.table[h])
+	}
+	i += si &^ 0xffff
+	if i >= si {
+		i -= 1 << 16
+	}
+	return i
+}
+
+func (c *hcLz4z3_pierrecScratch) put(h uint32, si int) {
+	c.table[h] = uint16(si)
+	c.inUse[h/32] |= 1 << (h % 32)
+}
+
+// pierrecSeqs optionally stops at the first sequence that disagrees with target.
+func hcLz4z3_pierrecSeqs(src []byte, target []hcLz4z3Seq) (seqs []hcLz4z3Seq, aborted bool) {
+	c := hcLz4z3_pierrecPool.Get().(*hcLz4z3_pierrecScratch)
+	defer hcLz4z3_pierrecPool.Put(c)
+	c.inUse = [1 << 11]uint32{}
+	const win = 1 << 16
+	var si, anchor int
+	sn := len(src) - 14
+	for si < sn {
+		match := binary.LittleEndian.Uint64(src[si:])
+		h := hcLz4z3_pierrecHash(match)
+		h2 := hcLz4z3_pierrecHash(match >> 8)
+		ref := c.get(h, si)
+		ref2 := c.get(h2, si+1)
+		c.put(h, si)
+		c.put(h2, si+1)
+		offset := si - ref
+		if offset <= 0 || offset >= win || uint32(match) != binary.LittleEndian.Uint32(src[ref:]) {
+			h = hcLz4z3_pierrecHash(match >> 16)
+			ref3 := c.get(h, si+2)
+			si++
+			offset = si - ref2
+			if offset <= 0 || offset >= win || uint32(match>>8) != binary.LittleEndian.Uint32(src[ref2:]) {
+				si++
+				offset = si - ref3
+				c.put(h, si)
+				if offset <= 0 || offset >= win || uint32(match>>16) != binary.LittleEndian.Uint32(src[ref3:]) {
+					si += 2 + (si-anchor)>>7
+					continue
+				}
+			}
+		}
+		lLen := si - anchor
+		mLen := 4
+		for tOff := si - offset - 1; lLen > 0 && tOff >= 0 && src[si-1] == src[tOff]; tOff-- {
+			si--
+			lLen--
+			mLen++
+		}
+		start := si
+		si += mLen
+		for si+8 <= sn {
+			x := binary.LittleEndian.Uint64(src[si:]) ^ binary.LittleEndian.Uint64(src[si-offset:])
+			if x != 0 {
+				si += bits.TrailingZeros64(x) >> 3
+				break
+			}
+			si += 8
+		}
+		seqs = append(seqs, hcLz4z3Seq{Lit: lLen, Match: si - start, Off: offset})
+		if target != nil && (len(seqs) > len(target) || seqs[len(seqs)-1] != target[len(seqs)-1]) {
+			return seqs[:len(seqs)-1], true
+		}
+		anchor = si
+		if si >= sn {
+			break
+		}
+		c.put(hcLz4z3_pierrecHash(binary.LittleEndian.Uint64(src[si-2:])), si-2)
+	}
+	return append(seqs, hcLz4z3Seq{Lit: len(src) - anchor}), false
+}
+
+// Recipe kinds.
+const (
+	hcLz4z3KindExplicit  = 0 // full sequence list
+	hcLz4z3KindPredicted = 1 // predictor id + acceleration reproduces the block
+	hcLz4z3KindHybrid    = 2 // predictor reproduces the first K sequences; the rest is explicit
+)
+
+// Recipe is the reversible decision record of one LZ4 block.
+type hcLz4z3Recipe struct {
+	Kind   int
+	Pred   int
+	Accel  int
+	Prefix int          // KindHybrid: predicted sequences taken from the predictor
+	Seqs   []hcLz4z3Seq // KindExplicit: all sequences; KindHybrid: the explicit tail
+}
+
+// accelSweep lists the accelerations tried per predictor (producers use small values; the
+// lz4 CLI --fast=N and LZ4_ACCELERATION_DEFAULT cover 1..64, wrappers occasionally use larger ones).
+var hcLz4z3_accelSweep = func() []int {
+	var a []int
+	for i := 1; i <= 64; i++ {
+		a = append(a, i)
+	}
+	return append(a, 96, 128, 192, 256, 512, 1024, 4096, 16384, 65537)
+}()
+
+// Analyze returns the cheapest verified recipe for block (decoded to plain with sequences
+// seqs). hist must be empty for predictor kinds: predictors model independent blocks.
+func hcLz4z3Analyze(plain []byte, seqs []hcLz4z3Seq, independent bool) hcLz4z3Recipe {
+	best := hcLz4z3Recipe{Kind: hcLz4z3KindExplicit, Seqs: seqs}
+	if !independent {
+		return best
+	}
+	bestLen := len(best.Marshal())
+	bestPrefix, bestP := 0, hcLz4z3Recipe{}
+	for _, id := range []int{hcLz4z3PredDefault, hcLz4z3PredContinue, hcLz4z3PredDefault5, hcLz4z3PredPierrec} {
+		for _, ac := range hcLz4z3_accelSweep {
+			if id == hcLz4z3PredPierrec && ac != 1 { // the Go producer has no acceleration parameter
+				break
+			}
+			k, ok := hcLz4z3_predictPrefix(id, plain, ac, seqs)
+			if !ok {
+				continue
+			}
+			if k == len(seqs) {
+				r := hcLz4z3Recipe{Kind: hcLz4z3KindPredicted, Pred: id, Accel: ac}
+				if n := len(r.Marshal()); n < bestLen {
+					best, bestLen = r, n
+				}
+				return best // exact predictor hits are as cheap as recipes get
+			}
+			if k > bestPrefix {
+				bestPrefix, bestP = k, hcLz4z3Recipe{Kind: hcLz4z3KindHybrid, Pred: id, Accel: ac, Prefix: k, Seqs: seqs[k:]}
+			}
+		}
+	}
+	for lv := 3; lv <= 12; lv++ { // LZ4HC hash-chain levels 3..9 and optimal-parser levels 10..12
+		if k, ok := hcLz4z3_predictPrefix(hcLz4z3PredHC, plain, lv, seqs); ok {
+			if k == len(seqs) {
+				r := hcLz4z3Recipe{Kind: hcLz4z3KindPredicted, Pred: hcLz4z3PredHC, Accel: lv}
+				if n := len(r.Marshal()); n < bestLen {
+					best = r
+				}
+				return best
+			}
+			if k > bestPrefix {
+				bestPrefix, bestP = k, hcLz4z3Recipe{Kind: hcLz4z3KindHybrid, Pred: hcLz4z3PredHC, Accel: lv, Prefix: k, Seqs: seqs[k:]}
+			}
+		}
+	}
+	if bestPrefix > 0 {
+		if n := len(bestP.Marshal()); n < bestLen {
+			best = bestP
+		}
+	}
+	return best
+}
+
+func hcLz4z3_commonPrefix(a, b []hcLz4z3Seq) int {
+	n := min(len(a), len(b))
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
+// Marshal serializes the recipe canonically.
+func (r hcLz4z3Recipe) Marshal() []byte {
+	b := []byte{byte(r.Kind)}
+	switch r.Kind {
+	case hcLz4z3KindPredicted:
+		b = append(b, byte(r.Pred))
+		b = binary.AppendUvarint(b, uint64(r.Accel))
+	case hcLz4z3KindHybrid:
+		b = append(b, byte(r.Pred))
+		b = binary.AppendUvarint(b, uint64(r.Accel))
+		b = binary.AppendUvarint(b, uint64(r.Prefix))
+		b = hcLz4z3_appendSeqs(b, r.Seqs)
+	default:
+		b = hcLz4z3_appendSeqs(b, r.Seqs)
+	}
+	return b
+}
+
+func hcLz4z3_appendSeqs(b []byte, s []hcLz4z3Seq) []byte {
+	b = binary.AppendUvarint(b, uint64(len(s)))
+	for i, q := range s {
+		b = binary.AppendUvarint(b, uint64(q.Lit))
+		if q.Match != 0 || i != len(s)-1 {
+			b = binary.AppendUvarint(b, uint64(q.Match-hcLz4z3_minMatch))
+			b = binary.AppendUvarint(b, uint64(q.Off))
+		}
+	}
+	return b
+}
+
+// Unmarshal parses a serialized recipe; sizes are bounded by lim and the remaining input.
+func hcLz4z3Unmarshal(b []byte, lim hcLz4z3Limits) (hcLz4z3Recipe, int, error) {
+	lim = lim.norm()
+	var r hcLz4z3Recipe
+	if len(b) < 1 {
+		return r, 0, hcLz4z3_recipeErr("empty recipe")
+	}
+	r.Kind = int(b[0])
+	i := 1
+	uv := func() (uint64, bool) {
+		v, n := binary.Uvarint(b[i:])
+		if n <= 0 {
+			return 0, false
+		}
+		i += n
+		return v, true
+	}
+	switch r.Kind {
+	case hcLz4z3KindExplicit:
+	case hcLz4z3KindPredicted, hcLz4z3KindHybrid:
+		if len(b) < 2 {
+			return r, 0, hcLz4z3_recipeErr("truncated predictor id")
+		}
+		r.Pred = int(b[1])
+		i = 2
+		a, ok := uv()
+		if !ok || a < 1 || a > 1<<20 {
+			return r, 0, hcLz4z3_recipeErr("acceleration")
+		}
+		r.Accel = int(a)
+		if r.Kind == hcLz4z3KindHybrid {
+			p, ok := uv()
+			if !ok || p > uint64(lim.MaxSeqs) {
+				return r, 0, hcLz4z3_recipeErr("prefix")
+			}
+			r.Prefix = int(p)
+		}
+	default:
+		return r, 0, hcLz4z3_recipeErr("kind %d", r.Kind)
+	}
+	if r.Kind != hcLz4z3KindPredicted {
+		n, ok := uv()
+		if !ok || n > uint64(lim.MaxSeqs) || n > uint64(len(b)-i) {
+			return r, 0, hcLz4z3_recipeErr("sequence count")
+		}
+		r.Seqs = make([]hcLz4z3Seq, n)
+		for k := range r.Seqs {
+			l, ok := uv()
+			if !ok || l > uint64(lim.MaxDecoded) {
+				return r, 0, hcLz4z3_recipeErr("literal run")
+			}
+			r.Seqs[k].Lit = int(l)
+			if k == len(r.Seqs)-1 {
+				break // the final sequence is literal-only
+			}
+			m, ok1 := uv()
+			o, ok2 := uv()
+			if !ok1 || !ok2 || m > uint64(lim.MaxDecoded) || o < 1 || o > hcLz4z3_maxOff {
+				return r, 0, hcLz4z3_recipeErr("match fields")
+			}
+			r.Seqs[k].Match, r.Seqs[k].Off = int(m)+hcLz4z3_minMatch, int(o)
+		}
+	}
+	return r, i, nil
+}
+
+// Replay rebuilds the compressed block from the payload (and optional linked history).
+func (r hcLz4z3Recipe) Replay(hist, plain []byte, lim hcLz4z3Limits) ([]byte, error) {
+	lim = lim.norm()
+	var seqs []hcLz4z3Seq
+	switch r.Kind {
+	case hcLz4z3KindExplicit:
+		seqs = r.Seqs
+	case hcLz4z3KindPredicted, hcLz4z3KindHybrid:
+		if len(hist) != 0 {
+			return nil, hcLz4z3_recipeErr("predictor on a linked block")
+		}
+		p, ok := hcLz4z3Predict(r.Pred, plain, r.Accel)
+		if !ok {
+			return nil, hcLz4z3_recipeErr("unknown predictor %d", r.Pred)
+		}
+		if r.Kind == hcLz4z3KindPredicted {
+			seqs = p
+		} else {
+			if r.Prefix > len(p) {
+				return nil, hcLz4z3_recipeErr("prefix %d beyond %d predicted sequences", r.Prefix, len(p))
+			}
+			seqs = append(append([]hcLz4z3Seq(nil), p[:r.Prefix]...), r.Seqs...)
+		}
+	default:
+		return nil, hcLz4z3_recipeErr("kind %d", r.Kind)
+	}
+	if len(seqs) > lim.MaxSeqs || len(plain) > lim.MaxDecoded {
+		return nil, hcLz4z3ErrLimit
+	}
+	return hcLz4z3BuildH(hist, plain, seqs)
+}
+
+// Analyzer is Analyze with memory: producers use one encoder profile per file, so the profile
+// that reproduced the previous block is tried first (one encoder run instead of a sweep), and
+// after GiveUp consecutive blocks that no predictor reproduces the sweep is skipped: an
+// unsupported producer then costs one explicit recipe per block and no encoder runs.
+type hcLz4z3Analyzer struct {
+	GiveUp   int // 0 = never give up
+	pred     int
+	accel    int
+	miss     int
+	Hits     int // blocks reproduced by the remembered profile
+	Sweeps   int // blocks that needed the full sweep
+	Rejected int // blocks handled without any predictor run
+}
+
+// Analyze returns the cheapest verified recipe for the block (see the package-level Analyze).
+func (a *hcLz4z3Analyzer) Analyze(plain []byte, seqs []hcLz4z3Seq, independent bool) hcLz4z3Recipe {
+	if !independent {
+		return hcLz4z3Recipe{Kind: hcLz4z3KindExplicit, Seqs: seqs}
+	}
+	if a.pred != hcLz4z3PredNone {
+		if k, ok := hcLz4z3_predictPrefix(a.pred, plain, a.accel, seqs); ok && k == len(seqs) {
+			a.Hits++
+			a.miss = 0
+			return hcLz4z3Recipe{Kind: hcLz4z3KindPredicted, Pred: a.pred, Accel: a.accel}
+		}
+	}
+	if a.GiveUp > 0 && a.miss >= a.GiveUp {
+		a.Rejected++
+		return hcLz4z3Recipe{Kind: hcLz4z3KindExplicit, Seqs: seqs}
+	}
+	a.Sweeps++
+	r := hcLz4z3Analyze(plain, seqs, true)
+	if r.Kind == hcLz4z3KindPredicted {
+		a.pred, a.accel, a.miss = r.Pred, r.Accel, 0
+	} else {
+		a.miss++
+	}
+	return r
+}
+
+const (
+	hcLz4z3_p32a = 2654435761
+	hcLz4z3_p32b = 2246822519
+	hcLz4z3_p32c = 3266489917
+	hcLz4z3_p32d = 668265263
+	hcLz4z3_p32e = 374761393
+)
+
+// XXH32 is the xxHash 32-bit digest (LZ4 frame header, block and content checksums).
+func hcLz4z3XXH32(b []byte, seed uint32) uint32 {
+	n := len(b)
+	var h uint32
+	if n >= 16 {
+		v1, v2, v3, v4 := seed+hcLz4z3_p32a+hcLz4z3_p32b, seed+hcLz4z3_p32b, seed, seed-hcLz4z3_p32a
+		for len(b) >= 16 {
+			v1 = bits.RotateLeft32(v1+binary.LittleEndian.Uint32(b)*hcLz4z3_p32b, 13) * hcLz4z3_p32a
+			v2 = bits.RotateLeft32(v2+binary.LittleEndian.Uint32(b[4:])*hcLz4z3_p32b, 13) * hcLz4z3_p32a
+			v3 = bits.RotateLeft32(v3+binary.LittleEndian.Uint32(b[8:])*hcLz4z3_p32b, 13) * hcLz4z3_p32a
+			v4 = bits.RotateLeft32(v4+binary.LittleEndian.Uint32(b[12:])*hcLz4z3_p32b, 13) * hcLz4z3_p32a
+			b = b[16:]
+		}
+		h = bits.RotateLeft32(v1, 1) + bits.RotateLeft32(v2, 7) + bits.RotateLeft32(v3, 12) + bits.RotateLeft32(v4, 18)
+	} else {
+		h = seed + hcLz4z3_p32e
+	}
+	h += uint32(n)
+	for ; len(b) >= 4; b = b[4:] {
+		h = bits.RotateLeft32(h+binary.LittleEndian.Uint32(b)*hcLz4z3_p32c, 17) * hcLz4z3_p32d
+	}
+	for _, c := range b {
+		h = bits.RotateLeft32(h+uint32(c)*hcLz4z3_p32e, 11) * hcLz4z3_p32a
+	}
+	h ^= h >> 15
+	h *= hcLz4z3_p32b
+	h ^= h >> 13
+	h *= hcLz4z3_p32c
+	h ^= h >> 16
+	return h
 }
 
 // =============================================================================
@@ -59079,6 +66026,32 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 	return repFloorOf(env, reach)
 }
 
+// repRootHard reports whether a representation closure holds a Parquet or SST recipe that needs the
+// exact Brotli or LZ4 replay (the recipe's first byte is the hard version).
+func (s *Store) repRootHard(r *repRoot) (hard, stream bool, err error) {
+	src := s.newRepSource(r.Descs, nil)
+	defer src.close()
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	reach, err := env.reachable(r.Rep)
+	if err != nil {
+		return false, false, err
+	}
+	for id, role := range reach.Role {
+		if role != repDepRep {
+			continue
+		}
+		obj, err := env.loadRep(id)
+		if err != nil {
+			return false, false, err
+		}
+		if len(obj.Recipe) > 0 && (obj.Kind == repKindParquet && obj.Recipe[0] >= repPQrecipeVersionHard || obj.Kind == repKindSST && obj.Recipe[0] == repSSrecipeVersionHard) {
+			hard = true
+			stream = stream || obj.Kind == repKindParquet && obj.Recipe[0] == repPQrecipeVersionStream
+		}
+	}
+	return hard, stream, nil
+}
+
 // repFloorOf is the store-format level the representation closure reach describes
 // requires. A builder that has just walked the closure passes its own result in
 // rather than walking it a second time.
@@ -59560,6 +66533,10 @@ func repSSDecodeRange(w io.Writer, recipe []byte, get repSSGetter, off, n int64,
 			if err := repSSreplayZstdBlock(&payload, bl.Zstd, raw, lim); err != nil {
 				return st, err
 			}
+		case repSSCompLZ4, repSSCompLZ4HC:
+			if err := repSSreplayLZ4Block(&payload, bl.LZ4, raw, lim); err != nil {
+				return st, err
+			}
 		case repSSCompNone:
 			payload.Write(raw)
 		case repSSCompSnappy:
@@ -59671,6 +66648,8 @@ type repSSLimits struct {
 	MaxTail        int64 // opaque tail span (default 256 MiB)
 	MaxRecordBytes int64 // one key or value (default 64 MiB)
 	MaxRecipe      int64 // recipe head bytes (default 256 MiB)
+	// Hard admits LZ4 and LZ4HC blocks to analysis; the decoder always replays them.
+	Hard bool
 }
 
 // Port source: zeros3-z3/sstz3/doc.go
@@ -59770,6 +66749,7 @@ type repSSStats struct {
 	DataBytes, TailBytes        int64
 	DecodedBytes                int64
 	SnappyCmds                  int64
+	LZ4Kinds                    [3]int // LZ4 blocks: explicit, predicted, hybrid recipes
 	PredBlocks                  [4]int // Snappy blocks: explicit, Go-, C++1.1.10-, C++15-predicted
 	Footer                      repSSFooter
 	RestartInterval             int
@@ -59890,6 +66870,7 @@ func repSSEncode(r io.ReaderAt, size int64, opt repSSOptions, emit repSSEmit) ([
 		rec.RestartInterval = uint32(ri)
 		st.RestartInterval = ri
 	}
+	lz4an := &hcLz4z3Analyzer{GiveUp: 16} // one producer profile per table
 	gb := &repSSgroupBuilder{form: opt.Form, emit: emit, rec: rec, st: &st}
 	var (
 		keys  []byte
@@ -59903,11 +66884,20 @@ func repSSEncode(r io.ReaderAt, size int64, opt repSSOptions, emit repSSEmit) ([
 		if err != nil {
 			return nil, repSSSizes{}, st, err
 		}
-		dec, cmds, err := repSSDecodeBlock(rb, lim)
+		var dec []byte
+		var cmds []repSNCmd
+		bl := repSSBlockRec{CSize: h.Size, Trailer: rb.Trailer}
+		if rb.Comp() == repSSCompLZ4 || rb.Comp() == repSSCompLZ4HC { // decode and recipe in one pass
+			dec, bl.LZ4, err = repSSanalyzeLZ4Block(rb.Payload, lim, lz4an)
+			if err == nil {
+				st.LZ4Kinds[repSSlz4Kind(bl.LZ4)]++
+			}
+		} else {
+			dec, cmds, err = repSSDecodeBlock(rb, lim)
+		}
 		if err != nil {
 			return nil, repSSSizes{}, st, err
 		}
-		bl := repSSBlockRec{CSize: h.Size, Trailer: rb.Trailer}
 		st.Blocks++
 		st.CompBlocks[rb.Comp()&7]++
 		st.DataBytes += int64(h.Size) + repSStrailerLen
@@ -60358,12 +67348,18 @@ const (
 )
 
 // Port source: zeros3-z3/sstz3/recipe.go
-const repSSrecipeVersion = 1
+// Version 2 is written only for a table with an LZ4 or LZ4HC block: a build that stops at version 1
+// refuses it by its first byte, and a version 1 recipe is unchanged.
+const (
+	repSSrecipeVersion     = 1
+	repSSrecipeVersionHard = 2
+)
 
 // Port source: zeros3-z3/sstz3/recipe.go
 // BlockRec is the per-block physical framing.
 type repSSBlockRec struct {
 	Zstd     []byte // exact zstd skeleton/units and original size prefix
+	LZ4      []byte // exact lz4 recipe (Z4-B6): size prefix | lz4 recipe
 	CSize    uint64 // stored payload bytes (without the trailer)
 	Trailer  [repSStrailerLen]byte
 	Entries  uint32 // logical layouts
@@ -60396,12 +67392,12 @@ type repSSRecipe struct {
 // Port source: zeros3-z3/sstz3/recipe.go
 // Sizes is the byte accounting of a serialized recipe.
 type repSSSizes struct {
-	Head, Framing, Snappy, Zstd, Explicit, Groups, Trailers, Digests int64
+	Head, Framing, Snappy, Zstd, LZ4, Explicit, Groups, Trailers, Digests int64
 }
 
 // Port source: zeros3-z3/sstz3/recipe.go
 func (s repSSSizes) Total() int64 {
-	return s.Head + s.Framing + s.Snappy + s.Zstd + s.Explicit + s.Groups + s.Trailers + s.Digests
+	return s.Head + s.Framing + s.Snappy + s.Zstd + s.LZ4 + s.Explicit + s.Groups + s.Trailers + s.Digests
 }
 
 // Port source: zeros3-z3/sstz3/recipe.go
@@ -60411,7 +67407,13 @@ func repSSappendUv(b []byte, v uint64) []byte { return binary.AppendUvarint(b, v
 // Marshal serialises the recipe: head fields then the digests.
 func (r *repSSRecipe) Marshal() ([]byte, repSSSizes) {
 	var s repSSSizes
-	b := []byte{repSSrecipeVersion, byte(r.Form)}
+	ver := byte(repSSrecipeVersion)
+	for i := range r.Blocks {
+		if c := r.Blocks[i].Trailer[0]; c == repSSCompLZ4 || c == repSSCompLZ4HC {
+			ver = repSSrecipeVersionHard
+		}
+	}
+	b := []byte{ver, byte(r.Form)}
 	b = repSSappendUv(b, uint64(r.Size))
 	b = repSSappendUv(b, uint64(r.RestartInterval))
 	b = repSSappendUv(b, uint64(len(r.Blocks)))
@@ -60449,6 +67451,12 @@ func (r *repSSRecipe) Marshal() ([]byte, repSSSizes) {
 			b = repSSappendUv(b, uint64(len(bl.Zstd)))
 			b = append(b, bl.Zstd...)
 			s.Zstd += int64(len(b) - n)
+		}
+		if bl.Trailer[0] == repSSCompLZ4 || bl.Trailer[0] == repSSCompLZ4HC {
+			n := len(b)
+			b = repSSappendUv(b, uint64(len(bl.LZ4)))
+			b = append(b, bl.LZ4...)
+			s.LZ4 += int64(len(b) - n)
 		}
 		if bl.Trailer[0] == repSSCompSnappy {
 			n1 := len(b)
@@ -60572,7 +67580,7 @@ func repSSParseRecipe(b []byte, lim repSSLimits) (*repSSRecipe, error) {
 	if int64(len(b)) > lim.MaxRecipe {
 		return nil, repSSErrLimit
 	}
-	if len(b) < 2 || b[0] != repSSrecipeVersion {
+	if len(b) < 2 || b[0] != repSSrecipeVersion && b[0] != repSSrecipeVersionHard {
 		return nil, repSSrecipeErr("version")
 	}
 	if repSSForm(b[1]) > repSSmaxForm {
@@ -60633,6 +67641,11 @@ func repSSParseRecipe(b []byte, lim repSSLimits) (*repSSRecipe, error) {
 			}
 		} else if bl.Trailer[0] == repSSCompZstd {
 			bl.Zstd = r.take(r.uv(uint64(lim.MaxRecipe)))
+		} else if bl.Trailer[0] == repSSCompLZ4 || bl.Trailer[0] == repSSCompLZ4HC {
+			if b[0] != repSSrecipeVersionHard {
+				r.fail("compression type %d in a version %d recipe", bl.Trailer[0], b[0])
+			}
+			bl.LZ4 = r.take(r.uv(uint64(lim.MaxRecipe)))
 		} else if bl.Trailer[0] != repSSCompNone {
 			r.fail("compression type %d", bl.Trailer[0])
 		}
@@ -60831,6 +67844,9 @@ func repSSDecodeBlock(b *repSSRawBlock, lim repSSLimits) (decoded []byte, cmds [
 	case repSSCompZstd:
 		d, _, e := repSSanalyzeZstdBlock(b.Payload, lim)
 		return d, nil, e
+	case repSSCompLZ4, repSSCompLZ4HC:
+		d, e := repSSdecodeLZ4Block(b.Payload, lim)
+		return d, nil, e
 	case repSSCompSnappy:
 		d, c, err := repSNParse(b.Payload, repSNLimits{MaxDecoded: lim.MaxDecoded})
 		if err != nil {
@@ -60839,6 +67855,107 @@ func repSSDecodeBlock(b *repSSRawBlock, lim repSSLimits) (decoded []byte, cmds [
 		return d, c, nil
 	}
 	return nil, nil, repSSunsupported("compression type %d", b.Comp())
+}
+
+// Port source: zeros3-z3/sstz3/lz4.go
+// Z4-B6: RocksDB LZ4 / LZ4HC data and index blocks (compress_format_version 2): a varint32
+// decoded size followed by one raw LZ4 block. The prefix spelling is kept verbatim; the block
+// is described by an LZ4 recipe (predictor id or explicit sequences), verified at analysis.
+func repSSlz4Limits(lim repSSLimits) hcLz4z3Limits {
+	lim = lim.norm()
+	return hcLz4z3Limits{MaxDecoded: int(lim.MaxDecoded), MaxSeqs: int(lim.MaxDecoded)/4 + 1}
+}
+
+// Port source: zeros3-z3/sstz3/lz4.go
+// analyzeLZ4Block returns the decoded block and the serialized recipe
+// (uvarint prefix length | prefix bytes | lz4 recipe). an carries the producer profile across
+// the blocks of one table (nil = stateless sweep).
+func repSSanalyzeLZ4Block(payload []byte, lim repSSLimits, an *hcLz4z3Analyzer) ([]byte, []byte, error) {
+	lim = lim.norm()
+	n, k := binary.Uvarint(payload)
+	if k <= 0 || n == 0 || n > uint64(lim.MaxDecoded) {
+		return nil, nil, repSSunsupported("lz4 block decoded-size prefix")
+	}
+	ll := repSSlz4Limits(lim)
+	plain, seqs, err := hcLz4z3Decode(payload[k:], int(n), ll)
+	if err != nil {
+		return nil, nil, repSScorrupt("lz4 block: %v", err)
+	}
+	var rc hcLz4z3Recipe
+	if an != nil {
+		rc = an.Analyze(plain, seqs, true)
+	} else {
+		rc = hcLz4z3Analyze(plain, seqs, true)
+	}
+	// A predicted recipe was accepted because the predictor's sequences equal the decoded ones, so
+	// rebuilding the block from those sequences proves the recipe without a second encoder run.
+	var rep []byte
+	if rc.Kind == hcLz4z3KindPredicted {
+		rep, err = hcLz4z3Build(plain, seqs)
+	} else {
+		rep, err = rc.Replay(nil, plain, ll)
+	}
+	if err != nil || string(rep) != string(payload[k:]) {
+		return nil, nil, repSSunsupported("lz4 recipe does not reproduce the block (%v)", err)
+	}
+	recipe := repSSappendUv(nil, uint64(k))
+	recipe = append(recipe, payload[:k]...)
+	recipe = append(recipe, rc.Marshal()...)
+	return plain, recipe, nil
+}
+
+// Port source: zeros3-z3/sstz3/lz4.go
+// decodeLZ4Block decodes a block without building a recipe (read paths).
+func repSSdecodeLZ4Block(payload []byte, lim repSSLimits) ([]byte, error) {
+	lim = lim.norm()
+	n, k := binary.Uvarint(payload)
+	if k <= 0 || n == 0 || n > uint64(lim.MaxDecoded) {
+		return nil, repSSunsupported("lz4 block decoded-size prefix")
+	}
+	plain, _, err := hcLz4z3Decode(payload[k:], int(n), repSSlz4Limits(lim))
+	if err != nil {
+		return nil, repSScorrupt("lz4 block: %v", err)
+	}
+	return plain, nil
+}
+
+// Port source: zeros3-z3/sstz3/lz4.go
+func repSSreplayLZ4Block(w io.Writer, recipe, plain []byte, lim repSSLimits) error {
+	lim = lim.norm()
+	n, k := binary.Uvarint(recipe)
+	if k <= 0 || n == 0 || n > 10 || n > uint64(len(recipe)-k) {
+		return repSSrecipeErr("lz4 prefix recipe")
+	}
+	prefix := recipe[k : k+int(n)]
+	want, l := binary.Uvarint(prefix)
+	if l != len(prefix) || want != uint64(len(plain)) {
+		return repSSrecipeErr("lz4 decoded size")
+	}
+	rc, used, err := hcLz4z3Unmarshal(recipe[k+int(n):], repSSlz4Limits(lim))
+	if err != nil {
+		return repSSrecipeErr("lz4: %v", err)
+	}
+	if used != len(recipe)-k-int(n) {
+		return repSSrecipeErr("lz4 recipe has %d trailing bytes", len(recipe)-k-int(n)-used)
+	}
+	blk, err := rc.Replay(nil, plain, repSSlz4Limits(lim))
+	if err != nil {
+		return repSSrecipeErr("lz4: %v", err)
+	}
+	if _, err := w.Write(prefix); err != nil {
+		return err
+	}
+	nw, err := w.Write(blk)
+	if err == nil && nw != len(blk) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
+// Port source: zeros3-z3/sstz3/lz4.go
+// lz4Kind returns the recipe kind (0 explicit, 1 predicted, 2 hybrid) of an analyzed recipe.
+func repSSlz4Kind(recipe []byte) int {
+	return int(recipe[1+int(recipe[0])]) % 3
 }
 
 // Port source: zeros3-z3/sstz3/table.go
@@ -61328,7 +68445,7 @@ func (a *repPQAnalyzer) ChunkSupport(c *repPQChunk) string {
 		return "repeated (nested) column"
 	case col.MaxDef > 8:
 		return "definition levels above 8"
-	case !repPQCodecs(c.Codec):
+	case !repPQCodecs(c.Codec, a.Lim.Hard):
 		return "codec " + repPQCodecName(c.Codec)
 	case c.NumValues > 1<<40:
 		return "huge chunk"
@@ -61482,6 +68599,9 @@ func (a *repPQAnalyzer) chunkPass(c *repPQChunk, plan *repPQChunkPlan, sk *repPQ
 		}
 		if rec.ID == repPQCompZstd {
 			info.CompRecBytes = len(rec.Zstd)
+		}
+		if rec.ID == repPQCompLZ4Rec {
+			info.CompRecBytes = len(rec.LZ4)
 		}
 		switch p.Type {
 		case repPQPageDict:
@@ -61684,20 +68804,27 @@ func (a *repPQAnalyzer) FinishColumn(col int, level func(rec []byte, items int) 
 // commands; the zstdz3 skeleton and units). A predictor id is recorded only after the
 // predictor's output was compared with the original payload (the Z3-30 rule).
 const (
-	repPQCompNone     = 0 // UNCOMPRESSED: payload == body
-	repPQCompSnapCmds = 1 // explicit Snappy commands
-	repPQCompSnapRef  = 2 // golang/snappy, fragment by fragment
-	repPQCompSnapCPP  = 3 // C++ snappy 1.1.x, 14-bit hash
-	repPQCompSnapCPP5 = 4 // C++ snappy with a 15-bit hash
-	repPQCompZstd     = 5 // zstdz3 skeleton + units
-	repPQCompSnapCRC  = 6 // C++ snappy 1.2.x built with CRC32C table hashing (DuckDB 2.0.0)
-	repPQcompMax      = 6
+	repPQCompNone     = 0  // UNCOMPRESSED: payload == body
+	repPQCompSnapCmds = 1  // explicit Snappy commands
+	repPQCompSnapRef  = 2  // golang/snappy, fragment by fragment
+	repPQCompSnapCPP  = 3  // C++ snappy 1.1.x, 14-bit hash
+	repPQCompSnapCPP5 = 4  // C++ snappy with a 15-bit hash
+	repPQCompZstd     = 5  // zstdz3 skeleton + units
+	repPQCompSnapCRC  = 6  // C++ snappy 1.2.x built with CRC32C table hashing (DuckDB 2.0.0)
+	repPQCompLZ4Rec   = 7  // Z4-B6: lz4 recipe member (explicit sequences, hybrid, or a predictor with acceleration != 1)
+	repPQCompLZ4Def   = 8  // PredDefault, acceleration 1
+	repPQCompLZ4Cont  = 9  // PredContinue, acceleration 1
+	repPQCompLZ4Def5  = 10 // PredDefault5, acceleration 1
+	repPQCompBrotli5  = 11 // Z4-P7: one-shot google/brotli at quality 5..9 (ids 11..15), 22-bit window
+	repPQCompBrotli9  = 15
+	repPQcompMax      = 15
+	repPQcompHard     = 7 // first id whose recipe needs the exact Brotli/LZ4 replay (recipe version 2)
 )
 
 // Port source: zeros3-z3/parquetz3/codec.go
 // CompName is the audit name of a compression id.
 func repPQCompName(id int) string {
-	return [...]string{"none", "snappy-explicit", "snappy-go", "snappy-cpp14", "snappy-cpp15", "zstd-explicit", "snappy-cpp-crc15"}[id]
+	return [...]string{"none", "snappy-explicit", "snappy-go", "snappy-cpp14", "snappy-cpp15", "zstd-explicit", "snappy-cpp-crc15", "lz4-recipe", "lz4-default", "lz4-continue", "lz4-default5", "brotli-q5", "brotli-q6", "brotli-q7", "brotli-q8", "brotli-q9"}[id]
 }
 
 // Port source: zeros3-z3/parquetz3/codec.go
@@ -61706,6 +68833,7 @@ type repPQCompRec struct {
 	ID    uint8
 	Cmds  []byte // CompSnapCmds: snappyz3.Marshal of the commands
 	Zstd  []byte // CompZstd: uvarint(len skeleton) | skeleton | units
+	LZ4   []byte // repPQCompLZ4Rec: lz4 recipe, marshaled
 	hints int
 }
 
@@ -61726,8 +68854,9 @@ func repPQsnapEncoder(id uint8) func([]byte) []byte {
 
 // Port source: zeros3-z3/parquetz3/codec.go
 // Codecs reports whether the representation can replay a Parquet codec.
-func repPQCodecs(codec int) bool {
-	return codec == repPQCodecNone || codec == repPQCodecSnappy || codec == repPQCodecZstd
+// hard admits the Brotli and LZ4_RAW replay, which only archive migrations enable (recipe version 2).
+func repPQCodecs(codec int, hard bool) bool {
+	return codec == repPQCodecNone || codec == repPQCodecSnappy || codec == repPQCodecZstd || hard && (codec == repPQCodecLZ4Raw || codec == repPQCodecBrotli)
 }
 
 // Port source: zeros3-z3/parquetz3/codec.go
@@ -61749,7 +68878,16 @@ type repPQCompressor struct {
 	NoPredict bool
 	lim       repPQLimits
 	last      uint8
+	brLast    int // Brotli quality that reproduced the previous page (0 = none yet)
+	brMiss    int // consecutive Brotli pages no ported quality reproduced
 }
+
+// repPQbrStreamOnly (tests) derives a streaming recipe even for pages the one-shot quality ids reproduce.
+var repPQbrStreamOnly bool
+
+// repPQbrGiveUp: after this many consecutive unreproduced pages the producer is treated as
+// unsupported and later pages are rejected without decoding or re-encoding.
+const repPQbrGiveUp = 3
 
 // Port source: zeros3-z3/parquetz3/codec.go
 // NewCompressor returns a compressor for a supported codec.
@@ -61808,8 +68946,98 @@ func (c *repPQCompressor) Analyze(payload []byte, want int64) (body []byte, rec 
 			return nil, rec, fmt.Errorf("%w: zstd replay differs from the page (%v)", repPQErrUnsupported, err)
 		}
 		return plain.Bytes(), rec, nil
+	case repPQCodecLZ4Raw:
+		if err := hcBrotliEnsureDict(); err != nil {
+			return nil, rec, err
+		}
+		body, seqs, err := hcLz4z3Decode(payload, int(want), hcLz4z3Limits{MaxDecoded: int(c.lim.MaxPage)})
+		if err != nil {
+			return nil, rec, repPQcorrupt("lz4_raw page: %v", err)
+		}
+		for _, p := range [...]struct {
+			id   int
+			comp uint8
+		}{{hcLz4z3PredDefault, repPQCompLZ4Def}, {hcLz4z3PredContinue, repPQCompLZ4Cont}, {hcLz4z3PredDefault5, repPQCompLZ4Def5}} {
+			if b, ok := hcLz4z3PredictBlock(p.id, body, 1); ok && bytes.Equal(b, payload) {
+				return body, repPQCompRec{ID: p.comp}, nil // inline id: no recipe member
+			}
+		}
+		rc := hcLz4z3Analyze(body, seqs, true)
+		if rep, e := rc.Replay(nil, body, hcLz4z3Limits{MaxDecoded: int(c.lim.MaxPage)}); e != nil || !bytes.Equal(rep, payload) {
+			return nil, rec, fmt.Errorf("%w: lz4 recipe differs from the page (%v)", repPQErrUnsupported, e)
+		}
+		return body, repPQCompRec{ID: repPQCompLZ4Rec, LZ4: rc.Marshal()}, nil
+	case repPQCodecBrotli:
+		if c.brMiss >= repPQbrGiveUp || len(payload) == 0 {
+			return nil, rec, repPQunsupported("brotli page outside the reproduced encoder profile")
+		}
+		if err := hcBrotliEnsureDict(); err != nil {
+			return nil, rec, err
+		}
+		body, tr, err := hcBrotliz3DecodeTrace(payload, int(want))
+		if err != nil {
+			if err == hcBrotliz3ErrCorrupt || err == hcBrotliz3ErrLimit {
+				return nil, rec, repPQcorrupt("brotli page: %v", err)
+			}
+			return nil, rec, repPQunsupported("brotli: %v", err)
+		}
+		if int64(len(body)) != want {
+			return nil, rec, repPQcorrupt("brotli page decodes to %d bytes, header says %d", len(body), want)
+		}
+		if payload[0]&0xF == 0xB && !repPQbrStreamOnly { // the 22-bit window of a one-shot producer: a quality id, no recipe member
+			order := [6]int{c.brLast, 8, 9, 5, 6, 7}
+			for i, q := range order {
+				if q == 0 || (i > 0 && q == c.brLast) {
+					continue
+				}
+				if out, e := hcBrotliz3Encode(body, q, 22); e == nil && bytes.Equal(out, payload) {
+					c.brLast, c.brMiss = q, 0
+					return body, repPQCompRec{ID: uint8(repPQCompBrotli5 + q - 5)}, nil
+				}
+			}
+		}
+		// a streaming producer (chunked input, flushes, another window or block size, a hint of its own)
+		if r, ok := hcBrotliz3Derive(payload, body, tr, c.brLast); ok {
+			c.brLast, c.brMiss = r.Quality, 0
+			return body, repPQCompRec{ID: repPQCompLZ4Rec, LZ4: append([]byte{repPQbrStreamTag}, r.Marshal()...)}, nil
+		}
+		c.brMiss++
+		return nil, rec, repPQunsupported("brotli page not reproduced by qualities 5-9 or a streaming recipe")
 	}
 	return nil, rec, repPQunsupported("codec %s", repPQCodecName(c.Codec))
+}
+
+// replayBrotliStream regenerates a page from a streaming-Brotli recipe member.
+func (c *repPQCompressor) replayBrotliStream(rec repPQCompRec, body []byte) ([]byte, error) {
+	if err := hcBrotliEnsureDict(); err != nil {
+		return nil, err
+	}
+	r, n, err := hcBrotliz3UnmarshalRecipe(rec.LZ4[1:], int64(len(body)))
+	if err != nil || n != len(rec.LZ4)-1 {
+		return nil, repPQrecipeErr("brotli stream recipe: %v", err)
+	}
+	return r.Replay(body)
+}
+
+// Port source: zeros3-z3/parquetz3/codec.go
+func (c *repPQCompressor) replayLZ4(rec repPQCompRec, body []byte) ([]byte, error) {
+	lim := hcLz4z3Limits{MaxDecoded: int(c.lim.MaxPage)}
+	var r hcLz4z3Recipe
+	switch rec.ID {
+	case repPQCompLZ4Def:
+		r = hcLz4z3Recipe{Kind: hcLz4z3KindPredicted, Pred: hcLz4z3PredDefault, Accel: 1}
+	case repPQCompLZ4Cont:
+		r = hcLz4z3Recipe{Kind: hcLz4z3KindPredicted, Pred: hcLz4z3PredContinue, Accel: 1}
+	case repPQCompLZ4Def5:
+		r = hcLz4z3Recipe{Kind: hcLz4z3KindPredicted, Pred: hcLz4z3PredDefault5, Accel: 1}
+	default:
+		var n int
+		var err error
+		if r, n, err = hcLz4z3Unmarshal(rec.LZ4, lim); err != nil || n != len(rec.LZ4) {
+			return nil, repPQrecipeErr("lz4 recipe: %v", err)
+		}
+	}
+	return r.Replay(nil, body, lim)
 }
 
 // Port source: zeros3-z3/parquetz3/codec.go
@@ -61848,6 +69076,21 @@ func (c *repPQCompressor) Replay(rec repPQCompRec, body []byte) ([]byte, error) 
 			return nil, repPQrecipeErr("zstd replay: %v", err)
 		}
 		return out.Bytes(), nil
+	case repPQCompLZ4Rec, repPQCompLZ4Def, repPQCompLZ4Cont, repPQCompLZ4Def5:
+		if rec.ID == repPQCompLZ4Rec && len(rec.LZ4) > 0 && rec.LZ4[0] == repPQbrStreamTag {
+			return c.replayBrotliStream(rec, body)
+		}
+		return c.replayLZ4(rec, body)
+	}
+	if rec.ID >= repPQCompBrotli5 && rec.ID <= repPQCompBrotli9 {
+		if err := hcBrotliEnsureDict(); err != nil {
+			return nil, err
+		}
+		out, err := hcBrotliz3Encode(body, int(rec.ID)-repPQCompBrotli5+5, 22)
+		if err != nil {
+			return nil, repPQrecipeErr("brotli replay: %v", err)
+		}
+		return out, nil
 	}
 	return nil, repPQrecipeErr("compression id %d", rec.ID)
 }
@@ -62085,9 +69328,15 @@ func (d *repPQdecoder) compRec(s *repPQSeg) (repPQCompRec, error) {
 		if err != nil {
 			return rec, err
 		}
-		if s.Comp == repPQCompSnapCmds {
+		switch s.Comp {
+		case repPQCompSnapCmds:
 			rec.Cmds = b
-		} else {
+		case repPQCompLZ4Rec:
+			rec.LZ4 = b
+			if len(b) > 0 && b[0] == repPQbrStreamTag && d.rec.Ver != repPQrecipeVersionStream {
+				return rec, repPQrecipeErr("a streaming-Brotli recipe in a version %d recipe", d.rec.Ver)
+			}
+		default:
 			rec.Zstd = b
 		}
 	}
@@ -62095,8 +69344,8 @@ func (d *repPQdecoder) compRec(s *repPQSeg) (repPQCompRec, error) {
 }
 
 // Port source: zeros3-z3/parquetz3/decode.go
-// page rebuilds the bytes of a logical page segment (raw header + payload).
-func (d *repPQdecoder) page(si int) ([]byte, error) {
+// pagePrep reconstructs a page up to its compression: the levels and values the compressor replays.
+func (d *repPQdecoder) pagePrep(si int) (*repPQpageJob, error) {
 	s := &d.rec.Segs[si]
 	if d.activeCol != s.Col {
 		if d.activeCol >= 0 {
@@ -62166,9 +69415,36 @@ func (d *repPQdecoder) page(si int) ([]byte, error) {
 		}
 		d.stats.Pages++
 	}
+	return &repPQpageJob{s: s, rec: rec, levels: levels, values: values}, nil
+}
+
+// repPQpageJob is a page whose values are known and whose compression is still to be replayed: the replay
+// is independent of every other page, so a read may run several at once.
+type repPQpageJob struct {
+	s      *repPQSeg
+	rec    repPQCompRec
+	levels []byte
+	values []byte
+}
+
+// Port source: zeros3-z3/parquetz3/decode.go
+// page rebuilds the bytes of a logical page segment (raw header + payload).
+func (d *repPQdecoder) page(si int) ([]byte, error) {
+	j, err := d.pagePrep(si)
+	if err != nil {
+		return nil, err
+	}
+	return repPQpageFinish(d.cp, j)
+}
+
+// repPQpageFinish replays the page's compression and prepends its header.
+func repPQpageFinish(cp *repPQCompressor, j *repPQpageJob) ([]byte, error) {
+	s, rec, levels, values := j.s, j.rec, j.levels, j.values
+	pg := s.Page
+	var err error
 	var payload []byte
 	if pg.Type == repPQPageDataV2 {
-		v, err := d.cp.Replay(rec, values)
+		v, err := cp.Replay(rec, values)
 		if err != nil {
 			return nil, err
 		}
@@ -62178,7 +69454,7 @@ func (d *repPQdecoder) page(si int) ([]byte, error) {
 		if len(levels) > 0 {
 			body = append(append(make([]byte, 0, len(levels)+len(values)), levels...), values...)
 		}
-		if payload, err = d.cp.Replay(rec, body); err != nil {
+		if payload, err = cp.Replay(rec, body); err != nil {
 			return nil, err
 		}
 	}
@@ -62247,10 +69523,71 @@ func repPQdecodeRange(w io.Writer, rec *repPQRecipe, get repPQGetter, off, n int
 			hi = m
 		}
 	}
+	// Pages whose compression needs the exact Brotli or LZ4 replay are expensive and independent of one another:
+	// their replays run in a window of at most `workers` pages (the values of a page are still read in order), and
+	// the bytes leave in file order. A failing page ends the output exactly where the serial loop would have.
+	workers := repPQreplayWorkers()
+	type pending struct {
+		a, z int64
+		b    []byte
+		err  error
+		done chan struct{}
+	}
+	var q []*pending
+	emit := func(p *pending) error {
+		<-p.done
+		if p.err != nil {
+			return p.err
+		}
+		_, err := w.Write(p.b[p.a:p.z])
+		p.b = nil
+		return err
+	}
+	drain := func(keep int) error {
+		var first error
+		for len(q) > keep {
+			if first != nil {
+				<-q[0].done // nothing after the failing page is written; wait for the replays still running
+			} else if err := emit(q[0]); err != nil {
+				first, keep = err, 0
+			}
+			q = q[1:]
+		}
+		return first
+	}
 	for si := lo; si < len(rec.Segs) && rec.Segs[si].Off < end; si++ {
 		s := &rec.Segs[si]
 		if s.Total == 0 {
 			continue
+		}
+		a, z := max(off, s.Off)-s.Off, min(end, s.Off+s.Total)-s.Off
+		if workers > 1 && (s.Kind == repPQSegData || s.Kind == repPQSegDict) && s.Comp >= repPQcompHard {
+			if err := drain(workers - 1); err != nil {
+				return d.stats, err
+			}
+			j, err := d.pagePrep(si)
+			if err != nil {
+				drain(0)
+				return d.stats, err
+			}
+			j.values, j.levels = bytes.Clone(j.values), bytes.Clone(j.levels) // the stream cursors reuse their buffers for the next page
+			p := &pending{a: a, z: z, done: make(chan struct{})}
+			q = append(q, p)
+			total := s.Total
+			go func() {
+				defer close(p.done)
+				repPQreplayTokens <- struct{}{}
+				defer func() { <-repPQreplayTokens }()
+				b, err := repPQpageFinish(repPQNewCompressor(repPQCodecNone, d.lim), j)
+				if err == nil && int64(len(b)) != total {
+					err = repPQrecipeErr("segment rebuilt as %d bytes, expected %d", len(b), total)
+				}
+				p.b, p.err = b, err
+			}()
+			continue
+		}
+		if err := drain(0); err != nil {
+			return d.stats, err
 		}
 		b, err := d.seg(si)
 		if err != nil {
@@ -62259,12 +69596,25 @@ func repPQdecodeRange(w io.Writer, rec *repPQRecipe, get repPQGetter, off, n int
 		if int64(len(b)) != s.Total {
 			return d.stats, repPQrecipeErr("segment %d rebuilt as %d bytes, expected %d", si, len(b), s.Total)
 		}
-		a, z := max(off, s.Off)-s.Off, min(end, s.Off+s.Total)-s.Off
 		if _, err := w.Write(b[a:z]); err != nil {
 			return d.stats, err
 		}
 	}
+	if err := drain(0); err != nil {
+		return d.stats, err
+	}
 	return d.stats, nil
+}
+
+// repPQreplayTokens bounds the page replays running at once in the whole process, however many requests read.
+var repPQreplayTokens = make(chan struct{}, 8)
+
+// repPQreplayWorkers is the page-replay window of one read: ZEROS3_PQ_WORKERS, else up to four.
+func repPQreplayWorkers() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_PQ_WORKERS")); err == nil && v >= 1 {
+		return min(v, cap(repPQreplayTokens))
+	}
+	return min(4, runtime.NumCPU())
 }
 
 // Port source: zeros3-z3/parquetz3/decode.go
@@ -62684,11 +70034,15 @@ func (e *repPQencoder) chunk(c *repPQChunk) error {
 		value: func(rec []byte) error { return e.vs[ci].add(rec, 1) },
 		page: func(i int, pi *repPQPageInfo, values []byte, comp repPQCompRec, hdr []byte) error {
 			s := repPQSeg{Col: ci, Hdr: append([]byte(nil), hdr...), Comp: comp.ID, Lay: pi.Lay.retained(), Present: pi.Present}
+			s.Stream = comp.ID == repPQCompLZ4Rec && len(comp.LZ4) > 0 && comp.LZ4[0] == repPQbrStreamTag
 			var err error
 			if repPQcompNeedsMember(comp.ID) {
 				cb := comp.Cmds
 				if comp.ID == repPQCompZstd {
 					cb = comp.Zstd
+				}
+				if comp.ID == repPQCompLZ4Rec {
+					cb = comp.LZ4
 				}
 				if s.CompMember, err = e.component("crec", cb); err != nil {
 					return err
@@ -62698,8 +70052,12 @@ func (e *repPQencoder) chunk(c *repPQChunk) error {
 			e.st.Pages++
 			e.st.LogicalPages++
 			e.st.PagePayload += int64(pi.Page.Comp)
-			e.st.CompPages[repPQCompName(int(comp.ID))]++
-			e.st.CompBytes[repPQCompName(int(comp.ID))] += int64(pi.Page.Comp)
+			cname := repPQCompName(int(comp.ID))
+			if s.Stream {
+				cname = "brotli-stream"
+			}
+			e.st.CompPages[cname]++
+			e.st.CompBytes[cname] += int64(pi.Page.Comp)
 			if pi.Mode == repPQModeDict {
 				s.Kind = repPQSegDict
 				if plan.DictMode == repPQDictExplicit {
@@ -62864,6 +70222,9 @@ type repPQLimits struct {
 	MaxValue     int   // bytes of one BYTE_ARRAY value kept logical (default 4 MiB; larger: the chunk is opaque)
 	MaxDict      int64 // bytes of one chunk's dictionary page (default 128 MiB)
 	Thrift       repTCLimits
+	// Hard admits Brotli and LZ4_RAW pages to analysis (the exact replay costs a page encode per read),
+	// and nothing else: the decoder always replays every recipe it can parse.
+	Hard bool
 }
 
 // Port source: zeros3-z3/parquetz3/meta.go
@@ -64190,6 +71551,7 @@ type repPQSeg struct {
 	Lay          repPQlayout
 	Present      int  // non-null values of a SegData page
 	DictExplicit bool // SegDict: the dictionary body is a component
+	Stream       bool // the compression member is a streaming-Brotli recipe: the recipe is version 3 (set by the encoder only)
 
 	// derived by ParseRecipe (never serialized)
 	Page       *repPQPage
@@ -64221,6 +71583,7 @@ type repPQRecipe struct {
 	Cols    []repPQColRec
 	Segs    []repPQSeg
 	Digests []repPQID
+	Ver     byte // the version byte it was parsed from (never serialized)
 }
 
 // Port source: zeros3-z3/parquetz3/recipe.go
@@ -64242,7 +71605,16 @@ func (s repPQSizes) Total() int64 {
 }
 
 // Port source: zeros3-z3/parquetz3/recipe.go
-const repPQrecipeVersion = 1
+// Version 2 is written only for a recipe with a compression id from repPQcompHard up (Brotli, LZ4_RAW):
+// a build that stops at version 1 refuses it by its first byte, and a version 1 recipe is unchanged.
+const (
+	repPQrecipeVersion       = 1
+	repPQrecipeVersionHard   = 2
+	repPQrecipeVersionStream = 3 // a page whose Brotli stream came from a streaming producer (recipe member tagged repPQbrStreamTag)
+)
+
+// repPQbrStreamTag starts a compression-id-7 member that holds a streaming-Brotli recipe instead of an LZ4 recipe.
+const repPQbrStreamTag = 0xB5
 
 // Port source: zeros3-z3/parquetz3/recipe.go
 func repPQappendExplicit(b []byte, hdrs []uint64, pad []uint32, bw int) []byte {
@@ -64278,13 +71650,24 @@ func repPQflagsOf(s *repPQSeg) byte {
 }
 
 // Port source: zeros3-z3/parquetz3/recipe.go
-func repPQcompNeedsMember(id uint8) bool { return id == repPQCompSnapCmds || id == repPQCompZstd }
+func repPQcompNeedsMember(id uint8) bool {
+	return id == repPQCompSnapCmds || id == repPQCompZstd || id == repPQCompLZ4Rec
+}
 
 // Port source: zeros3-z3/parquetz3/recipe.go
 // Marshal serializes the recipe: the head, then the member table.
 func (r *repPQRecipe) Marshal() ([]byte, repPQSizes) {
 	var sz repPQSizes
-	b := []byte{repPQrecipeVersion}
+	ver := byte(repPQrecipeVersion)
+	for i := range r.Segs {
+		if r.Segs[i].Comp >= repPQcompHard && (r.Segs[i].Kind == repPQSegData || r.Segs[i].Kind == repPQSegDict) {
+			ver = max(ver, repPQrecipeVersionHard)
+		}
+		if r.Segs[i].Stream {
+			ver = repPQrecipeVersionStream
+		}
+	}
+	b := []byte{ver}
 	b = binary.AppendUvarint(b, uint64(r.Size))
 	b = binary.AppendUvarint(b, uint64(len(r.Digests)))
 	b = binary.AppendUvarint(b, uint64(len(r.Cols)))
@@ -64468,10 +71851,12 @@ func (r *repPQrrd) explicit(bw int, maxHdrs uint64) (hdrs []uint64, pad []uint32
 func repPQParseRecipe(b []byte, lim repPQLimits) (*repPQRecipe, error) {
 	lim = lim.norm()
 	r := &repPQrrd{b: b}
-	if v := r.byte(); r.err == nil && v != repPQrecipeVersion {
-		return nil, repPQrecipeErr("version %d", v)
+	ver := r.byte()
+	if r.err == nil && ver != repPQrecipeVersion && ver != repPQrecipeVersionHard && ver != repPQrecipeVersionStream {
+		return nil, repPQrecipeErr("version %d", ver)
 	}
-	out := &repPQRecipe{Size: int64(r.uv(1 << 62))}
+	sawHard := false
+	out := &repPQRecipe{Size: int64(r.uv(1 << 62)), Ver: ver}
 	ndig := r.uv(1 << 24)
 	ncols := r.uv(uint64(lim.MaxColumns))
 	if r.err != nil {
@@ -64574,9 +71959,10 @@ func repPQParseRecipe(b []byte, lim repPQLimits) (*repPQRecipe, error) {
 			s.Comp = fl >> 2 & 15
 			s.DictExplicit = fl&64 != 0
 			s.Lay.LvlExpl, s.Lay.ValExpl, s.Lay.ValWidth = fl&1 != 0, fl&2 != 0, fl&128 != 0
-			if r.err == nil && (s.Comp > repPQcompMax || s.Lay.ValExpl && s.Lay.ValWidth) {
+			if r.err == nil && (s.Comp > repPQcompMax || s.Comp >= repPQcompHard && ver < repPQrecipeVersionHard || s.Lay.ValExpl && s.Lay.ValWidth) {
 				r.fail("segment %d: flags %02x", i, fl)
 			}
+			sawHard = sawHard || s.Comp >= repPQcompHard
 			if repPQcompNeedsMember(s.Comp) {
 				s.CompMember = int(r.uv(ndig))
 			}
@@ -64706,6 +72092,9 @@ func repPQParseRecipe(b []byte, lim repPQLimits) (*repPQRecipe, error) {
 				st.to.nodes = append(st.to.nodes, repPQnodeRef{out.Digests[n.member], n.items})
 			}
 		}
+	}
+	if ver >= repPQrecipeVersionHard && !sawHard {
+		return nil, repPQrecipeErr("version %d without a Brotli or LZ4 page", ver)
 	}
 	return out, nil
 }
@@ -66680,6 +74069,7 @@ func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*
 	var ids [][32]byte
 	if k == repKindSST {
 		lim := repStructuredSSTLimits()
+		lim.Hard = b.s.rep.hardCodecs.Load()
 		t, err := repSSOpen(src, size, lim)
 		if err != nil {
 			return nil, err
@@ -66701,7 +74091,10 @@ func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*
 			n := int64(len(rb.Payload))
 			switch rb.Comp() {
 			case repSSCompNone:
-			case repSSCompSnappy, repSSCompZstd:
+			case repSSCompSnappy, repSSCompZstd, repSSCompLZ4, repSSCompLZ4HC:
+				if (rb.Comp() == repSSCompLZ4 || rb.Comp() == repSSCompLZ4HC) && !lim.Hard {
+					return nil, errRepUnsupported
+				}
 				v, z := binary.Uvarint(rb.Payload)
 				if z <= 0 || v > uint64(lim.MaxDecoded) {
 					return nil, errRepLimit
@@ -66734,6 +74127,7 @@ func (b *repBuilder) encodeStructured(src io.ReaderAt, size int64, k repKind) (*
 		ids = pr.Digests
 	} else {
 		lim := repStructuredParquetLimits()
+		lim.Hard = b.s.rep.hardCodecs.Load()
 		f, err := repPQOpen(src, size, lim)
 		if err != nil {
 			return nil, err

@@ -1,0 +1,7 @@
+=== RUN   TestAuthorityZN7DecodeScaling
+    zeros3_authority_test.go:5330: DECODE pythia14m workers=2: 134 MiB in 641ms = 209 MiB/s, 320 ranges 13.249ms each, peak RSS while streaming 374 MiB (baseline RSS before: 162 MiB)
+    zeros3_authority_test.go:5330: DECODE smollm2-q4_0 workers=2: 346 MiB in 9.389s = 37 MiB/s, 192 ranges 123.097ms each, peak RSS while streaming 1036 MiB (baseline RSS before: 510 MiB)
+    zeros3_authority_test.go:5330: DECODE smollm2-iq3 workers=2: 429 MiB in 1m29.533s = 5 MiB/s, 256 ranges 1.044753s each, peak RSS while streaming 1926 MiB (baseline RSS before: 943 MiB)
+--- PASS: TestAuthorityZN7DecodeScaling (1071.81s)
+PASS
+ok  	zeros3	1071.897s

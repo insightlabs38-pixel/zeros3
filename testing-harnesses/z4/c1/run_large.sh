@@ -19,3 +19,4 @@ done
 du -sb "$W/store" | tee "$W/final_bytes.txt"
 ZEROS3_C1_LARGE_CHECK=1 "$W/zeros3.test" -test.run TestAuthorityLargeCheck -test.v 2>&1 | grep -E 'exact|ranges|PASS|FAIL' | tee "$W/check.txt"
 python3 "$R" verify "$W/verify.txt" "$W/zeros3" verify -store "$W/store" -deep | tee -a "$W/rss.txt"; tail -3 "$W/verify.txt"
+rm -rf "$W/store"

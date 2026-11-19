@@ -27,10 +27,11 @@ const (
 	DQ3_K
 	DIQ4_NL
 	DIQ4_XS
+	DIQ3_S
 )
 
 var dtNames = map[DType]string{DRaw: "RAW", DF32: "F32", DF16: "F16", DBF16: "BF16", DQ8_0: "Q8_0", DQ4_0: "Q4_0", DQ5_0: "Q5_0", DQ4_1: "Q4_1", DQ5_1: "Q5_1",
-	DQ4_K: "Q4_K", DQ6_K: "Q6_K", DQ5_K: "Q5_K", DQOther: "QOTHER", DQ2_K: "Q2_K", DQ3_K: "Q3_K", DIQ4_NL: "IQ4_NL", DIQ4_XS: "IQ4_XS"}
+	DQ4_K: "Q4_K", DQ6_K: "Q6_K", DQ5_K: "Q5_K", DQOther: "QOTHER", DQ2_K: "Q2_K", DQ3_K: "Q3_K", DIQ4_NL: "IQ4_NL", DIQ4_XS: "IQ4_XS", DIQ3_S: "IQ3_S"}
 
 func (d DType) String() string { return dtNames[d] }
 
@@ -49,7 +50,7 @@ func (d DType) Width() int {
 func (d DType) IsFloat() bool { return d == DF32 || d == DF16 || d == DBF16 }
 
 var qtypes = map[DType]qcore.Type{DQ8_0: qcore.Q8_0, DQ4_0: qcore.Q4_0, DQ4_1: qcore.Q4_1, DQ5_0: qcore.Q5_0, DQ5_1: qcore.Q5_1, DQ2_K: qcore.Q2_K, DQ3_K: qcore.Q3_K,
-	DQ4_K: qcore.Q4_K, DQ5_K: qcore.Q5_K, DQ6_K: qcore.Q6_K, DIQ4_NL: qcore.IQ4_NL, DIQ4_XS: qcore.IQ4_XS}
+	DQ4_K: qcore.Q4_K, DQ5_K: qcore.Q5_K, DQ6_K: qcore.Q6_K, DIQ4_NL: qcore.IQ4_NL, DIQ4_XS: qcore.IQ4_XS, DIQ3_S: qcore.IQ3_S}
 
 // QType is the ggml quantization type of a block dtype.
 func (d DType) QType() (qcore.Type, bool) { t, ok := qtypes[d]; return t, ok }

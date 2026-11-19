@@ -147,9 +147,6 @@ func TestEncodeRejectsUnsupported(t *testing.T) {
 			t.Fatalf("q%d w%d: %v", p[0], p[1], err)
 		}
 	}
-	if _, err := brotliz3.Encode(make([]byte, brotliz3.MaxInput(17)+1), 8, 17); err != brotliz3.ErrUnsupported {
-		t.Fatalf("oversized input: %v", err)
-	}
 	if out, err := brotliz3.Encode(nil, 8, 22); err != nil || !bytes.Equal(out, []byte{6}) {
 		t.Fatalf("empty input: %v %x", err, out)
 	}

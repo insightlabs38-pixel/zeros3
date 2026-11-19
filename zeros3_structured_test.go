@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -114,6 +116,7 @@ func TestRepStructuredEncoderLabIdentity(t *testing.T) {
 
 // Unsupported producer features must preserve the authoritative CDC path.
 func TestRepStructuredFallbackAndLifecycle(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	for _, path := range []string{"testing-harnesses/z3/sstz3/testdata/pebble-v7.sst", "testing-harnesses/z3/parquetz3/testdata/pa_gzip.parquet", "testing-harnesses/z3/parquetz3/testdata/pa_nested.parquet"} {
 		t.Run(path, func(t *testing.T) {
 			data, err := os.ReadFile(path)
@@ -287,6 +290,7 @@ func TestRepStructuredZstdWindowBeforeAllocation(t *testing.T) {
 }
 
 func TestRepStructuredOrdinaryPutCrashFloor(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	raw, err := os.ReadFile("testing-harnesses/z4/testdata/a3-structured/lab-structured.json")
 	if err != nil {
@@ -351,6 +355,7 @@ func TestRepStructuredOrdinaryPutCrashFloor(t *testing.T) {
 }
 
 func TestRepStructuredCumulativeModelCompatibility(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	l.put("model", repZ4ModelSafetensors(t, bytes.Repeat([]byte{1, 2, 3, 4}, 16384)))
@@ -469,5 +474,127 @@ func TestRepStructuredLayoutDetachesPageBacking(t *testing.T) {
 	}
 	if cap(got.Delta) > 64 || cap(got.LvlHdrs) > 8 {
 		t.Fatal("short metadata retained whole-page capacity")
+	}
+}
+
+// FuzzRepHardRecipes mutates Parquet and SST recipes that carry Brotli / LZ4 compression ids (version 2):
+// parsing never panics, and whatever parses re-marshals to a recipe that parses to the same table.
+func FuzzRepHardRecipes(f *testing.F) {
+	for _, name := range []string{"pa_brotli.parquet", "pa_lz4_raw.parquet"} {
+		b, err := os.ReadFile(filepath.Join("testdata", "p7", name))
+		if err != nil {
+			f.Fatal(err)
+		}
+		lim := repStructuredParquetLimits()
+		lim.Hard = true
+		raw, _, _, err := repPQEncode(bytes.NewReader(b), int64(len(b)), repPQOptions{Limits: lim, Target: 64 << 10}, func(string, repPQID, []byte) error { return nil })
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(raw)
+	}
+	for _, name := range []string{"rocksdb_lz4_small.sst", "rocksdb_lz4hc_small.sst"} {
+		b, err := os.ReadFile(filepath.Join("testdata", "p7", name))
+		if err != nil {
+			f.Fatal(err)
+		}
+		lim := repStructuredSSTLimits()
+		lim.Hard = true
+		raw, _, _, err := repSSEncode(bytes.NewReader(b), int64(len(b)), repSSOptions{Form: repSSFormUKV, Cutter: &repSSHashCutter{Target: 64 << 10, Max: 64 << 10}, Limits: lim}, func(string, repSSID, []byte) error { return nil })
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(raw)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			return
+		}
+		if r, err := repPQParseRecipe(data, repStructuredParquetLimits()); err == nil {
+			again, _ := r.Marshal()
+			if r2, err := repPQParseRecipe(again, repStructuredParquetLimits()); err != nil || len(r2.Segs) != len(r.Segs) {
+				t.Fatalf("parquet recipe does not survive a round trip: %v", err)
+			}
+		}
+		if r, err := repSSParseRecipe(data, repStructuredSSTLimits()); err == nil {
+			again, _ := r.Marshal()
+			if r2, err := repSSParseRecipe(again, repStructuredSSTLimits()); err != nil || len(r2.Blocks) != len(r.Blocks) {
+				t.Fatalf("sst recipe does not survive a round trip: %v", err)
+			}
+		}
+	})
+}
+
+// Parallel page replay: a read with 1, 2, 4 or 8 workers produces the same bytes as the serial loop, a damaged
+// component ends the output exactly at the page that needs it (everything before it is already correct), and
+// ranges cut anywhere read the same bytes.
+func TestRepParquetParallelReplayIsExact(t *testing.T) {
+	for _, name := range []string{"pa_brotli.parquet", "pa_brotli_q6.parquet", "pa_lz4_raw.parquet"} {
+		b, err := os.ReadFile(filepath.Join("testdata", "p7", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lim := repStructuredParquetLimits()
+		lim.Hard = true
+		comps := map[repPQID][]byte{}
+		raw, _, st, err := repPQEncode(bytes.NewReader(b), int64(len(b)), repPQOptions{Limits: lim, Target: 64 << 10}, func(_ string, id repPQID, data []byte) error {
+			comps[id] = append([]byte(nil), data...)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		get := func(id repPQID) ([]byte, error) {
+			if c, ok := comps[id]; ok {
+				return c, nil
+			}
+			return nil, fmt.Errorf("component %x missing", id[:6])
+		}
+		for _, w := range []string{"1", "2", "4", "8"} {
+			t.Setenv("ZEROS3_PQ_WORKERS", w)
+			var out bytes.Buffer
+			if err := repPQDecode(&out, raw, get, lim); err != nil || !bytes.Equal(out.Bytes(), b) {
+				t.Fatalf("%s workers=%s: %v", name, w, err)
+			}
+			for _, r := range [][2]int64{{0, 1}, {17, 5000}, {int64(len(b)) / 3, int64(len(b)) / 2}, {int64(len(b)) - 100, 100}} {
+				var part bytes.Buffer
+				if _, err := repPQDecodeRange(&part, raw, get, r[0], r[1], lim); err != nil || !bytes.Equal(part.Bytes(), b[r[0]:r[0]+r[1]]) {
+					t.Fatalf("%s workers=%s range %v: %v", name, w, r, err)
+				}
+			}
+		}
+		// every component is damaged in turn: the output is an exact prefix and the error is reported, with any worker count
+		hard := st.CompPages["brotli-q8"] + st.CompPages["brotli-q6"] + st.CompPages["lz4-default"] + st.CompPages["lz4-recipe"] + st.CompPages["brotli-q5"]
+		if hard == 0 {
+			t.Fatalf("%s: no hard-codec page in the recipe (%v)", name, st.CompPages)
+		}
+		keys := make([]repPQID, 0, len(comps))
+		for id := range comps {
+			keys = append(keys, id)
+		}
+		sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i][:], keys[j][:]) < 0 })
+		for ki := 0; ki < len(keys); ki += max(1, len(keys)/12) {
+			bad := keys[ki]
+			badGet := func(id repPQID) ([]byte, error) { // the store verifies every component against its digest
+				if id == bad {
+					return nil, fmt.Errorf("component %x fails its digest", id[:6])
+				}
+				return get(id)
+			}
+			for _, w := range []string{"1", "4"} {
+				t.Setenv("ZEROS3_PQ_WORKERS", w)
+				var out bytes.Buffer
+				err := repPQDecode(&out, raw, badGet, lim)
+				if err == nil && !bytes.Equal(out.Bytes(), b) {
+					t.Fatalf("%s workers=%s: damaged component %x gave wrong bytes without an error", name, w, bad[:4])
+				}
+				if err == nil {
+					continue // the component is not needed by any page (a recipe-only member)
+				}
+				if !bytes.Equal(out.Bytes(), b[:out.Len()]) {
+					t.Fatalf("%s workers=%s: output before the error is not an exact prefix", name, w)
+				}
+			}
+		}
 	}
 }

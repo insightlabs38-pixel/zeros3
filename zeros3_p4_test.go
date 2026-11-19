@@ -68,6 +68,7 @@ func p4CopyDir(t testing.TB, src, dst string) {
 }
 
 func TestP4DeferredBuildsAfterAcknowledgement(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	for _, mode := range []repMode{repModeShadow, repModePrefer} {
 		t.Run(mode.String(), func(t *testing.T) {
 			s := p4Deferred(t, mode, 1, 16)
@@ -551,6 +552,7 @@ func TestP4PrefixIndexMatchesReference(t *testing.T) {
 }
 
 func TestP4ReadCacheServesExactBytesAndStillVerifiesData(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	useLooseLayout(t, "the fixture removes and damages individual component files")
 	s := repOpenStore(t, repModePrefer)
 	db := repTestSQLite(600, 4096, 41)
@@ -708,12 +710,10 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 	bin := buildZeros3Binary(t)
 	storeDir := t.TempDir()
 	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
-	type acked struct {
-		seed int64
-		kind int
-	}
+	// the digest of each body is taken once when it is sent: re-deriving thousands of structured bodies
+	// (SQLite, CAR, block files) for every later comparison cost a quarter of the test
 	var mu sync.Mutex
-	ack := map[string]acked{}
+	ack := map[string][32]byte{}
 	rng := rand.New(rand.NewSource(3))
 	rootsSeen, objectsWithoutRoot := 0, 0
 	for round := 0; round < 6; round++ {
@@ -745,6 +745,7 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 					kind := (c + i) % 3
 					key := fmt.Sprintf("o/%d/%d/%d", round, c, i)
 					body := p4Body(seed, kind)
+					sum := sha256.Sum256(body)
 					req, _ := http.NewRequest(http.MethodPut, "http://"+addr+"/b/"+key, bytes.NewReader(body))
 					signTestRequest(t, req, signer, req.URL.Path, req.URL.RawQuery, body, time.Now(), nil)
 					resp, err := client.Do(req)
@@ -754,7 +755,7 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 					resp.Body.Close()
 					if resp.StatusCode == http.StatusOK {
 						mu.Lock()
-						ack[key] = acked{seed, kind}
+						ack[key] = sum
 						mu.Unlock()
 					}
 				}
@@ -771,9 +772,9 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 			t.Fatalf("round %d: open after kill: %v", round, err)
 		}
 		mu.Lock()
-		for key, a := range ack {
+		for key, want := range ack {
 			_, got, err := s.GetObject("b", key)
-			if err != nil || !bytes.Equal(got, p4Body(a.seed, a.kind)) {
+			if err != nil || sha256.Sum256(got) != want {
 				mu.Unlock()
 				t.Fatalf("round %d: ACKNOWLEDGED object %s lost or corrupt: %v", round, key, err)
 			}
@@ -794,8 +795,8 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 			t.Fatal(err)
 		}
 		mu.Lock()
-		for key, a := range ack {
-			if _, got, err := s.GetObject("b", key); err != nil || !bytes.Equal(got, p4Body(a.seed, a.kind)) {
+		for key, want := range ack {
+			if _, got, err := s.GetObject("b", key); err != nil || sha256.Sum256(got) != want {
 				mu.Unlock()
 				t.Fatalf("round %d: acknowledged object %s damaged by gc: %v", round, key, err)
 			}
@@ -813,6 +814,7 @@ func TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData(t *testing.T) {
 }
 
 func TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	l := newRepLab(t, repModePrefer)
 	dbA := repTestSQLite(40, 4096, 71)
 	dbB := repTestSQLiteUpdate(dbA, 4096, []int{3, 17, 30}, 72)
@@ -943,18 +945,10 @@ func p4BuildBase(t *testing.T) string {
 	if ref == "" {
 		ref = "68b259377512a8e9e27e323f5dbdd8aa1e85aeb3"
 	}
-	src, err := exec.Command("git", "show", ref+":zeros3.go").Output()
-	if err != nil {
+	if err := exec.Command("git", "cat-file", "-e", ref+":zeros3.go").Run(); err != nil {
 		t.Skipf("pre-P4 source %s unavailable: %v", ref, err)
 	}
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "zeros3.go"), src, 0o644)
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module zeros3\n\ngo 1.27.0\n"), 0o644)
-	bin := filepath.Join(dir, "zeros3-base")
-	if out, err := exec.Command("go", "build", "-C", dir, "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("building the pre-P4 binary: %v\n%s", err, out)
-	}
-	return bin
+	return buildBinaryAt(t, ref)
 }
 
 // A store written by the new server (deferred representations; small objects whose

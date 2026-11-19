@@ -301,6 +301,7 @@ func repVerifyOK(t testing.TB, s *Store, deep bool) VerifyResult {
 // ---- smoke ---------------------------------------------------------------------
 
 func TestRepSmokeSQLiteRoundTrip(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	s := repOpenStore(t, repModePrefer)
 	db := repTestSQLite(300, 4096, 1)
@@ -377,6 +378,7 @@ func repFixtures(t testing.TB) []repFixture {
 }
 
 func TestRepKindMatrixRoundTrip(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	for _, mode := range []repMode{repModeShadow, repModePrefer} {
 		t.Run(mode.String(), func(t *testing.T) {
 			s := repOpenStore(t, mode)
@@ -1281,6 +1283,7 @@ func repSmallCompact() compactOptions {
 }
 
 func TestRepLifecycleChain(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	dbA := repTestSQLite(400, 4096, 71)
 	dbB := repTestSQLiteUpdate(dbA, 4096, []int{3, 17, 200, 399}, 72)
@@ -1425,6 +1428,7 @@ func repRootFilesOf(t *testing.T, l *repLab) []string {
 }
 
 func TestRepCrashMatrix(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	base := repTestSQLite(900, 4096, 81)
 	crashDB := repTestSQLiteUpdate(base, 4096, []int{1, 2, 3, 400, 800}, 82)
@@ -1527,6 +1531,7 @@ func repNewestManifest(t testing.TB, dir string) manifestV1 {
 
 // C6: building or publishing the optional root fails; the namespace commit still succeeds.
 func TestRepOptionalFailureNeverFailsPut(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	db := repTestSQLite(300, 4096, 91)
 	t.Run("root directory blocked: fail closed until cleared", func(t *testing.T) {
@@ -1651,6 +1656,7 @@ func repCorruptFile(t testing.TB, path string, f func([]byte) []byte) {
 }
 
 func TestRepLiveRootFaultsFailClosed(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	db := repTestSQLite(300, 4096, 101)
 	faults := map[string]func(t *testing.T, l *repLab, uuid string){
@@ -1835,6 +1841,7 @@ func TestRepFailureAfterOutputStartsDoesNotPanic(t *testing.T) {
 }
 
 func TestRepModesAndFallbackCounters(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	db := repTestSQLite(200, 4096, 121)
 	for _, mode := range []repMode{repModeShadow, repModePrefer} {
 		l := newRepLab(t, mode)
@@ -1872,6 +1879,7 @@ func TestRepModesAndFallbackCounters(t *testing.T) {
 }
 
 func TestRepTempFilesAreNeverRootsOrLiveness(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	l.put("db", repTestSQLite(120, 4096, 131))
 	l.close()
@@ -1941,6 +1949,7 @@ func repPhysicalOf(t testing.TB, s *Store, uuid string) map[string]bool {
 }
 
 func TestRepSharedChildAcrossFormatsAndRootLifecycle(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	x := repTestSQLite(180, 4096, 151) // the shared child
 	y := make([]byte, 20000)
@@ -2025,6 +2034,7 @@ func TestRepSharedChildAcrossFormatsAndRootLifecycle(t *testing.T) {
 }
 
 func TestRepVirtualComponentDescriptor(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	l := newRepLab(t, repModePrefer)
 	big := make([]byte, 900<<10) // a tar member far above one pack record
@@ -2112,6 +2122,7 @@ func TestRepVirtualComponentDescriptor(t *testing.T) {
 }
 
 func TestRepSharedVirtualComponentAcrossRoots(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	big := make([]byte, 700<<10)
 	rand.New(rand.NewSource(171)).Read(big)
@@ -2165,6 +2176,7 @@ func TestRepSharedVirtualComponentAcrossRoots(t *testing.T) {
 // ---- Merkle revision chains, snapshots, copy, multipart --------------------------------------
 
 func TestRepMerkleRevisionChainSections(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	for _, tag := range []byte{1, 3} { // sha3-256 (owning sections) and sha256 (graph walk)
 		t.Run(fmt.Sprintf("hash-%d", tag), func(t *testing.T) {
 			l := newRepLab(t, repModePrefer)
@@ -2311,6 +2323,7 @@ func TestRepSnapshotRetainsRepresentation(t *testing.T) {
 }
 
 func TestRepCopyObjectAndMultipart(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	db := repTestSQLite(260, 4096, 201)
 	l.put("src", db)
@@ -2353,6 +2366,7 @@ func TestRepCopyObjectAndMultipart(t *testing.T) {
 // ---- Source corruption, copy fallback, concurrency ----------------------------------------------
 
 func TestRepSourceCorruptionClassified(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	l := newRepLab(t, repModePrefer)
 	big := make([]byte, 600<<10)
@@ -2519,6 +2533,7 @@ func TestRepPackedCopyFallback(t *testing.T) {
 }
 
 func TestRepConcurrentReadsMixedTiers(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	x := repTestSQLite(220, 4096, 231)
 	rnd := make([]byte, 400<<10)
@@ -2682,6 +2697,7 @@ func TestRepConcurrentPutsAndReads(t *testing.T) {
 // ---- hostile and look-alike objects --------------------------------------------------------------
 
 func TestRepNegativeFormatControls(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	rnd := make([]byte, 50000)
@@ -2722,6 +2738,7 @@ func TestRepNegativeFormatControls(t *testing.T) {
 }
 
 func TestRepHostileObjectsNeverFailPut(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	base := map[string][]byte{
 		"sqlite": repTestSQLite(30, 4096, 261),
@@ -2762,6 +2779,7 @@ func TestRepHostileObjectsNeverFailPut(t *testing.T) {
 }
 
 func TestRepAnalysisBudgets(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	var bd repBudget
 	for i := 0; i < repMaxAttempts; i++ {
 		if err := bd.attempt(); err != nil {
@@ -2819,6 +2837,7 @@ func TestRepAnalysisBudgets(t *testing.T) {
 // ---- late creation, retirement, journal independence, upgrades ------------------------------------
 
 func TestRepLateCreationAndRetirementLeaveNamespaceUntouched(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModeOff)
 	db := repTestSQLite(200, 4096, 271)
 	l.put("db", db)
@@ -2911,6 +2930,7 @@ func TestRepLateCreationAndRetirementLeaveNamespaceUntouched(t *testing.T) {
 }
 
 func TestRepCrashAfterFormatRaiseBeforeFirstRoot(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModePrefer)
 	db := repTestSQLite(150, 4096, 281)
@@ -2934,6 +2954,7 @@ func TestRepCrashAfterFormatRaiseBeforeFirstRoot(t *testing.T) {
 }
 
 func TestRepUpgradeLevelsDoNotMoveUntilFirstRoot(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "derived-representation fixture inspects and removes loose chunk files")
 	version := func(dir string) int {
 		b, err := os.ReadFile(filepath.Join(dir, "FORMAT.json"))
@@ -3010,6 +3031,7 @@ func TestRepUpgradeLevelsDoNotMoveUntilFirstRoot(t *testing.T) {
 
 // off mode on a level-6 store: maintenance still knows the roots and must not destroy them.
 func TestRepOffModeMaintenanceKeepsRoots(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	l.put("db", repTestSQLite(250, 4096, 301))
 	l.put("car", repTestCAR(repTestBlocks(100, 3000, 302)))
@@ -3573,6 +3595,7 @@ func TestRepStreamWriterBatching(t *testing.T) {
 // compositions) through loose, compacted, repacked, tier-spread and restarted
 // states; each stage checks CDC, representation and deep verification.
 func TestRepKindLifecycleMatrix(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	fx := repFixtures(t)
 	for _, f := range fx {
@@ -3625,6 +3648,7 @@ func TestRepKindLifecycleMatrix(t *testing.T) {
 // Large objects stream their components into immutable packs, like an ordinary
 // large ingest, instead of creating one loose file per component.
 func TestRepLargeObjectComponentsGoToPacks(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	oldMin, oldTarget, oldSeg := directPackMinBytes, directPackTarget, segMaxObjectBytes
 	directPackMinBytes, directPackTarget, segMaxObjectBytes = 1<<20, 1<<20, 0
 	t.Cleanup(func() { directPackMinBytes, directPackTarget, segMaxObjectBytes = oldMin, oldTarget, oldSeg })
@@ -3650,6 +3674,7 @@ func TestRepLargeObjectComponentsGoToPacks(t *testing.T) {
 // A section above 256 KiB is a virtual component; a later revision that reuses it
 // carries its descriptor, so removing the revision that created it changes nothing.
 func TestRepMerkleVirtualSectionReuse(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	keys := repTestKeys(20000, 701)
 	ver := map[uint64]int{}
@@ -3754,6 +3779,7 @@ func repHandPublish(t *testing.T, s *Store, bucket, key string, data []byte) (uu
 }
 
 func TestRepSubstrateStoreRoundTrip(t *testing.T) {
+	g1CDCSpecific(t, "storelevel")
 	useLooseLayout(t, "asserts exact store-format level transitions; the segment policy raises the level to 11 on the first small write (segment level transitions: TestP1C_Format*)")
 	l := newRepLab(t, repModeOff)
 	data := make([]byte, 5000+300<<10+4000)

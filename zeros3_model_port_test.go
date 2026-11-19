@@ -89,6 +89,7 @@ func repZ4ModelSafetensors(t testing.TB, data []byte) []byte {
 	return append(out, data...)
 }
 func TestRepZ4ModelStreamingModelLifecycle(t *testing.T) {
+	g1CDCSpecific(t, "hook")
 	l := newRepLab(t, repModePrefer)
 	plain := bytes.Repeat([]byte{0, 60, 1, 60, 2, 60, 3, 60}, 1<<16)
 	for rev := 0; rev < 5; rev++ {
@@ -138,6 +139,7 @@ func TestRepZ4ModelStreamingModelLifecycle(t *testing.T) {
 }
 
 func TestRepZ4ModelGGUFAndUnsupportedModel(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	data, e := os.ReadFile("testing-harnesses/z4/testdata/a2-model/model.gguf")
 	if e != nil {
 		t.Fatal(e)
@@ -247,6 +249,7 @@ func TestRepZ4ModelModelGiBBounded(t *testing.T) {
 }
 
 func TestRepZ4ModelBaseSurvivesRootRetirement(t *testing.T) {
+	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
 	plain := bytes.Repeat([]byte{0, 60, 1, 60}, 1<<16)
 	l.put("base", repZ4ModelSafetensors(t, plain))

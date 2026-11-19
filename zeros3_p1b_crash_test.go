@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -22,6 +23,7 @@ import (
 type ackedPut struct {
 	seed int64
 	size int
+	sum  [32]byte // digest of the body, taken when it was sent
 }
 
 // TestP1B_RealKill_AckedObjectsSurviveConcurrentKill hammers a real server
@@ -95,7 +97,7 @@ func realKillRounds(t *testing.T, sizes []int, extraEnv []string) {
 					if shared {
 						key = fmt.Sprintf("s/%d", r.IntN(5))
 					}
-					put := ackedPut{seed, size}
+					put := ackedPut{seed, size, sha256.Sum256(body)}
 					if shared {
 						mu.Lock()
 						sharedMaybe[key] = append(sharedMaybe[key], put)
@@ -138,7 +140,7 @@ func realKillRounds(t *testing.T, sizes []int, extraEnv []string) {
 		nAcked := len(acked)
 		for key, p := range acked {
 			_, got, err := s.GetObject("b", key)
-			if err != nil || !bytes.Equal(got, genRandomBytes(p.seed, p.size)) {
+			if err != nil || sha256.Sum256(got) != p.sum {
 				mu.Unlock()
 				t.Fatalf("round %d: ACKNOWLEDGED object %s lost or corrupt after kill -9: %v", round, key, err)
 			}
@@ -158,7 +160,7 @@ func realKillRounds(t *testing.T, sizes []int, extraEnv []string) {
 			}
 			ok := false
 			for _, v := range versions {
-				if bytes.Equal(got, genRandomBytes(v.seed, v.size)) {
+				if sha256.Sum256(got) == v.sum {
 					ok = true
 					break
 				}
@@ -182,7 +184,7 @@ func realKillRounds(t *testing.T, sizes []int, extraEnv []string) {
 		}
 		mu.Lock()
 		for key, p := range acked {
-			if _, got, err := s.GetObject("b", key); err != nil || !bytes.Equal(got, genRandomBytes(p.seed, p.size)) {
+			if _, got, err := s.GetObject("b", key); err != nil || sha256.Sum256(got) != p.sum {
 				mu.Unlock()
 				t.Fatalf("round %d: acknowledged object %s damaged by gc: %v", round, key, err)
 			}
@@ -223,6 +225,7 @@ func claimsEmpty(r *pubRegistry) bool {
 // complete, verify -deep passes, gc keeps all acknowledged data, no claim or
 // queue entry leaked, and every unacknowledged PUT can be retried.
 func TestP1B_CrashMatrix_ConcurrentGroups(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	useLooseLayout(t, "crash boundaries of the loose publication path (segment boundaries: TestP1C_Crash*)")
 	points := []string{
 		hookCASAfterStage, hookCASBeforeStageSync, hookCASAfterStageSync, hookCASBeforeRename,

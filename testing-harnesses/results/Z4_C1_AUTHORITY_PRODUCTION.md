@@ -39,3 +39,7 @@ gofmt, vet, reproducible build, clean checkout, `go.mod` unchanged, source/test 
 
 ## Remaining limits
 Offline exclusive-lock maintenance; floor lock-in until `revert -all`; archive reads 21-390 MB/s vs CDC 1,084; ZN7 decode single-worker; Brotli/LZ4 forms; 2 GiB migrate 132 MiB.
+
+## Erratum (Z4-C1/T1)
+
+`qualification_summary.tsv` above records `toc_source rc=1` and `race_suite rc=1` next to the verdict, and its piped steps (`| tee`) did not propagate failures. The tree was requalified with `testing-harnesses/z4/t1/qualify.sh` (results in `testing-harnesses/z4/t1/results/`): maps pass, the full `-race` suite passes without findings or timeouts, the retire-everything hook runs with no failing test (the 166 layout-specific tests of the ledger run with CDC authoritative and are covered by `TestAuthorityEquiv*`), and the G5 memory/throughput figures were remeasured (2 GiB x3: 98 MiB, 94.8 s; 1 GiB x3: 84-87 MiB, 54.5 s; same machine, C1 binary 130 MiB / 137.5 s and 92 MiB / 71.7-75.8 s).

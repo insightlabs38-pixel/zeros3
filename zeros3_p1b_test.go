@@ -705,6 +705,7 @@ func verifyDeepOK(t *testing.T, s *Store) {
 // object (chunk list, sizes, digests, ETag) is byte-for-byte what the loose
 // policy produces, for sizes around the threshold.
 func TestP1B_MediumPack_SameManifestAsLoose(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	for _, size := range []int{255 << 10, 256 << 10, 700 << 10, 3 << 20, 9<<20 + 12345} {
 		body := genRandomBytes(int64(size), size)
 		run := func(medium bool) (manifestV1, *Store, string) {
@@ -922,6 +923,7 @@ func TestP1B_MediumPack_MultipartPartsAndCompletion(t *testing.T) {
 // Packs holding only dead records (a failed conditional PUT, an aborted
 // multipart upload, a replaced part) are removed by an ordinary gc; live packs stay.
 func TestP1B_MediumPack_DeadPacksCollectedByGC(t *testing.T) {
+	g1CDCSpecific(t, "layout")
 	useLooseLayout(t, "fixture mixes loose and packed chunks / counts packs, so it needs a loose starting layout (production-layout pack behaviour: TestLayoutMatrix_* and the direct-pack tests)")
 	mediumPolicy(t)
 	dir := t.TempDir()

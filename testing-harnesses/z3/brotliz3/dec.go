@@ -448,8 +448,42 @@ func transformWord(dst []byte, w []byte, t int) []byte {
 	return append(dst, ps(suf)...)
 }
 
+// Trace is the meta-block structure of a decoded stream: what a recipe has to explain.
+type Trace struct {
+	LgWin     int
+	Blocks    []TraceBlock // data meta-blocks in stream order
+	Markers   []int        // decoded offsets of empty metadata blocks (the padding a flush leaves behind)
+	EmptyLast bool         // the stream ends with an empty last meta-block
+	Cmds      []TraceCmd   // the first commands of the stream (insert length, copy length code): a cheap fingerprint of the encoder
+}
+
+// TraceCmd is a decoded command's lengths.
+type TraceCmd struct{ Ins, Copy int32 }
+
+// maxTraceCmds bounds the commands a trace keeps.
+const maxTraceCmds = 1 << 17
+
+// TraceBlock is one data meta-block: the decoded range it produced.
+type TraceBlock struct {
+	Start, End   int
+	Uncompressed bool
+	Last         bool
+}
+
 // Decode decompresses a complete Brotli stream producing at most maxOut bytes.
 func Decode(src []byte, maxOut int) ([]byte, error) {
+	out, _, err := DecodeTrace(src, maxOut)
+	return out, err
+}
+
+// DecodeTrace is Decode that also reports the meta-block structure.
+func DecodeTrace(src []byte, maxOut int) ([]byte, *Trace, error) {
+	tr := &Trace{}
+	out, err := decode(src, maxOut, tr)
+	return out, tr, err
+}
+
+func decode(src []byte, maxOut int, tr *Trace) ([]byte, error) {
 	d := theDict.Load()
 	if d == nil {
 		return nil, ErrDictionary
@@ -468,12 +502,14 @@ func Decode(src []byte, maxOut int) ([]byte, error) {
 		wbits = 8 + uint(m)
 	}
 	maxDist := 1<<wbits - 16
+	tr.LgWin = int(wbits)
 	var out []byte
 	ring := [4]int{16, 15, 11, 4}
 	ri := 0 // ring[(ri-1)&3] is the last distance
 	for !r.bad {
 		last := r.bits(1) == 1
 		if last && r.bits(1) == 1 {
+			tr.EmptyLast = true
 			break
 		}
 		nib := r.bits(2)
@@ -494,6 +530,7 @@ func Decode(src []byte, maxOut int) ([]byte, error) {
 			for ; n > 0 && !r.bad; n-- {
 				r.bits(8)
 			}
+			tr.Markers = append(tr.Markers, len(out))
 			if last {
 				break
 			}
@@ -511,11 +548,13 @@ func Decode(src []byte, maxOut int) ([]byte, error) {
 		if mlen > maxOut-len(out) {
 			return nil, ErrLimit
 		}
+		bstart := len(out)
 		if !last && r.bits(1) == 1 { // uncompressed
 			r.alignByte()
 			for i := 0; i < mlen && !r.bad; i++ {
 				out = append(out, byte(r.bits(8)))
 			}
+			tr.Blocks = append(tr.Blocks, TraceBlock{bstart, len(out), true, false})
 			continue
 		}
 		var bl, bi, bd blockState
@@ -574,6 +613,9 @@ func Decode(src []byte, maxOut int) ([]byte, error) {
 			ic, cc := int(cellInsBase[cell])+(c>>3)&7, int(cellCopyBase[cell])+c&7
 			ins := int(insBase[ic]) + int(r.bits(insExtra[ic]))
 			cp := int(copyBase[cc]) + int(r.bits(copyExtra[cc]))
+			if tr != nil && len(tr.Cmds) < maxTraceCmds {
+				tr.Cmds = append(tr.Cmds, TraceCmd{int32(ins), int32(cp)})
+			}
 			if ins > end-len(out) {
 				return nil, ErrCorrupt
 			}
@@ -663,6 +705,7 @@ func Decode(src []byte, maxOut int) ([]byte, error) {
 				return nil, ErrCorrupt
 			}
 		}
+		tr.Blocks = append(tr.Blocks, TraceBlock{bstart, len(out), false, last})
 		if last {
 			break
 		}

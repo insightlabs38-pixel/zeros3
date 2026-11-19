@@ -1,0 +1,144 @@
+{
+ "hardware": "4 vCPU, 15 GiB, ext4 on virtio disk, Go 1.27.0, linux/amd64; baseline and new runs on the same machine",
+ "baseline_revision": "b1d5e555c03ade67671bc16e3e89c906cf25f1af (origin/main, C1 merge): plain `go test` test binary, tests run serially in one process",
+ "normal_root_suite": {
+  "baseline_seconds": 574,
+  "new_seconds": 183,
+  "speedup": 3.14,
+  "tests": 1304,
+  "passed": 1279,
+  "skipped": 25,
+  "failed": 0,
+  "note": "new = test binary + production binary compile (cold cache for the qualification) + all tests, 4 jobs"
+ },
+ "race_root_suite": {
+  "baseline_seconds": [
+   2134,
+   2212
+  ],
+  "new_seconds": 650,
+  "speedup": [
+   3.28,
+   3.4
+  ],
+  "tests": 1304,
+  "passed": 1279,
+  "failed": 0,
+  "note": "the two serial baselines are upper bounds: each overlapped with some compile/test activity of the author on the same machine; the recorded C1 figure on its own hardware was 3861 s"
+ },
+ "authority_hook_suite": {
+  "baseline_seconds": 985,
+  "baseline_failed_tests": 167,
+  "new_seconds": 352,
+  "new_failed": 0,
+  "speedup": 2.8,
+  "note": "baseline: the C1 binary's hook run (ZEROS3_G1_RETIRE_ALL=1, -skip TestAuthority), serial, 167 failures; new: the same hook over the non-authority tests, all passing (authority suite runs natively: 49 s)"
+ },
+ "g5_cli_migrate_3x_history_same_machine": {
+  "1GiB": {
+   "baseline_c1_binary": {
+    "wall_s": [
+     71.7,
+     75.8
+    ],
+    "maxrss_mib": 92
+   },
+   "new": {
+    "wall_s": [
+     54.7,
+     54.4
+    ],
+    "maxrss_mib": [
+     84,
+     87
+    ]
+   }
+  },
+  "2GiB": {
+   "baseline_c1_binary": {
+    "wall_s": 137.5,
+    "maxrss_mib": 130
+   },
+   "new": {
+    "wall_s": 94.8,
+    "maxrss_mib": 98
+   }
+  },
+  "command": "zeros3 authority migrate -apply -max-depth 2 -archive -store S (3 versions of a synthetic 1 GiB / 2 GiB object), fresh process, quiet machine"
+ },
+ "zn7_decode_streaming_MiBps": {
+  "workers_1_2_4": {
+   "smollm2_q4_0_derivation": [
+    13,
+    24,
+    45
+   ],
+   "pythia14m_5_versions": [
+    140,
+    228,
+    276
+   ]
+  },
+  "note": "production reader, byte-exact, peak RSS identical for every worker count"
+ },
+ "not_improved_much": {
+  "scale_1m_seconds": {
+   "c1_own_hardware": 1325,
+   "new": 1200
+  }
+ },
+ "final_qualification_same_session": {
+  "source_fingerprint": "aee6b5c60db5",
+  "git_head": "bf3e82b24b4ab0fafa3ef68c41ece06726abf4a2",
+  "note": "serial `go test ./...` and the optimized runner, same machine and tree, tests 1320 (1294 pass, 26 allowed skip, 0 fail), outcomes identical (t1_equivalence)",
+  "normal": {
+   "conventional_s": 596,
+   "t1run_s": 193,
+   "speedup": 3.09
+  },
+  "race": {
+   "conventional_s": 2837,
+   "t1run_s": 834,
+   "speedup": 3.4
+  },
+  "authority_hook_s": 315,
+  "authority_native_s": 61,
+  "g3_scale_1m_s": {
+   "baseline_total": 1266,
+   "optimized_qualification": 823,
+   "optimized_run_alone": 846,
+   "reduction_pct": 35.0,
+   "objects": 1000000,
+   "pin_records": 50000
+  },
+  "g5_migrate_cli": {
+   "1GiB": {
+    "wall_s": 52.7,
+    "rss_mib": 84.9,
+    "baseline": "54.5 s, 84-87 MiB"
+   },
+   "2GiB": {
+    "wall_s": 99.8,
+    "rss_mib": 100.2,
+    "baseline": "94.8 s, 98 MiB (5% slower, 2% higher RSS)"
+   }
+  },
+  "zn7_decode_MiBps_workers_1_2_4": {
+   "pythia14m": [
+    137,
+    209,
+    319
+   ],
+   "smollm2_q4_0": [
+    20,
+    37,
+    67
+   ],
+   "smollm2_iq3_derived": [
+    3,
+    5,
+    8
+   ]
+  }
+ }
+}

@@ -1,0 +1,7287 @@
+{
+ "FuzzAuthRecord": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzAuthWindowRecord": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzModelMetadata": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepCodecAnalysis": {
+  "s": 0.33,
+  "cpu": 0.23,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepCodecDecode": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepDecoders": {
+  "s": 0.38,
+  "cpu": 0.26,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepGitDecode": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepGitReaderAt": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepHardRecipes": {
+  "s": 0.1,
+  "cpu": 0.11,
+  "rss_mib": 49
+ },
+ "FuzzRepRootUnmarshal": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepStructuredRecipes": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepUnmarshal": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepZ4ManagedDecode": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzRepZ4ModelDecode": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzServedManifestParse": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "FuzzXDeltaEnvelope": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestA4QualificationForkCommitRace": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAWSChunkReader_Fragmentation": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAWSChunked_AWSDocumentationVector": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAWSChunked_ConditionalHistoryRestart": {
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAWSChunked_FailureKeepsExistingObject": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAWSChunked_LargeObjectBoundedMemory": {
+  "s": 1.49,
+  "cpu": 1.68,
+  "rss_mib": 48
+ },
+ "TestAWSChunked_Matrix": {
+  "s": 0.7,
+  "cpu": 0.49,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAWSChunked_UploadPart": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestApplyCredentialEnvFallback_AllThreeFromEnv": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestApplyCredentialEnvFallback_ExplicitFlagsWinOverEnvForAllThree": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestApplyCredentialEnvFallback_MissingAccessKeyLeavesAccessAtDefault": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestApplyCredentialEnvFallback_PartialPairLeavesOtherFlagAtDefault": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthHelperProcess": {
+  "s": 0,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthorityBaseRetentionAfterNamespacePruning": {
+  "s": 0.8,
+  "cpu": 0.56,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthorityBundleExportToOldBinary": {
+  "s": 0.92,
+  "cpu": 0.64,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthorityCLIWorkflowAndHTTPReads": {
+  "s": 1.54,
+  "cpu": 0.94,
+  "rss_mib": 57
+ },
+ "TestAuthorityConcurrentOperations": {
+  "s": 9.39,
+  "cpu": 14.39,
+  "rss_mib": 302,
+  "disk_mib": 15
+ },
+ "TestAuthorityCopyAndRestoreOfBodyOnlyContent": {
+  "s": 0.51,
+  "cpu": 0.35,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthorityCorruptComponentFailsClosedNeverWrongBytes": {
+  "s": 0.31,
+  "cpu": 0.22,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthorityCrashMatrix": {
+  "s": 34.88,
+  "cpu": 24.1,
+  "rss_mib": 229,
+  "disk_mib": 4
+ },
+ "TestAuthorityCycleRejected": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthorityDefaultOrderKeepsNewestInCDC": {
+  "s": 0.6,
+  "cpu": 0.42,
+  "rss_mib": 199,
+  "disk_mib": 4
+ },
+ "TestAuthorityDeltaLifecycleAndReclaim": {
+  "s": 2.09,
+  "cpu": 1.47,
+  "rss_mib": 163,
+  "disk_mib": 3
+ },
+ "TestAuthorityEquivAccounting": {
+  "s": 0.59,
+  "cpu": 0.49,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityEquivCorruptionClasses": {
+  "s": 4.05,
+  "cpu": 2.7,
+  "rss_mib": 154,
+  "disk_mib": 3
+ },
+ "TestAuthorityEquivDifferential": {
+  "s": 0.69,
+  "cpu": 0.47,
+  "rss_mib": 110
+ },
+ "TestAuthorityEquivHostileObjectsStayExact": {
+  "s": 0.14,
+  "cpu": 0.08,
+  "rss_mib": 21
+ },
+ "TestAuthorityEquivMaintenanceCrashPoints": {
+  "s": 10.23,
+  "cpu": 7.33,
+  "rss_mib": 216,
+  "disk_mib": 2
+ },
+ "TestAuthorityEquivMaintenanceKeepsFormat": {
+  "s": 0.67,
+  "cpu": 0.4,
+  "rss_mib": 107
+ },
+ "TestAuthorityEquivPhysicalLayouts": {
+  "s": 0.62,
+  "cpu": 0.52,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityEquivRangeReadsFetchOnlyWhatTheyNeed": {
+  "s": 1.03,
+  "cpu": 0.59,
+  "rss_mib": 132
+ },
+ "TestAuthorityEquivRetirementIsPhysical": {
+  "s": 1.23,
+  "cpu": 0.65,
+  "rss_mib": 129
+ },
+ "TestAuthorityEquivStoreLevel": {
+  "s": 1.06,
+  "cpu": 0.81,
+  "rss_mib": 133
+ },
+ "TestAuthorityEquivStreamingPutAndReadBoundedMemory": {
+  "s": 2.51,
+  "cpu": 2.11,
+  "rss_mib": 102,
+  "disk_mib": 3
+ },
+ "TestAuthorityFiveGenerationMatrix": {
+  "s": 0,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityGCFailsClosedOnMissingBase": {
+  "s": 0.39,
+  "cpu": 0.33,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityGraphLimits": {
+  "s": 0.21,
+  "cpu": 0.18,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityHardCodecsAdmissionAndExactness": {
+  "s": 2.3,
+  "cpu": 2.01,
+  "rss_mib": 193
+ },
+ "TestAuthorityHardCodecsFeatureLifecycle": {
+  "s": 1.53,
+  "cpu": 1.3,
+  "rss_mib": 173
+ },
+ "TestAuthorityHardCorpusEconomics": {
+  "s": 0,
+  "rss_mib": 12
+ },
+ "TestAuthorityInjectedIOFailuresKeepLastValidState": {
+  "s": 2.42,
+  "cpu": 1.7,
+  "rss_mib": 120,
+  "disk_mib": 2
+ },
+ "TestAuthorityLargeCheck": {
+  "s": 0,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityLargeFixture": {
+  "s": 0,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityLargeProfile": {
+  "s": 0,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityMalformedRecordsAndEnvelopes": {
+  "s": 0.34,
+  "cpu": 0.28,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityMixedLifecycle": {
+  "s": 9.61,
+  "cpu": 8.83,
+  "rss_mib": 248,
+  "disk_mib": 4
+ },
+ "TestAuthorityNativeClosureTransferAndInterruption": {
+  "s": 1.04,
+  "cpu": 0.87,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched": {
+  "s": 0.59,
+  "cpu": 0.49,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityPeerAssistedComponentRepair": {
+  "s": 0.61,
+  "cpu": 0.51,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityPersistenceLossModel": {
+  "s": 47.79,
+  "cpu": 31.02,
+  "rss_mib": 263,
+  "disk_mib": 138
+ },
+ "TestAuthorityPlannerRepGroupsExact": {
+  "s": 2.2,
+  "cpu": 1.49,
+  "rss_mib": 134,
+  "disk_mib": 13
+ },
+ "TestAuthorityPlannerReusesPlansAndReverts": {
+  "s": 2.33,
+  "cpu": 1.53,
+  "rss_mib": 171,
+  "disk_mib": 3
+ },
+ "TestAuthorityPublishRefusesIncompleteClosure": {
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityRepFormAcrossStructuralKinds": {
+  "s": 3.09,
+  "cpu": 2.07,
+  "rss_mib": 103,
+  "disk_mib": 10
+ },
+ "TestAuthorityRepairCrashQualification": {
+  "s": 24.87,
+  "cpu": 13.71,
+  "rss_mib": 215,
+  "disk_mib": 54
+ },
+ "TestAuthorityRepairPaths": {
+  "s": 0.66,
+  "cpu": 0.55,
+  "rss_mib": 161,
+  "disk_mib": 3
+ },
+ "TestAuthorityRepeatedCrashLoops": {
+  "s": 5.8,
+  "cpu": 4.43,
+  "rss_mib": 224,
+  "disk_mib": 4
+ },
+ "TestAuthorityReplicationToNewAndOldDestinations": {
+  "s": 0.92,
+  "cpu": 0.74,
+  "rss_mib": 334
+ },
+ "TestAuthorityRetireEverythingSubprocess": {
+  "s": 4.03,
+  "cpu": 2.78,
+  "rss_mib": 150,
+  "disk_mib": 11
+ },
+ "TestAuthorityRetiredEquivalents": {
+  "s": 6.37,
+  "cpu": 3.87,
+  "rss_mib": 144,
+  "disk_mib": 5
+ },
+ "TestAuthorityRevertAllLowersFloorAndOldBinaryReopens": {
+  "s": 1.36,
+  "cpu": 1.19,
+  "rss_mib": 127
+ },
+ "TestAuthorityRevertRestoresCDC": {
+  "s": 0.7,
+  "cpu": 0.57,
+  "rss_mib": 334
+ },
+ "TestAuthorityScaleFixture": {
+  "s": 0,
+  "rss_mib": 334
+ },
+ "TestAuthorityScopedMigration": {
+  "s": 0.53,
+  "cpu": 0.43,
+  "rss_mib": 334
+ },
+ "TestAuthorityStaleGenerationRejected": {
+  "s": 0.11,
+  "cpu": 0.09,
+  "rss_mib": 334
+ },
+ "TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds": {
+  "s": 12.51,
+  "cpu": 15.69,
+  "rss_mib": 196,
+  "disk_mib": 2
+ },
+ "TestAuthoritySyncIntoBodyOnlyDestination": {
+  "s": 0.64,
+  "cpu": 0.52,
+  "rss_mib": 334
+ },
+ "TestAuthorityThinClosureUsesDestinationBasesAndFallsBack": {
+  "s": 0.68,
+  "cpu": 0.55,
+  "rss_mib": 334
+ },
+ "TestAuthorityTierGateOnHardCodecs": {
+  "s": 5.82,
+  "cpu": 5.48,
+  "rss_mib": 220
+ },
+ "TestAuthorityTierRefusalTable": {
+  "s": 0,
+  "rss_mib": 12
+ },
+ "TestAuthorityWindowedDelta": {
+  "s": 1.32,
+  "cpu": 1.22,
+  "rss_mib": 120
+ },
+ "TestAuthorityZN7BaseRetentionRevertAndFeature": {
+  "s": 2.61,
+  "cpu": 2.51,
+  "rss_mib": 126,
+  "disk_mib": 2
+ },
+ "TestAuthorityZN7DecodeScaling": {
+  "s": 0,
+  "rss_mib": 334
+ },
+ "TestAuthorityZN7ModelHistory": {
+  "s": 3.92,
+  "cpu": 3.27,
+  "rss_mib": 120,
+  "disk_mib": 8
+ },
+ "TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive": {
+  "s": 28.16,
+  "cpu": 37.19,
+  "rss_mib": 38,
+  "disk_mib": 1
+ },
+ "TestAuthorityZN7RealModels": {
+  "s": 0,
+  "rss_mib": 334
+ },
+ "TestB2Economics": {
+  "s": 0,
+  "rss_mib": 334
+ },
+ "TestB2RepBreakdown": {
+  "s": 0,
+  "rss_mib": 334
+ },
+ "TestBulkBudget_BoundsConcurrentBytesRegardlessOfWorkers": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 334
+ },
+ "TestBulkDiscovery_AdvertisedAdditivelyAndWithdrawable": {
+  "s": 0.12,
+  "cpu": 0.1,
+  "rss_mib": 334
+ },
+ "TestBulkFetch_ClientRejectsDishonestResponses": {
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 334
+ },
+ "TestBulkFetch_SendsOnlyLogicalBytesFromAnyRepresentation": {
+  "s": 0.13,
+  "cpu": 0.11,
+  "rss_mib": 334
+ },
+ "TestBulkFetch_ServerSideFailures": {
+  "s": 0.62,
+  "cpu": 0.5,
+  "rss_mib": 334
+ },
+ "TestBulkFraming_BoundaryBatchesParse": {
+  "s": 0.39,
+  "cpu": 0.32,
+  "rss_mib": 334
+ },
+ "TestBulkFraming_RejectsMalformedFrames": {
+  "s": 0,
+  "rss_mib": 334
+ },
+ "TestBulkNegotiate_MatchesV1ForEveryPhysicalState": {
+  "s": 0.11,
+  "cpu": 0.09,
+  "rss_mib": 334
+ },
+ "TestBulkNegotiate_SplitsLargeSetsAndStaysReadOnly": {
+  "s": 0.14,
+  "cpu": 0.11,
+  "rss_mib": 334
+ },
+ "TestBulkPlanner_BoundsBothAxesAndKeepsOrder": {
+  "s": 0,
+  "rss_mib": 334
+ },
+ "TestBulkRepair_PartialSuccessSurvivesBatchFailure": {
+  "s": 1.4,
+  "cpu": 0.78,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkReplicate_AdvertisedBulkFailureIsReportedNotHidden": {
+  "s": 0.57,
+  "cpu": 0.32,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkReplicate_FallsBackToV1WhenEitherEndLacksBulk": {
+  "s": 0.53,
+  "cpu": 0.29,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkReplicate_InterruptedTransferResumesThroughNegotiation": {
+  "s": 0.74,
+  "cpu": 0.41,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkReplicate_NewToNewUsesBulkAndCollapsesRequests": {
+  "s": 0.81,
+  "cpu": 0.45,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkReplicate_PhysicalSourceRepresentationDoesNotChangeWireBytes": {
+  "s": 0.22,
+  "cpu": 0.12,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkReplicate_ThroughStandardReverseProxy": {
+  "s": 0.35,
+  "cpu": 0.19,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkRestore_UsesBulkAcrossServers": {
+  "s": 0.27,
+  "cpu": 0.15,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkSync_ChunkChangedAfterScanIsNeverSent": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkSync_UsesBulkAndMatchesV1Stats": {
+  "s": 0.79,
+  "cpu": 0.44,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkUpload_FailuresPublishNoPartialBatchAndNeverCommit": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkUpload_NearByteLimit": {
+  "s": 0.84,
+  "cpu": 0.79,
+  "rss_mib": 315
+ },
+ "TestBulkUpload_PresentAndPackedChunksAreNoOps": {
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBulkUpload_PublishesThroughCASAndIsIdempotent": {
+  "s": 4.02,
+  "cpu": 2.91,
+  "rss_mib": 133,
+  "disk_mib": 25
+ },
+ "TestBulkUpload_WaitsForTransportToReleaseFrame": {
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBundleDeltaLife_BrowserSiteRevision": {
+  "s": 0.52,
+  "cpu": 0.29,
+  "rss_mib": 75,
+  "disk_mib": 11
+ },
+ "TestBundleDeltaLife_CDCShiftResynchronises": {
+  "s": 3.63,
+  "cpu": 2.27,
+  "rss_mib": 338,
+  "disk_mib": 185
+ },
+ "TestBundleDeltaLife_CheckpointChain": {
+  "s": 13.93,
+  "cpu": 12.86,
+  "rss_mib": 1658,
+  "disk_mib": 660
+ },
+ "TestBundleDeltaLife_RealProcessKillDuringDeltaImport": {
+  "s": 8.64,
+  "cpu": 6.42,
+  "rss_mib": 1157,
+  "disk_mib": 588
+ },
+ "TestBundleDeltaScale_MergeOneMillionChunks": {
+  "s": 0.93,
+  "cpu": 0.77,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_BaseIdentityFailsClosed": {
+  "s": 0.43,
+  "cpu": 0.36,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_CLI": {
+  "s": 0.22,
+  "cpu": 0.18,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_ChainOfDeltasAndOutOfOrderFailure": {
+  "s": 0.33,
+  "cpu": 0.27,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_CorruptBaseReferenceFailsThenConverges": {
+  "s": 0.19,
+  "cpu": 0.16,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation": {
+  "s": 0.17,
+  "cpu": 0.14,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_ExportImportRestoresTargetOverBase": {
+  "s": 0.24,
+  "cpu": 0.2,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_FormatValidSyntheticDelta": {
+  "s": 0,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_ImportCrashMatrix": {
+  "s": 1.45,
+  "cpu": 0.91,
+  "rss_mib": 30
+ },
+ "TestBundleDelta_ImportIsIdempotentAndNeverTouchesNamespaceOrFormat": {
+  "s": 0.19,
+  "cpu": 0.16,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_ImportUsesGroupedCASPublication": {
+  "s": 0.48,
+  "cpu": 0.4,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_ParserMutationMatrix": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_PayloadRepairsCorruptDestinationCopyAndReusesExisting": {
+  "s": 0.22,
+  "cpu": 0.18,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_PlannerClassification": {
+  "s": 0,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleDelta_SemanticsMetadataNewObjectsDeletesAndSameSnapshot": {
+  "s": 0.17,
+  "cpu": 0.14,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleLife_BrowserSiteRoundTrip": {
+  "s": 0.33,
+  "cpu": 0.27,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleLife_BundleSurvivesSourceDeletionAndGC": {
+  "s": 0.13,
+  "cpu": 0.11,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleLife_CheckpointSharesChunksOnce": {
+  "s": 0.58,
+  "cpu": 0.48,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundleLife_RealProcessKillDuringImport": {
+  "s": 8.47,
+  "cpu": 6.04,
+  "rss_mib": 968,
+  "disk_mib": 586
+ },
+ "TestBundleScale_PlannerOneMillionChunks": {
+  "s": 0.83,
+  "cpu": 0.69,
+  "rss_mib": 307,
+  "disk_mib": 36
+ },
+ "TestBundle_CLI": {
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_CorruptBundleNeverPublishesSnapshot": {
+  "s": 0.61,
+  "cpu": 0.44,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_CorruptExistingChunkIsRepairedFromVerifiedPayload": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ExportIndependentOfPhysicalRepresentation": {
+  "s": 0.3,
+  "cpu": 0.22,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ExportIsDeterministicAndAtomic": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_FormatValidSyntheticBundle": {
+  "s": 0,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ImportCrashMatrix": {
+  "s": 1.02,
+  "cpu": 0.73,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ImportIsIdempotentAndCollisionsFail": {
+  "s": 0.12,
+  "cpu": 0.09,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ImportNeverTouchesNamespaceOrFormat": {
+  "s": 0.14,
+  "cpu": 0.1,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ImportRequiresExclusiveStore": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ImportUsesGroupedCASPublication": {
+  "s": 0.53,
+  "cpu": 0.38,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_InspectDistinguishesParsedFromVerified": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_ParserMutationMatrix": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_PartialOverlapImportsOnlyMissingContent": {
+  "s": 0.18,
+  "cpu": 0.13,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestBundle_RoundTripPreservesIdentityAndDeduplicates": {
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_BatchLocalDuplicatesStageOnce": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_BulkUploadPublishesFullBatchesOnly": {
+  "s": 0.31,
+  "cpu": 0.22,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_ConcurrentWritersOfOneDigest": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_ExistingChunksInAnyTierStageNothing": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_FlushFailureLeavesNothingPublished": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_IngestDuplicateAndLocalizedEdit": {
+  "s": 0.3,
+  "cpu": 0.22,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_IngestIsBoundedAndHandlesTinyObjects": {
+  "s": 1.57,
+  "cpu": 1.33,
+  "rss_mib": 96
+ },
+ "TestCASBatch_InterruptionMatrix": {
+  "s": 13.02,
+  "cpu": 8.18,
+  "rss_mib": 197,
+  "disk_mib": 29
+ },
+ "TestCASBatch_PublicationBarrier": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASBatch_RealProcessKillMidIngest": {
+  "s": 2.49,
+  "cpu": 2.58,
+  "rss_mib": 645,
+  "disk_mib": 128
+ },
+ "TestCASShardDirs_ConcurrentFirstUseOfOneShard": {
+  "s": 0.24,
+  "cpu": 0.17,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASShardDirs_FailedPublishRemovesItsNewDirs": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCASShardDirs_ParentDurabilityOrdering": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCAS_ChunkPathMatchesSHA256": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCAS_CorruptExistingChunkDetected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCAS_DedupNoDuplication": {
+  "s": 0,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCAS_RoundTrip": {
+  "s": 0,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_Deterministic": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_EditLocalityBeatsFixedSizeChunking": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_EmptyInput": {
+  "s": 0,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_ExactBoundarySizeInputs": {
+  "s": 0,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_ForcedMaximumOccurs": {
+  "s": 0.2,
+  "cpu": 0.14,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_MeanChunkSizePlausible": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_MinMaxBounds": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_RepetitiveData": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_TinyInput": {
+  "s": 0,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCDC_V1GoldenBoundaries": {
+  "s": 0.33,
+  "cpu": 0.24,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Fork_DestinationConflictNonzeroExit": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Fork_OverlapRejectedNonzeroExitNoObjectsTouched": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Fork_RestartThenDeepVerifyGreen": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Fork_ResumeAcrossRealProcessKill": {
+  "s": 0.65,
+  "cpu": 0.47,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Fork_WholeBucketToWholeBucket": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Repair_EndToEndSmoke": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Repair_ExitCodeNonzeroWhenUnresolved": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Repair_RealProcessKillThenResume": {
+  "s": 1.87,
+  "cpu": 1.48,
+  "rss_mib": 143
+ },
+ "TestCLI_Replicate_NonRecursiveSingleObjectUnaffectedByM8C": {
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Replicate_RecursiveExitCodeNonzeroOnPartialFailure": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Replicate_RecursiveWholeBucket": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_SnapshotRestore_EndToEnd": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_SnapshotRestore_ResumeAcrossRealProcessKill": {
+  "s": 0.33,
+  "cpu": 0.24,
+  "rss_mib": 257,
+  "disk_mib": 2
+ },
+ "TestCLI_Snapshot_CreateListShowDelete": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestCLI_Snapshot_GC_PinsAcrossRestart": {
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 169
+ },
+ "TestCLI_Sync_DirectoryAndSingleFile_Smoke": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestCLI_VerifyRepairFrom_OneCommandDetectRepairReverify": {
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 169
+ },
+ "TestCLI_VerifyRepairFrom_UnsetPreservesOrdinaryVerifyBehavior": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCLI_VersionsRestoreGCDoctor_Smoke": {
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 169
+ },
+ "TestCLI_WorkersFlagValidation": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 169
+ },
+ "TestCRC32_FailedChecksumLeavesNoVisibleObject": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCRC32_InvalidRejected": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestCRC32_ValidAccepted": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestConcurrency_DeleteBucketVsPutObjectResolvesCoherently": {
+  "s": 0.29,
+  "cpu": 0.18,
+  "rss_mib": 169
+ },
+ "TestConcurrency_GetDuringOverwriteSeesCompleteObject": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestConcurrency_RestoreRacingCopyObject": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestConcurrency_RestoreRacingDelete": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestConcurrency_RestoreRacingPut": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConcurrency_SameKeyPutVsDeleteNeverMixed": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConcurrency_StatsDuringWrites": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 169
+ },
+ "TestConcurrency_TwoOverwritesSameKey_HistoryDeterministic": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConcurrency_VerifyDuringWrites": {
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_HistoricalETagIsNotCurrentForIfMatch": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_IfMatch_MatchSucceeds": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_IfMatch_MismatchFailsWith412": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_IfNoneMatch_MatchReturns304": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_IfNoneMatch_MismatchServesNormally": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_MissingObjectIgnoresCondition": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_MultipartCurrentETag": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_QuotedUnquotedAndCaseInsensitive": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalGetHTTP_RangeInteraction": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConditionalHeadHTTP_IfMatch_MatchAndMismatch": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestConditionalHeadHTTP_IfNoneMatch_MatchAndMismatch": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_ConcurrentCreateOnly_ExactlyOneWinnerOverRealHTTP": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_IfMatch_CASUpdateThenStaleRejectWith412": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_IfMatch_MultipartCurrentETag": {
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_IfMatch_QuotedUnquotedAndCaseInsensitive": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_IfNoneMatchStar_CreateThenRejectWith412": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_UnconditionalPUTUnaffectedByM8F": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPutHTTP_WhitespaceAroundStarTolerated": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_ConcurrentCreateOnly_ExactlyOneWinner": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_ConcurrentIfMatchSameOldETag_ExactlyOneWinner": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfMatch_ABASameETagAfterDeleteRecreateSucceeds": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfMatch_AbsentKeyFails": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfMatch_HistoricalETagDoesNotMatchCurrent": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfMatch_MatchingETagSucceeds": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfMatch_MismatchingETagFails": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfMatch_SpeculativeCASBecomesGCCollectibleAfterFailure": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfNoneMatchStar_AbsentKeySucceeds": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfNoneMatchStar_DeletedKeySucceeds": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfNoneMatchStar_ExistingKeyFails": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_IfNoneMatchStar_FailedWriteLeavesContentMetadataAndVersionsUnchanged": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_StaleIfMatchLosesAfterDeleteRecreate": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestConditionalPut_StaleIfMatchLosesAfterInterveningOrdinaryPut": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestContentMD5_CoexistsWithValidCRC32": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestContentMD5_FailedDigestLeavesNoVisibleObjectOverRealHTTP": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestContentMD5_MalformedBase64RejectedAsInvalidDigest": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestContentMD5_MismatchedRejectedAsBadDigest": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestContentMD5_MissingHeaderUnchangedBehavior": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestContentMD5_ValidAccepted": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestContentMD5_ValidPUTOverRealHTTPSucceedsAndETagUnaffected": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestContentMD5_WrongLengthDecodedDigestRejectedAsInvalidDigest": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestCopyObjectHTTP_SourceConditionMalformedRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObjectHTTP_SourceIfMatch_MatchSucceeds": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObjectHTTP_SourceIfMatch_MismatchFailsWith412": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObjectHTTP_SourceIfMatch_SupersededHistoricalETagFails": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestCopyObjectHTTP_SourceIfMatch_WithMetadataReplaceDirective": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObjectHTTP_SourceIfNoneMatch_MatchFailsWith412": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObjectHTTP_SourceIfNoneMatch_MismatchSucceeds": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObject_CrossBucket": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObject_DestinationGetsNewManifestIdentityAndTimestamp": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestCopyObject_MetadataDirectiveCopyPreservesSourceMetadata": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestCopyObject_MissingDestinationBucket": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObject_MissingSource": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestCopyObject_OverwritesExistingDestination": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObject_SameBucketZeroNewCASChunkBytes": {
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 169
+ },
+ "TestCopyObject_SourceConditionUsesAtomicallyCapturedRevision": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCopyObject_TrickySourceKeys": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestCrash_AfterAck": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestCrash_AfterChunksBeforeManifest": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCrash_AfterJournalSyncBeforeResponse": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCrash_AfterJournalWriteBeforeSync": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCrash_AfterManifestBeforeJournal": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCrash_CopyObjectAfterJournalSyncIsDurable": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestCrash_CopyObjectReplaceBeforeJournalLeavesOldState": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCrash_DuringChunkStaging": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCrash_DuringPartialJournalFrame": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestCrash_JournalReplay_HistoryRecordTypesDeterministic": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestCrash_Restart_MultipartOverwritePreviousVersionPreserved": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 169
+ },
+ "TestCrash_SyncFailureRecoveryIsHonest": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDedup_EditedObjectReuseBeatsFixedSizeChunking": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 169
+ },
+ "TestDedup_IdenticalObjectReuseAcrossBuckets": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestDedup_IdenticalObjectReuseAcrossKeys": {
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 169
+ },
+ "TestDeleteBucket_EmptySucceeds": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteBucket_MissingIsNoSuchBucket": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteBucket_NonEmptyFails": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteBucket_SurvivesRestartAndRecreate": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteObject_ExistingThenMissingIdempotent": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteObject_MissingBucketErrors": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestDeleteObject_SharedChunksRemainReadableThroughAnotherObject": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteObject_SurvivesRestart": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteObjects_BucketVersionAndBounds": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestDeleteObjects_HistoryPruneGC": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDeleteObjects_Table": {
+  "s": 2.38,
+  "cpu": 0.53,
+  "rss_mib": 23
+ },
+ "TestDiff_CLI_SameServer_EndToEnd": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDirSync_AggregateStatsExactMatchSumOfPerFileStats": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 169
+ },
+ "TestDirSync_DeterministicOrdering": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestDirSync_DuplicateLookingPathsRemainDistinct": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_EmptyDirectory": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDirSync_ExistingIdenticalRemoteFile": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDirSync_FileDisappearsBeforeBeingProcessed": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_HiddenDotPrefixedFiles": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestDirSync_LocalDeletionDoesNotDeleteRemoteObject": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_NestedDirectories": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_NewlyAddedFileAfterInitialSync": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDirSync_OneFile": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestDirSync_OneModifiedFileAmongMany": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_PartialFailureMultipleFailureModesSuccessfulSiblingsRetained": {
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 169
+ },
+ "TestDirSync_PrefixNormalization": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_PrintSummaryFormat": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestDirSync_RemoteConflictForOneFileOthersSucceed": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestDirSync_ResultOKReflectsFailureCount": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestDirSync_ResumeAfterPartialPriorUploadOfOneFile": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 169
+ },
+ "TestDirSync_SameBasenameInDifferentDirectories": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_ServerRestart": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDirSync_SourcePathTrailingSeparator": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_SpacesInPaths": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_SpecialFileSkipped": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirSync_SymlinkSkippedNotFollowed": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDirSync_UnicodePaths": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirectPackLife_AbortedMultipartLeavesGCableDeadPacks": {
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 169
+ },
+ "TestDirectPackLife_BodyReadFailureCleansStagingKeepsPublishedPacks": {
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 169
+ },
+ "TestDirectPackLife_CrashMatrixConverges": {
+  "s": 1.6,
+  "cpu": 1.34,
+  "rss_mib": 88
+ },
+ "TestDirectPackLife_RealProcessKillAfterFirstPackBeforeRoot": {
+  "s": 3.32,
+  "cpu": 2.84,
+  "rss_mib": 879,
+  "disk_mib": 160
+ },
+ "TestDirectPackLife_RepackCompressesRawDirectPacksPreservingOrder": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 169
+ },
+ "TestDirectPackLife_RequestFailuresPublishNoObjectAndOrphansAreGCSafe": {
+  "s": 0.16,
+  "cpu": 0.1,
+  "rss_mib": 169
+ },
+ "TestDirectPackLife_TierRebalanceBundlesAndLogicalHistoryUnchanged": {
+  "s": 0.32,
+  "cpu": 0.2,
+  "rss_mib": 169
+ },
+ "TestDirectPack_AWSChunkedUsesDecodedSize": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 169
+ },
+ "TestDirectPack_AdaptiveCompressionOptionStillValidPackV1": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 169
+ },
+ "TestDirectPack_BuilderAbortRemovesStaging": {
+  "s": 0,
+  "rss_mib": 169
+ },
+ "TestDirectPack_BuilderEmitsSpecPackBytes": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 169
+ },
+ "TestDirectPack_ConcurrentPutsAndIdenticalDuplicates": {
+  "s": 0.34,
+  "cpu": 0.21,
+  "rss_mib": 169
+ },
+ "TestDirectPack_ExistingCopiesInAnyTierAreReused": {
+  "s": 0.62,
+  "cpu": 0.4,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDirectPack_IdenticalAndShiftedUploadsWriteNoPayload": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDirectPack_ManyPublishedPacksKeepLocatorBounded": {
+  "s": 5.33,
+  "cpu": 6.59,
+  "rss_mib": 36,
+  "disk_mib": 1
+ },
+ "TestDirectPack_MultipartPartsAndCompleteAreCanonical": {
+  "s": 0.63,
+  "cpu": 0.41,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDirectPack_MultiplePacksAndPackSizes": {
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDirectPack_RecordOrderFollowsObjectAndRepeatsWriteOnce": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDirectPack_SelectionByKnownSize": {
+  "s": 0.51,
+  "cpu": 0.33,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDirectPack_SinkRepeatedDigestWrittenOnce": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDirectPack_TailBelowMinimumStaysLoose": {
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_CLI_SingleObject_EndToEnd": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_PredictionMatchesActualExecution": {
+  "s": 0.19,
+  "cpu": 0.12,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_PredictionMatchesActualExecution_Recursive": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_ReadOnly_FullStoreFingerprintUnchanged": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_Recursive_EmptyPrefix": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_Recursive_PartialConflicts": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_Recursive_SeveralObjectsAndCrossObjectReuse": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_SingleObject_AllChunksMissing": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_SingleObject_AllChunksPresent_AlreadyEquivalent": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_SingleObject_DestinationConflict": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_SingleObject_DuplicateChunkReferences": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_SingleObject_EmptyObject": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_SingleObject_PartialOverlap_ExactAccounting": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestDryRun_SingleObject_WeirdKeys": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestE2E_BinaryObject": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestE2E_FailedPutNeverVisible": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestE2E_FullLifecycle": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestE2E_OverwriteThenRestart": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestE2E_ZeroByteObject": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvCredentials_Inspect_ExplicitFlagOverridesWrongEnv": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvCredentials_Inspect_UsesEnvWhenFlagsOmitted": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvCredentials_Presign_UsesEnvWhenFlagsOmitted": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvCredentials_Replicate_FromToFlagsNeverFallBackToEnv_RealProcess": {
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvCredentials_Replicate_RegionFromEnvButFromToNeverFallBack": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvCredentials_Serve_AuthenticatesFromEnv": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvOverride_DefaultWhenBothAbsent": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvOverride_EmptyEnvIsASetOverride": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvOverride_EnvUsedWhenFlagAbsent": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvOverride_FlagExplicitWinsOverEnv": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvOverride_RegionDefaultWhenBothAbsent": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvOverride_UnsetEnvNeverOverridesExplicitFlagEitherWay": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestEnvOverride_UsageStringNeverContainsEnvValue": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFetchRepairChunk_AuthFailureRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFetchRepairChunk_MalformedDigestRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFetchRepairChunk_OversizedResponseRejected": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFetchRepairChunk_PeerHasChunkSucceeds": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFetchRepairChunk_PeerMissingChunkFailsClearly": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFetchRepairChunk_TruncatedBytesRejected": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFetchRepairChunk_WrongBytesRejectedBeforePublication": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFirstTransferError_FallsBackToCancellationWhenNoGenuineError": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFirstTransferError_LowestIndexGenuineErrorWins": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFirstTransferError_NoErrorsReturnsNil": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFixtureImageEqualsBuildingInPlace": {
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 22
+ },
+ "TestForkNamespacesOverlap_BothWholeBucketOverlaps": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_DeeplyNestedSiblingsDoNotOverlap": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_DestNestedInsideSource": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_EqualPrefixesOverlap": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_SharedStringPrefixDifferentBoundaryDoesNotOverlap": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_SiblingPrefixesDoNotOverlap": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_SourceNestedInsideDest": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_WholeBucketDestAlwaysOverlaps": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestForkNamespacesOverlap_WholeBucketSourceAlwaysOverlaps": {
+  "s": 0,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_DeepVerifyGreenAfterFork": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_DestinationConflictOneObjectFailsOthersSucceed": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_DestinationDeletedAfterFork_SourceSurvives": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_DestinationEditedAfterFork_SourceUnchanged_OnlyNewChunksAdded": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_DestinationKeyCreatedConcurrentlyDuringOperationIsNotOverwritten": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_DestinationOnlyObjectSurvives": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_ETagContentEqualityAndIndependentLastModified": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_EmptySourceNamespace": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_GCPreservesBothNamespacesAfterDivergence": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_LargeMultiChunkObject_ZeroPayload": {
+  "s": 0.12,
+  "cpu": 0.08,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_MetadataAndContentTypePreserved": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_OneObject_ZeroPayload": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_PaginationBoundary_1500Objects": {
+  "s": 5.41,
+  "cpu": 1.89,
+  "rss_mib": 27,
+  "disk_mib": 2
+ },
+ "TestFork_PrefixToPrefix_SameBucketNonOverlapping": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_RepairComposesAcrossSharedCorruptChunk": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_SeveralObjectsSharingChunks_ZeroPayload": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_SourceDeletedAfterFork_DestinationSurvives": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_SourceEditedAfterFork_DestinationUnchanged": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_SourceObjectChangesAfterListingBeforeFetch_ForksOneCleanRevisionNotMixed": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_SourceObjectDisappearsBetweenListingAndFetch_ReportsFailureContinues": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_UnrelatedObjects_ZeroPayload": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_WeirdKeysUnicodePercentHashQuestionSpacesRepeatedSlashesPreserved": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestFork_WholeBucketToWholeBucket_DifferentBuckets": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestGC_AbortedMultipartBecomesCollectible": {
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestGC_AdversarialMatrix_K1toK5": {
+  "s": 0.2,
+  "cpu": 0.13,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestGC_DryRunDeletesNothing": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestGC_ExclusivityRefusesWhileStoreInUse": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestGC_InterruptedSweep_K6": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 128,
+  "disk_mib": 10
+ },
+ "TestGC_MultipartSurvivesGC_ThenCompletes": {
+  "s": 0.23,
+  "cpu": 0.15,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestGC_RefusesOnCorruptLiveRoot_K7": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestGetBucketLocation": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestGetObject_MetadataAndContentTypeRoundTrip": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestHardBrotliConcurrentEncodersAreIndependent": {
+  "s": 0.52,
+  "cpu": 0.84,
+  "rss_mib": 287
+ },
+ "TestHardBrotliMatchesPinnedProducerOutput": {
+  "s": 8.96,
+  "cpu": 7.06,
+  "rss_mib": 195
+ },
+ "TestHardBrotliStreamingProducers": {
+  "s": 2.61,
+  "cpu": 2.39,
+  "rss_mib": 126
+ },
+ "TestHardLZ4MatchesPinnedProducerOutput": {
+  "s": 0.38,
+  "cpu": 0.3,
+  "rss_mib": 47
+ },
+ "TestHeadBucket_PresentMissing": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestHeadObject_HeadersNoBody": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestHeadObject_Missing": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestIngestCrash_Matrix": {
+  "s": 0.29,
+  "cpu": 0.19,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestIngest_Matrix": {
+  "s": 0.81,
+  "cpu": 0.54,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestIngest_StreamsLazily": {
+  "s": 0.19,
+  "cpu": 0.13,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_CLI_EndToEnd": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_ChunksListing_OffsetsAndDigestsExact": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_ChunksListing_TruncatedByDefault": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_CopyObjectSharing": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_CurrentVersionSemantics": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_DeletionChangesReachabilityCorrectly": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_EmptyObject": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_ForkSharing_BeforeAndAfter": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_ForkThenLocalizedMutation_HistoricalRootStillShares": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_GCDoesNotChangeValidReportedSemantics": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_ManyChunks_MinAvgMaxExact": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_ObjectUniqueInStore_SolelyReachable": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_OneChunk": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_PartialChunkSharing_ExactSplit": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_ReadOnly_NoStoreMutation": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_RepeatedChunkIDs_ExactDedup": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_RetainedVersionSharing": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_SnapshotPinnedSharing_SurvivesLiveDeletion": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_TwoKeysIdenticalContent_FullySharedElsewhere": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestInspect_WeirdKeys": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_CRC32C": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_CorruptionInEarlierFrameFails": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_CreateBucketReplay": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_DeleteBucketReplay": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_DeleteObjectRootReplay": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_FrameEncodeDecodeRoundTrip": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_GenuinelyUnknownRecordTypeStillFailsClosed": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_IncompleteFinalFrameIsTornTail": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_InvalidVersionAndTypeRejected": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_MixedCreatePutDeleteRecreateSequence": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_MultiFrameReplay": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_PayloadLengthBound": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_PoisonedAfterWriteFailure": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_PutObjectRootReplay": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestJournal_SequenceEnforcement": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLayoutMatrix_ConcurrentPutGetSameAndDifferentKeys": {
+  "s": 3.55,
+  "cpu": 3.31,
+  "rss_mib": 272,
+  "disk_mib": 36
+ },
+ "TestLayoutMatrix_GCReclaimsUnreferencedDataKeepsLiveData": {
+  "s": 0.83,
+  "cpu": 0.55,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLayoutMatrix_HistoryRestoreAndDeleteSurviveMaintenance": {
+  "s": 0.74,
+  "cpu": 0.49,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLayoutMatrix_RepairFindingsClassifyMissingAndCorrupt": {
+  "s": 0.57,
+  "cpu": 0.38,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLayoutMatrix_RestartDurabilityAndUncleanReopen": {
+  "s": 0.31,
+  "cpu": 0.21,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLayoutMatrix_VerifyDetectsMissingAndCorruptChunks": {
+  "s": 0.72,
+  "cpu": 0.48,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListBuckets_EmptyNonEmptyOrder": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_Dedup": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_DeterministicOrdering": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_DocumentedFixture": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_EmptyPreservesFlatListing": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_MultiCharacter": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_NestedGrouping": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_NoMatch": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Delimiter_UnicodeAndRepeatedSlashes": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_CommonPrefixBoundary": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_CompletedAndAbortedAreAbsent": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_MarkerNearCommonPrefixBoundary": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_Matrix": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_NoUploads": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_OneUpload": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_PrefixMarkerPositions": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_RestartStableOrdering": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_SameKeyBehindGroup": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Pagination_SameKeyMultipleUploadIDs_PageSplit": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Prefix_Basic": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Prefix_PartialKeyBoundary": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Prefix_UnusualCharacters": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Prefix_WithPagination": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_ReadOnly_NoStorageMutation": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_Scale_1200Traversal": {
+  "s": 0.33,
+  "cpu": 0.22,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListMultipartUploads_XMLSpecialCharactersAndLongKeys": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_DefaultAndLargeMaxKeysClamped": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_Empty": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_EncodingTypeURL": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_InvalidContinuationToken": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_LexicalOrderingAndUnicode": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_MaxKeysOnePagination": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_MaxKeysZero": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_PaginationNoDuplicateOrSkipWithDelimiter": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_PrefixDelimiterCommonPrefixes": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListObjectsV2_XMLEscaping": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListParts_Pagination": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListParts_Pagination_InvalidQueryValues": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListParts_Pagination_OverwrittenPartNoDuplicate": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListParts_Pagination_RestartThenPaginate": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListSourceObjects_EmptyBucket": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListSourceObjects_ExactlyPageLimit": {
+  "s": 0.53,
+  "cpu": 0.17,
+  "rss_mib": 21
+ },
+ "TestListSourceObjects_MultiPageOver1000": {
+  "s": 0.94,
+  "cpu": 0.26,
+  "rss_mib": 21
+ },
+ "TestListSourceObjects_MultipleDeterministicOrder": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListSourceObjects_OneObject": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListSourceObjects_PrefixFiltering": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestListSourceObjects_WeirdKeys": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLocalityBench_CompactOverhead": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLocalityBench_RunWindows": {
+  "s": 0,
+  "rss_mib": 115,
+  "disk_mib": 7
+ },
+ "TestLocalityScale_Planner": {
+  "s": 2.06,
+  "cpu": 1.57,
+  "rss_mib": 126
+ },
+ "TestLocality_CompactLayoutsEndToEnd": {
+  "s": 0.6,
+  "cpu": 0.45,
+  "rss_mib": 163
+ },
+ "TestLocality_DeterministicAcrossBuildOrder": {
+  "s": 0.41,
+  "cpu": 0.31,
+  "rss_mib": 163
+ },
+ "TestLocality_FirstReferenceRanking": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestLocality_PackBoundariesAndTailFolding": {
+  "s": 0.25,
+  "cpu": 0.19,
+  "rss_mib": 163
+ },
+ "TestLocality_RebalanceSplitKeepsSourceOrderPerTier": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 163
+ },
+ "TestLocality_RepackCombinesPacksInPackOrderAndDedups": {
+  "s": 0.13,
+  "cpu": 0.1,
+  "rss_mib": 163
+ },
+ "TestLocality_RepackKeepsSurvivorsInSourceOrder": {
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 163
+ },
+ "TestLocality_RootObservationOrder": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 163
+ },
+ "TestLocality_SingleChunkEmptyAndSharedObjects": {
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 163
+ },
+ "TestLocatorScale": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestLocator_DifferentialAgainstReferenceMap": {
+  "s": 0.17,
+  "cpu": 0.13,
+  "rss_mib": 163
+ },
+ "TestLocator_PackedOnlyChunksDeduplicateAfterRestart": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 163
+ },
+ "TestLocator_PublishedLevelsStayBounded": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 163
+ },
+ "TestLocator_ReloadNeverExposesPartialIndex": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 163
+ },
+ "TestLocator_TableCases": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestM8G_CredentialSeparation_Diff": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 163
+ },
+ "TestM8G_HostileAudit_CombinedFingerprint": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 163
+ },
+ "TestM8G_HostileAudit_NoMutatingHTTPMethods": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestM8G_HostileEndpoint_MalformedDescriptorDoesNotPanic": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestM8G_HugeNamespace_1500Objects_RecursiveDryRun": {
+  "s": 2.44,
+  "cpu": 0.91,
+  "rss_mib": 28,
+  "disk_mib": 1
+ },
+ "TestManifest_ByteSHA256MatchesJournalReference": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestManifest_CorruptOrMissingDetected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestManifest_MetadataDeterministicOrdering": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestManifest_RoundTrip": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestModelAggregateByteReservationOverflow": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestModelAggregateZeroReplayBound": {
+  "s": 0.51,
+  "cpu": 0.38,
+  "rss_mib": 163
+ },
+ "TestModelEmptyMembersStillVerifyDependencies": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestModelNestedPublicationRaisesFloor": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestModelOrdinaryPutCrashPublication": {
+  "s": 0.29,
+  "cpu": 0.22,
+  "rss_mib": 163
+ },
+ "TestModelRangeWorkChargesWindowNotWholeTensor": {
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 163
+ },
+ "TestMultipart_CompletedObjectDedupsAgainstOrdinaryPutOfSameBytes": {
+  "s": 0.17,
+  "cpu": 0.13,
+  "rss_mib": 163
+ },
+ "TestMultipart_CompletionValidation": {
+  "s": 0.74,
+  "cpu": 0.55,
+  "rss_mib": 163
+ },
+ "TestMultipart_Concurrency_AbortRacingUploadPartIsRaceFree": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 163
+ },
+ "TestMultipart_Concurrency_CompleteRacingUploadPartIsRaceFree": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 163
+ },
+ "TestMultipart_Concurrency_DifferentPartNumbersAllSurvive": {
+  "s": 0.18,
+  "cpu": 0.13,
+  "rss_mib": 163
+ },
+ "TestMultipart_Concurrency_SamePartNumberRaceIsDeterministicAndRaceFree": {
+  "s": 0.23,
+  "cpu": 0.17,
+  "rss_mib": 163
+ },
+ "TestMultipart_Concurrency_TwoAbortCallsOnlyOneWins": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestMultipart_Concurrency_TwoCompleteCallsOnlyOneWins": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_Crash_G1_RestartMidUploadThenResumeAndComplete": {
+  "s": 0.27,
+  "cpu": 0.2,
+  "rss_mib": 163
+ },
+ "TestMultipart_Crash_G2_ReplacePartThenRestartThenComplete": {
+  "s": 0.17,
+  "cpu": 0.13,
+  "rss_mib": 163
+ },
+ "TestMultipart_Crash_G3_AbortThenRestartUploadIDStaysInvalid": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_Crash_G4_CompleteThenRestartObjectVisibleSessionGone": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_Crash_G5_CrashAfterJournalCommitLeavesFullyCommittedObject": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_Crash_G5_CrashBeforeJournalCommitLeavesOldStateResumable": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 163
+ },
+ "TestMultipart_DeepVerifyAfterCompletion": {
+  "s": 0.14,
+  "cpu": 0.1,
+  "rss_mib": 163
+ },
+ "TestMultipart_DeleteBucketRefusedWithActiveUpload": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_ETag_DiffersFromOrdinarySinglePutETag": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy": {
+  "s": 0.18,
+  "cpu": 0.13,
+  "rss_mib": 163
+ },
+ "TestMultipart_IncompleteUploadInvisibleToOrdinaryOperations": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_InvalidPartNumberRejected": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestMultipart_LifecycleAfterAbortOrComplete": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 163
+ },
+ "TestMultipart_ListMultipartUploads": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_NonexistentUploadIDRejected": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestMultipart_ReplacedPartUsesLatestUpload": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_SinglePart": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestMultipart_UploadIDForWrongBucketOrKeyRejected": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_KeyExactlyEqualsPrefixMapsToEmptyRelative": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_KeyNotCarryingPrefixRejected": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_NestedRelative": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_PrefixSourceWholeBucketDest": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_PrefixToPrefix": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_RepeatedSlashesInRelativeSuffixPreserved": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_SpacesAndUnicodePreserved": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_TwoDistinctSourceKeysNeverCollide": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_WeirdCharactersPassedThroughUnaltered": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_WholeBucket": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNamespaceDestKey_WholeBucketSourcePrefixDest": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNewHardenedHTTPServer_FieldsExact": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestNoInsecureSkipVerifyInSource": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_AuthFailure": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_CrossCheckAgainstIndependentComputation": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_EmptyObjects": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_IdenticalObjects_ExactMatch": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_LocalizedDeletion": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_LocalizedInsertion": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_LocalizedMutation": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_MetadataOnlyDifference": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_MissingObjectA": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_MissingObjectB": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_PartialOverlap_ExactAccounting": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_RepeatedIdenticalChunks_DuplicateHandling": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_SameChunkSetDifferentOrder_NotExactMatch": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_SameServer_TwoKeys": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_TwoServers": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_WeirdKeys": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 163
+ },
+ "TestObjectDiff_WhollyUnrelatedObjects": {
+  "s": 0,
+  "rss_mib": 163
+ },
+ "TestP1A_BackgroundJobCrashPropagatesToRequest": {
+  "s": 0.12,
+  "cpu": 0.09,
+  "rss_mib": 163
+ },
+ "TestP1A_CDCBoundaryMatchesReference": {
+  "s": 0.6,
+  "cpu": 0.55,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_ConcurrentPipelinedPutsRoundTrip": {
+  "s": 0.79,
+  "cpu": 0.72,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_PackPublishFailureFailsRequestAndCleansUp": {
+  "s": 0.04,
+  "cpu": 0.04,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_PackWriterEarlySyncErrorIsSticky": {
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_PackWriterMatchesReferenceAndReportsErrors": {
+  "s": 1.28,
+  "cpu": 1.18,
+  "rss_mib": 352
+ },
+ "TestP1A_PipelinedCancellationMidChunk": {
+  "s": 0.08,
+  "cpu": 0.07,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_PipelinedIngestMatchesSerial": {
+  "s": 1.77,
+  "cpu": 1.65,
+  "rss_mib": 71
+ },
+ "TestP1A_PipelinedIngestReadErrorAndCleanup": {
+  "s": 0.11,
+  "cpu": 0.1,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_PipelinedPrematureEOFAndSlowReaders": {
+  "s": 0.16,
+  "cpu": 0.15,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_PipelinedSinkFailureStopsEverything": {
+  "s": 0.36,
+  "cpu": 0.33,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_RepeatedChunksAcrossInFlightPacksWrittenOnce": {
+  "s": 0.09,
+  "cpu": 0.08,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_StagedPackCorruptionIsCaughtByBackgroundVerify": {
+  "s": 0.07,
+  "cpu": 0.06,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1A_VerifyPackExactEquivalentToFull": {
+  "s": 17.7,
+  "cpu": 9.4,
+  "rss_mib": 28
+ },
+ "TestP1A_VerifyPackExactRejectsOtherValidPack": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_ConcurrentOverlappingBatches": {
+  "s": 0.32,
+  "cpu": 0.29,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_CrashMatrix_ConcurrentGroups": {
+  "s": 26.94,
+  "cpu": 14.87,
+  "rss_mib": 90,
+  "disk_mib": 2
+ },
+ "TestP1B_DirSync_CoalescesAndOrders": {
+  "s": 0.05,
+  "cpu": 0.05,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_DirSync_ErrorReachesEveryRoundMember": {
+  "s": 0.05,
+  "cpu": 0.05,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_DirSync_PanicDoesNotStrandJoiners": {
+  "s": 0.03,
+  "cpu": 0.03,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_DuplicateWriterTakesOverAfterFailure": {
+  "s": 0.06,
+  "cpu": 0.05,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_GroupCommit_ConcurrentPutsReplayIdentically": {
+  "s": 0.06,
+  "cpu": 0.05,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_GroupCommit_ConditionalCreateRace": {
+  "s": 0.02,
+  "cpu": 0.02,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_GroupCommit_JournalFailureFailsWholeBatch": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_GroupCommit_LeaderPanicDoesNotStrandFollowers": {
+  "s": 0.02,
+  "cpu": 0.02,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_MediumPack_DeadPacksCollectedByGC": {
+  "s": 0.18,
+  "cpu": 0.16,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_MediumPack_DedupAndRevisions": {
+  "s": 0.1,
+  "cpu": 0.09,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_MediumPack_MultipartPartsAndCompletion": {
+  "s": 0.59,
+  "cpu": 0.54,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_MediumPack_RestartKeepsEverything": {
+  "s": 0.31,
+  "cpu": 0.28,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_MediumPack_SameManifestAsLoose": {
+  "s": 0.7,
+  "cpu": 0.68,
+  "rss_mib": 83
+ },
+ "TestP1B_MediumPack_ValveFallsBackToLoose": {
+  "s": 0.07,
+  "cpu": 0.06,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_ObserverWaitsForDuplicateWriter": {
+  "s": 0.11,
+  "cpu": 0.1,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_PackLocatorPublishDoesNotCopyAllPacks": {
+  "s": 1.7,
+  "cpu": 1.56,
+  "rss_mib": 23
+ },
+ "TestP1B_PopulatedStoreThroughput": {
+  "s": 0,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_PubRegistry_ClaimWaitRelease": {
+  "s": 0,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_RealKill_AckedObjectsSurviveConcurrentKill": {
+  "s": 32.37,
+  "cpu": 28.29,
+  "rss_mib": 85,
+  "disk_mib": 269
+ },
+ "TestP1B_ShardDirsCreatedOnceUnderConcurrency": {
+  "s": 0.36,
+  "cpu": 0.33,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1B_StaleShardCacheRecovers": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_BatchFailureLeavesAcknowledgedDataAndNoPartialState": {
+  "s": 0.09,
+  "cpu": 0.08,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_BundleExportRefusesCorruptChunk": {
+  "s": 0.08,
+  "cpu": 0.07,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_CLIReadersAgainstALiveServer": {
+  "s": 0.14,
+  "cpu": 0.13,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_CrashMatrix_Segments": {
+  "s": 16.57,
+  "cpu": 5.67,
+  "rss_mib": 53
+ },
+ "TestP1C_CrashStateModel": {
+  "s": 10.25,
+  "cpu": 5,
+  "rss_mib": 28
+ },
+ "TestP1C_DuplicateContentWrittenOnce": {
+  "s": 0.05,
+  "cpu": 0.05,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_FailedBatchFailsEveryMemberAndOnlyThem": {
+  "s": 0.02,
+  "cpu": 0.02,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_FormatRaiseIsRaceFreeAgainstReaders": {
+  "s": 0.19,
+  "cpu": 0.17,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_Format_FirstSmallWriteRaisesLevelPolicyOffDoesNot": {
+  "s": 0.04,
+  "cpu": 0.04,
+  "rss_mib": 309,
+  "disk_mib": 52
+ },
+ "TestP1C_GCAndRepackReclaimDeadRecordsAndKeepLiveOnes": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 64
+ },
+ "TestP1C_GroupCommitSharesOneWriteAndFsync": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 64
+ },
+ "TestP1C_HardCapRollsBeforeWriting": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 64
+ },
+ "TestP1C_LargeManifestStaysAFile": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 64
+ },
+ "TestP1C_MaintenanceRefusesCorruptLiveRecord": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 64
+ },
+ "TestP1C_MultipartCopyAndBundleRoundTripThroughSegments": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 64
+ },
+ "TestP1C_OldStoreAndPolicyChangesCoexist": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP1C_ReadersNeverSeeMissingOffsetsAcrossSeal": {
+  "s": 1.17,
+  "cpu": 1.22,
+  "rss_mib": 76
+ },
+ "TestP1C_RecoveryCutsTornTailsAndKeepsAcknowledgedRecords": {
+  "s": 0.24,
+  "cpu": 0.15,
+  "rss_mib": 64
+ },
+ "TestP1C_RecoveryDropsUnusedAndBadSegments": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 64
+ },
+ "TestP1C_RecoveryLatency": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP1C_RolloverSealsIntoVerifiablePacks": {
+  "s": 0.15,
+  "cpu": 0.1,
+  "rss_mib": 64
+ },
+ "TestP1C_SharedOpenerNeverDisturbsALiveWriter": {
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 64
+ },
+ "TestP1C_SharedReaderSurvivesSealByOwner": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 64
+ },
+ "TestP1C_SmallPutUsesSegmentAndSurvivesRestart": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 64
+ },
+ "TestP1C_StoreLayerPutThroughput": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP1C_TierMoveAllSealsAndSkipsOpenSegments": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP1C_TierMoveCarriesInlineManifests": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 64
+ },
+ "TestP2_CacheClockKeepsReferencedEntries": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP2_CacheDisabledAndNilAreTransparent": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP2_CacheIsBoundedAndEvictsWithClock": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 64
+ },
+ "TestP2_CacheNameMismatchAndPurgeFence": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP2_CacheSingleFlightAndErrorsAreNotCached": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 64
+ },
+ "TestP2_CachedEntriesAreRevalidatedAgainstStorage": {
+  "s": 0.54,
+  "cpu": 0.35,
+  "rss_mib": 64
+ },
+ "TestP2_CachedManifestSurvivesSegmentSealAndRepack": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP2_ChunkCacheAdmissionAdaptsToTheWorkingSet": {
+  "s": 0.35,
+  "cpu": 0.22,
+  "rss_mib": 64
+ },
+ "TestP2_ChunkCacheBoundedAndScanResistant": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP2_ChunkCacheNeverMasksCorruptionFromDiagnostics": {
+  "s": 0.19,
+  "cpu": 0.12,
+  "rss_mib": 64
+ },
+ "TestP2_ConcurrentFirstLoadsShareOneRead": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP2_ConditionalAndVersionSemanticsWithWarmCache": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 64
+ },
+ "TestP2_DamagedOrMissingManifestBeforeFirstLoad": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP2_IndexHandlesOffsetsBeyond32Bits": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP2_ListingUsesCachedManifestsWithoutFillingTheCache": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 64
+ },
+ "TestP2_LocateMatchesLinearScan": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP2_ManifestCacheIntegrityContract": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP2_ParseServedAgreesOnMutations": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 64
+ },
+ "TestP2_ParseServedMatchesEncodingJSON": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP2_PipeReaderCloseSemantics": {
+  "s": 0.13,
+  "cpu": 0.08,
+  "rss_mib": 64
+ },
+ "TestP2_PipelinedStreamsFailSafeAndLeakNothing": {
+  "s": 1.04,
+  "cpu": 0.94,
+  "rss_mib": 145
+ },
+ "TestP2_PipeliningIsAdaptiveToActiveStreams": {
+  "s": 0.18,
+  "cpu": 0.12,
+  "rss_mib": 64
+ },
+ "TestP2_RangeReadsMatchReferenceOnEveryLayout": {
+  "s": 38.18,
+  "cpu": 26.69,
+  "rss_mib": 84,
+  "disk_mib": 4
+ },
+ "TestP2_ReadsDuringWritesSealsAndOverwrites": {
+  "s": 0.76,
+  "cpu": 0.49,
+  "rss_mib": 64
+ },
+ "TestP2_ServedManifestRejectsInvalid": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP3_ChurnFixture": {
+  "s": 0,
+  "rss_mib": 64
+ },
+ "TestP3_DeepVerifyFindsCorruptionBetweenPasses": {
+  "s": 0.48,
+  "cpu": 0.31,
+  "rss_mib": 64
+ },
+ "TestP3_DeepVerifyFindsCorruptionInjectedMidScan": {
+  "s": 0.67,
+  "cpu": 0.43,
+  "rss_mib": 64
+ },
+ "TestP3_FastJournalDecodeMatchesJSON": {
+  "s": 0.15,
+  "cpu": 0.1,
+  "rss_mib": 64
+ },
+ "TestP3_GCFailsClosedOnCorruptManifest": {
+  "s": 0.87,
+  "cpu": 0.52,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP3_HistoryFixture": {
+  "s": 0,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP3_JournalApplyErrorYieldsToJournalError": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP3_JournalReplayMatchesReference": {
+  "s": 4.3,
+  "cpu": 3.64,
+  "rss_mib": 66,
+  "disk_mib": 2
+ },
+ "TestP3_MaintHelper": {
+  "s": 0,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP3_ManifestJudgementMatchesReference": {
+  "s": 0.24,
+  "cpu": 0.14,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP3_ReachabilityMatchesReference_Damage": {
+  "s": 5.52,
+  "cpu": 2.99,
+  "rss_mib": 35,
+  "disk_mib": 3
+ },
+ "TestP3_ReachabilityMatchesReference_Healthy": {
+  "s": 1.32,
+  "cpu": 0.79,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames": {
+  "s": 0.1,
+  "cpu": 0.06,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP3_RealKillDuringMaintenance": {
+  "s": 9.87,
+  "cpu": 5.16,
+  "rss_mib": 40,
+  "disk_mib": 24
+ },
+ "TestP3_RepackCrashPointsWithPipelinedStaging": {
+  "s": 5.67,
+  "cpu": 3.12,
+  "rss_mib": 59,
+  "disk_mib": 3
+ },
+ "TestP3_RepackPipelineWritesIdenticalPacks": {
+  "s": 3.22,
+  "cpu": 1,
+  "rss_mib": 37
+ },
+ "TestP3_SharedOpenerNeverTruncatesALiveJournal": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4DeepVerifyParallelEqualsSerial": {
+  "s": 1.96,
+  "cpu": 1.04,
+  "rss_mib": 31
+ },
+ "TestP4DeferredBuildsAfterAcknowledgement": {
+  "s": 2.16,
+  "cpu": 1.33,
+  "rss_mib": 99,
+  "disk_mib": 20
+ },
+ "TestP4DeferredCoalescesIdenticalContent": {
+  "s": 0.2,
+  "cpu": 0.12,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4DeferredConcurrentWritersRace": {
+  "s": 0.56,
+  "cpu": 0.33,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4DeferredCrashImagesAtEveryPhase": {
+  "s": 8.47,
+  "cpu": 3.94,
+  "rss_mib": 67,
+  "disk_mib": 12
+ },
+ "TestP4DeferredNeverPublishesForAnotherVersion": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4DeferredQueueIsBoundedAndNeverBlocksPuts": {
+  "s": 0.15,
+  "cpu": 0.09,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4DeferredShutdownAbandonsWorkWithoutLeaks": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4DeferredSkipsManifestsThatLeftTheNamespace": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4DeferredYieldsToForegroundThenRuns": {
+  "s": 0.62,
+  "cpu": 0.37,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4FSEInverseEqualsBinarySearch": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4Interference": {
+  "s": 0,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4PrefixIndexMatchesReference": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4Probe": {
+  "s": 0,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4ReadCacheServesExactBytesAndStillVerifiesData": {
+  "s": 0.92,
+  "cpu": 0.65,
+  "rss_mib": 46
+ },
+ "TestP4SmallObjectComponentsShareTheSegmentAndSurviveMaintenance": {
+  "s": 0.41,
+  "cpu": 0.24,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestP4_PreP4BinaryUnderstandsDeferredStore": {
+  "s": 0.81,
+  "cpu": 0.74,
+  "rss_mib": 55
+ },
+ "TestP4_RealKill_DeferredBuildsNeverHurtAcknowledgedData": {
+  "s": 44.52,
+  "cpu": 45.28,
+  "rss_mib": 141,
+  "disk_mib": 590
+ },
+ "TestPackCompression_AdaptivePolicyByDataClass": {
+  "s": 0.67,
+  "cpu": 0.4,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestPackCompression_CLI": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestPackCompression_CompactOffWritesRawAndRerunIsStable": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestPackCompression_CorruptCompressedRecordsFailSafely": {
+  "s": 0.08,
+  "cpu": 0.05,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestPackCompression_CrashPoints": {
+  "s": 2.59,
+  "cpu": 1.4,
+  "rss_mib": 43
+ },
+ "TestPackCompression_DeepVerifyDetectsCompressedPayloadCorruption": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestPackCompression_InvalidRecordLengthsRejectedAtOpen": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 77,
+  "disk_mib": 24
+ },
+ "TestPackCompression_MixedObjectReadsAndRanges": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackCompression_MixedRepresentationsOfOneChunk": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackCompression_PhysicalAccounting": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackCompression_RecordIndexCodecDisagreement": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackCompression_RepackAbortsOnDamagedCompressedData": {
+  "s": 0.62,
+  "cpu": 0.41,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackCompression_RepackMatrix": {
+  "s": 1.29,
+  "cpu": 0.77,
+  "rss_mib": 46
+ },
+ "TestPackCompression_RepackSelectionUsesPhysicalBytes": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackCompression_StoreFormatBoundary": {
+  "s": 0.13,
+  "cpu": 0.09,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackCompressor_EncodeRule": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_BadPackStopsFurtherRuns": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_BoundsAndFileReuse": {
+  "s": 0.26,
+  "cpu": 0.17,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_ConcurrentReadersAndHTTP": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_CorruptionFallsBackOrFailsWithoutLeakingBytes": {
+  "s": 2.32,
+  "cpu": 1.18,
+  "rss_mib": 35,
+  "disk_mib": 2
+ },
+ "TestPackRun_HTTPCorruptionNeverReachesClient": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_LocalityCoalescesDigestDoesNot": {
+  "s": 0.15,
+  "cpu": 0.1,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_NoncontiguousAndSingleChunk": {
+  "s": 0.12,
+  "cpu": 0.08,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_RangeFetchesOnlyNeededChunks": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_RangesMatchOrdinaryReads": {
+  "s": 0.52,
+  "cpu": 0.34,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPackRun_TiersAndLooseCopyPreference": {
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_CompactCLI": {
+  "s": 0.17,
+  "cpu": 0.11,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_CompactCrashPoints": {
+  "s": 1.75,
+  "cpu": 0.99,
+  "rss_mib": 64
+ },
+ "TestPack_CompactIsDeterministicAndRepeatedHashesPackOnce": {
+  "s": 0.17,
+  "cpu": 0.11,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_CompactPreservesLogicalState": {
+  "s": 0.17,
+  "cpu": 0.11,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_CompactRefusesWhileStoreInUse": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_DryRunAndZeroCandidatesWriteNothing": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_DuplicateCopiesCorruptionPreference": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_GCNeverTouchesPacks": {
+  "s": 0.19,
+  "cpu": 0.13,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_LogicalFeaturesOverPackedStore": {
+  "s": 0.16,
+  "cpu": 0.11,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_MalformedPacksRejectedSafely": {
+  "s": 0.16,
+  "cpu": 0.11,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_MixedManifestSpansLooseAndPacked": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_PayloadAndRecordHeaderDamageFailSafely": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_PhysicalMatrix": {
+  "s": 0.53,
+  "cpu": 0.35,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_PlanBatchesBoundaries": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_RepairReplacesCorruptPackedChunkFromPeer": {
+  "s": 0.09,
+  "cpu": 0.06,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_StatsAndVerifyReportPhysicalLayout": {
+  "s": 0.22,
+  "cpu": 0.14,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_StoreFormatVersionGate": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPack_UnpublishedArtifactsIgnored": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestParseCopySource_TrickyKeys": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_ClassifySigV4Payload": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_ExcludedModesRejectCleanly": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_FixedSHA256_CorrectDigestAndBodyAccepted": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_FixedSHA256_EmptyBodyCorrectDigestAccepted": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_FixedSHA256_EmptyBodyDigestWithNonEmptyBodyRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_FixedSHA256_WrongDigestRejected": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_LowercaseOrMisspelledSentinelsRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_MalformedDigestVariantsRejected": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_PresignedBehaviorUnchanged": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_StreamingHMACTrailerRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_UnsignedPayload_ModifiedBodyAloneDoesNotInvalidateSignature": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_UnsignedPayload_TamperedAuthorizationRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_UnsignedPayload_ValidSigButWrongCRC32Fails": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_UnsignedPayload_ValidSigButWrongContentMD5Fails": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPayloadMode_UnsignedPayload_ValidSignedPUTAccepted": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_CaseChangedParamNameNotAuthenticated": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_DuplicateQueryParameterRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ExactExpiryBoundaryAccepted": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ExpiresBoundsAccepted": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ExpiresMalformedRejected": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ExtraUnsignedQueryParamAfterGenerationRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_FutureDateBeyondSkewRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_HostNotSignedRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ImmediatelyPastExpiryRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_LongLivedButUnexpiredAccepted": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_MalformedCredentialScopeRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_MalformedTimestampRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_MissingRequiredParameterRejected": {
+  "s": 0.04,
+  "cpu": 0.03,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_MissingSignatureFallsThroughToHeaderPathAndFails": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ModifiedBucketAfterGenerationRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ModifiedHostAfterGenerationRejected": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ModifiedPathAfterGenerationRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ModifiedSignedQueryParameterRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_SecurityTokenRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_TamperedSignatureRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_TrickyPathsAccepted": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_UnsupportedAlgorithmRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ValidAccepted": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_ValidPUTAccepted": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_WrongAccessKeyRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_WrongRegionRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignAuth_WrongServiceRejected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresign_BucketAndKeyRequired": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresign_ExpiresOutOfRangeRejectedAtGenerationTime": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresign_GeneratedURLPassesServerVerifier": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresign_NeverLogsOrEmbedsSecretKey": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresign_TrickyKeysRoundTripThroughServerVerifier": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresign_UnsupportedMethodRejected": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignedGET_TamperedSignatureRejectedOverRealHTTP": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignedPUT_ExpiredURLLeavesNoVisibleObject": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignedPUT_MissingDestinationBucketLeavesNoMutation": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPresignedPUT_TamperedSignatureLeavesNoVisibleObject": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestProbe": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_ApplyBatchedFramesMatchReplay": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_CrashBoundaries": {
+  "s": 0.59,
+  "cpu": 0.39,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_DeletedBucketHistoryIsPruneable": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_DryRunMakesNoChange": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_ExclusiveStoreOwnership": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_PackedHistoryReclaimedByRepack": {
+  "s": 0.13,
+  "cpu": 0.09,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_ParseRetentionAge": {
+  "s": 0,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_PlanScopeAndValidation": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 74,
+  "disk_mib": 2
+ },
+ "TestPrune_ReplayRejectsMalformedAndToleratesAbsent": {
+  "s": 0.13,
+  "cpu": 0.1,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestPrune_SelectTable": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestPrune_SharedAndRestoredRootsStayPinned": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestPrune_SnapshotSurvivesPruneThenGC": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestPrune_StoreFormatVersions": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRange_EmptyObjectUnsatisfiable": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRange_MalformedHeaderIgnoredServesFullObject": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRange_MultiRangeUnsupportedIgnoredServesFullObject": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRange_ReadsOnlyOverlappingChunks": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRange_Unsatisfiable": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRange_VariousForms": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestReachability_CoversAllThreeRootCategories": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestReachability_DetectsCorruptionAmongLiveRoots": {
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepAnalysisBudgets": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepBundleBackfillFailureAndCLI": {
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepBundleBackfillFullDeltaAndReuse": {
+  "s": 0.26,
+  "cpu": 0.19,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepBundlesCarryOnlyAuthoritativeState": {
+  "s": 1.63,
+  "cpu": 0.85,
+  "rss_mib": 49
+ },
+ "TestRepCatalogAmbiguityAndOrderIndependence": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepChildCausePreserved": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecAnalysisDepth": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecConcurrentFirstUse": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecCrashAndOptionalFailure": {
+  "s": 1.24,
+  "cpu": 0.83,
+  "rss_mib": 79
+ },
+ "TestRepCodecEconomics": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecLabWireFidelity": {
+  "s": 0.06,
+  "cpu": 0.04,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecLargeStreaming": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecMetadataCountsBounded": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecMissingChildFailsClosed": {
+  "s": 0.2,
+  "cpu": 0.15,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecNestedProduction": {
+  "s": 0.51,
+  "cpu": 0.38,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCodecUnsupportedFallsBack": {
+  "s": 0.29,
+  "cpu": 0.21,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepConcurrentPutsAndReads": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepConcurrentReadsMixedTiers": {
+  "s": 0.8,
+  "cpu": 0.59,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCopyObjectAndMultipart": {
+  "s": 0.43,
+  "cpu": 0.32,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCrashAfterFormatRaiseBeforeFirstRoot": {
+  "s": 0.46,
+  "cpu": 0.34,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepCrashMatrix": {
+  "s": 13.77,
+  "cpu": 7.87,
+  "rss_mib": 88,
+  "disk_mib": 7
+ },
+ "TestRepCyclesTerminate": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepDepthConsistentAcrossSubsystems": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepFailureAfterOutputStartsDoesNotPanic": {
+  "s": 0.93,
+  "cpu": 0.69,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepGitHostileFallback": {
+  "s": 0.16,
+  "cpu": 0.12,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepGitLabWireAndReaderAt": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepGitProductionPackAndIdx": {
+  "s": 0.85,
+  "cpu": 0.63,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepGitRealReexports": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepGitRecipeBoundaries": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepHostileObjectsNeverFailPut": {
+  "s": 0.63,
+  "cpu": 0.46,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepKindLifecycleMatrix": {
+  "s": 2.73,
+  "cpu": 1.83,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepKindMatrixRoundTrip": {
+  "s": 1.75,
+  "cpu": 1.21,
+  "rss_mib": 89
+ },
+ "TestRepLargeObjectComponentsGoToPacks": {
+  "s": 1.34,
+  "cpu": 1.47,
+  "rss_mib": 189
+ },
+ "TestRepLateCreationAndRetirementLeaveNamespaceUntouched": {
+  "s": 0.34,
+  "cpu": 0.25,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepLifecycleChain": {
+  "s": 0.88,
+  "cpu": 0.82,
+  "rss_mib": 86
+ },
+ "TestRepLiveRootFaultsFailClosed": {
+  "s": 8.84,
+  "cpu": 3.76,
+  "rss_mib": 52,
+  "disk_mib": 3
+ },
+ "TestRepManagedComponentLengthOverflow": {
+  "s": 0,
+  "rss_mib": 189,
+  "disk_mib": 2
+ },
+ "TestRepManagedCumulativeCompatibility": {
+  "s": 0.52,
+  "cpu": 0.42,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepManagedDependencyAndWriterFailures": {
+  "s": 0.02,
+  "cpu": 0.02,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepManagedNestedGroupWorkBudget": {
+  "s": 1.12,
+  "cpu": 0.9,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepManagedNestedPublicationFloor": {
+  "s": 0.42,
+  "cpu": 0.34,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepManagedOrdinaryPutCrashFloor": {
+  "s": 1.28,
+  "cpu": 0.91,
+  "rss_mib": 24
+ },
+ "TestRepMeasure": {
+  "s": 0,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepMerkleRevisionChainSections": {
+  "s": 5.19,
+  "cpu": 3.48,
+  "rss_mib": 45,
+  "disk_mib": 2
+ },
+ "TestRepMerkleVirtualSectionReuse": {
+  "s": 1.07,
+  "cpu": 0.8,
+  "rss_mib": 69
+ },
+ "TestRepModesAndFallbackCounters": {
+  "s": 0.1,
+  "cpu": 0.08,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepNegativeFormatControls": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepOCIRealRegistryComposition": {
+  "s": 0,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepOffModeMaintenanceKeepsRoots": {
+  "s": 0.25,
+  "cpu": 0.2,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepOptionalFailureNeverFailsPut": {
+  "s": 1.82,
+  "cpu": 1.15,
+  "rss_mib": 35
+ },
+ "TestRepOversizedRootReadBounded": {
+  "s": 0.07,
+  "cpu": 0.06,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepPackedCopyFallback": {
+  "s": 0.05,
+  "cpu": 0.04,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepParquetParallelReplayIsExact": {
+  "s": 1.4,
+  "cpu": 0.95,
+  "rss_mib": 202
+ },
+ "TestRepReconstructFraming": {
+  "s": 0,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepRootFormatAndCorruptionMatrix": {
+  "s": 0,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepRootNamesAndTemp": {
+  "s": 0,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepS3TranscriptIdenticalInEveryMode": {
+  "s": 0.99,
+  "cpu": 0.8,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepSharedChildAcrossFormatsAndRootLifecycle": {
+  "s": 0.22,
+  "cpu": 0.18,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepSharedChildHeightIndependentOfRootOrder": {
+  "s": 0,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepSharedChildStoredOnceAndLiveness": {
+  "s": 0,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepSharedVirtualComponentAcrossRoots": {
+  "s": 0.12,
+  "cpu": 0.1,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepSmokeSQLiteRoundTrip": {
+  "s": 0.57,
+  "cpu": 0.46,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepSnapshotRetainsRepresentation": {
+  "s": 0.08,
+  "cpu": 0.06,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepSourceCorruptionClassified": {
+  "s": 0.09,
+  "cpu": 0.07,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepStatsFields": {
+  "s": 0.06,
+  "cpu": 0.05,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepStreamWriterBatching": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepStructuredCumulativeModelCompatibility": {
+  "s": 0.27,
+  "cpu": 0.22,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepStructuredEncoderLabIdentity": {
+  "s": 0.9,
+  "cpu": 0.73,
+  "rss_mib": 110,
+  "disk_mib": 10
+ },
+ "TestRepStructuredFallbackAndLifecycle": {
+  "s": 0.8,
+  "cpu": 0.61,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredLabWireFidelity": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredLayoutDetachesPageBacking": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredNodeItemTotalOverflow": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredOrdinaryPutCrashFloor": {
+  "s": 1.91,
+  "cpu": 0.95,
+  "rss_mib": 46
+ },
+ "TestRepStructuredPreallocationAndRecipeGuards": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredPrefixExpansionBudget": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredRetainedMetadataBudget": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredZstdAdmissionBounds": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepStructuredZstdWindowBeforeAllocation": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepSubstrateStoreRoundTrip": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepTempFilesAreNeverRootsOrLiveness": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepTransferBackfill": {
+  "s": 0.41,
+  "cpu": 0.31,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepTransferCrashAfterAuthoritativeCommit": {
+  "s": 0.28,
+  "cpu": 0.21,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepUpgradeLevelsDoNotMoveUntilFirstRoot": {
+  "s": 2.6,
+  "cpu": 1.16,
+  "rss_mib": 52,
+  "disk_mib": 2
+ },
+ "TestRepVirtualComponentDescriptor": {
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepWireCorruptionMatrix": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepWireGoldenAndRoundTrip": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepWireKindNumbers": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepWriterFailureIsNotCorruption": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ManagedDefaultAndMalformedFallback": {
+  "s": 0.06,
+  "cpu": 0.05,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ManagedEncoderFidelity": {
+  "s": 0.19,
+  "cpu": 0.14,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ManagedLabWireFidelity": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ManagedLifecycleAndCapability": {
+  "s": 0.51,
+  "cpu": 0.39,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ModelBaseSurvivesRootRetirement": {
+  "s": 0.13,
+  "cpu": 0.1,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ModelGGUFAndUnsupportedModel": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ModelLabWireFidelity": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ModelModelGiBBounded": {
+  "s": 15.73,
+  "cpu": 11.55,
+  "rss_mib": 107,
+  "disk_mib": 2048
+ },
+ "TestRepZ4ModelShortWriterAndAmbiguousNames": {
+  "s": 0,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepZ4ModelStreamingModelLifecycle": {
+  "s": 0.32,
+  "cpu": 0.24,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepack_AbortsOnCorruptLiveSource": {
+  "s": 0.15,
+  "cpu": 0.11,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepack_AbortsWhenASourcePackIsUnusable": {
+  "s": 0.2,
+  "cpu": 0.15,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepack_AbortsWhenReplacementFailsValidation": {
+  "s": 0.28,
+  "cpu": 0.21,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepack_CLI": {
+  "s": 0.17,
+  "cpu": 0.13,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepack_ConflictingPackedCopiesBlockDestructiveWork": {
+  "s": 0.11,
+  "cpu": 0.08,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepack_ControlledUtilizationMatrix": {
+  "s": 0.88,
+  "cpu": 0.34,
+  "rss_mib": 24
+ },
+ "TestRepack_CorruptPrimaryFallsBackToDuplicate": {
+  "s": 0.16,
+  "cpu": 0.12,
+  "rss_mib": 137,
+  "disk_mib": 1
+ },
+ "TestRepack_CrashPoints": {
+  "s": 3.51,
+  "cpu": 1.46,
+  "rss_mib": 50,
+  "disk_mib": 2
+ },
+ "TestRepack_DefaultPolicyLeavesHealthyPacksAlone": {
+  "s": 0.69,
+  "cpu": 0.45,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_DuplicatePackedLocations": {
+  "s": 0.27,
+  "cpu": 0.18,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_FullyRedundantPackRemovedByGC": {
+  "s": 0.14,
+  "cpu": 0.09,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_GCCrashDuringDeadPackRemoval": {
+  "s": 0.1,
+  "cpu": 0.07,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_GCReportsAndRemovesDeadPacks": {
+  "s": 0.15,
+  "cpu": 0.1,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_LiveDataSpanningPacksAndMultipleOutputs": {
+  "s": 0.17,
+  "cpu": 0.11,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_LooseCopyCountsAsSurvivingCopy": {
+  "s": 0.26,
+  "cpu": 0.17,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_NoPacksAndLooseOnlyStores": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_RefusesUnsafeLiveSet": {
+  "s": 0.11,
+  "cpu": 0.07,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_RefusesWhileStoreInUse": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_RejectsBadOptions": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_RespectsEveryLiveRootType": {
+  "s": 0.3,
+  "cpu": 0.2,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_StatsExposePackLiveness": {
+  "s": 0.12,
+  "cpu": 0.08,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepack_UtilizationProfiles": {
+  "s": 1.15,
+  "cpu": 0.69,
+  "rss_mib": 58
+ },
+ "TestRepairFromPeer_IncompatiblePeerFailsClearly": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_ConcurrentGetOnUnrelatedObjectDuringRepair": {
+  "s": 0.64,
+  "cpu": 0.42,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_CorruptChunkContentMismatchDetected": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_CorruptExistingChunkAtomicallyReplaced": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_HealthyChunkNeverRewritten": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_HealthyStoreNoFindings": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_HighWorkerCount_RaceAndCorrectness": {
+  "s": 0.35,
+  "cpu": 0.23,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_LocalRestartResumesNaturally": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_ManyCorruptChunks_WorkerCountsProduceIdenticalStats": {
+  "s": 1.94,
+  "cpu": 0.88,
+  "rss_mib": 33
+ },
+ "TestRepair_ManyMissingChunks_Concurrent": {
+  "s": 0.35,
+  "cpu": 0.23,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_MissingChunkDetected": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_MissingChunkRestoredEndToEnd": {
+  "s": 0.12,
+  "cpu": 0.08,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_MixedCorruptAndMissing_Concurrent": {
+  "s": 0.42,
+  "cpu": 0.28,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_MultipartInProgressPartChunkRepaired": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_MultipleCorruptChunksDetected": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_OnePeerFailureAmongManySuccesses_Concurrent": {
+  "s": 0.44,
+  "cpu": 0.29,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_PartialRepairPeerMissingSomeChunksReportsHonestly": {
+  "s": 0.07,
+  "cpu": 0.05,
+  "rss_mib": 103,
+  "disk_mib": 5
+ },
+ "TestRepair_PeerRestartBetweenAttempts": {
+  "s": 0.14,
+  "cpu": 0.08,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_RestartThenGetExact": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_ResumeAfterPartialRunOnlyFetchesRemaining": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_RetainedHistoricalVersionChunkRepaired": {
+  "s": 0.07,
+  "cpu": 0.04,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_SharedCorruptDigestAffectsAllReferencingObjects": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_SharedDigestSingleRepairJob_Concurrent": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_StatsExactAccounting": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_UnreachableOrphanChunkNeverTriggersRepair": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_VersionsMetadataAndETagUnchanged": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_WrongLengthChunkDetectedAsCorrupt": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestRepair_WrongPeerBytesAmongMany_Concurrent": {
+  "s": 0.2,
+  "cpu": 0.11,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_DestinationConflictOneObjectFailsOthersSucceed": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_DestinationOnlyObjectSurvives": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_DestinationPrepopulatedCASReuse": {
+  "s": 0.11,
+  "cpu": 0.06,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_DestinationRestartThenRerunIsCleanAndDeepVerifies": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_EmptyObject": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_MetadataPreservedPerObject": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_PrefixMappingEndToEnd": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_ResumeAcrossRealProcessInterruption": {
+  "s": 1.25,
+  "cpu": 1.06,
+  "rss_mib": 79
+ },
+ "TestReplicateNamespace_SharedChunksAcrossObjectsAccountingExact": {
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_SourceChunkCorruptOneObjectFailsOthersSucceed": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_SourceObjectDisappearsBetweenListingAndFetchReportsFailureContinues": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_SourceRemovalAfterReplicationDoesNotRemoveDestination": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_StatsExactAccounting": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicateNamespace_WholeBucketAllChunksMissing": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_AuthFailureDestinationRejected": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_AuthFailureSourceRejected": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_CancellationStopsUnnecessaryWorkOnFailure": {
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_ClientRehashDetectsSourceReturningWrongBytes": {
+  "s": 0,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_ConcurrentChunkFetchesActuallyOverlap": {
+  "s": 0.26,
+  "cpu": 0.14,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_ConnectionResetOnOneChunkIsHandledAsFailure": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_DestinationConflict_AbsentBecomesPresentDuringReplication": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_DestinationConflict_ConcurrentWriteDuringReplicationRejectedSafely": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_DestinationServerRestartBetweenAttempts": {
+  "s": 0.24,
+  "cpu": 0.13,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_DestinationUploadRejectsAmongMany": {
+  "s": 0.61,
+  "cpu": 0.33,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_DuplicateDigestReferencesTransferOnce": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_EndToEnd_NewDestinationOrdinaryObject": {
+  "s": 0.27,
+  "cpu": 0.15,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_FailureLeavesUploadedChunksReusable_RerunTransfersOnlyRemaining": {
+  "s": 0.19,
+  "cpu": 0.1,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_IncompatibleDestinationFailsClearly": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_IncompatibleSourceFailsClearly": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_M8ADemonstrationFixture": {
+  "s": 0.61,
+  "cpu": 0.33,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_Negotiate_AllMissing": {
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_Negotiate_MixedPartialReuseExactStats": {
+  "s": 0.13,
+  "cpu": 0.07,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_Negotiate_ZeroMissingFullReuse": {
+  "s": 0.11,
+  "cpu": 0.06,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_NewEndpointsRejectUnauthenticatedRequests": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_OrdinaryS3AndM6SyncUnaffected": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_ParallelTransferFasterThanSequentialUnderLatency": {
+  "s": 0.37,
+  "cpu": 0.2,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_PartialAndZeroMissing_WithWorkers": {
+  "s": 0.16,
+  "cpu": 0.09,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_RepeatedTransfersDoNotLeakGoroutines": {
+  "s": 0.47,
+  "cpu": 0.25,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_ResumeAcrossRealProcessInterruption": {
+  "s": 0.89,
+  "cpu": 0.48,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_ResumeAfterPartialPriorUpload": {
+  "s": 0.1,
+  "cpu": 0.05,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_SourceChunkDownload_CorruptChunkOnDiskDetected": {
+  "s": 0,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_SourceChunkDownload_MalformedDigest": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_SourceChunkDownload_MissingChunk": {
+  "s": 0,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_SourceChunkDownload_Valid": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_SourceDescriptor_EmptyObjectEndToEnd": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 162,
+  "disk_mib": 9
+ },
+ "TestReplicate_SourceDescriptor_MetadataAndContentTypePreserved": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceDescriptor_MissingBucket": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceDescriptor_MissingObject": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceDescriptor_MissingQueryParamsRejected": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceDescriptor_ObjectExists": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceDescriptor_WeirdKeyCharacters": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceMissingOneChunkAmongMany": {
+  "s": 0.13,
+  "cpu": 0.05,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceOverwrittenDuringReplicationDoesNotProduceMixedRevision": {
+  "s": 0.07,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceReturnsWrongDigestAmongMany": {
+  "s": 0.08,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SourceServerRestartBetweenDescriptorAndChunkFetch": {
+  "s": 0.08,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_StatsExactAccounting": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_Stats_DuplicateChunkReferencesNotDoubleCounted": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_SuccessfulTransferCommitsExactlyOnce": {
+  "s": 0.08,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_UnknownExtensionPathStillNotBucketParsed": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_WorkerCountsProduceByteIdenticalStats": {
+  "s": 0.92,
+  "cpu": 0.38,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestReplicate_WorkersGreaterThanChunkCount": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestResolveTransferWorkers_ZeroMeansDefault": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRestore_AfterCurrentObjectDeletion": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRestore_CorruptedHistoricalManifest_NoPartialMutation": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRestore_InvalidVersionID": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRestore_MissingHistoricalChunk_NoPartialMutation": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRestore_WrongBucketOrKey": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRestore_ZeroCopy_OverExistingCurrent": {
+  "s": 0.05,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRunTransferWorkers_BoundedConcurrency": {
+  "s": 0.14,
+  "cpu": 0.06,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRunTransferWorkers_CancelOnErrorStopsUnstartedWork": {
+  "s": 0.2,
+  "cpu": 0.08,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRunTransferWorkers_ExternalContextCancellationSkipsEveryItem": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRunTransferWorkers_NoCancelOnErrorRunsEveryItem": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRunTransferWorkers_ResultsPreserveInputOrderRegardlessOfCompletionOrder": {
+  "s": 0.11,
+  "cpu": 0.05,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestRunTransferWorkers_ZeroItems": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_GracefulShutdown_ReplicateWorkersTerminateCleanly_RealProcess": {
+  "s": 0.54,
+  "cpu": 0.23,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_SIGINT_IdleGracefulShutdown_RealProcess": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_SIGTERM_ActiveGET_CompletesWithinGrace_RealProcess": {
+  "s": 0.92,
+  "cpu": 0.38,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_SIGTERM_ActivePUT_CompletesWithinGrace_RealProcess": {
+  "s": 8.49,
+  "cpu": 0.04,
+  "rss_mib": 15
+ },
+ "TestServe_SIGTERM_IdleGracefulShutdown_RealProcess": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_SIGTERM_SecondSignalForcesImmediateExit_RealProcess": {
+  "s": 1.53,
+  "cpu": 0.01,
+  "rss_mib": 15
+ },
+ "TestServe_SIGTERM_SlowRequestExceedsGrace_RealProcess": {
+  "s": 32.09,
+  "cpu": 0.04,
+  "rss_mib": 15
+ },
+ "TestServe_TLS_BadCertKeyFails_RealProcess": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_TLS_HTTPS_SigV4_PresignAndGracefulShutdown_RealProcess": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_TLS_MissingCertOrKeyFails_RealProcess": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestServe_TLS_Replicate_RealProcess": {
+  "s": 0.37,
+  "cpu": 0.15,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_AlteredPayloadRejected": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_CanonicalQuery": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_CanonicalQueryExcludingSignature": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_CanonicalURI": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_IncorrectSecretRejected": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_MissingSignedHeaderRejected": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_QueryEdgeCases": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_RawPathIsNotCleaned": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_ValidSignedRequestsAcrossRawPathShapes": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_WrongAccessKeyRejected": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSigV4_WrongRegionServiceScopeRejected": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_CapturedRootsMatchLiveManifest": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_ConcurrentPutsDuringCaptureYieldsCoherentSnapshot": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_DeletedAfterCaptureStillListedInSnapshot": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_EmptyBucketZeroObjects": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_EmptyPrefix_WholeBucket": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_IncompleteTempFileNeverObservedAsPublished": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_ManyObjects": {
+  "s": 0.22,
+  "cpu": 0.09,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_MutationAfterCaptureNotReflected": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_NoStrayTempFilesLeftInSnapshotsDir": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_NoSuchBucket": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_ObjectAddedAfterCaptureExcluded": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_OneObject": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_OverOneThousandObjects": {
+  "s": 1.22,
+  "cpu": 0.29,
+  "rss_mib": 22
+ },
+ "TestSnapshotCreate_PrefixScoping": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_WeirdKeys": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotCreate_WritesZeroNewCASPayload": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotDelete_ConcurrentDeletesOneWinsOneGetsCleanError": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotDelete_InvalidID": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotDelete_RemovesDescriptorOnly": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotDelete_SurvivesRestart": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotDelete_UnknownID": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_BadCRC": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_BadMagic": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_DeterministicEncode": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_DuplicateEntryKey": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_EmptyEntriesValid": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_InvalidSnapshotID": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_MalformedLength": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_MalformedManifestSHA256": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_MalformedManifestUUID": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_OversizedDeclaredLength": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_Truncated": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_UnsortedEntries": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_UnsupportedVersion": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotFormat_ValidRoundTrip": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotGC_CorruptDescriptorRefusesToSweep": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotGC_DeleteFinalSnapshotAllowsEventualCollection": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotGC_MultipleSnapshotsSharingChunks_DeleteOneKeepsOther": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotGC_NoSnapshotsUnchangedBehavior": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotGC_PinsContentWithNoOtherRoot": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotGC_PinsOtherwiseUnreachableChunks": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotGC_UnexpectedFileNameInSnapshotsDirCausesRefusal": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotList_EmptyStore": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotList_MultipleSnapshotsOrderedByID": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_DeepVerifyGreenAfterRestore": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_DeleteOriginalNamespaceDoesNotAffectRestoredCopy": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_DestinationBucketMissingFailsClearly": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_EmptySnapshot": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_LaterObjectsContinueAfterOneConflict": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_MetadataAndContentTypePreserved": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_NestedPrefix": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_OneObject": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_OverOneThousandObjects": {
+  "s": 10.87,
+  "cpu": 5.19,
+  "rss_mib": 26,
+  "disk_mib": 2
+ },
+ "TestSnapshotRestore_PreexistingDifferentDestinationConflict": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_RestoredDeletionDoesNotAffectSnapshot": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_RestoredMutationDoesNotAffectSnapshot": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_ResumeMatchingPriorRestoreIsNoOp": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_SnapshotDeletionAfterRestoreDoesNotBreakRestoredNamespace": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_SourceDeletedThenGC_StillRestoresExactly": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_SourceMutatedAfterSnapshot_RestoresOldVersion": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_TwoRestoresFromSameSnapshotToDistinctDestinations": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_WeirdKeys": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotRestore_ZeroNewCASPayload": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotShow_EntriesOmittedByDefault": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotShow_InvalidID": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshotShow_UnknownID": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshot_SurvivesRestart": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestSnapshot_VerifyReportsCorruptSnapshot": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStats_ExactSharingArrangement": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStats_JSONFieldNamesMatchSpec": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStats_ReclaimableAfterDelete": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStorageEfficiencyProof_VersionHistoryIsCheap": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStore_FormatJSONContents": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStore_NewInitialization": {
+  "s": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStore_StableV1Constants": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStore_UnsupportedFormatRejected": {
+  "s": 0,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStreamingGet_Corruption": {
+  "s": 0.2,
+  "cpu": 0.08,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStreamingGet_HeadAndConditionalsSkipPayload": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 62,
+  "disk_mib": 3
+ },
+ "TestStreamingGet_Matrix": {
+  "s": 0.43,
+  "cpu": 0.21,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestStreamingMultipart_UploadPart": {
+  "s": 0.17,
+  "cpu": 0.08,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestStreamingPut_ConcurrentCreateOnly": {
+  "s": 0.05,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestStreamingPut_ConditionalHistory": {
+  "s": 0.07,
+  "cpu": 0.03,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestStreamingPut_HTTPMatrix": {
+  "s": 0.63,
+  "cpu": 0.31,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestStreamingPut_InterruptedBodies": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestStreamingPut_LargeObjectBoundedMemory": {
+  "s": 4.54,
+  "cpu": 4.45,
+  "rss_mib": 159,
+  "disk_mib": 3
+ },
+ "TestStreamingPut_RejectedBeforeIngest": {
+  "s": 0.53,
+  "cpu": 0.26,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestStreamingPut_RestartCompatibility": {
+  "s": 0.09,
+  "cpu": 0.04,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncChunkUpload_DigestMismatchRejected": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncChunkUpload_IdempotentRetry": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncChunkUpload_InvalidDigestInURLRejected": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncChunkUpload_OversizedBodyRejected": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncChunkUpload_Success": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncCommit_CorruptChunkRejected": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncCommit_MalformedJSONRejected": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncCommit_MissingBucketOrKeyRejected": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncCommit_MissingChunkRejected": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncCommit_UnknownBucketRejected": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncCommit_UnsupportedProtocolCDCHash": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncCommit_WrongLengthRejected": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_AllMissing": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_BatchSizeBoundary": {
+  "s": 0.06,
+  "cpu": 0.03,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_DuplicatedDigestsReportedOnce": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_InvalidDigest": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_InvalidLength": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_MalformedJSONRejected": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_MultiBatchViaClient": {
+  "s": 3.88,
+  "cpu": 1.01,
+  "rss_mib": 20
+ },
+ "TestSyncNegotiate_NeverMutatesStore": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_OneMissingAmongMany": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_OversizedRequestRejected": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_SomeMissing": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_UnsupportedProtocolCDCHash": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncNegotiate_ZeroMissing": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncStats_FirstSyncAllNew": {
+  "s": 0.05,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSyncStats_ResyncIdenticalContentToNewKeyIsFullyReused": {
+  "s": 0.08,
+  "cpu": 0.04,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_AllEndpointsRejectUnauthenticatedRequests": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_CDCEquivalenceWithOrdinaryPut": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ConcurrentNormalPutAndSyncDifferentKeys": {
+  "s": 0.05,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ConflictAbsentDestinationStaysAbsentUntilCommit": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ConflictConcurrentPUTDuringSyncCausesCommitConflict": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ConflictRetryAfterConflictSucceeds": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ConflictTwoConcurrentSyncsToSameKeySecondFails": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ConflictUnchangedDestinationCommitsCleanly": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_CriticalAcceptanceProof": {
+  "s": 0.11,
+  "cpu": 0.05,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_Discovery_AuthFailureRejected": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_Discovery_Supported": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_Discovery_UnknownExtensionPathNotBucketParsed": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_KeyWithHashCharacterDoesNotMisroute": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_KeyWithPercentCharacterFallsBackCorrectly": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_KeyWithQuestionMarkResyncsCleanly": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_LocalMutationDuringConcurrentUploadStillDetected": {
+  "s": 0.07,
+  "cpu": 0.03,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_LocalMutationDuringOperationAborts": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_M6ADemonstrationFixture": {
+  "s": 0.42,
+  "cpu": 0.21,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_NonZeroS3Endpoint_FallsBackToPlainPut": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_NormalS3RoutesUnaffectedByExtension": {
+  "s": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ParallelChunkUploadWithWorkers": {
+  "s": 0.14,
+  "cpu": 0.07,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_RepeatedCommitFailsCleanlyRatherThanDuplicating": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_RepeatedFullSyncOfIdenticalContentUploadsNothing": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ResumeAfterPartialPriorUpload": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_ServerRestartAfterPartialUploadThenResume": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_TwoConcurrentSyncsToDifferentKeysBothSucceed": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_UnmodifiedFileCommitsNormally": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestSync_WorkersOneMatchesSequentialBaseline": {
+  "s": 0.03,
+  "cpu": 0.01,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierPolicy_DeletedBucketHistoryKeepsPolicy": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierPolicy_HottestReferenceWins": {
+  "s": 0.23,
+  "cpu": 0.11,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierPolicy_MalformedFileOnlyBlocksAdministration": {
+  "s": 0.4,
+  "cpu": 0.2,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierPolicy_MutationNeedsExclusiveStore": {
+  "s": 0.05,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierPolicy_Persistence": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierPolicy_RuleResolution": {
+  "s": 0,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierRebalance_CLI": {
+  "s": 0.2,
+  "cpu": 0.1,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierRebalance_CrashPointsConverge": {
+  "s": 5.09,
+  "cpu": 2.7,
+  "rss_mib": 57,
+  "disk_mib": 2
+ },
+ "TestTierRebalance_DriftAndDuplicatesConverge": {
+  "s": 0.19,
+  "cpu": 0.09,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierRebalance_DryRunThenApplyOnLooseChunks": {
+  "s": 0.17,
+  "cpu": 0.08,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierRebalance_HistoryPruneChangesTargets": {
+  "s": 0.13,
+  "cpu": 0.06,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierRebalance_MinMisplacedDefersCostlyRewrites": {
+  "s": 0.19,
+  "cpu": 0.09,
+  "rss_mib": 119,
+  "disk_mib": 2
+ },
+ "TestTierRebalance_MixedPacksAreRewritten": {
+  "s": 0.27,
+  "cpu": 0.15,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTierRebalance_MultipartRootsStaySafe": {
+  "s": 0.11,
+  "cpu": 0.06,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTierRebalance_RefusesUnsafeStates": {
+  "s": 0.58,
+  "cpu": 0.32,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTierRebalance_SharedCheckpointBlocksStayHot": {
+  "s": 0.13,
+  "cpu": 0.07,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTierRebalance_WholeMoveCrashConverges": {
+  "s": 0.67,
+  "cpu": 0.37,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTierRebalance_WholePackMoveKeepsBytes": {
+  "s": 0.18,
+  "cpu": 0.1,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_CLI": {
+  "s": 0.21,
+  "cpu": 0.12,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_ColdOnlyStoreMovesToHot": {
+  "s": 0.17,
+  "cpu": 0.09,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_CompactIntoColdCrashPoints": {
+  "s": 1.96,
+  "cpu": 1.13,
+  "rss_mib": 56
+ },
+ "TestTier_FallbackAcrossTiers": {
+  "s": 0.11,
+  "cpu": 0.06,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_GCRemovesDeadPackFromItsTier": {
+  "s": 0.22,
+  "cpu": 0.12,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_InitSafety": {
+  "s": 1.4,
+  "cpu": 1.01,
+  "rss_mib": 27
+ },
+ "TestTier_LifecycleCompactMoveReads": {
+  "s": 0.69,
+  "cpu": 0.38,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_LocatorPreferenceDifferential": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_MoveCrashPoints": {
+  "s": 2.03,
+  "cpu": 1.06,
+  "rss_mib": 34,
+  "disk_mib": 1
+ },
+ "TestTier_MoveExistingTarget": {
+  "s": 0.09,
+  "cpu": 0.05,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_RepackGCPreserveTiersAndPaths": {
+  "s": 0.61,
+  "cpu": 0.34,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_RootSafety": {
+  "s": 0.36,
+  "cpu": 0.2,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTier_TransferFromColdSource": {
+  "s": 0.17,
+  "cpu": 0.09,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestTransferHTTPTransport_PoolSizedForMaxWorkers": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestUUID_CanonicalStringForm": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestUUID_IsVersion7Variant10": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestUUID_RoundTripsThroughStdlibParse": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestUUID_SuitableAsManifestAndVersionID": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestUUID_Unique": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestUploadPartCopy_ProtocolAndFailures": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVHost_BucketFromHost": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVHost_DisabledByDefaultFallsBackToPathStyle": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVHost_EndToEndCreateBucketPutGetListDelete": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVHost_ListBucketsStillWorksOnBareHost": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVHost_PathStyleStillWorksWhenVHostConfigured": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVHost_PresignedURLWithVHostAddressing": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestValidSnapshotID": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestValidateWorkers_Range": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVectors_Presign": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVectors_SigV4": {
+  "s": 0,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVectors_WireShapes": {
+  "s": 0.05,
+  "cpu": 0.03,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_CleanStoreOK": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DeepWholeObjectDigest_EmptyObject": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DeepWholeObjectDigest_MalformedReportedInvalid": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DeepWholeObjectDigest_MismatchDetected": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DeepWholeObjectDigest_MultiChunkObject": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DetectsChunkLengthMismatch": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DetectsCorruptChunkOnlyUnderDeep": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DetectsCorruptManifestHashMismatch": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DetectsManifestLengthSumMismatch": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DetectsMissingChunk": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_DetectsUnparsableManifestJSON": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached": {
+  "s": 0.03,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVersionGC_Interaction": {
+  "s": 0.04,
+  "cpu": 0.02,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVersions_CopyObjectOverwriteCreatesHistory": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVersions_DeleteArchivesHistoryGetNotFound": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVersions_FirstPutCreatesNoHistory": {
+  "s": 0.01,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVersions_FullLifecycleAcrossRestart": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVersions_MultipartOverwriteCreatesHistory": {
+  "s": 0.12,
+  "cpu": 0.07,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestVersions_PutOverwriteCreatesHistory": {
+  "s": 0.02,
+  "cpu": 0.01,
+  "rss_mib": 63,
+  "disk_mib": 1
+ },
+ "TestXDeltaRoundTripAndRejection": {
+  "s": 0.11,
+  "cpu": 0.06,
+  "rss_mib": 63,
+  "disk_mib": 1
+ }
+}
