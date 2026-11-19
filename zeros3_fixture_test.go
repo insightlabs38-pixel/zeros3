@@ -101,8 +101,9 @@ func fixtureClone(src, dst string) error {
 func fixtureImage(t testing.TB, dir, key string, build func(dir string)) {
 	t.Helper()
 	root := fixtureRoot()
-	if ents, err := os.ReadDir(dir); root == "" || err != nil || len(ents) > 0 {
-		build(dir) // no cache, or the directory already holds something: build in place
+	// The retire-everything hook keeps per-store state in this process, which a cloned image would not carry.
+	if ents, err := os.ReadDir(dir); root == "" || authCommitHook != nil || err != nil || len(ents) > 0 {
+		build(dir) // no cache, the hook is installed, or the directory already holds something: build in place
 		return
 	}
 	sum := sha256.Sum256([]byte(key + "|" + runtime.GOARCH))
