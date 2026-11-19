@@ -465,7 +465,7 @@ func TestP8WinCache(t *testing.T) {
 
 // A decoded source or window cached while planning must never stand in for the physical check of a proof: a base
 // chunk that rots between planning and proof fails the proof closed and the object stays CDC.
-func TestP8PlanCacheNeverHidesPhysicalCorruption(t *testing.T) {
+func TestAuthorityPlanCacheNeverHidesPhysicalCorruption(t *testing.T) {
 	l := authHistoryLab(t, 91, 4, 700_000)
 	base := l.man("k1")
 	fires := 0
