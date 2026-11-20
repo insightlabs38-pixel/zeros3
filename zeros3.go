@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50670    Windowed and estimated similarity deltas (extracted dcore)
-//    52192    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59837    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66109    CLI dispatch, HTTP server/startup, and main
+//    50751    Windowed and estimated similarity deltas (extracted dcore)
+//    52273    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59921    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66193    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46738,10 +46738,11 @@ type AuthPolicy struct {
 	// HardCodecs lets structured analysis replay Brotli and LZ4_RAW Parquet pages and LZ4 SST blocks
 	// exactly (archive use: reading them re-runs the page encoder). Records that use them carry the
 	// "hardcodec" feature, which builds without the replay refuse.
-	HardCodecs  bool  `json:"hard_codecs"`
-	MinRepGroup int   `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
-	FrameSpan   int64 `json:"frame_span"`
-	Apply       bool  `json:"apply"`
+	HardCodecs       bool   `json:"hard_codecs"`
+	MinRepGroup      int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan        int64  `json:"frame_span"`
+	Apply            bool   `json:"apply"`
+	ReserveFreeBytes uint64 `json:"reserve_free_bytes,omitempty"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
 	// representation for a kind group whose delta plan already costs at most this
 	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
@@ -47432,6 +47433,9 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 		return AuthReport{}, err
 	}
 	pol = pol.norm()
+	if err := s.checkAuthDiskReserve(pol.ReserveFreeBytes, 0, 0); err != nil {
+		return AuthReport{}, err
+	}
 	if pol.HardCodecs { // nested planning passes restore what the outer pass set
 		defer s.rep.hardCodecs.Store(s.rep.hardCodecs.Swap(true))
 	}
@@ -47751,6 +47755,9 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 				rc = cache.repC[m.order[i].sha]
 			}
 			if rc == nil {
+				if err := m.s.checkAuthDiskReserve(m.pol.ReserveFreeBytes, 0, 0); err != nil {
+					return err
+				}
 				var src io.ReaderAt
 				if man := m.order[i].man; man.TotalLength <= authWindowMin {
 					if b, err := m.source(man); err == nil {
@@ -47760,6 +47767,9 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil })
 				if errors.Is(err, syscall.ENOSPC) {
 					return err
+				}
+				if spaceErr := m.s.checkAuthDiskReserve(m.pol.ReserveFreeBytes, 0, 0); spaceErr != nil {
+					return spaceErr
 				}
 				if err != nil {
 					continue
@@ -48114,6 +48124,39 @@ func (m *authMigrator) source(man manifestV1) ([]byte, error) {
 	return m.wc.load(authWinKey{sha, 0, -1}, func() ([]byte, error) { return m.s.manifestBytes(man) })
 }
 
+// checkAuthDiskReserve prices staged output against the currently available
+// blocks. Existing data and candidate components stay charged until reclaimed.
+func (s *Store) checkAuthDiskReserve(reserve, bytes, files uint64) error {
+	if reserve == 0 {
+		return nil
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(s.root, &st); err != nil {
+		return err
+	}
+	if st.Bsize <= 0 {
+		return errors.New("invalid filesystem block size")
+	}
+	block := uint64(st.Bsize)
+	blocks := func(n uint64) uint64 {
+		if n == 0 {
+			return 0
+		}
+		return 1 + (n-1)/block
+	}
+	available, keep, staged := uint64(st.Bavail), blocks(reserve), blocks(bytes)
+	// Charge one extra block per output file for independent rounding and
+	// directory entries. The filesystem still arbitrates space for each write.
+	if keep > available || staged > available-keep || files > available-keep-staged {
+		return fmt.Errorf("authority staging needs %d data bytes and space for %d files while reserving %d bytes: %w", bytes, files, reserve, syscall.ENOSPC)
+	}
+	return nil
+}
+
+func (m *authMigrator) checkAuthComponentReserve(size int64) error {
+	return m.s.checkAuthDiskReserve(m.pol.ReserveFreeBytes, uint64(size), uint64(size/xdPieceSize+1))
+}
+
 func (m *authMigrator) process(i int, o *authObj) error {
 	pol := m.pol
 	plan := AuthPlan{SHA: hex.EncodeToString(o.sha[:]), Size: o.man.TotalLength, Form: "cdc"}
@@ -48240,6 +48283,9 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	var pins []int
 	if choice == "delta" {
 		rec, pins = best.rec, best.pins
+		if err := m.checkAuthComponentReserve(int64(len(best.blob))); err != nil {
+			return err
+		}
 		ps, err := m.s.authWritePieces(m.ctx, best.blob)
 		if err != nil {
 			return err
@@ -48256,6 +48302,34 @@ func (m *authMigrator) process(i int, o *authObj) error {
 // amplification gate and publishes it. A refusal keeps the object in CDC.
 func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, plan AuthPlan, choice string, finish func(AuthPlan)) error {
 	pol := m.pol
+	if pol.ReserveFreeBytes != 0 {
+		data, err := rec.marshal()
+		if err != nil {
+			return err
+		}
+		metaBytes, files := uint64(len(data)), uint64(1)
+		for _, j := range pins {
+			bo := m.order[j]
+			if bo.hasRec {
+				continue
+			}
+			ps, err := chunkPieces(bo.man)
+			if err != nil {
+				return err
+			}
+			pin := authRecord{SHA: bo.sha, Size: bo.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}
+			data, err := pin.marshal()
+			if err != nil {
+				return err
+			}
+			metaBytes += uint64(len(data))
+			files++
+		}
+		// FORMAT.json can be replaced when publication raises the feature floor.
+		if err := m.s.checkAuthDiskReserve(pol.ReserveFreeBytes, metaBytes, files+1); err != nil {
+			return err
+		}
+	}
 	fireTestHook(hookAuthComponentsFlushed)
 	for _, j := range pins {
 		if err := m.ctx.Err(); err != nil {
@@ -48454,6 +48528,9 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		finish(plan)
 		m.addBase(i)
 		return nil
+	}
+	if err := m.checkAuthComponentReserve(added); err != nil {
+		return err
 	}
 	pw := m.s.newAuthPieceWriter()
 	defer pw.abort()
@@ -50514,6 +50591,7 @@ func runAuthority(args []string) {
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
+	reserveMiB := fs.Uint64("reserve-free-mib", 0, "migrate: require this much free space after estimated staging (0 disables the reserve)")
 	fs.Parse(args[1:])
 	// An offline maintenance process needs no serving cache and keeps its heap near the
 	// bound: windowed deltas hold an anchor table and per-worker page caches, nothing else.
@@ -50612,9 +50690,12 @@ func runAuthority(args []string) {
 			log.Fatalf("zeros3: authority index-status: %v", err)
 		}
 	case "migrate":
+		if *reserveMiB > math.MaxUint64>>20 {
+			log.Fatal("zeros3: authority migrate: reserve-free-mib is too large")
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, ReserveFreeBytes: *reserveMiB << 20}
 		if *indexedDiscovery && pol.AllowDelta {
 			pol.similarity, err = store.openCurrentAuthSimilarityQuery()
 			if err != nil {
@@ -59752,6 +59833,9 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 		finish(plan)
 		m.addBase(i)
 		return true, nil
+	}
+	if err := m.checkAuthComponentReserve(added); err != nil {
+		return true, err
 	}
 	pw := m.s.newAuthPieceWriter()
 	defer pw.abort()

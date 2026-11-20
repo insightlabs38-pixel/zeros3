@@ -2315,6 +2315,32 @@ func TestAuthorityMigrationCancellationBeforePublication(t *testing.T) {
 	}
 }
 
+func TestAuthorityMigrationDiskReserve(t *testing.T) {
+	l := authHistoryLab(t, 493, 3, 520_000)
+	l.reclaim()
+	pol := AuthPolicy{Apply: true, AllowDelta: true, NoZN7: true, MaxDepth: 2, MaxReadAmp: -1, ReserveFreeBytes: math.MaxUint64}
+	report, err := l.s.AuthorityMigrate(pol)
+	if !errors.Is(err, syscall.ENOSPC) || report.Objects != 0 || report.Admitted != 0 {
+		t.Fatalf("impossible reserve did not stop before staging: report=%+v err=%v", report, err)
+	}
+	if err := l.s.checkAuthDiskReserve(1, math.MaxUint64, math.MaxUint64); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("overflow-sized output estimate bypassed the reserve: %v", err)
+	}
+	files, err := l.s.authFiles()
+	if err != nil || len(files) != 0 {
+		t.Fatalf("reserve refusal changed authority: %v %v", files, err)
+	}
+	l.exact("reserve refusal")
+	pol.ReserveFreeBytes = 1 << 20
+	report, err = l.s.AuthorityMigrate(pol)
+	if err != nil || report.Admitted == 0 {
+		t.Fatalf("available reserve wrongly refused migration: %+v %v", report, err)
+	}
+	l.reclaim()
+	l.exact("admitted with reserve")
+	l.verifyOK("admitted with reserve")
+}
+
 func TestAuthorityWindowedMigrationReportsStagingENOSPC(t *testing.T) {
 	defer func(a, b int64) { authWindowMin, authWindowSize = a, b }(authWindowMin, authWindowSize)
 	authWindowMin, authWindowSize = 64<<10, 64<<10

@@ -153,3 +153,11 @@ The C2B `index-inspect` command reports the publication state and counts inactiv
 generation and staging directories. It checks the selected generation under the
 offline store lock. Inactive directories include both earlier sealed generations
 and unattached builds. The command leaves derived files and object authority intact.
+
+The migration command can reserve filesystem headroom with
+`-reserve-free-mib`. It checks the current free blocks before staging encoded
+delta or model output and again before publishing new pins and records.
+Earlier staged output and retained shared packs remain charged. Structural
+representations check the floor before and after construction, where the
+candidate's encoded size is known. The reserve is an estimate. Actual write
+errors still propagate, and aborted staging remains collectible.
