@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50760    Windowed and estimated similarity deltas (extracted dcore)
-//    52282    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59930    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66202    CLI dispatch, HTTP server/startup, and main
+//    50788    Windowed and estimated similarity deltas (extracted dcore)
+//    52310    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59958    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66230    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46942,9 +46942,11 @@ type AuthReport struct {
 	// CacheHits/CacheMisses/DecodedBytes describe the shared decoded-source cache of the pass: a miss decodes
 	// DecodedBytes once, a hit avoids decoding that many bytes again.
 	CacheHits, CacheMisses, DecodedBytes int64
-	SimilarityQueries                    int  `json:"similarity_queries,omitempty"`
-	SimilarityMatches                    int  `json:"similarity_matches,omitempty"`
-	SimilarityFallback                   bool `json:"similarity_fallback,omitempty"`
+	SimilarityQueries                    int   `json:"similarity_queries,omitempty"`
+	SimilarityMatches                    int   `json:"similarity_matches,omitempty"`
+	SimilarityFallback                   bool  `json:"similarity_fallback,omitempty"`
+	SimilarityLookupNanos                int64 `json:"similarity_lookup_ns,omitempty"`
+	SimilarityOpenNanos                  int64 `json:"similarity_open_ns,omitempty"`
 }
 
 type authObj struct {
@@ -47879,7 +47881,9 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 	}
 	if q := m.pol.similarity; q != nil && !q.failed {
 		m.rep.SimilarityQueries++
+		start := time.Now()
 		extra, err := m.indexedCandidates(i, sk)
+		m.rep.SimilarityLookupNanos += time.Since(start).Nanoseconds()
 		if err != nil {
 			q.failed = true
 		} else {
@@ -49372,13 +49376,14 @@ func (s *Store) casReadOrVirtual(sum [32]byte) (data []byte, virtual bool, err e
 
 // ZSR1 is a derived run of (feature uint64, catalog ID uint32) postings.
 const (
-	authSimilarityRunMagic   = "ZSR1"
-	authSimilarityRunHeader  = 20
-	authSimilarityRunBuckets = 1 << 16
-	authSimilarityRunEntry   = 10
-	authSimilarityRunBase    = authSimilarityRunHeader + (authSimilarityRunBuckets+1)*4
-	authSimilarityRunLimit   = 64
-	authSimilarityMaxRuns    = 256
+	authSimilarityRunMagic          = "ZSR1"
+	authSimilarityRunHeader         = 20
+	authSimilarityRunBuckets        = 1 << 16
+	authSimilarityRunEntry          = 10
+	authSimilarityRunBase           = authSimilarityRunHeader + (authSimilarityRunBuckets+1)*4
+	authSimilarityRunLimit          = 64
+	authSimilarityMaxRuns           = 256
+	authSimilarityCachedDirectories = 32
 )
 
 var errAuthSimilarityRun = errors.New("invalid similarity posting run")
@@ -49463,8 +49468,23 @@ func openAuthSimilarityRun(src io.ReaderAt, size int64) (*authSimilarityRun, err
 func (r *authSimilarityRun) lookup(feature uint64, limit int) ([]uint32, error) {
 	bucket := feature >> 48
 	want := feature & (1<<48 - 1)
-	start, end := r.directory[bucket], r.directory[bucket+1]
-	if start == end || limit <= 0 {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var start, end uint32
+	if r.directory != nil {
+		start, end = r.directory[bucket], r.directory[bucket+1]
+	} else {
+		var bounds [8]byte
+		if _, err := r.src.ReadAt(bounds[:], authSimilarityRunHeader+int64(bucket)*4); err != nil {
+			return nil, err
+		}
+		start, end = binary.LittleEndian.Uint32(bounds[:]), binary.LittleEndian.Uint32(bounds[4:])
+		if start > end || end > r.count {
+			return nil, fmt.Errorf("%w: bucket directory changed after verification", errAuthSimilarityRun)
+		}
+	}
+	if start == end {
 		return nil, nil
 	}
 	var raw [authSimilarityRunLimit * authSimilarityRunEntry]byte
@@ -50493,7 +50513,7 @@ func openAuthSimilarityQuery(report authSimilarityStageReport) (*authSimilarityQ
 	if err := verifyAuthSimilarityCatalog(catalog, report); err != nil {
 		return nil, err
 	}
-	for _, desc := range report.Runs {
+	for i, desc := range report.Runs {
 		f, err := os.Open(filepath.Join(report.Directory, desc.Name))
 		if err != nil {
 			return nil, err
@@ -50502,6 +50522,10 @@ func openAuthSimilarityQuery(report authSimilarityStageReport) (*authSimilarityQ
 		run, err := openVerifiedAuthSimilarityRun(f, report, desc)
 		if err != nil {
 			return nil, err
+		}
+		// Older verified runs can fetch one bucket without retaining their full directory.
+		if i < len(report.Runs)-authSimilarityCachedDirectories {
+			run.directory = nil
 		}
 		q.runs = append(q.runs, run)
 	}
@@ -50705,8 +50729,11 @@ func runAuthority(args []string) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, ReserveFreeBytes: *reserveMiB << 20}
+		var similarityOpenNanos int64
 		if *indexedDiscovery && pol.AllowDelta {
+			start := time.Now()
 			pol.similarity, err = store.openCurrentAuthSimilarityQuery()
+			similarityOpenNanos = time.Since(start).Nanoseconds()
 			if err != nil {
 				log.Printf("zeros3: similarity discovery using existing candidates: %v", err)
 			} else {
@@ -50726,6 +50753,7 @@ func runAuthority(args []string) {
 		if err != nil {
 			log.Fatalf("zeros3: authority migrate: %v", err)
 		}
+		rep.SimilarityOpenNanos = similarityOpenNanos
 		rep.SimilarityFallback = *indexedDiscovery && pol.AllowDelta && (pol.similarity == nil || pol.similarity.failed)
 		enc.Encode(rep)
 	case "status":

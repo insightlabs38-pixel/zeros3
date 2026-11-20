@@ -161,3 +161,9 @@ Earlier staged output and retained shared packs remain charged. Structural
 representations check the floor before and after construction, where the
 candidate's encoded size is known. The reserve is an estimate. Actual write
 errors still propagate, and aborted staging remains collectible.
+
+The repeated-query reader retains the verified bucket directories of at
+most 32 runs. Older verified runs read one pair of directory offsets on
+demand. This bounds retained directories to about 8 MiB at the generation
+run cap. The migration report distinguishes verified index open time from
+candidate lookup time. The lookup timer covers the reported planning pass.

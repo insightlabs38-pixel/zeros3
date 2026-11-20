@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -115,6 +117,7 @@ func TestAuthoritySimilarityHotPostingsAcrossRuns(t *testing.T) {
 		return opened
 	}
 	old, middle, recent := run(1, 20), run(21, 80), run(81, 100)
+	middle.directory = nil // Verified older runs retain only their file and metadata.
 	q := authSimilarityQuery{
 		report: authSimilarityStageReport{retired: []uint32{37, 99}},
 		runs:   []*authSimilarityRun{old, middle, recent},
@@ -898,6 +901,50 @@ func TestAuthoritySimilarityUsesScopedAliasForIndexedDiscovery(t *testing.T) {
 	}
 }
 
+func TestAuthoritySimilarityQueryBoundsResidentDirectories(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("similar"); err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.Repeat([]byte("query directory fixture"), 250)
+	mustPutObject(t, s, "similar", "one", body, "", nil)
+	report, err := s.buildAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(report.Directory, report.Runs[0].Name)
+	for i := 0; i < authSimilarityCachedDirectories; i++ {
+		desc := report.Runs[0]
+		desc.Name = fmt.Sprintf("copy-%d.zsr", i)
+		if err := os.Link(source, filepath.Join(report.Directory, desc.Name)); err != nil {
+			t.Fatal(err)
+		}
+		report.Runs = append(report.Runs, desc)
+	}
+	query, err := openAuthSimilarityQuery(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer query.close()
+	kept := 0
+	for _, run := range query.runs {
+		if run.directory != nil {
+			kept++
+		}
+	}
+	if kept != authSimilarityCachedDirectories || query.runs[0].directory != nil {
+		t.Fatalf("wrong resident directory count: %d of %d", kept, len(query.runs))
+	}
+	ids, err := query.postings(authFeatures(body, 16)[0])
+	if err != nil || !slices.Equal(ids, []uint32{1}) {
+		t.Fatalf("older-file reads did not preserve deduplicated candidates: %v %v", ids, err)
+	}
+}
+
 func TestAuthoritySimilarityIndexInventory(t *testing.T) {
 	s, err := OpenStore(t.TempDir())
 	if err != nil {
@@ -948,4 +995,51 @@ func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]u
 	}
 	defer q.close()
 	return q.postings(feature)
+}
+
+// BenchmarkAuthoritySimilarityLookup uses an already published production index.
+func BenchmarkAuthoritySimilarityLookup(b *testing.B) {
+	dir, raw := os.Getenv("ZEROS3_C2_INDEX_STORE"), os.Getenv("ZEROS3_C2_INDEX_FEATURES")
+	if dir == "" || raw == "" {
+		b.Skip("set ZEROS3_C2_INDEX_STORE and ZEROS3_C2_INDEX_FEATURES")
+	}
+	var features []uint64
+	for _, value := range strings.Split(raw, ",") {
+		f, err := strconv.ParseUint(strings.TrimSpace(value), 0, 64)
+		if err != nil {
+			b.Fatal(err)
+		}
+		features = append(features, f)
+	}
+	lock, err := acquireStoreLock(dir, true)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer lock.release()
+	s, err := OpenStoreShared(dir)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	query, err := s.openCurrentAuthSimilarityQuery()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer query.close()
+	b.ReportAllocs()
+	var matched, i int
+	for b.Loop() {
+		ids, err := query.postings(features[i%len(features)])
+		if err != nil {
+			b.Fatal(err)
+		}
+		for _, id := range ids {
+			if _, _, err := query.content(id); err != nil {
+				b.Fatal(err)
+			}
+		}
+		matched += len(ids)
+		i++
+	}
+	b.ReportMetric(float64(matched)/float64(b.N), "candidates/op")
 }
