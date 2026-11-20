@@ -32,3 +32,10 @@ query. The index occupied 7,446,528 allocated bytes within the
 1,186,250,752-byte store footprint. Refresh used 112.96 CPU seconds and
 173,388 KiB peak RSS under concurrent qualification load. Fresh deep
 verification passed after the append.
+
+After verifying and opening the expanded index, three warm measurements of
+the four busiest features took 110–113 µs per lookup, returning 64
+candidates and allocating 1,184 bytes per lookup. This excludes catalog
+and run verification and store replay, which are included in the fresh
+CLI results above. The page cache was warm and the machine shared CPU
+with the running qualification.

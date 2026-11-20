@@ -1,0 +1,10 @@
+ZeroS3 gc (apply)
+roots            5 current | 0 historical | 0 multipart | 0 snapshot
+live set         ok=true
+chunks           0 scanned | 0 reachable | 0 unreachable
+manifests        0 scanned | 0 unreachable
+payload bytes    0 reachable | 0 reclaimable
+disk bytes       0 reclaimable
+packs            4 | 3324 live chunks (123821057 bytes) | 0 dead chunks (0 bytes) | 100% utilized
+pack reclaim     0 fully dead packs (0 bytes removed by gc -apply) | 0 partly dead (0 bytes via `zeros3 repack`)
+deleted          0 chunks | 0 manifests | 0 packs | 0 bytes
