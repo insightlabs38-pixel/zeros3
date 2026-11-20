@@ -117,10 +117,10 @@ import (
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44750    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49259    Windowed and estimated similarity deltas (extracted dcore)
-//    50781    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58421    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64693    CLI dispatch, HTTP server/startup, and main
+//    49268    Windowed and estimated similarity deltas (extracted dcore)
+//    50790    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58430    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64702    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -45727,8 +45727,8 @@ const (
 	authPlanWinCacheBytes  = 32 << 20  // planning cache of windowed objects (1 MiB windows)
 	authPlanSrcCacheMin    = 96 << 20  // floor once whole in-memory sources are in scope
 	authPlanWinCacheMax    = 160 << 20 // and what four of the largest in-memory objects may raise it to
-	authProofWinBytes      = 64 << 20  // decoded windows one proof of a windowed body keeps
-	authProofPieceBytes    = 32 << 20  // verified base chunks the same proof keeps
+	authProofWinBytes      = 16 << 20  // decoded windows one proof of a windowed body keeps
+	authProofPieceBytes    = 8 << 20   // verified base chunks the same proof keeps
 	authProofFrames        = 96        // decoded frames per delta body a proof keeps (128 KiB of target each)
 )
 
@@ -46207,6 +46207,7 @@ type authWinBody struct {
 	wr      *dwDcoreWRecord
 	base    authBody
 	wp      dwDcoreWParams
+	wc      *authWinCache
 	win     []byte
 	off     int64
 	pv      *dwDcore_pageView // base pages kept between windows
@@ -46228,7 +46229,7 @@ func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authB
 	if int(rec.Depth) < int(brec.Depth)+1 {
 		return nil, fmt.Errorf("%w: recorded depth %d below the base's %d", errAuthCorrupt, rec.Depth, int(brec.Depth)+1)
 	}
-	return &authWinBody{c: c, rec: rec, wr: wr, base: b, wp: authWParams(1, wr.BaseSize), off: -1}, nil
+	return &authWinBody{c: c, rec: rec, wr: wr, base: b, wc: c.wc, wp: authWParams(1, wr.BaseSize), off: -1}, nil
 }
 
 func (b *authWinBody) Size() int64 { return b.rec.Size }
@@ -46251,7 +46252,7 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 			}
 			var data []byte
 			var err error
-			if wc := b.c.wc; wc != nil {
+			if wc := b.wc; wc != nil {
 				data, err = wc.load(authWinKey{b.rec.SHA, b.rec.Gen, ws}, func() ([]byte, error) { return decode(nil) })
 			} else {
 				data, err = decode(b.win)
@@ -46312,6 +46313,7 @@ func (a *authObjAt) close() {
 	for _, r := range a.all {
 		r.close()
 	}
+	a.all, a.free = nil, nil
 }
 
 // authPieceWriter stores a streamed blob as fixed-size CAS chunks without holding it.
@@ -47184,6 +47186,10 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 	body, _, err := ctx.body(cand.SHA, 0, 1)
 	if err != nil {
 		return 0, 0, err
+	}
+	// The candidate is scanned in order. Reuse its last output buffer and cache only base windows.
+	if b, ok := body.(*authWinBody); ok {
+		b.wc = nil
 	}
 	h := sha256.New()
 	buf := make([]byte, authReadPiece)
@@ -48325,6 +48331,9 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	if _, err := dwDcoreWEncode(pw, tgt, o.man.TotalLength, base, bo.man.TotalLength, idx, wp); err != nil {
 		return keep("windowed encoding failed: " + err.Error())
 	}
+	// Encoding has joined the window workers; release their readers before opening the proof.
+	base.close()
+	tgt.close()
 	ps, err := pw.finish()
 	if err != nil {
 		return err
