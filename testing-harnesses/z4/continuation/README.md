@@ -9,8 +9,10 @@ implementation or verification prerequisites.
   lower peak RSS. Concurrent migration and the full T1 gate are in progress.
 - PR #121 merged matcher research evidence. Both variants reconstructed exact bytes,
   with performance regressions on several inputs. Item 4 remains incomplete.
-- PR #122 holds the C2A contract and tested ZSR1 reader. Production index publication,
-  writing, maintenance and rebuild are pending.
+- PR #122 holds the C2A contract, ZSR1 reader and staged rebuild. Active-generation
+  publication and compatibility checks are under test. Incremental maintenance is pending.
+- PR #125 merged additional benchmark evidence. PRs #126 and #127 hold the range
+  and DEFLATE experiments.
 - PR #123 holds the tested T1 Git provenance failure control.
 - In a resumed workspace, start with the current GitHub main and the draft branches.
   If /workspace/work/zeros3 is present, reuse its existing logs and corpora. The
