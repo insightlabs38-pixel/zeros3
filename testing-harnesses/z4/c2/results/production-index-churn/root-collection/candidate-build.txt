@@ -1,0 +1,17 @@
+/workspace/work/zeros3/c2b-root-collection.MMgo5h/candidate: go1.27.4
+	path	zeros3
+	mod	zeros3	v0.1.2-0.20261120052253-1f65b62bbca3
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=1f65b62bbca3ef7683860104792dcf50dc3ac475
+	build	vcs.time=2026-11-20T05:22:53Z
+	build	vcs.modified=false

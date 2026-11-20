@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "profile": 1,
+  "store_id": "01a1f749-95c5-7ac8-be23-dc9f4c7f3fb9",
+  "generation": 1795153332292110483,
+  "journal_end": 28248385,
+  "journal_sequence": 53249,
+  "journal_sha256": "226693b113b604999a915a5bad17dcd72a3bdc75ad21c4a3fc9968eaf9ce00c0",
+  "snapshots_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "catalog_sha256": "3ccb9dcc9c198583066da87cd179983939a4f5ebe2d888016ba648d3121fb932",
+  "live_objects": 26624,
+  "tombstones": 0,
+  "objects": 26624,
+  "runs": [
+    {
+      "name": "run-1469246757.zsr",
+      "postings": 262144,
+      "sha256": "2c9d99a8d2a2fb1547c6c03ecdb17f9e40a4bbe0e6f3f8b806f0c795df4e6ea9"
+    },
+    {
+      "name": "run-2310821009.zsr",
+      "postings": 163840,
+      "sha256": "f7b0f028538c393edd383b1378baa8440e43ceaddea533ed4a2d4d1ffea7c4e5"
+    }
+  ],
+  "directory": "/workspace/work/zeros3/c2b-production-skew.dWsGlZ/store/similarity-index/generation-2476073414"
+}
