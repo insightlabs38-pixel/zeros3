@@ -1,0 +1,14 @@
+=== RUN   TestP8NestedRangeExperiment
+    zeros3_p8_range_experiment_test.go:46: CDC fixture retained 45014886 bytes
+=== RUN   TestP8NestedRangeExperiment/1048576
+    zeros3_p8_range_experiment_test.go:64: window=1048576 migrated=2 CPU=230.53 wall=770.46
+    zeros3_p8_range_experiment_test.go:67: window=1048576 retained=21901451
+    zeros3_p8_range_experiment_test.go:115: window=1048576 whole digests match, depth counts=map[0:1 1:1 2:1]
+=== RUN   TestP8NestedRangeExperiment/131072
+    zeros3_p8_range_experiment_test.go:64: window=131072 migrated=2 CPU=180.33 wall=154.98
+    zeros3_p8_range_experiment_test.go:67: window=131072 retained=22397038
+    zeros3_p8_range_experiment_test.go:115: window=131072 whole digests match, depth counts=map[0:1 1:1 2:1]
+--- PASS: TestP8NestedRangeExperiment (1574.59s)
+    --- PASS: TestP8NestedRangeExperiment/1048576 (1327.82s)
+    --- PASS: TestP8NestedRangeExperiment/131072 (179.79s)
+PASS

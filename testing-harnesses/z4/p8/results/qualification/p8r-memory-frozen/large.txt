@@ -1,0 +1,23 @@
+    zeros3_authority_test.go:2369: v0 put 6.940204977s
+    zeros3_authority_test.go:2369: v1 put 3.66553378s
+    zeros3_authority_test.go:2369: v2 put 3.889859497s
+--- PASS: TestAuthorityLargeFixture (14.51s)
+PASS
+1092951435	/workspace/work/zeros3/p8r-t1-scratch-procs4/large/store
+migrate rc=0 wall=51.59s rss=189112KB
+status rc=0 wall=0.02s rss=17584KB
+gc rc=0 wall=0.04s rss=22544KB
+repack rc=0 wall=0.03s rss=21712KB
+compact rc=0 wall=0.05s rss=24740KB
+gc rc=0 wall=0.03s rss=22112KB
+1080907913	/workspace/work/zeros3/p8r-t1-scratch-procs4/large/store
+    zeros3_authority_test.go:2427: v0 exact 1073741824 bytes at 402 MiB/s, peak RSS so far 45 MiB
+    zeros3_authority_test.go:2427: v1 exact 1073741824 bytes at 307 MiB/s, peak RSS so far 57 MiB
+    zeros3_authority_test.go:2427: v2 exact 1073741824 bytes at 236 MiB/s, peak RSS so far 66 MiB
+    zeros3_authority_test.go:2440: 64 random 4 KiB ranges of v1: 5.100278ms each
+--- PASS: TestAuthorityLargeCheck (14.94s)
+PASS
+verify rc=0 wall=10.80s rss=60744KB
+integrity        0 missing | 0 corrupt | 0 invalid
+reclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes
+result           OK

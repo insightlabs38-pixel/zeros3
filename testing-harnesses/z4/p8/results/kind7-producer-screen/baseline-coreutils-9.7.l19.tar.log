@@ -1,0 +1,5 @@
+=== RUN   TestP8Rep
+    zeros3_p8_test.go:218: {"alloc_mib":373.9232864379883,"build_s":11.911495915,"bytes":6732207,"cpu_s":6.092254,"err":"representation: unsupported version or kind: codec description costs 7451045 bytes","file":"coreutils-9.7.l19.tar.zst","mibps":0.5390030735388428,"p8":"rep","rep":0,"rep_phys":0,"rss_mib":224.0703125}
+    zeros3_p8_test.go:218: {"alloc_mib":369.64620208740234,"build_s":7.049289284,"bytes":6732207,"cpu_s":4.335458,"err":"representation: unsupported version or kind: codec description costs 7451045 bytes","file":"coreutils-9.7.l19.tar.zst","mibps":0.9107773351283523,"p8":"rep","rep":1,"rep_phys":0,"rss_mib":224.9921875}
+--- PASS: TestP8Rep (19.35s)
+PASS

@@ -116,11 +116,11 @@ import (
 //    25840    Portable snapshot bundles (`zeros3 bundle`)
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44750    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49268    Windowed and estimated similarity deltas (extracted dcore)
-//    50790    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58430    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64702    CLI dispatch, HTTP server/startup, and main
+//    44744    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    49266    Windowed and estimated similarity deltas (extracted dcore)
+//    50795    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58435    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64707    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -36433,8 +36433,7 @@ type repIRwindow struct {
 	plain     []byte
 	base, end int // window covers [base, end); candidates are searched at positions in [start, end)
 	prof      *repIRProfile
-	head      [1 << 16]repIRhentry // generation-tagged: stale entries of earlier units read as empty
-	gen       uint32
+	head      [1 << 16]int32
 	prev      [32768]int32
 	inserted  int // next position to insert
 	work      int64
@@ -36444,23 +36443,10 @@ type repIRwindow struct {
 }
 
 // Port source: zeros3-z3/ir/predict.go
-type repIRhentry struct {
-	pos int32
-	gen uint32
-}
+func (w *repIRwindow) headGet(h uint32) int32 { return w.head[h] }
 
-// Port source: zeros3-z3/ir/predict.go
-func (w *repIRwindow) headGet(h uint32) int32 {
-	if e := w.head[h]; e.gen == w.gen {
-		return e.pos
-	}
-	return 0
-}
+func (w *repIRwindow) headSet(h uint32, v int32) { w.head[h] = v }
 
-// Port source: zeros3-z3/ir/predict.go
-func (w *repIRwindow) headSet(h uint32, v int32) { w.head[h] = repIRhentry{v, w.gen} }
-
-// Port source: zeros3-z3/ir/predict.go
 var repIRwindowPool = sync.Pool{New: func() any { return &repIRwindow{} }}
 
 // Port source: zeros3-z3/ir/predict.go
@@ -36491,11 +36477,8 @@ func repIRhashAt(b []byte, q, n int) uint32 {
 // Port source: zeros3-z3/ir/predict.go
 func repIRnewWindow(plain []byte, start, plainLen int, prof *repIRProfile) *repIRwindow {
 	w := repIRwindowPool.Get().(*repIRwindow)
-	w.gen++
-	if w.gen == 0 { // wrapped: stale tags could match again
-		w.head = [1 << 16]repIRhentry{}
-		w.gen = 1
-	}
+	// Every new unit starts with empty heads; stale previous links are unreachable.
+	clear(w.head[:])
 	w.plain, w.prof, w.end, w.work, w.nextEvict = plain, prof, start+plainLen, 0, 0
 	w.ent[0].valid, w.ent[1].valid = false, false
 	w.base = max(0, start-32768)
@@ -36648,18 +36631,29 @@ func (w *repIRwindow) search(pos, capLen int) ([]repIRcand, int, bool) {
 // matchLen returns how many bytes of p[q:] and p[pos:] agree, at most max
 // (q < pos, pos+max <= len(p)).
 func repIRmatchLen(p []byte, q, pos, max int) int {
-	l := 0
-	for l+8 <= max {
-		x := binary.LittleEndian.Uint64(p[q+l:]) ^ binary.LittleEndian.Uint64(p[pos+l:])
+	a, b := p[q:q+max], p[pos:pos+max]
+	i := 0
+	for ; i+16 <= max; i += 16 {
+		x := binary.LittleEndian.Uint64(a[i:i+8]) ^ binary.LittleEndian.Uint64(b[i:i+8])
 		if x != 0 {
-			return l + bits.TrailingZeros64(x)>>3
+			return i + bits.TrailingZeros64(x)/8
 		}
-		l += 8
+		x = binary.LittleEndian.Uint64(a[i+8:i+16]) ^ binary.LittleEndian.Uint64(b[i+8:i+16])
+		if x != 0 {
+			return i + 8 + bits.TrailingZeros64(x)/8
+		}
 	}
-	for l < max && p[q+l] == p[pos+l] {
-		l++
+	if i+8 <= max {
+		x := binary.LittleEndian.Uint64(a[i:i+8]) ^ binary.LittleEndian.Uint64(b[i:i+8])
+		if x != 0 {
+			return i + bits.TrailingZeros64(x)/8
+		}
+		i += 8
 	}
-	return l
+	for i < max && a[i] == b[i] {
+		i++
+	}
+	return i
 }
 
 // Port source: zeros3-z3/ir/predict.go
@@ -47345,38 +47339,42 @@ type authIdxEnt struct {
 	once sync.Once
 	x    *dwDcoreIndex
 	err  error
+	cost int64
 }
 
 const authIdxCacheBytes = 48 << 20
 
-// get returns the index of the base b (identified by its content SHA-256), building it on first use.
+// get shares in-flight builds. Only completed, retained entries join the eviction list.
 func (c *authIdxCache) get(sha [32]byte, b []byte, p dwDcoreParams) (*dwDcoreIndex, error) {
 	c.mu.Lock()
 	e := c.m[sha]
 	if e == nil {
 		e = &authIdxEnt{}
 		c.m[sha] = e
-		c.order = append(c.order, sha)
 	}
 	c.mu.Unlock()
 	e.once.Do(func() {
-		e.x, e.err = dwDcoreBuildIndex([][]byte{b}, p)
-		if e.err != nil {
+		x, err := dwDcoreBuildIndex([][]byte{b}, p)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		e.x, e.err = x, err
+		if err != nil {
+			delete(c.m, sha)
 			return
 		}
-		c.mu.Lock()
-		c.used += int64(len(e.x.table)) * 8
-		for c.used > c.budget && len(c.order) > 1 {
+		e.cost = int64(len(x.table))*8 + int64(cap(b))
+		if e.cost > c.budget {
+			delete(c.m, sha)
+			return
+		}
+		for c.used+e.cost > c.budget {
 			old := c.order[0]
 			c.order = c.order[1:]
-			if o := c.m[old]; o != nil && o != e {
-				if o.x != nil {
-					c.used -= int64(len(o.x.table)) * 8
-				}
-				delete(c.m, old)
-			}
+			c.used -= c.m[old].cost
+			delete(c.m, old)
 		}
-		c.mu.Unlock()
+		c.order = append(c.order, sha)
+		c.used += e.cost
 	})
 	return e.x, e.err
 }
@@ -50771,7 +50769,14 @@ func (w *dwDcoreWRecord) DecodeRangeInto(out []byte, scratch *[]byte, v *dwDcore
 			hi = m
 		}
 	}
-	if int64(cap(*scratch)) < w.maxWindow {
+	if lo < len(w.frames) && w.tstart[lo] == off && w.frames[lo].tlen == n {
+		out = slices.Grow(out, int(n))[:n]
+		if err := w.decodeFrame(lo, v, out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	if n > 0 && int64(cap(*scratch)) < w.maxWindow {
 		*scratch = make([]byte, w.maxWindow)
 	}
 	for i := lo; i < len(w.frames) && int64(len(out)) < n; i++ {

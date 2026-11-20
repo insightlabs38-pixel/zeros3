@@ -112,8 +112,7 @@ type window struct {
 	plain     []byte
 	base, end int // window covers [base, end); candidates are searched at positions in [start, end)
 	prof      *Profile
-	head      [1 << 16]hentry // generation-tagged: stale entries of earlier units read as empty
-	gen       uint32
+	head      [1 << 16]int32
 	prev      [32768]int32
 	inserted  int // next position to insert
 	work      int64
@@ -122,19 +121,9 @@ type window struct {
 	nextEvict int
 }
 
-type hentry struct {
-	pos int32
-	gen uint32
-}
+func (w *window) headGet(h uint32) int32 { return w.head[h] }
 
-func (w *window) headGet(h uint32) int32 {
-	if e := w.head[h]; e.gen == w.gen {
-		return e.pos
-	}
-	return 0
-}
-
-func (w *window) headSet(h uint32, v int32) { w.head[h] = hentry{v, w.gen} }
+func (w *window) headSet(h uint32, v int32) { w.head[h] = v }
 
 var windowPool = sync.Pool{New: func() any { return &window{} }}
 
@@ -161,11 +150,8 @@ func hashAt(b []byte, q, n int) uint32 {
 
 func newWindow(plain []byte, start, plainLen int, prof *Profile) *window {
 	w := windowPool.Get().(*window)
-	w.gen++
-	if w.gen == 0 { // wrapped: stale tags could match again
-		w.head = [1 << 16]hentry{}
-		w.gen = 1
-	}
+	// Every new unit starts with empty heads; stale previous links are unreachable.
+	clear(w.head[:])
 	w.plain, w.prof, w.end, w.work, w.nextEvict = plain, prof, start+plainLen, 0, 0
 	w.ent[0].valid, w.ent[1].valid = false, false
 	w.base = max(0, start-32768)
@@ -313,18 +299,29 @@ func (w *window) search(pos, capLen int) ([]cand, int, bool) {
 // matchLen returns how many bytes of p[q:] and p[pos:] agree, at most max
 // (q < pos, pos+max <= len(p)).
 func matchLen(p []byte, q, pos, max int) int {
-	l := 0
-	for l+8 <= max {
-		x := binary.LittleEndian.Uint64(p[q+l:]) ^ binary.LittleEndian.Uint64(p[pos+l:])
+	a, b := p[q:q+max], p[pos:pos+max]
+	i := 0
+	for ; i+16 <= max; i += 16 {
+		x := binary.LittleEndian.Uint64(a[i:i+8]) ^ binary.LittleEndian.Uint64(b[i:i+8])
 		if x != 0 {
-			return l + bits.TrailingZeros64(x)>>3
+			return i + bits.TrailingZeros64(x)/8
 		}
-		l += 8
+		x = binary.LittleEndian.Uint64(a[i+8:i+16]) ^ binary.LittleEndian.Uint64(b[i+8:i+16])
+		if x != 0 {
+			return i + 8 + bits.TrailingZeros64(x)/8
+		}
 	}
-	for l < max && p[q+l] == p[pos+l] {
-		l++
+	if i+8 <= max {
+		x := binary.LittleEndian.Uint64(a[i:i+8]) ^ binary.LittleEndian.Uint64(b[i:i+8])
+		if x != 0 {
+			return i + bits.TrailingZeros64(x)/8
+		}
+		i += 8
 	}
-	return l
+	for i < max && a[i] == b[i] {
+		i++
+	}
+	return i
 }
 
 func lengthCode(l int) (sym int, extra uint32) {
