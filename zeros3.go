@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50655    Windowed and estimated similarity deltas (extracted dcore)
-//    52177    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59822    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66094    CLI dispatch, HTTP server/startup, and main
+//    50670    Windowed and estimated similarity deltas (extracted dcore)
+//    52192    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59837    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66109    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46799,6 +46799,9 @@ func (p AuthPolicy) norm() AuthPolicy {
 		p.MaxDepth = 2
 	}
 	p.MaxDepth = min(p.MaxDepth, authHardDepth)
+	if limits, ok := authTierLimits[p.Tier]; ok && !p.NoReadCost {
+		p.MaxDepth = min(p.MaxDepth, limits.Depth)
+	}
 	if p.MaxBases <= 0 {
 		p.MaxBases = 2
 	}
@@ -50120,19 +50123,23 @@ func (s *Store) readAuthSimilarityStage(name string) (authSimilarityStageReport,
 	if err != nil {
 		return report, err
 	}
+	return report, s.checkAuthSimilarityFence(report)
+}
+
+func (s *Store) checkAuthSimilarityFence(report authSimilarityStageReport) error {
 	want, _, err := s.authSimilarityFence()
 	if err != nil {
-		return report, err
+		return err
 	}
 	if report.StoreID != want.StoreID || report.JournalEnd != want.JournalEnd ||
 		report.JournalSeq != want.JournalSeq || report.JournalSHA != want.JournalSHA ||
 		report.SnapshotSHA != want.SnapshotSHA {
-		return report, errAuthSimilarityStale
+		return errAuthSimilarityStale
 	}
-	return report, nil
+	return nil
 }
 
-func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageReport, error) {
+func (s *Store) readAuthSimilarityManifest(name string) (authSimilarityStageReport, error) {
 	var report authSimilarityStageReport
 	if !strings.HasPrefix(name, "generation-") || filepath.Base(name) != name {
 		return report, errors.New("invalid similarity generation name")
@@ -50168,7 +50175,27 @@ func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageRe
 	if len(report.Runs) > authSimilarityMaxRuns {
 		return report, errAuthSimilarityNeedsRebuild
 	}
-	catalog, err := os.Open(filepath.Join(dir, "catalog.zsc"))
+	if err := readAuthSimilarityTombstones(dir, &report); err != nil {
+		return report, err
+	}
+	seen := make(map[string]bool, len(report.Runs))
+	for _, desc := range report.Runs {
+		if !strings.HasSuffix(desc.Name, ".zsr") || filepath.Base(desc.Name) != desc.Name || seen[desc.Name] {
+			return report, errors.New("invalid or repeated similarity run name")
+		}
+		seen[desc.Name] = true
+	}
+	report.CandidateIDs = nil
+	report.Directory = dir
+	return report, nil
+}
+
+func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageReport, error) {
+	report, err := s.readAuthSimilarityManifest(name)
+	if err != nil {
+		return report, err
+	}
+	catalog, err := os.Open(filepath.Join(report.Directory, "catalog.zsc"))
 	if err != nil {
 		return report, err
 	}
@@ -50179,21 +50206,16 @@ func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageRe
 	if err := catalog.Close(); err != nil {
 		return report, err
 	}
-	if err := readAuthSimilarityTombstones(dir, &report); err != nil {
-		return report, err
-	}
-	seen := make(map[string]bool, len(report.Runs))
 	for _, desc := range report.Runs {
-		if !strings.HasSuffix(desc.Name, ".zsr") || filepath.Base(desc.Name) != desc.Name || seen[desc.Name] {
-			return report, errors.New("invalid or repeated similarity run name")
+		f, err := os.Open(filepath.Join(report.Directory, desc.Name))
+		if err != nil {
+			return report, err
 		}
-		seen[desc.Name] = true
-		if err := verifyAuthSimilarityStageRun(filepath.Join(dir, desc.Name), report.Generation, report.Objects, desc); err != nil {
+		_, err = openVerifiedAuthSimilarityRun(f, report, desc)
+		if err := errors.Join(err, f.Close()); err != nil {
 			return report, err
 		}
 	}
-	report.CandidateIDs = nil
-	report.Directory = dir
 	return report, nil
 }
 
@@ -50229,27 +50251,23 @@ func verifyAuthSimilarityCatalog(f *os.File, report authSimilarityStageReport) e
 	return nil
 }
 
-func verifyAuthSimilarityStageRun(path string, generation uint64, objects uint32, desc authSimilarityStageRun) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+func openVerifiedAuthSimilarityRun(f *os.File, report authSimilarityStageReport, desc authSimilarityStageRun) (*authSimilarityRun, error) {
 	st, err := f.Stat()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !st.Mode().IsRegular() {
-		return fmt.Errorf("similarity run %s must be a regular file", desc.Name)
+		return nil, fmt.Errorf("similarity run %s must be a regular file", desc.Name)
 	}
 	run, err := openAuthSimilarityRun(f, st.Size())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if run.generation != generation || run.count != desc.Postings || run.highestID > objects || hex.EncodeToString(run.digest[:]) != desc.SHA256 {
-		return fmt.Errorf("similarity run %s differs from the generation manifest", desc.Name)
+	if run.generation != report.Generation || run.count != desc.Postings ||
+		run.highestID > report.Objects || hex.EncodeToString(run.digest[:]) != desc.SHA256 {
+		return nil, fmt.Errorf("similarity run %s differs from the generation manifest", desc.Name)
 	}
-	return nil
+	return run, nil
 }
 
 func (s *Store) publishAuthSimilarityStage(name string) error {
@@ -50359,6 +50377,21 @@ type authSimilarityQuery struct {
 	failed  bool
 }
 
+func (s *Store) openCurrentAuthSimilarityQuery() (*authSimilarityQuery, error) {
+	name, err := s.authSimilarityCurrentName()
+	if err != nil {
+		return nil, err
+	}
+	report, err := s.readAuthSimilarityManifest(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkAuthSimilarityFence(report); err != nil {
+		return nil, err
+	}
+	return openAuthSimilarityQuery(report)
+}
+
 func openAuthSimilarityQuery(report authSimilarityStageReport) (*authSimilarityQuery, error) {
 	catalog, err := os.Open(filepath.Join(report.Directory, "catalog.zsc"))
 	if err != nil {
@@ -50380,20 +50413,9 @@ func openAuthSimilarityQuery(report authSimilarityStageReport) (*authSimilarityQ
 			return nil, err
 		}
 		q.files = append(q.files, f)
-		st, err := f.Stat()
+		run, err := openVerifiedAuthSimilarityRun(f, report, desc)
 		if err != nil {
 			return nil, err
-		}
-		if !st.Mode().IsRegular() {
-			return nil, errAuthSimilarityRun
-		}
-		run, err := openAuthSimilarityRun(f, st.Size())
-		if err != nil {
-			return nil, err
-		}
-		if run.generation != report.Generation || run.count != desc.Postings ||
-			run.highestID > report.Objects || hex.EncodeToString(run.digest[:]) != desc.SHA256 {
-			return nil, errAuthSimilarityRun
 		}
 		q.runs = append(q.runs, run)
 	}
@@ -50449,15 +50471,6 @@ func (q *authSimilarityQuery) postings(feature uint64) ([]uint32, error) {
 		_, retired := slices.BinarySearch(q.report.retired, id)
 		return retired
 	}), nil
-}
-
-func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]uint32, error) {
-	q, err := openAuthSimilarityQuery(report)
-	if err != nil {
-		return nil, err
-	}
-	defer q.close()
-	return q.postings(feature)
 }
 
 // runAuthority implements the authority maintenance commands.
@@ -50576,19 +50589,24 @@ func runAuthority(args []string) {
 			log.Fatalf("zeros3: authority index-inspect: %v", err)
 		}
 	case "index-status":
-		report, err := store.readAuthSimilarityCurrent()
+		var report authSimilarityStageReport
+		if *indexFeature == "" {
+			report, err = store.readAuthSimilarityCurrent()
+		} else {
+			var feature uint64
+			feature, err = strconv.ParseUint(*indexFeature, 0, 64)
+			if err == nil {
+				var query *authSimilarityQuery
+				query, err = store.openCurrentAuthSimilarityQuery()
+				if err == nil {
+					defer query.close()
+					report = query.report
+					report.CandidateIDs, err = query.postings(feature)
+				}
+			}
+		}
 		if err != nil {
 			log.Fatalf("zeros3: authority index-status: %v", err)
-		}
-		if *indexFeature != "" {
-			feature, err := strconv.ParseUint(*indexFeature, 0, 64)
-			if err != nil {
-				log.Fatalf("zeros3: authority index-status: %v", err)
-			}
-			report.CandidateIDs, err = similarityPostingIDs(report, feature)
-			if err != nil {
-				log.Fatalf("zeros3: authority index-status: %v", err)
-			}
 		}
 		if err := enc.Encode(report); err != nil {
 			log.Fatalf("zeros3: authority index-status: %v", err)
@@ -50598,10 +50616,7 @@ func runAuthority(args []string) {
 		defer stop()
 		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost}
 		if *indexedDiscovery && pol.AllowDelta {
-			report, err := store.readAuthSimilarityCurrent()
-			if err == nil {
-				pol.similarity, err = openAuthSimilarityQuery(report)
-			}
+			pol.similarity, err = store.openCurrentAuthSimilarityQuery()
 			if err != nil {
 				log.Printf("zeros3: similarity discovery using existing candidates: %v", err)
 			} else {

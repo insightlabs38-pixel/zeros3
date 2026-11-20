@@ -347,6 +347,10 @@ func TestAuthoritySimilarityRefresh(t *testing.T) {
 	if _, err := s.readAuthSimilarityCurrent(); err == nil {
 		t.Fatal("corrupt inherited run was accepted")
 	}
+	if q, err := s.openCurrentAuthSimilarityQuery(); err == nil {
+		q.close()
+		t.Fatal("corrupt inherited run was opened for migration queries")
+	}
 	repaired, err := s.refreshAuthSimilarityStage()
 	if err != nil || repaired.Objects != 1 || repaired.Generation == rebuilt.Generation {
 		t.Fatalf("failed to rebuild damaged derived state: %+v %v", repaired, err)
@@ -805,11 +809,7 @@ func TestAuthoritySimilarityIndexedCandidatesScopeAndFallback(t *testing.T) {
 	if err := s.publishAuthSimilarityStage(filepath.Base(report.Directory)); err != nil {
 		t.Fatal(err)
 	}
-	report, err = s.readAuthSimilarityCurrent()
-	if err != nil {
-		t.Fatal(err)
-	}
-	q, err := openAuthSimilarityQuery(report)
+	q, err := s.openCurrentAuthSimilarityQuery()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,4 +897,13 @@ func TestAuthoritySimilarityIndexInventory(t *testing.T) {
 	if err != nil || !bytes.Equal(got, body) {
 		t.Fatalf("index inspection changed the object: %v", err)
 	}
+}
+
+func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]uint32, error) {
+	q, err := openAuthSimilarityQuery(report)
+	if err != nil {
+		return nil, err
+	}
+	defer q.close()
+	return q.postings(feature)
 }

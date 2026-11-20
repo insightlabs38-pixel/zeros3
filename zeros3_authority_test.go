@@ -2253,6 +2253,23 @@ func TestAuthorityRevertAllLowersFloorAndOldBinaryReopens(t *testing.T) {
 	l.close()
 }
 
+func TestAuthorityTierDepthFiltersBeforeEncoding(t *testing.T) {
+	const feature = 100
+	m := &authMigrator{
+		pol:   AuthPolicy{Tier: "hot", MaxDepth: 4}.norm(),
+		order: []*authObj{{}, {}, {}},
+		index: map[uint64][]int{feature: {0, 1}},
+		depth: map[int]int{0: 0, 1: 1},
+	}
+	if got := m.candidates(2, []uint64{feature}, true); !slices.Equal(got, []int{0}) {
+		t.Fatalf("hot tier considered a base deeper than its known limit: %v", got)
+	}
+	m.pol = AuthPolicy{Tier: "hot", NoReadCost: true, MaxDepth: 4}.norm()
+	if got := m.candidates(2, []uint64{feature}, true); !slices.Equal(got, []int{1, 0}) {
+		t.Fatalf("read-cost override did not retain both bases: %v", got)
+	}
+}
+
 func TestAuthorityMigrationCancellationBeforePublication(t *testing.T) {
 	for _, cut := range []string{hookAuthComponentsFlushed, hookAuthProofDone} {
 		t.Run(cut, func(t *testing.T) {
