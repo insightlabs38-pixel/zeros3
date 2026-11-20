@@ -1,0 +1,3503 @@
+{
+  "admission": {
+    "AddedBytes": 11517624,
+    "Admitted": 1,
+    "CDCBytes": 179853464,
+    "CacheHits": 3,
+    "CacheMisses": 16,
+    "DecodedBytes": 331663076,
+    "KeptCDC": 8,
+    "Objects": 9,
+    "Pinned": 0,
+    "PlanReuse": 0,
+    "Plans": [
+      {
+        "added_bytes": 0,
+        "cdc_unshared_bytes": 17262493,
+        "depth": 0,
+        "form": "cdc",
+        "reason": "no similar base",
+        "saving": 0,
+        "sha256": "d71f1075012c8fd1fb30be24dac9b91b973dfff6bb6574d0a3b4f3f8de960355",
+        "size": 61214720
+      },
+      {
+        "added_bytes": 4337833,
+        "bases": [
+          "d71f1075012c"
+        ],
+        "cdc_amp_4k": 144489.9787557006,
+        "cdc_unshared_bytes": 16786076,
+        "depth": 1,
+        "form": "cdc",
+        "read_amp_4k": 9566051.5,
+        "read_cost": {
+          "amp_4k": 9566051.5,
+          "depth": 1,
+          "peak_mem_mib": 8,
+          "ratio_vs_cdc": 0.03896384504266494,
+          "replay": "plain",
+          "replay_mib_s": 12.768476744865103
+        },
+        "read_ratio": 0.03896384504266494,
+        "reason": "cold tier: 4 KiB amplification 66.2x CDC exceeds 16.0x",
+        "saving": 0.7415814750272786,
+        "sha256": "c4b9b4ca3fdc0e3baa7905ec41f6a465ab3f4188b47f195264eb48dde283bc21",
+        "size": 62730240
+      },
+      {
+        "added_bytes": 2262593,
+        "bases": [
+          "c4b9b4ca3fdc"
+        ],
+        "cdc_amp_4k": 151872.32768389813,
+        "cdc_unshared_bytes": 16929094,
+        "depth": 1,
+        "form": "cdc",
+        "read_amp_4k": 8302080.75,
+        "read_cost": {
+          "amp_4k": 8302080.75,
+          "depth": 1,
+          "peak_mem_mib": 8,
+          "ratio_vs_cdc": 0.028869660048399155,
+          "replay": "plain",
+          "replay_mib_s": 21.198757515383516
+        },
+        "read_ratio": 0.028869660048399155,
+        "reason": "cold tier: 4 KiB amplification 54.7x CDC exceeds 16.0x",
+        "saving": 0.866348843003648,
+        "sha256": "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924",
+        "size": 63078400
+      },
+      {
+        "added_bytes": 0,
+        "cdc_unshared_bytes": 14750134,
+        "depth": 0,
+        "form": "cdc",
+        "reason": "no admissible exact representation",
+        "saving": 0,
+        "sha256": "767ae6a22950ec42f3ba5f7c1de79dd27800ee8e9b8642da5dedb5974a1741e5",
+        "size": 14750134
+      },
+      {
+        "added_bytes": 0,
+        "cdc_unshared_bytes": 14849488,
+        "depth": 0,
+        "form": "cdc",
+        "reason": "no admissible exact representation",
+        "saving": 0,
+        "sha256": "2bec616375002c92c1ed5ead32a092b174fe44c14bc736d32e5961053b821d84",
+        "size": 15027461
+      },
+      {
+        "added_bytes": 11517624,
+        "bases": [
+          "2bec61637500"
+        ],
+        "cdc_amp_4k": 84962.63466587749,
+        "cdc_unshared_bytes": 14873880,
+        "depth": 1,
+        "form": "delta",
+        "read_amp_4k": 247234.375,
+        "read_cost": {
+          "amp_4k": 247234.375,
+          "depth": 1,
+          "peak_mem_mib": 8,
+          "ratio_vs_cdc": 0.1055846204606413,
+          "replay": "plain",
+          "replay_mib_s": 35.95035997030211
+        },
+        "read_ratio": 0.1055846204606413,
+        "saving": 0.2256476454025446,
+        "sha256": "0898a90191c828e337d5e4e4feb71f8ebb75aacac32c434daf5424cda16acb42",
+        "size": 15107617
+      },
+      {
+        "added_bytes": 0,
+        "cdc_unshared_bytes": 28133948,
+        "depth": 0,
+        "form": "cdc",
+        "reason": "no admissible exact representation",
+        "saving": 0,
+        "sha256": "d42411e70b4110bb69bc4301af75f25efbdf4b2278b2235bfe1d3d567b33bb59",
+        "size": 28143920
+      },
+      {
+        "added_bytes": 17728609,
+        "bases": [
+          "d42411e70b41"
+        ],
+        "cdc_amp_4k": 90915.35726110649,
+        "cdc_unshared_bytes": 28135684,
+        "depth": 1,
+        "form": "cdc",
+        "read_amp_4k": 7282288.25,
+        "read_cost": {
+          "amp_4k": 7282288.25,
+          "depth": 1,
+          "peak_mem_mib": 60,
+          "ratio_vs_cdc": 0.045103012436985765,
+          "replay": "zn7",
+          "replay_mib_s": 17.899996624154937
+        },
+        "read_ratio": 0.045103012436985765,
+        "reason": "cold tier: 4 KiB amplification 80.1x CDC exceeds 16.0x",
+        "saving": 0.3698888216117298,
+        "sha256": "ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2",
+        "size": 28143920
+      },
+      {
+        "added_bytes": 17657264,
+        "bases": [
+          "ffa0ce742b32",
+          "d42411e70b41"
+        ],
+        "cdc_amp_4k": 87685.68818323816,
+        "cdc_unshared_bytes": 28132667,
+        "depth": 1,
+        "form": "cdc",
+        "read_amp_4k": 6869676.75,
+        "read_cost": {
+          "amp_4k": 6869676.75,
+          "depth": 1,
+          "peak_mem_mib": 60,
+          "ratio_vs_cdc": 0.02754106781362867,
+          "replay": "zn7",
+          "replay_mib_s": 22.20881342855355
+        },
+        "read_ratio": 0.02754106781362867,
+        "reason": "cold tier: 4 KiB amplification 78.3x CDC exceeds 16.0x",
+        "saving": 0.37235726708740413,
+        "sha256": "2d08d671493b4397dfc6bee89afd1f55fc154aba406f56d39b1dc53eb8475cc2",
+        "size": 28143920
+      }
+    ],
+    "RepNotBuilt": 0,
+    "Seconds": 112.579638435
+  },
+  "fixture": [
+    {
+      "family": "coreutils-tar",
+      "key": "coreutils-tar/revision-0",
+      "ordinal": 0,
+      "sha256": "d71f1075012c8fd1fb30be24dac9b91b973dfff6bb6574d0a3b4f3f8de960355",
+      "size": 61214720,
+      "source": "coreutils-9.5.tar"
+    },
+    {
+      "family": "coreutils-tar",
+      "key": "coreutils-tar/revision-1",
+      "ordinal": 1,
+      "sha256": "c4b9b4ca3fdc0e3baa7905ec41f6a465ab3f4188b47f195264eb48dde283bc21",
+      "size": 62730240,
+      "source": "coreutils-9.6.tar"
+    },
+    {
+      "family": "coreutils-tar",
+      "key": "coreutils-tar/revision-2",
+      "ordinal": 2,
+      "sha256": "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924",
+      "size": 63078400,
+      "source": "coreutils-9.7.tar"
+    },
+    {
+      "family": "coreutils-gzip",
+      "key": "coreutils-gzip/revision-0",
+      "ordinal": 0,
+      "sha256": "767ae6a22950ec42f3ba5f7c1de79dd27800ee8e9b8642da5dedb5974a1741e5",
+      "size": 14750134,
+      "source": "coreutils-9.5.tar.gz"
+    },
+    {
+      "family": "coreutils-gzip",
+      "key": "coreutils-gzip/revision-1",
+      "ordinal": 1,
+      "sha256": "2bec616375002c92c1ed5ead32a092b174fe44c14bc736d32e5961053b821d84",
+      "size": 15027461,
+      "source": "coreutils-9.6.tar.gz"
+    },
+    {
+      "family": "coreutils-gzip",
+      "key": "coreutils-gzip/revision-2",
+      "ordinal": 2,
+      "sha256": "0898a90191c828e337d5e4e4feb71f8ebb75aacac32c434daf5424cda16acb42",
+      "size": 15107617,
+      "source": "coreutils-9.7.tar.gz"
+    },
+    {
+      "family": "pythia",
+      "key": "pythia/revision-0",
+      "ordinal": 0,
+      "sha256": "d42411e70b4110bb69bc4301af75f25efbdf4b2278b2235bfe1d3d567b33bb59",
+      "size": 28143920,
+      "source": "step100000.safetensors"
+    },
+    {
+      "family": "pythia",
+      "key": "pythia/revision-1",
+      "ordinal": 1,
+      "sha256": "ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2",
+      "size": 28143920,
+      "source": "step101000.safetensors"
+    },
+    {
+      "family": "pythia",
+      "key": "pythia/revision-2",
+      "ordinal": 2,
+      "sha256": "2d08d671493b4397dfc6bee89afd1f55fc154aba406f56d39b1dc53eb8475cc2",
+      "size": 28143920,
+      "source": "step102000.safetensors"
+    }
+  ],
+  "go": "go1.27.4 linux/amd64",
+  "identity": {
+    "binary_sha256": "24dd66711b85cb6f3614d6aab8db328068804af2c2acfd5c2d6c3717c89a939e",
+    "harness_sha256": "d744d84bb247e728e5984887e1b88e13d75f6405aebb90c78d3248c59d18f03f"
+  },
+  "long_observation": "PENDING 30-DAY RUN",
+  "maintenance": {
+    "cdc": {
+      "gc": {
+        "allocated_after": 309280768,
+        "allocated_before": 309280768,
+        "allocated_peak_sampled": 309280768,
+        "command": [
+          "gc",
+          "-apply",
+          "-json"
+        ],
+        "cpu_s": 0.024739999999999998,
+        "exit": 0,
+        "free_min_sampled": 23303958528,
+        "max_rss_kib": 16572,
+        "wall_s": 0.257143854003516
+      },
+      "repack": {
+        "allocated_after": 174579712,
+        "allocated_before": 309280768,
+        "allocated_peak_sampled": 483774464,
+        "command": [
+          "repack",
+          "-apply",
+          "-recompress",
+          "-json"
+        ],
+        "cpu_s": 8.796477,
+        "exit": 0,
+        "free_min_sampled": 22990692352,
+        "max_rss_kib": 46512,
+        "wall_s": 21.38513222199981
+      }
+    },
+    "cold": {
+      "gc": {
+        "allocated_after": 313724928,
+        "allocated_before": 550735872,
+        "allocated_peak_sampled": 550735872,
+        "command": [
+          "gc",
+          "-apply",
+          "-json"
+        ],
+        "cpu_s": 0.313736,
+        "exit": 0,
+        "free_min_sampled": 23043416064,
+        "max_rss_kib": 20468,
+        "wall_s": 0.6915421839948976
+      },
+      "repack": {
+        "allocated_after": 179015680,
+        "allocated_before": 313724928,
+        "allocated_peak_sampled": 473325568,
+        "command": [
+          "repack",
+          "-apply",
+          "-recompress",
+          "-json"
+        ],
+        "cpu_s": 8.226952,
+        "exit": 0,
+        "free_min_sampled": 23038173184,
+        "max_rss_kib": 48828,
+        "wall_s": 12.217566734005231
+      }
+    }
+  },
+  "merged_tree_commit": "0e8cd8a352eab4ad3f048c492e3abcfb2aaf73ca",
+  "migration": {
+    "allocated_after": 550735872,
+    "allocated_before": 309293056,
+    "allocated_peak_sampled": 550735872,
+    "command": [
+      "authority",
+      "migrate",
+      "-tier",
+      "cold",
+      "-apply",
+      "-workers",
+      "1"
+    ],
+    "cpu_s": 81.21863099999999,
+    "exit": 0,
+    "free_min_sampled": 22766465024,
+    "max_rss_kib": 208496,
+    "wall_s": 213.2954947440012
+  },
+  "samples": [
+    {
+      "allocated_bytes": {
+        "cdc": 174579712,
+        "cold": 179015680
+      },
+      "allocated_saving": -0.02540941297921262,
+      "errors": 0,
+      "extended_observation": "PENDING 30-DAY RUN",
+      "finish": "2026-11-20T23:28:55.513572+00:00",
+      "start": "2026-11-20T23:28:02.489094+00:00",
+      "stores": {
+        "cdc": {
+          "requests": [
+            {
+              "age_since_ingest_s": 265.992294,
+              "at": "2026-11-20T23:28:04.520013+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.139062,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.90512
+            },
+            {
+              "age_since_ingest_s": 267.027855,
+              "at": "2026-11-20T23:28:05.555574+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.066594,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.550453
+            },
+            {
+              "age_since_ingest_s": 267.71971,
+              "at": "2026-11-20T23:28:06.247429+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.004173,
+              "http": 206,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                61206528,
+                61210623
+              ],
+              "seconds": 0.004397
+            },
+            {
+              "age_since_ingest_s": 265.14514,
+              "at": "2026-11-20T23:28:06.292728+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.004008,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.911528
+            },
+            {
+              "age_since_ingest_s": 266.18254,
+              "at": "2026-11-20T23:28:07.330128+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.038148,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.748407
+            },
+            {
+              "age_since_ingest_s": 267.096967,
+              "at": "2026-11-20T23:28:08.244555+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003794,
+              "http": 206,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                62722048,
+                62726143
+              ],
+              "seconds": 0.003904
+            },
+            {
+              "age_since_ingest_s": 264.554452,
+              "at": "2026-11-20T23:28:08.298990+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.009094,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 1.003245
+            },
+            {
+              "age_since_ingest_s": 265.713054,
+              "at": "2026-11-20T23:28:09.457592+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.005476,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.859634
+            },
+            {
+              "age_since_ingest_s": 266.751258,
+              "at": "2026-11-20T23:28:10.495796+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001565,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001723
+            },
+            {
+              "age_since_ingest_s": 266.771458,
+              "at": "2026-11-20T23:28:10.515996+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001187,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001241
+            },
+            {
+              "age_since_ingest_s": 266.783273,
+              "at": "2026-11-20T23:28:10.527811+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001119,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001254
+            },
+            {
+              "age_since_ingest_s": 266.793007,
+              "at": "2026-11-20T23:28:10.537545+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.000845,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.000918
+            },
+            {
+              "age_since_ingest_s": 266.802735,
+              "at": "2026-11-20T23:28:10.547273+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003255,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.003344
+            },
+            {
+              "age_since_ingest_s": 266.859939,
+              "at": "2026-11-20T23:28:10.604477+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.00141,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001506
+            },
+            {
+              "age_since_ingest_s": 266.877711,
+              "at": "2026-11-20T23:28:10.622249+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001701,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001795
+            },
+            {
+              "age_since_ingest_s": 266.89539,
+              "at": "2026-11-20T23:28:10.639928+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001259,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001355
+            },
+            {
+              "age_since_ingest_s": 264.904526,
+              "at": "2026-11-20T23:28:10.653215+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.020907,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.102715
+            },
+            {
+              "age_since_ingest_s": 265.066552,
+              "at": "2026-11-20T23:28:10.815241+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.008982,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.071961
+            },
+            {
+              "age_since_ingest_s": 265.167033,
+              "at": "2026-11-20T23:28:10.915722+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001476,
+              "http": 206,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                14741942,
+                14746037
+              ],
+              "seconds": 0.001583
+            },
+            {
+              "age_since_ingest_s": 264.281552,
+              "at": "2026-11-20T23:28:10.929762+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.00808,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.107952
+            },
+            {
+              "age_since_ingest_s": 264.475989,
+              "at": "2026-11-20T23:28:11.124199+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.004658,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.059749
+            },
+            {
+              "age_since_ingest_s": 264.564231,
+              "at": "2026-11-20T23:28:11.212441+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001208,
+              "http": 206,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                15019269,
+                15023364
+              ],
+              "seconds": 0.001272
+            },
+            {
+              "age_since_ingest_s": 263.771869,
+              "at": "2026-11-20T23:28:11.225258+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.007566,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.105658
+            },
+            {
+              "age_since_ingest_s": 263.943363,
+              "at": "2026-11-20T23:28:11.396752+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.006054,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.032304
+            },
+            {
+              "age_since_ingest_s": 264.03934,
+              "at": "2026-11-20T23:28:11.492729+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001457,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001519
+            },
+            {
+              "age_since_ingest_s": 264.053347,
+              "at": "2026-11-20T23:28:11.506736+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002033,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.002204
+            },
+            {
+              "age_since_ingest_s": 264.068723,
+              "at": "2026-11-20T23:28:11.522112+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001141,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001206
+            },
+            {
+              "age_since_ingest_s": 264.081681,
+              "at": "2026-11-20T23:28:11.535070+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001617,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001683
+            },
+            {
+              "age_since_ingest_s": 264.097718,
+              "at": "2026-11-20T23:28:11.551107+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001314,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.00138
+            },
+            {
+              "age_since_ingest_s": 264.140464,
+              "at": "2026-11-20T23:28:11.593853+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001397,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001544
+            },
+            {
+              "age_since_ingest_s": 264.155046,
+              "at": "2026-11-20T23:28:11.608435+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.007037,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.007202
+            },
+            {
+              "age_since_ingest_s": 264.191943,
+              "at": "2026-11-20T23:28:11.645332+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001818,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001921
+            },
+            {
+              "age_since_ingest_s": 263.153473,
+              "at": "2026-11-20T23:28:11.686720+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.02205,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.098726
+            },
+            {
+              "age_since_ingest_s": 263.294565,
+              "at": "2026-11-20T23:28:11.827812+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.022596,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.144539
+            },
+            {
+              "age_since_ingest_s": 263.496523,
+              "at": "2026-11-20T23:28:12.029770+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.021392,
+              "http": 206,
+              "key": "pythia/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.021446
+            },
+            {
+              "age_since_ingest_s": 262.523165,
+              "at": "2026-11-20T23:28:12.119355+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.044306,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.375424
+            },
+            {
+              "age_since_ingest_s": 262.952946,
+              "at": "2026-11-20T23:28:12.549136+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.042014,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.144565
+            },
+            {
+              "age_since_ingest_s": 263.160054,
+              "at": "2026-11-20T23:28:12.756244+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002962,
+              "http": 206,
+              "key": "pythia/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.003036
+            },
+            {
+              "age_since_ingest_s": 261.873872,
+              "at": "2026-11-20T23:28:12.794843+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.01479,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.215733
+            },
+            {
+              "age_since_ingest_s": 262.13066,
+              "at": "2026-11-20T23:28:13.051631+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.006035,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.066125
+            },
+            {
+              "age_since_ingest_s": 262.301865,
+              "at": "2026-11-20T23:28:13.222836+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.00231,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.002418
+            },
+            {
+              "age_since_ingest_s": 262.317149,
+              "at": "2026-11-20T23:28:13.238120+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001458,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001523
+            },
+            {
+              "age_since_ingest_s": 262.330253,
+              "at": "2026-11-20T23:28:13.251224+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001392,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001962
+            },
+            {
+              "age_since_ingest_s": 262.380432,
+              "at": "2026-11-20T23:28:13.301403+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001696,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001792
+            },
+            {
+              "age_since_ingest_s": 262.39521,
+              "at": "2026-11-20T23:28:13.316181+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001403,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001534
+            },
+            {
+              "age_since_ingest_s": 262.409637,
+              "at": "2026-11-20T23:28:13.330608+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.00127,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001362
+            },
+            {
+              "age_since_ingest_s": 262.422106,
+              "at": "2026-11-20T23:28:13.343077+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.034047,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.034138
+            },
+            {
+              "age_since_ingest_s": 262.470838,
+              "at": "2026-11-20T23:28:13.391809+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001372,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001455
+            }
+          ],
+          "verify": {
+            "authorities_verified": 0,
+            "authority_bodies": 0,
+            "authority_orphan_bodies": 0,
+            "chunks_checked": 3600,
+            "corrupt": 0,
+            "current_root_count": 12,
+            "deep": true,
+            "historical_root_count": 6,
+            "invalid": 0,
+            "issues": null,
+            "journal_frames_checked": 19,
+            "journal_ok": true,
+            "manifests_checked": 18,
+            "missing": 0,
+            "multipart_root_count": 0,
+            "packs_checked": 5,
+            "reclaimable_bytes": 0,
+            "representation_orphan_roots": 0,
+            "representation_roots": 0,
+            "representations_verified": 0,
+            "snapshot_root_count": 0,
+            "unreachable_chunks": 0,
+            "unreachable_manifests": 0
+          },
+          "versions": {
+            "coreutils-gzip": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "8bffbaaf77490a55d45fd9b0d75f968a",
+                "size": 15107617,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-f210-7712-bc3d-1dbe327337b2"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "55c10cf92dff6a7bd96ddc824d18bb2f",
+                "size": 15027461,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:47.601381646Z",
+                "version_id": "01a1fb45-f211-7608-831f-a99d773241e4"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "c951425d8dd64a1422889153074e9a2a",
+                "size": 14750134,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:46.908594602Z",
+                "version_id": "01a1fb45-ef5c-796c-b25e-150c3a79200a"
+              }
+            ],
+            "coreutils-tar": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "931608e38fe4cf4b6472b55f31e85c24",
+                "size": 63078400,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-e734-7455-bf02-d433de1949d6"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "a6c66e64f01c3d4ba7e069cb06b698ae",
+                "size": 62730240,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:44.834507186Z",
+                "version_id": "01a1fb45-e742-7804-b5b1-2de85d409ed3"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "850f2e4b14166960160d33549bdb5a25",
+                "size": 61214720,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:42.023399144Z",
+                "version_id": "01a1fb45-dc47-764e-8312-6fef0a4c2fe3"
+              }
+            ],
+            "pythia": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "0001054b65c1e79bb3a7acea5d5ed550",
+                "size": 28143920,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb46-0117-7d60-adcc-ac324edcf7b8"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "64a7d1299501a894b9a38f32fe36dec6",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:51.491932782Z",
+                "version_id": "01a1fb46-0143-7ed9-8c88-c743196dd1f1"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "47c0e9babcf5e9be2ae1f447e483f71a",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:49.944195184Z",
+                "version_id": "01a1fb45-fb38-7309-b882-bbd21c7eade4"
+              }
+            ]
+          }
+        },
+        "cold": {
+          "requests": [
+            {
+              "age_since_ingest_s": 289.264608,
+              "at": "2026-11-20T23:28:27.792327+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.011617,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.931355
+            },
+            {
+              "age_since_ingest_s": 290.321959,
+              "at": "2026-11-20T23:28:28.849678+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.005,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 1.062729
+            },
+            {
+              "age_since_ingest_s": 291.582069,
+              "at": "2026-11-20T23:28:30.109788+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003115,
+              "http": 206,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                61206528,
+                61210623
+              ],
+              "seconds": 0.003241
+            },
+            {
+              "age_since_ingest_s": 288.987032,
+              "at": "2026-11-20T23:28:30.134620+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.005497,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.9475
+            },
+            {
+              "age_since_ingest_s": 290.046637,
+              "at": "2026-11-20T23:28:31.194225+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.007145,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 1.537266
+            },
+            {
+              "age_since_ingest_s": 291.751163,
+              "at": "2026-11-20T23:28:32.898751+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003042,
+              "http": 206,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                62722048,
+                62726143
+              ],
+              "seconds": 0.003421
+            },
+            {
+              "age_since_ingest_s": 289.184394,
+              "at": "2026-11-20T23:28:32.928932+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.004367,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.970338
+            },
+            {
+              "age_since_ingest_s": 290.271145,
+              "at": "2026-11-20T23:28:34.015683+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.004378,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.974248
+            },
+            {
+              "age_since_ingest_s": 291.353907,
+              "at": "2026-11-20T23:28:35.098445+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001759,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001911
+            },
+            {
+              "age_since_ingest_s": 291.375012,
+              "at": "2026-11-20T23:28:35.119550+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001297,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001361
+            },
+            {
+              "age_since_ingest_s": 291.387589,
+              "at": "2026-11-20T23:28:35.132127+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001263,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001369
+            },
+            {
+              "age_since_ingest_s": 291.400064,
+              "at": "2026-11-20T23:28:35.144602+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.034287,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.034349
+            },
+            {
+              "age_since_ingest_s": 291.445984,
+              "at": "2026-11-20T23:28:35.190522+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001648,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001814
+            },
+            {
+              "age_since_ingest_s": 291.458287,
+              "at": "2026-11-20T23:28:35.202825+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001439,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001501
+            },
+            {
+              "age_since_ingest_s": 291.470883,
+              "at": "2026-11-20T23:28:35.215421+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001266,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001328
+            },
+            {
+              "age_since_ingest_s": 291.482969,
+              "at": "2026-11-20T23:28:35.227507+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.00145,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001549
+            },
+            {
+              "age_since_ingest_s": 289.490746,
+              "at": "2026-11-20T23:28:35.239435+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.038824,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.064459
+            },
+            {
+              "age_since_ingest_s": 289.584268,
+              "at": "2026-11-20T23:28:35.332957+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.005889,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.065035
+            },
+            {
+              "age_since_ingest_s": 289.675418,
+              "at": "2026-11-20T23:28:35.424107+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001658,
+              "http": 206,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                14741942,
+                14746037
+              ],
+              "seconds": 0.001725
+            },
+            {
+              "age_since_ingest_s": 288.789198,
+              "at": "2026-11-20T23:28:35.437408+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.039117,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.092742
+            },
+            {
+              "age_since_ingest_s": 288.943029,
+              "at": "2026-11-20T23:28:35.591239+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.007162,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.098977
+            },
+            {
+              "age_since_ingest_s": 289.154993,
+              "at": "2026-11-20T23:28:35.803203+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001997,
+              "http": 206,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                15019269,
+                15023364
+              ],
+              "seconds": 0.002088
+            },
+            {
+              "age_since_ingest_s": 288.390674,
+              "at": "2026-11-20T23:28:35.844063+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.037051,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.166835
+            },
+            {
+              "age_since_ingest_s": 288.594989,
+              "at": "2026-11-20T23:28:36.048378+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.03489,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.489306
+            },
+            {
+              "age_since_ingest_s": 289.149256,
+              "at": "2026-11-20T23:28:36.602645+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.006159,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.006345
+            },
+            {
+              "age_since_ingest_s": 289.16866,
+              "at": "2026-11-20T23:28:36.622049+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.008318,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.008413
+            },
+            {
+              "age_since_ingest_s": 289.195563,
+              "at": "2026-11-20T23:28:36.648952+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.006377,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.006508
+            },
+            {
+              "age_since_ingest_s": 289.281648,
+              "at": "2026-11-20T23:28:36.735037+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.050045,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.05014
+            },
+            {
+              "age_since_ingest_s": 289.353297,
+              "at": "2026-11-20T23:28:36.806686+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.006885,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.006987
+            },
+            {
+              "age_since_ingest_s": 289.378473,
+              "at": "2026-11-20T23:28:36.831862+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002109,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.002236
+            },
+            {
+              "age_since_ingest_s": 289.434028,
+              "at": "2026-11-20T23:28:36.887417+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.011348,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.011411
+            },
+            {
+              "age_since_ingest_s": 289.535161,
+              "at": "2026-11-20T23:28:36.988550+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.004739,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.004831
+            },
+            {
+              "age_since_ingest_s": 288.497263,
+              "at": "2026-11-20T23:28:37.030510+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.036621,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.560112
+            },
+            {
+              "age_since_ingest_s": 289.178094,
+              "at": "2026-11-20T23:28:37.711341+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.033869,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.164843
+            },
+            {
+              "age_since_ingest_s": 289.45792,
+              "at": "2026-11-20T23:28:37.991167+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.023493,
+              "http": 206,
+              "key": "pythia/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.023562
+            },
+            {
+              "age_since_ingest_s": 288.449569,
+              "at": "2026-11-20T23:28:38.045759+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.020297,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.50481
+            },
+            {
+              "age_since_ingest_s": 289.047553,
+              "at": "2026-11-20T23:28:38.643743+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.034799,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.447468
+            },
+            {
+              "age_since_ingest_s": 289.718603,
+              "at": "2026-11-20T23:28:39.314793+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.045399,
+              "http": 206,
+              "key": "pythia/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.045492
+            },
+            {
+              "age_since_ingest_s": 288.47215,
+              "at": "2026-11-20T23:28:39.393121+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.063756,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.181794
+            },
+            {
+              "age_since_ingest_s": 288.879267,
+              "at": "2026-11-20T23:28:39.800238+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.012557,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.203984
+            },
+            {
+              "age_since_ingest_s": 289.175892,
+              "at": "2026-11-20T23:28:40.096863+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.005677,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.00576
+            },
+            {
+              "age_since_ingest_s": 289.193632,
+              "at": "2026-11-20T23:28:40.114603+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001436,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.00153
+            },
+            {
+              "age_since_ingest_s": 289.207211,
+              "at": "2026-11-20T23:28:40.128182+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001563,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001641
+            },
+            {
+              "age_since_ingest_s": 289.220143,
+              "at": "2026-11-20T23:28:40.141114+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001612,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001677
+            },
+            {
+              "age_since_ingest_s": 289.265549,
+              "at": "2026-11-20T23:28:40.186520+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.00161,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001701
+            },
+            {
+              "age_since_ingest_s": 289.27775,
+              "at": "2026-11-20T23:28:40.198721+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001867,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001992
+            },
+            {
+              "age_since_ingest_s": 289.293188,
+              "at": "2026-11-20T23:28:40.214159+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003175,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.003321
+            },
+            {
+              "age_since_ingest_s": 289.308206,
+              "at": "2026-11-20T23:28:40.229177+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.00145,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001531
+            }
+          ],
+          "verify": {
+            "authorities_verified": 6,
+            "authority_bodies": 6,
+            "authority_orphan_bodies": 0,
+            "chunks_checked": 3716,
+            "corrupt": 0,
+            "current_root_count": 12,
+            "deep": true,
+            "historical_root_count": 6,
+            "invalid": 0,
+            "issues": null,
+            "journal_frames_checked": 19,
+            "journal_ok": true,
+            "manifests_checked": 18,
+            "missing": 0,
+            "multipart_root_count": 0,
+            "packs_checked": 5,
+            "reclaimable_bytes": 0,
+            "representation_orphan_roots": 0,
+            "representation_roots": 0,
+            "representations_verified": 0,
+            "snapshot_root_count": 0,
+            "unreachable_chunks": 0,
+            "unreachable_manifests": 0
+          },
+          "versions": {
+            "coreutils-gzip": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "8bffbaaf77490a55d45fd9b0d75f968a",
+                "size": 15107617,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-f210-7712-bc3d-1dbe327337b2"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "55c10cf92dff6a7bd96ddc824d18bb2f",
+                "size": 15027461,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:47.601381646Z",
+                "version_id": "01a1fb45-f211-7608-831f-a99d773241e4"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "c951425d8dd64a1422889153074e9a2a",
+                "size": 14750134,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:46.908594602Z",
+                "version_id": "01a1fb45-ef5c-796c-b25e-150c3a79200a"
+              }
+            ],
+            "coreutils-tar": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "931608e38fe4cf4b6472b55f31e85c24",
+                "size": 63078400,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-e734-7455-bf02-d433de1949d6"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "a6c66e64f01c3d4ba7e069cb06b698ae",
+                "size": 62730240,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:44.834507186Z",
+                "version_id": "01a1fb45-e742-7804-b5b1-2de85d409ed3"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "850f2e4b14166960160d33549bdb5a25",
+                "size": 61214720,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:42.023399144Z",
+                "version_id": "01a1fb45-dc47-764e-8312-6fef0a4c2fe3"
+              }
+            ],
+            "pythia": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "0001054b65c1e79bb3a7acea5d5ed550",
+                "size": 28143920,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb46-0117-7d60-adcc-ac324edcf7b8"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "64a7d1299501a894b9a38f32fe36dec6",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:51.491932782Z",
+                "version_id": "01a1fb46-0143-7ed9-8c88-c743196dd1f1"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "47c0e9babcf5e9be2ae1f447e483f71a",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:49.944195184Z",
+                "version_id": "01a1fb45-fb38-7309-b882-bbd21c7eade4"
+              }
+            ]
+          }
+        }
+      },
+      "whole_bytes_per_second": {
+        "cdc": {
+          "first-process-read": 82679556.02844775,
+          "repeat-whole": 118137192.71160685
+        },
+        "cold": {
+          "first-process-read": 71571101.4503574,
+          "repeat-whole": 62717954.67594634
+        }
+      },
+      "whole_ratio": {
+        "first-process-read": 0.8656444820014729,
+        "repeat-whole": 0.5308908501749455
+      }
+    },
+    {
+      "allocated_bytes": {
+        "cdc": 174579712,
+        "cold": 179015680
+      },
+      "allocated_saving": -0.02540941297921262,
+      "errors": 0,
+      "extended_observation": "PENDING 30-DAY RUN",
+      "finish": "2026-11-20T23:31:27.915639+00:00",
+      "start": "2026-11-20T23:29:51.499869+00:00",
+      "stores": {
+        "cdc": {
+          "requests": [
+            {
+              "age_since_ingest_s": 425.772235,
+              "at": "2026-11-20T23:30:44.299954+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.131327,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 1.002998
+            },
+            {
+              "age_since_ingest_s": 426.88163,
+              "at": "2026-11-20T23:30:45.409349+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.064379,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.72122
+            },
+            {
+              "age_since_ingest_s": 427.718432,
+              "at": "2026-11-20T23:30:46.246151+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.034666,
+              "http": 206,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                61206528,
+                61210623
+              ],
+              "seconds": 0.034811
+            },
+            {
+              "age_since_ingest_s": 425.144512,
+              "at": "2026-11-20T23:30:46.292100+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.005803,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 3.525982
+            },
+            {
+              "age_since_ingest_s": 428.803552,
+              "at": "2026-11-20T23:30:49.951140+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.020723,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 1.415062
+            },
+            {
+              "age_since_ingest_s": 430.638431,
+              "at": "2026-11-20T23:30:51.786019+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.014319,
+              "http": 206,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                62722048,
+                62726143
+              ],
+              "seconds": 0.014633
+            },
+            {
+              "age_since_ingest_s": 428.103565,
+              "at": "2026-11-20T23:30:51.848103+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.009219,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 2.156299
+            },
+            {
+              "age_since_ingest_s": 430.887276,
+              "at": "2026-11-20T23:30:54.631814+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.004877,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 1.779896
+            },
+            {
+              "age_since_ingest_s": 433.193861,
+              "at": "2026-11-20T23:30:56.938399+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.013949,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.014075
+            },
+            {
+              "age_since_ingest_s": 433.302149,
+              "at": "2026-11-20T23:30:57.046687+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.004687,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.004766
+            },
+            {
+              "age_since_ingest_s": 433.3996,
+              "at": "2026-11-20T23:30:57.144138+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003556,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.003654
+            },
+            {
+              "age_since_ingest_s": 433.489561,
+              "at": "2026-11-20T23:30:57.234099+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001301,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001408
+            },
+            {
+              "age_since_ingest_s": 433.563658,
+              "at": "2026-11-20T23:30:57.308196+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.098452,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.098537
+            },
+            {
+              "age_since_ingest_s": 433.751735,
+              "at": "2026-11-20T23:30:57.496273+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.006078,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.006355
+            },
+            {
+              "age_since_ingest_s": 433.795344,
+              "at": "2026-11-20T23:30:57.539882+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.037763,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.037877
+            },
+            {
+              "age_since_ingest_s": 433.851759,
+              "at": "2026-11-20T23:30:57.596297+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.010709,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.010783
+            },
+            {
+              "age_since_ingest_s": 431.90325,
+              "at": "2026-11-20T23:30:57.651939+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.228371,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.777705
+            },
+            {
+              "age_since_ingest_s": 432.867798,
+              "at": "2026-11-20T23:30:58.616487+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.052866,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.253195
+            },
+            {
+              "age_since_ingest_s": 433.266252,
+              "at": "2026-11-20T23:30:59.014941+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003895,
+              "http": 206,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                14741942,
+                14746037
+              ],
+              "seconds": 0.003985
+            },
+            {
+              "age_since_ingest_s": 432.392596,
+              "at": "2026-11-20T23:30:59.040806+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.043559,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.196761
+            },
+            {
+              "age_since_ingest_s": 432.676917,
+              "at": "2026-11-20T23:30:59.325127+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.007185,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.077087
+            },
+            {
+              "age_since_ingest_s": 432.805447,
+              "at": "2026-11-20T23:30:59.453657+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.021945,
+              "http": 206,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                15019269,
+                15023364
+              ],
+              "seconds": 0.022045
+            },
+            {
+              "age_since_ingest_s": 432.087705,
+              "at": "2026-11-20T23:30:59.541094+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.008773,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.239538
+            },
+            {
+              "age_since_ingest_s": 432.550147,
+              "at": "2026-11-20T23:31:00.003536+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.007999,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.076378
+            },
+            {
+              "age_since_ingest_s": 432.673403,
+              "at": "2026-11-20T23:31:00.126792+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.006338,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.006444
+            },
+            {
+              "age_since_ingest_s": 432.735868,
+              "at": "2026-11-20T23:31:00.189257+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.005565,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.005691
+            },
+            {
+              "age_since_ingest_s": 432.76663,
+              "at": "2026-11-20T23:31:00.220019+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001251,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001317
+            },
+            {
+              "age_since_ingest_s": 432.788291,
+              "at": "2026-11-20T23:31:00.241680+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003473,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.003538
+            },
+            {
+              "age_since_ingest_s": 432.85189,
+              "at": "2026-11-20T23:31:00.305279+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.007275,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.007347
+            },
+            {
+              "age_since_ingest_s": 432.885067,
+              "at": "2026-11-20T23:31:00.338456+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001453,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.00196
+            },
+            {
+              "age_since_ingest_s": 432.952536,
+              "at": "2026-11-20T23:31:00.405925+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001561,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001629
+            },
+            {
+              "age_since_ingest_s": 432.971432,
+              "at": "2026-11-20T23:31:00.424821+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001316,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.001381
+            },
+            {
+              "age_since_ingest_s": 431.905944,
+              "at": "2026-11-20T23:31:00.439191+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.04229,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.247673
+            },
+            {
+              "age_since_ingest_s": 432.262188,
+              "at": "2026-11-20T23:31:00.795435+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.072674,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.279294
+            },
+            {
+              "age_since_ingest_s": 432.765476,
+              "at": "2026-11-20T23:31:01.298723+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.008004,
+              "http": 206,
+              "key": "pythia/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.008106
+            },
+            {
+              "age_since_ingest_s": 431.736513,
+              "at": "2026-11-20T23:31:01.332703+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.100349,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.617384
+            },
+            {
+              "age_since_ingest_s": 432.803436,
+              "at": "2026-11-20T23:31:02.399626+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.01383,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.42263
+            },
+            {
+              "age_since_ingest_s": 433.509223,
+              "at": "2026-11-20T23:31:03.105413+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.078083,
+              "http": 206,
+              "key": "pythia/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.078171
+            },
+            {
+              "age_since_ingest_s": 432.431095,
+              "at": "2026-11-20T23:31:03.352066+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.040707,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.629211
+            },
+            {
+              "age_since_ingest_s": 433.372837,
+              "at": "2026-11-20T23:31:04.293808+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.015874,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.506025
+            },
+            {
+              "age_since_ingest_s": 434.366678,
+              "at": "2026-11-20T23:31:05.287649+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.010425,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.010666
+            },
+            {
+              "age_since_ingest_s": 434.415121,
+              "at": "2026-11-20T23:31:05.336092+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001538,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.005102
+            },
+            {
+              "age_since_ingest_s": 434.431162,
+              "at": "2026-11-20T23:31:05.352133+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001073,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001124
+            },
+            {
+              "age_since_ingest_s": 434.486901,
+              "at": "2026-11-20T23:31:05.407872+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.009193,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.009255
+            },
+            {
+              "age_since_ingest_s": 434.516469,
+              "at": "2026-11-20T23:31:05.437440+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.037969,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.038079
+            },
+            {
+              "age_since_ingest_s": 434.567204,
+              "at": "2026-11-20T23:31:05.488175+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003848,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.003979
+            },
+            {
+              "age_since_ingest_s": 434.582164,
+              "at": "2026-11-20T23:31:05.503135+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002158,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.002231
+            },
+            {
+              "age_since_ingest_s": 434.595066,
+              "at": "2026-11-20T23:31:05.516037+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.006622,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.007164
+            }
+          ],
+          "verify": {
+            "authorities_verified": 0,
+            "authority_bodies": 0,
+            "authority_orphan_bodies": 0,
+            "chunks_checked": 3600,
+            "corrupt": 0,
+            "current_root_count": 12,
+            "deep": true,
+            "historical_root_count": 6,
+            "invalid": 0,
+            "issues": null,
+            "journal_frames_checked": 19,
+            "journal_ok": true,
+            "manifests_checked": 18,
+            "missing": 0,
+            "multipart_root_count": 0,
+            "packs_checked": 5,
+            "reclaimable_bytes": 0,
+            "representation_orphan_roots": 0,
+            "representation_roots": 0,
+            "representations_verified": 0,
+            "snapshot_root_count": 0,
+            "unreachable_chunks": 0,
+            "unreachable_manifests": 0
+          },
+          "versions": {
+            "coreutils-gzip": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "8bffbaaf77490a55d45fd9b0d75f968a",
+                "size": 15107617,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-f210-7712-bc3d-1dbe327337b2"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "55c10cf92dff6a7bd96ddc824d18bb2f",
+                "size": 15027461,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:47.601381646Z",
+                "version_id": "01a1fb45-f211-7608-831f-a99d773241e4"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "c951425d8dd64a1422889153074e9a2a",
+                "size": 14750134,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:46.908594602Z",
+                "version_id": "01a1fb45-ef5c-796c-b25e-150c3a79200a"
+              }
+            ],
+            "coreutils-tar": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "931608e38fe4cf4b6472b55f31e85c24",
+                "size": 63078400,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-e734-7455-bf02-d433de1949d6"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "a6c66e64f01c3d4ba7e069cb06b698ae",
+                "size": 62730240,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:44.834507186Z",
+                "version_id": "01a1fb45-e742-7804-b5b1-2de85d409ed3"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "850f2e4b14166960160d33549bdb5a25",
+                "size": 61214720,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:42.023399144Z",
+                "version_id": "01a1fb45-dc47-764e-8312-6fef0a4c2fe3"
+              }
+            ],
+            "pythia": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "0001054b65c1e79bb3a7acea5d5ed550",
+                "size": 28143920,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb46-0117-7d60-adcc-ac324edcf7b8"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "64a7d1299501a894b9a38f32fe36dec6",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:51.491932782Z",
+                "version_id": "01a1fb46-0143-7ed9-8c88-c743196dd1f1"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "47c0e9babcf5e9be2ae1f447e483f71a",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:49.944195184Z",
+                "version_id": "01a1fb45-fb38-7309-b882-bbd21c7eade4"
+              }
+            ]
+          }
+        },
+        "cold": {
+          "requests": [
+            {
+              "age_since_ingest_s": 375.299995,
+              "at": "2026-11-20T23:29:53.827714+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.021263,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 1.933708
+            },
+            {
+              "age_since_ingest_s": 377.482411,
+              "at": "2026-11-20T23:29:56.010130+00:00",
+              "bytes": 61214720,
+              "exact": true,
+              "first_byte_s": 0.00449,
+              "http": 200,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 1.886282
+            },
+            {
+              "age_since_ingest_s": 379.675509,
+              "at": "2026-11-20T23:29:58.203228+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.019088,
+              "http": 206,
+              "key": "coreutils-tar/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                61206528,
+                61210623
+              ],
+              "seconds": 0.019171
+            },
+            {
+              "age_since_ingest_s": 377.101449,
+              "at": "2026-11-20T23:29:58.249037+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.005944,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 2.032494
+            },
+            {
+              "age_since_ingest_s": 379.504247,
+              "at": "2026-11-20T23:30:00.651835+00:00",
+              "bytes": 62730240,
+              "exact": true,
+              "first_byte_s": 0.011113,
+              "http": 200,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 1.791625
+            },
+            {
+              "age_since_ingest_s": 381.55762,
+              "at": "2026-11-20T23:30:02.705208+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.046413,
+              "http": 206,
+              "key": "coreutils-tar/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                62722048,
+                62726143
+              ],
+              "seconds": 0.046566
+            },
+            {
+              "age_since_ingest_s": 379.057658,
+              "at": "2026-11-20T23:30:02.802196+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.005358,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 1.023298
+            },
+            {
+              "age_since_ingest_s": 380.499101,
+              "at": "2026-11-20T23:30:04.243639+00:00",
+              "bytes": 63078400,
+              "exact": true,
+              "first_byte_s": 0.015629,
+              "http": 200,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 1.219866
+            },
+            {
+              "age_since_ingest_s": 381.905869,
+              "at": "2026-11-20T23:30:05.650407+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003151,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.00323
+            },
+            {
+              "age_since_ingest_s": 381.965971,
+              "at": "2026-11-20T23:30:05.710509+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002148,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.002282
+            },
+            {
+              "age_since_ingest_s": 381.982247,
+              "at": "2026-11-20T23:30:05.726785+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.005417,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.005491
+            },
+            {
+              "age_since_ingest_s": 382.001881,
+              "at": "2026-11-20T23:30:05.746419+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001677,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001889
+            },
+            {
+              "age_since_ingest_s": 382.015264,
+              "at": "2026-11-20T23:30:05.759802+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001302,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001447
+            },
+            {
+              "age_since_ingest_s": 382.050741,
+              "at": "2026-11-20T23:30:05.795279+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001497,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001709
+            },
+            {
+              "age_since_ingest_s": 382.063807,
+              "at": "2026-11-20T23:30:05.808345+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001485,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.001552
+            },
+            {
+              "age_since_ingest_s": 382.076842,
+              "at": "2026-11-20T23:30:05.821380+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001318,
+              "http": 206,
+              "key": "coreutils-tar/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                63070208,
+                63074303
+              ],
+              "seconds": 0.00143
+            },
+            {
+              "age_since_ingest_s": 380.086553,
+              "at": "2026-11-20T23:30:05.835242+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.044893,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.147773
+            },
+            {
+              "age_since_ingest_s": 380.261829,
+              "at": "2026-11-20T23:30:06.010518+00:00",
+              "bytes": 14750134,
+              "exact": true,
+              "first_byte_s": 0.005881,
+              "http": 200,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.069275
+            },
+            {
+              "age_since_ingest_s": 380.356935,
+              "at": "2026-11-20T23:30:06.105624+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001885,
+              "http": 206,
+              "key": "coreutils-gzip/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                14741942,
+                14746037
+              ],
+              "seconds": 0.002056
+            },
+            {
+              "age_since_ingest_s": 379.472098,
+              "at": "2026-11-20T23:30:06.120308+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.005657,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.205664
+            },
+            {
+              "age_since_ingest_s": 379.758473,
+              "at": "2026-11-20T23:30:06.406683+00:00",
+              "bytes": 15027461,
+              "exact": true,
+              "first_byte_s": 0.05908,
+              "http": 200,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.647642
+            },
+            {
+              "age_since_ingest_s": 380.642631,
+              "at": "2026-11-20T23:30:07.290841+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.012747,
+              "http": 206,
+              "key": "coreutils-gzip/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                15019269,
+                15023364
+              ],
+              "seconds": 0.01286
+            },
+            {
+              "age_since_ingest_s": 379.992198,
+              "at": "2026-11-20T23:30:07.445587+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.008805,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.598653
+            },
+            {
+              "age_since_ingest_s": 380.841998,
+              "at": "2026-11-20T23:30:08.295387+00:00",
+              "bytes": 15107617,
+              "exact": true,
+              "first_byte_s": 0.016089,
+              "http": 200,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.395223
+            },
+            {
+              "age_since_ingest_s": 381.275828,
+              "at": "2026-11-20T23:30:08.729217+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001943,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.002231
+            },
+            {
+              "age_since_ingest_s": 381.291721,
+              "at": "2026-11-20T23:30:08.745110+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.034068,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.034138
+            },
+            {
+              "age_since_ingest_s": 381.338283,
+              "at": "2026-11-20T23:30:08.791672+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002109,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.002178
+            },
+            {
+              "age_since_ingest_s": 381.353546,
+              "at": "2026-11-20T23:30:08.806935+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.066474,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.066539
+            },
+            {
+              "age_since_ingest_s": 381.465919,
+              "at": "2026-11-20T23:30:08.919308+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.045273,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.045366
+            },
+            {
+              "age_since_ingest_s": 381.551178,
+              "at": "2026-11-20T23:30:09.004567+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.00551,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.006293
+            },
+            {
+              "age_since_ingest_s": 381.646927,
+              "at": "2026-11-20T23:30:09.100316+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.003454,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.003557
+            },
+            {
+              "age_since_ingest_s": 381.770901,
+              "at": "2026-11-20T23:30:09.224290+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.021323,
+              "http": 206,
+              "key": "coreutils-gzip/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                15099425,
+                15103520
+              ],
+              "seconds": 0.021423
+            },
+            {
+              "age_since_ingest_s": 380.801517,
+              "at": "2026-11-20T23:30:09.334764+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.042048,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.803822
+            },
+            {
+              "age_since_ingest_s": 382.155535,
+              "at": "2026-11-20T23:30:10.688782+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.009848,
+              "http": 200,
+              "key": "pythia/revision-0",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.615574
+            },
+            {
+              "age_since_ingest_s": 383.075981,
+              "at": "2026-11-20T23:30:11.609228+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002113,
+              "http": 206,
+              "key": "pythia/revision-0",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.002225
+            },
+            {
+              "age_since_ingest_s": 382.212858,
+              "at": "2026-11-20T23:30:11.809048+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.004595,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.790949
+            },
+            {
+              "age_since_ingest_s": 383.20916,
+              "at": "2026-11-20T23:30:12.805350+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.005733,
+              "http": 200,
+              "key": "pythia/revision-1",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.695962
+            },
+            {
+              "age_since_ingest_s": 384.103354,
+              "at": "2026-11-20T23:30:13.699544+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.020299,
+              "http": 206,
+              "key": "pythia/revision-1",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.030277
+            },
+            {
+              "age_since_ingest_s": 382.911064,
+              "at": "2026-11-20T23:30:13.832035+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.047596,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "first-process-read",
+              "range": null,
+              "seconds": 0.654481
+            },
+            {
+              "age_since_ingest_s": 383.973179,
+              "at": "2026-11-20T23:30:14.894150+00:00",
+              "bytes": 28143920,
+              "exact": true,
+              "first_byte_s": 0.051879,
+              "http": 200,
+              "key": "pythia/revision-2",
+              "phase": "repeat-whole",
+              "range": null,
+              "seconds": 0.484091
+            },
+            {
+              "age_since_ingest_s": 384.771904,
+              "at": "2026-11-20T23:30:15.692875+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.011773,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.011911
+            },
+            {
+              "age_since_ingest_s": 384.871024,
+              "at": "2026-11-20T23:30:15.791995+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001575,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.001635
+            },
+            {
+              "age_since_ingest_s": 384.906949,
+              "at": "2026-11-20T23:30:15.827920+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.001939,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.002069
+            },
+            {
+              "age_since_ingest_s": 384.986956,
+              "at": "2026-11-20T23:30:15.907927+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.01853,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.018636
+            },
+            {
+              "age_since_ingest_s": 385.030303,
+              "at": "2026-11-20T23:30:15.951274+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.010734,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.010913
+            },
+            {
+              "age_since_ingest_s": 385.122355,
+              "at": "2026-11-20T23:30:16.043326+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.064003,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.064077
+            },
+            {
+              "age_since_ingest_s": 385.270887,
+              "at": "2026-11-20T23:30:16.191858+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.002038,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.002204
+            },
+            {
+              "age_since_ingest_s": 385.302094,
+              "at": "2026-11-20T23:30:16.223065+00:00",
+              "bytes": 4096,
+              "exact": true,
+              "first_byte_s": 0.011651,
+              "http": 206,
+              "key": "pythia/revision-2",
+              "phase": "repeat-range",
+              "range": [
+                28135728,
+                28139823
+              ],
+              "seconds": 0.012025
+            }
+          ],
+          "verify": {
+            "authorities_verified": 6,
+            "authority_bodies": 6,
+            "authority_orphan_bodies": 0,
+            "chunks_checked": 3716,
+            "corrupt": 0,
+            "current_root_count": 12,
+            "deep": true,
+            "historical_root_count": 6,
+            "invalid": 0,
+            "issues": null,
+            "journal_frames_checked": 19,
+            "journal_ok": true,
+            "manifests_checked": 18,
+            "missing": 0,
+            "multipart_root_count": 0,
+            "packs_checked": 5,
+            "reclaimable_bytes": 0,
+            "representation_orphan_roots": 0,
+            "representation_roots": 0,
+            "representations_verified": 0,
+            "snapshot_root_count": 0,
+            "unreachable_chunks": 0,
+            "unreachable_manifests": 0
+          },
+          "versions": {
+            "coreutils-gzip": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "8bffbaaf77490a55d45fd9b0d75f968a",
+                "size": 15107617,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-f210-7712-bc3d-1dbe327337b2"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "55c10cf92dff6a7bd96ddc824d18bb2f",
+                "size": 15027461,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:47.601381646Z",
+                "version_id": "01a1fb45-f211-7608-831f-a99d773241e4"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "c951425d8dd64a1422889153074e9a2a",
+                "size": 14750134,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:46.908594602Z",
+                "version_id": "01a1fb45-ef5c-796c-b25e-150c3a79200a"
+              }
+            ],
+            "coreutils-tar": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "931608e38fe4cf4b6472b55f31e85c24",
+                "size": 63078400,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb45-e734-7455-bf02-d433de1949d6"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "a6c66e64f01c3d4ba7e069cb06b698ae",
+                "size": 62730240,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:44.834507186Z",
+                "version_id": "01a1fb45-e742-7804-b5b1-2de85d409ed3"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "850f2e4b14166960160d33549bdb5a25",
+                "size": 61214720,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:42.023399144Z",
+                "version_id": "01a1fb45-dc47-764e-8312-6fef0a4c2fe3"
+              }
+            ],
+            "pythia": [
+              {
+                "content_type": "application/octet-stream",
+                "etag": "0001054b65c1e79bb3a7acea5d5ed550",
+                "size": 28143920,
+                "status": "current",
+                "timestamp": "",
+                "version_id": "01a1fb46-0117-7d60-adcc-ac324edcf7b8"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "64a7d1299501a894b9a38f32fe36dec6",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:51.491932782Z",
+                "version_id": "01a1fb46-0143-7ed9-8c88-c743196dd1f1"
+              },
+              {
+                "content_type": "application/octet-stream",
+                "etag": "47c0e9babcf5e9be2ae1f447e483f71a",
+                "size": 28143920,
+                "status": "historical",
+                "timestamp": "2026-11-20T23:23:49.944195184Z",
+                "version_id": "01a1fb45-fb38-7309-b882-bbd21c7eade4"
+              }
+            ]
+          }
+        }
+      },
+      "whole_bytes_per_second": {
+        "cdc": {
+          "first-process-read": 33676330.92107554,
+          "repeat-whole": 57196260.13440763
+        },
+        "cold": {
+          "first-process-read": 38621222.580047324,
+          "repeat-whole": 40527667.784676015
+        }
+      },
+      "whole_ratio": {
+        "first-process-read": 1.1468358198094895,
+        "repeat-whole": 0.7085719886132158
+      }
+    }
+  ],
+  "source_commit": "40fa9b08169712c00db618b6b32b066c6ec208ea"
+}
