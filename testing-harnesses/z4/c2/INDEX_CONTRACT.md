@@ -148,3 +148,8 @@ PUT of an 86,658-byte body and returned identical bytes through S3 GET. The
 index rejected the stale fence after that write and caught up without changing
 the catalog generation. Both binaries passed deep verification of the updated
 store. The same replay checked refusal and rebuild of the v1 prototype.
+
+The C2B `index-inspect` command reports the publication state and counts inactive
+generation and staging directories. It checks the selected generation under the
+offline store lock. Inactive directories include both earlier sealed generations
+and unattached builds. The command leaves derived files and object authority intact.

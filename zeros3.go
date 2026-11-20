@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50511    Windowed and estimated similarity deltas (extracted dcore)
-//    52033    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59673    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65945    CLI dispatch, HTTP server/startup, and main
+//    50581    Windowed and estimated similarity deltas (extracted dcore)
+//    52103    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59743    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66015    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -50041,6 +50041,8 @@ func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, o
 	return nil
 }
 
+var errAuthSimilarityStale = errors.New("stale or wrong-store similarity generation")
+
 func (s *Store) readAuthSimilarityStage(name string) (authSimilarityStageReport, error) {
 	report, err := s.readAuthSimilarityGeneration(name)
 	if err != nil {
@@ -50053,7 +50055,7 @@ func (s *Store) readAuthSimilarityStage(name string) (authSimilarityStageReport,
 	if report.StoreID != want.StoreID || report.JournalEnd != want.JournalEnd ||
 		report.JournalSeq != want.JournalSeq || report.JournalSHA != want.JournalSHA ||
 		report.SnapshotSHA != want.SnapshotSHA {
-		return report, errors.New("stale or wrong-store similarity generation")
+		return report, errAuthSimilarityStale
 	}
 	return report, nil
 }
@@ -50218,6 +50220,65 @@ func (s *Store) authSimilarityCurrentName() (string, error) {
 	return string(name[:len(name)-1]), nil
 }
 
+type authSimilarityInventory struct {
+	State      string                     `json:"state"`
+	Current    string                     `json:"current,omitempty"`
+	Inactive   int                        `json:"inactive_generations"`
+	Incomplete int                        `json:"staging_directories"`
+	Issue      string                     `json:"issue,omitempty"`
+	Generation *authSimilarityStageReport `json:"generation,omitempty"`
+}
+
+func (s *Store) inspectAuthSimilarityIndex() (authSimilarityInventory, error) {
+	info := authSimilarityInventory{State: "missing"}
+	parent, err := os.Open(filepath.Join(s.root, "similarity-index"))
+	if os.IsNotExist(err) {
+		return info, nil
+	}
+	if err != nil {
+		return info, err
+	}
+	defer parent.Close()
+	info.Current, err = s.authSimilarityCurrentName()
+	if err == nil {
+		var report authSimilarityStageReport
+		report, err = s.readAuthSimilarityStage(info.Current)
+		switch {
+		case err == nil:
+			info.State, info.Generation = "current", &report
+		case errors.Is(err, errAuthSimilarityStale):
+			info.State = "stale"
+		default:
+			info.State = "invalid"
+		}
+	} else if !os.IsNotExist(err) {
+		info.State = "invalid"
+	}
+	if err != nil && info.State != "missing" {
+		info.Issue = err.Error()
+	}
+	for {
+		entries, err := parent.ReadDir(128)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			switch name := entry.Name(); {
+			case strings.HasPrefix(name, "generation-") && name != info.Current:
+				info.Inactive++
+			case strings.HasPrefix(name, ".building-"):
+				info.Incomplete++
+			}
+		}
+		if err == io.EOF {
+			return info, nil
+		}
+		if err != nil {
+			return info, err
+		}
+	}
+}
+
 type authSimilarityQuery struct {
 	report  authSimilarityStageReport
 	catalog *os.File
@@ -50330,7 +50391,7 @@ func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]u
 // runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, index-build, index-refresh, index-status or index-run-verify")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, index-build, index-refresh, index-status, index-inspect or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -50390,7 +50451,8 @@ func runAuthority(args []string) {
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(25)
 	}
-	if sub == "index-build" || sub == "index-refresh" || sub == "index-status" {
+	indexOp := sub == "index-build" || sub == "index-refresh" || sub == "index-status" || sub == "index-inspect"
+	if indexOp {
 		if fs.NArg() != 0 {
 			log.Fatalf("zeros3: authority %s: unexpected arguments", sub)
 		}
@@ -50405,7 +50467,7 @@ func runAuthority(args []string) {
 	}
 	defer lock.release()
 	open := OpenStore
-	if sub == "index-build" || sub == "index-refresh" || sub == "index-status" {
+	if indexOp {
 		open = OpenStoreShared
 	}
 	store, err := open(*storeDir)
@@ -50432,6 +50494,14 @@ func runAuthority(args []string) {
 		}
 		if err := enc.Encode(report); err != nil {
 			log.Fatalf("zeros3: authority index-build: %v", err)
+		}
+	case "index-inspect":
+		info, err := store.inspectAuthSimilarityIndex()
+		if err != nil {
+			log.Fatalf("zeros3: authority index-inspect: %v", err)
+		}
+		if err := enc.Encode(info); err != nil {
+			log.Fatalf("zeros3: authority index-inspect: %v", err)
 		}
 	case "index-status":
 		report, err := store.readAuthSimilarityCurrent()

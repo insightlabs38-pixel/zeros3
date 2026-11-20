@@ -855,3 +855,46 @@ func TestAuthoritySimilarityIndexedCandidatesScopeAndFallback(t *testing.T) {
 		t.Fatalf("index read failure did not retain existing candidates: failed=%t candidates=%v", q.failed, got)
 	}
 }
+
+func TestAuthoritySimilarityIndexInventory(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if info, err := s.inspectAuthSimilarityIndex(); err != nil || info.State != "missing" {
+		t.Fatalf("missing index state: %+v %v", info, err)
+	}
+	if err := s.CreateBucket("similar"); err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.Repeat([]byte("index inventory object"), 100)
+	mustPutObject(t, s, "similar", "first", body, "", nil)
+	active, err := s.buildAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.publishAuthSimilarityStage(filepath.Base(active.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.buildAuthSimilarityStage(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.MkdirTemp(filepath.Dir(active.Directory), ".building-"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := s.inspectAuthSimilarityIndex()
+	if err != nil || info.State != "current" || info.Generation == nil ||
+		info.Current != filepath.Base(active.Directory) || info.Inactive != 1 || info.Incomplete != 1 {
+		t.Fatalf("incorrect index inventory: %+v %v", info, err)
+	}
+	mustPutObject(t, s, "similar", "second", body, "", nil)
+	info, err = s.inspectAuthSimilarityIndex()
+	if err != nil || info.State != "stale" || info.Generation != nil || info.Inactive != 1 || info.Incomplete != 1 {
+		t.Fatalf("incorrect stale index inventory: %+v %v", info, err)
+	}
+	_, got, err := s.GetObject("similar", "first")
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("index inspection changed the object: %v", err)
+	}
+}
