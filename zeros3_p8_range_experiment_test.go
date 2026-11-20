@@ -218,3 +218,58 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestP8WindowedRangeFanout(t *testing.T) {
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
+	t.Setenv("ZEROS3_AUTH_CACHE_MIB", "0")
+	defer func(size, threshold int64) { authWindowSize, authWindowMin = size, threshold }(authWindowSize, authWindowMin)
+	const frame = 128 << 10
+	authWindowSize, authWindowMin = frame, 1<<20
+	l := newAuthLab(t)
+	base := genRandomBytes(916, 2<<20)
+	baseSHA := sha256.Sum256(base)
+	l.put("base", base)
+	keys := []string{"child-a", "child-b", "child-c"}
+	for i, key := range keys {
+		body := bytes.Clone(base)
+		off := (i+7)*frame + 32
+		copy(body[off:], genRandomBytes(100+int64(i), 8192))
+		l.put(key, body)
+	}
+	l.migrate(AuthPolicy{AllowDelta: true, MaxDepth: 1, MaxBases: 1, MinSaving: 0.05, MaxReadAmp: -1})
+	for _, key := range keys {
+		rec, err := l.s.authLoad(sha256.Sum256(l.want[key]))
+		if err != nil || rec == nil || rec.Form != authFormDelta || rec.Depth != 1 ||
+			len(rec.Bases) != 1 || rec.Bases[0].SHA != baseSHA {
+			t.Fatalf("%s did not share the expected windowed base: %+v %v", key, rec, err)
+		}
+	}
+	l.reclaim()
+	l.verifyOK("repacked fanout")
+	l.exact("repacked fanout")
+	for _, key := range keys {
+		for _, span := range []byteRange{{0, 4095}, {frame - 19, frame + 4076}, {frame, 2*frame - 1}} {
+			_, _, got, err := l.s.GetObjectRange("b", key, span)
+			if err != nil || !bytes.Equal(got, l.want[key][span.start:span.end+1]) {
+				t.Fatalf("%s range %+v: %v", key, span, err)
+			}
+		}
+	}
+	pin, err := l.s.authLoad(baseSHA)
+	if err != nil || pin == nil || pin.Form != authFormPin || len(pin.Pieces) == 0 {
+		t.Fatalf("missing pinned shared base: %+v %v", pin, err)
+	}
+	corruptChunkAnyLayout(t, l.s, pin.Pieces[0].SHA)
+	l.close()
+	l.open()
+	verification, err := l.s.Verify(true)
+	if err != nil || verification.OK() {
+		t.Fatalf("deep verification did not report shared base corruption: %+v %v", verification, err)
+	}
+	for _, key := range keys {
+		_, _, got, err := l.s.GetObjectRange("b", key, byteRange{0, 4095})
+		if err == nil && !bytes.Equal(got, l.want[key][:4096]) {
+			t.Fatalf("%s returned wrong bytes from a corrupted shared base", key)
+		}
+	}
+}

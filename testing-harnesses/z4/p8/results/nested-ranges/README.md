@@ -52,3 +52,10 @@ and justify preserving tier admission limits. Host load varied across
 cohorts, and the two historical layouts have no comparable fetch
 accounting. This screen covers one chain, so fanout and mixed-version
 qualification remain open.
+
+A tagged production regression pinned one 2 MiB base shared by three
+128 KiB windowed children. Reopen after GC and repack verified all
+whole objects and the test checked both aligned and frame-crossing
+ranges. Corrupting a packed component of the base subsequently produced
+a deep verification failure and no wrong bytes on any dependent read.
+This synthetic regression complements the real depth-two tar screen.
