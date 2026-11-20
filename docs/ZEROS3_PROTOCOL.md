@@ -406,6 +406,16 @@ Candidate bytes are locally SHA-256 verified before CAS publication.
 
 Repair changes physical content availability, not namespace roots.
 
+`authority recover -from PEER -bucket BUCKET -key KEY` restores a native
+closure for the SHA-256 named by the local live manifest. The peer must
+advertise closure export and expose the same exact content at that key.
+Recovery takes the exclusive maintenance lock, checks the depth constraints
+of local dependents, and preserves readable authority records. Each
+component is independently hashed before repair. Missing or unreadable
+records are published bases-first after validation of the complete frame
+and reconstruction of each record. A failed replacement keeps the existing
+record until a fully written, fsynced replacement can be renamed over it.
+
 ## Optional bulk transport v2
 
 Bulk v2 is an optimization for moving the **same logical chunks** with far fewer

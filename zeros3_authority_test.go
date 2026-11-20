@@ -2142,6 +2142,93 @@ func TestAuthorityPeerAssistedComponentRepair(t *testing.T) {
 	}
 }
 
+func TestAuthorityRecoverPeerClosure(t *testing.T) {
+	local, peer := authMigratedLab(t), authMigratedLab(t)
+	local.offline(func() {
+		if _, err := gcCollect(local.dir, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	rootSHA := sha256.Sum256(local.want["k3"])
+	root := mustLoad(t, local.s, rootSHA)
+	if len(root.Bases) == 0 || len(root.Pieces) == 0 {
+		t.Fatal("fixture has no shared base or component")
+	}
+	basePath := local.s.authPath(root.Bases[0].SHA)
+	rootPath := local.s.authPath(rootSHA)
+	component := local.s.chunkPath(root.Pieces[0].SHA)
+	local.close()
+	if err := os.Remove(basePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(component, []byte("corrupt component"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("corrupt root record")
+	if err := os.WriteFile(rootPath, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local.open()
+	if res, err := local.s.Verify(true); err != nil || res.OK() {
+		t.Fatalf("expected damage to be diagnosed: %+v %v", res, err)
+	}
+
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	server := httptest.NewServer(NewServer(peer.s, creds, defaultRegion))
+	defer server.Close()
+	cfg := syncClientConfig{Endpoint: server.URL, Bucket: "b", Key: "k3", Creds: creds, Region: defaultRegion}
+
+	// A fault before rename must leave the last record on disk. The
+	// retry can keep the bases or exact components already restored.
+	lock, err := acquireStoreLock(local.dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	if _, err := gcCollect(local.dir, true); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("maintenance did not respect recovery's exclusive lock: %v", err)
+	}
+	if _, err := repackStore(local.dir, repackOptions{TargetBytes: defaultPackTargetBytes}); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("repack did not respect recovery's exclusive lock: %v", err)
+	}
+	fail := errors.New("simulated record write failure")
+	attempts := 0
+	authFault = func(point string) error {
+		if point == "record-write" {
+			attempts++
+			if attempts == 2 {
+				return fail
+			}
+		}
+		return nil
+	}
+	defer func() { authFault = nil }()
+	err = local.s.recoverAuthorityFromPeer(cfg)
+	authFault = nil
+	if !errors.Is(err, fail) {
+		t.Fatalf("recovery did not expose the injected failure after restoring the base: %v", err)
+	}
+	if got, err := os.ReadFile(rootPath); err != nil || !bytes.Equal(got, corrupt) {
+		t.Fatalf("failed recovery changed the previous root record: %v", err)
+	}
+	if err := local.s.recoverAuthorityFromPeer(cfg); err != nil {
+		t.Fatal(err)
+	}
+	local.close()
+	local.open()
+	local.exact("peer closure recovery covers all live dependents")
+	local.verifyOK("peer closure recovery reopened")
+
+	peer.put("k3", []byte("different source revision"))
+	if err := local.s.recoverAuthorityFromPeer(cfg); !errors.Is(err, errAuthMismatch) {
+		t.Fatalf("recovery accepted a different current source revision: %v", err)
+	}
+	server.Close()
+	if err := local.s.recoverAuthorityFromPeer(cfg); err == nil || !strings.Contains(err.Error(), "recover peer discovery") {
+		t.Fatalf("offline peer was not diagnosed: %v", err)
+	}
+}
+
 func deleteChunkOnDiskDir(t *testing.T, dir, hexSum string) {
 	t.Helper()
 	s, err := OpenStore(dir)

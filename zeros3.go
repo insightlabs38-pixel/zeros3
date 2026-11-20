@@ -105,22 +105,22 @@ import (
 //    16429    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
 //    17494    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
 //    18298    Delta sync client, credentials, and parallel transfer
-//    20517    Bulk logical-chunk transport (v2)
-//    21428    Recursive directory sync
-//    21733    Remote replication (`zeros3 replicate`)
-//    22627    Peer-assisted corruption repair (`zeros3 repair`)
-//    23195    Namespace (prefix/bucket) replication
-//    23511    Copy-on-write namespace fork (`zeros3 fork`)
-//    23719    Snapshots and restore
-//    24880    Structural diff and inspect (introspection)
-//    26219    Portable snapshot bundles (`zeros3 bundle`)
-//    27416    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28051    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45129    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49789    Windowed and estimated similarity deltas (extracted dcore)
-//    51311    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58951    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65223    CLI dispatch, HTTP server/startup, and main
+//    20521    Bulk logical-chunk transport (v2)
+//    21432    Recursive directory sync
+//    21737    Remote replication (`zeros3 replicate`)
+//    22631    Peer-assisted corruption repair (`zeros3 repair`)
+//    23199    Namespace (prefix/bucket) replication
+//    23515    Copy-on-write namespace fork (`zeros3 fork`)
+//    23723    Snapshots and restore
+//    24884    Structural diff and inspect (introspection)
+//    26223    Portable snapshot bundles (`zeros3 bundle`)
+//    27420    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28055    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45133    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    49923    Windowed and estimated similarity deltas (extracted dcore)
+//    51445    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59085    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65357    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -18970,7 +18970,7 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		payloadMD5.Sum(stamp[:0])
 		return check.verify(sum, stamp, payloadCRC.Sum32())
 	}
-	if err := srv.store.importAuthorityClosure(reader, &xdBaseRef{SHA: sha, Size: total}, verifyFrame); err != nil {
+	if err := srv.store.importAuthorityClosure(reader, &xdBaseRef{SHA: sha, Size: total}, verifyFrame, nil); err != nil {
 		var authErr *authError
 		if errors.As(err, &authErr) {
 			writeRequestError(w, err, zeros3AuthImportPath)
@@ -19061,8 +19061,12 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		held = func(digest [32]byte) bool { return known == digest }
 	}
 	recs, err := srv.store.authorityClosureFor(sha, req.Peer, held)
-	if errors.Is(err, errAuthMissing) || errors.Is(err, errAuthTransferUnsupported) {
-		writeSyncError(w, http.StatusConflict, "Materialize", "the source cannot offer a compatible native closure")
+	if errors.Is(err, errAuthMissing) {
+		writeSyncError(w, http.StatusConflict, "UnavailableClosure", "the source does not hold the requested closure")
+		return
+	}
+	if errors.Is(err, errAuthTransferUnsupported) {
+		writeSyncError(w, http.StatusConflict, "Materialize", "the source closure requires unsupported receiver features")
 		return
 	}
 	if err != nil {
@@ -22150,7 +22154,7 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 			return stats, false, err
 		}
 		var problem syncErrorBody
-		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusConflict && json.Unmarshal(body, &problem) == nil && problem.Code == "Materialize" {
+		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusConflict && json.Unmarshal(body, &problem) == nil && (problem.Code == "Materialize" || problem.Code == "UnavailableClosure") {
 			return stats, false, nil
 		}
 		return stats, false, fmt.Errorf("replicate: authority export status %d: %s", response.StatusCode, body)
@@ -45918,6 +45922,12 @@ func (s *Store) ensureAuthFormat() error {
 // every referenced component durable and proven the reconstruction. A record
 // replaces an existing one only with the next generation.
 func (s *Store) authPublish(rec *authRecord) error {
+	return s.authPublishChecked(rec, false)
+}
+
+// A recovery caller holds the exclusive store lock. Keep the old record until
+// the fsynced replacement is ready to be renamed over it.
+func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 	data, err := rec.marshal()
 	if err != nil {
 		return err
@@ -45961,7 +45971,7 @@ func (s *Store) authPublish(rec *authRecord) error {
 	s.auth.pubMu.Lock()
 	defer s.auth.pubMu.Unlock()
 	cur, err := s.authLoad(rec.SHA)
-	if err != nil {
+	if err != nil && !(recoverCorrupt && errors.Is(err, errAuthCorrupt)) {
 		return err
 	}
 	switch {
@@ -49257,10 +49267,15 @@ const hookAuthImportRecord = "auth-import-record"
 // durable, then each record is proven by full reconstruction and published
 // bases-first. Records the destination already holds are kept.
 func (s *Store) ImportAuthorityClosure(r io.Reader) error {
-	return s.importAuthorityClosure(r, nil, nil)
+	return s.importAuthorityClosure(r, nil, nil, nil)
 }
 
-func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyFrame func() error) error {
+type authRecoveryLimit struct {
+	size       int64
+	childDepth uint8
+}
+
+func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyFrame func() error, repair map[[32]byte]authRecoveryLimit) error {
 	br := bufio.NewReaderSize(r, 1<<20)
 	h := sha256.New()
 	tr := io.TeeReader(br, h)
@@ -49292,6 +49307,9 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 		rec, err := unmarshalAuthRecord(buf)
 		if err != nil {
 			return err
+		}
+		if limit, constrained := repair[rec.SHA]; constrained && (rec.Size != limit.size || rec.Depth >= limit.childDepth) {
+			return fmt.Errorf("import closure: %w: restored base %x conflicts with a local dependent", errAuthCorrupt, rec.SHA[:6])
 		}
 		if _, exists := positions[rec.SHA]; exists {
 			return fmt.Errorf("import closure: %w: repeated record %x", errAuthCorrupt, rec.SHA[:6])
@@ -49362,6 +49380,16 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 		if sha256.Sum256(data) != sum {
 			return fmt.Errorf("import closure: component %x does not match its hash", sum[:6])
 		}
+		if repair != nil {
+			// Each verified component can heal an exact digest immediately.
+			// Records still wait for the trailer and reconstruction proof.
+			if _, err := s.casRead(sum); err != nil {
+				if err := s.casRepairPublish(sum, data); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		if _, err := b.add(sum, data); err != nil {
 			return err
 		}
@@ -49390,9 +49418,11 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 	}
 	fireTestHook(hookAuthImportChunks)
 	for _, rec := range recs {
-		if cur, err := s.authLoad(rec.SHA); err != nil {
+		cur, err := s.authLoad(rec.SHA)
+		if err != nil && !(repair != nil && errors.Is(err, errAuthCorrupt)) {
 			return err
-		} else if cur != nil {
+		}
+		if cur != nil {
 			continue
 		}
 		rec.Gen = 1
@@ -49400,7 +49430,7 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 			return fmt.Errorf("import closure: proof of %x failed: %w", rec.SHA[:6], err)
 		}
 		fireTestHook(hookAuthImportRecord)
-		if err := s.authPublish(rec); err != nil {
+		if err := s.authPublishChecked(rec, repair != nil); err != nil {
 			return err
 		}
 	}
@@ -49413,6 +49443,91 @@ func (c *countingByteReader) ReadByte() (byte, error) {
 	var b [1]byte
 	_, err := io.ReadFull(c.r, b[:])
 	return b[0], err
+}
+
+// recoverAuthorityFromPeer restores the closure of an exact live manifest
+// under the exclusive store lock used by the authority maintenance command.
+func (s *Store) recoverAuthorityFromPeer(cfg syncClientConfig) error {
+	_, local, err := s.headServed(cfg.Bucket, cfg.Key)
+	if err != nil {
+		return fmt.Errorf("recover local manifest: %w", err)
+	}
+	sum, err := decodeHexSHA256(local.man.ObjectSHA256)
+	if err != nil {
+		return err
+	}
+	discovery, err := discoverZeroS3Sync(cfg)
+	if err != nil {
+		return fmt.Errorf("recover peer discovery: %w", err)
+	}
+	if discovery.AuthorityExport == nil || discovery.AuthorityExport.Version != authXferVersion {
+		return errAuthTransferUnsupported
+	}
+	desc, err := fetchSourceDescriptor(cfg)
+	if err != nil {
+		return fmt.Errorf("recover peer object: %w", err)
+	}
+	if desc.ObjectSHA256 != local.man.ObjectSHA256 || desc.Size != local.man.TotalLength {
+		return fmt.Errorf("recover peer object: %w", errAuthMismatch)
+	}
+	limits := make(map[[32]byte]authRecoveryLimit)
+	files, err := s.authFiles()
+	if err != nil {
+		return err
+	}
+	for _, entry := range files {
+		rec, err := s.authLoad(entry)
+		if errors.Is(err, errAuthCorrupt) || (err == nil && rec == nil) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, base := range rec.Bases {
+			limit, exists := limits[base.SHA]
+			if exists && limit.size != base.Size {
+				return fmt.Errorf("recover: %w: local dependents disagree on base %x size", errAuthCorrupt, base.SHA[:6])
+			}
+			if !exists || rec.Depth < limit.childDepth {
+				limits[base.SHA] = authRecoveryLimit{size: base.Size, childDepth: rec.Depth}
+			}
+		}
+	}
+	control, err := json.Marshal(authExportRequest{Bucket: cfg.Bucket, Key: cfg.Key, VersionID: desc.VersionID, Peer: s.AuthorityCaps()})
+	if err != nil {
+		return err
+	}
+	resp, err := cfg.signAndDoStream(context.Background(), http.MethodPost, zeros3AuthExportPath, control, map[string]string{"Content-Type": "application/json"})
+	if err != nil {
+		return fmt.Errorf("recover peer export: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, err := readAllLimited(resp.Body, 64<<10)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("recover peer export status %d: %s", resp.StatusCode, body)
+	}
+	reader := &io.LimitedReader{R: resp.Body, N: maxStreamedBodySize + 1}
+	checkSize := func() error {
+		if reader.N == 0 {
+			return errors.New("recover: closure exceeds network limit")
+		}
+		return nil
+	}
+	if err := s.importAuthorityClosure(reader, &xdBaseRef{SHA: sum, Size: local.man.TotalLength}, checkSize, limits); err != nil {
+		return err
+	}
+	root, err := s.authLoad(sum)
+	if err != nil {
+		return err
+	}
+	if root == nil {
+		return errAuthMissing
+	}
+	_, _, err = s.authProve(root, 0)
+	return err
 }
 
 // AuthorityRepairObject replaces an unreadable authoritative body with exact
@@ -49679,7 +49794,7 @@ func (s *Store) casReadOrVirtual(sum [32]byte) (data []byte, virtual bool, err e
 // runAuthority implements "zeros3 authority migrate|status|revert".
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status or revert")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert or recover")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -49703,9 +49818,21 @@ func runAuthority(args []string) {
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
+	peer := fs.String("from", "", "recover: compatible ZeroS3 peer endpoint")
+	key := fs.String("key", "", "recover: exact object key at both stores")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "recover: peer access key (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "recover: peer secret key (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "recover: peer region (default: AWS_REGION)")
 	memMiB := fs.Int64("max-memory-mib", 192, "soft heap limit of this process in MiB (0 = Go default)")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	fs.Parse(args[1:])
+	if sub == "recover" {
+		applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+		if *peer == "" || *bucket == "" || *key == "" {
+			fmt.Fprintln(os.Stderr, "zeros3: authority recover requires -from, -bucket and -key")
+			os.Exit(2)
+		}
+	}
 	// An offline maintenance process needs no serving cache and keeps its heap near the
 	// bound: windowed deltas hold an anchor table and per-worker page caches, nothing else.
 	if os.Getenv("ZEROS3_CHUNK_CACHE_MIB") == "" {
@@ -49763,6 +49890,13 @@ func runAuthority(args []string) {
 			log.Fatalf("zeros3: authority status: %v", err)
 		}
 		enc.Encode(st)
+	case "recover":
+		cfg := syncClientConfig{Endpoint: *peer, Bucket: *bucket, Key: *key, Region: *region,
+			Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}}
+		if err := store.recoverAuthorityFromPeer(cfg); err != nil {
+			log.Fatalf("zeros3: authority recover: %v", err)
+		}
+		enc.Encode(map[string]string{"bucket": *bucket, "key": *key, "status": "verified"})
 	case "revert":
 		if *all {
 			rep, err := store.AuthorityRevertAll()
