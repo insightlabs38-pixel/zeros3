@@ -1,0 +1,32 @@
+{
+  "Objects": 3,
+  "Admitted": 1,
+  "Pinned": 0,
+  "KeptCDC": 0,
+  "CDCBytes": 17811904,
+  "AddedBytes": 2241137,
+  "Plans": [
+    {
+      "sha256": "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924",
+      "size": 63078400,
+      "form": "delta",
+      "bases": [
+        "c4b9b4ca3fdc"
+      ],
+      "depth": 2,
+      "cdc_unshared_bytes": 17811904,
+      "added_bytes": 2241137,
+      "saving": 0.8741775724818638,
+      "read_amp_4k": 698777419.5,
+      "cdc_amp_4k": 151872.32768389813
+    }
+  ],
+  "Seconds": 25.584797834,
+  "PlanReuse": 0,
+  "RepNotBuilt": 0,
+  "CacheHits": 21149,
+  "CacheMisses": 705,
+  "DecodedBytes": 738324480,
+  "similarity_queries": 1,
+  "similarity_matches": 2
+}
