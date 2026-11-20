@@ -1129,6 +1129,243 @@ func TestAuthorityClosureNegotiatesVersionFeaturesAndDepth(t *testing.T) {
 	}
 }
 
+func TestAuthorityClosureSyncExport(t *testing.T) {
+	src := authMigratedLab(t)
+	src.reclaim()
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	server := httptest.NewServer(NewServer(src.s, creds, defaultRegion))
+	defer server.Close()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: defaultRegion}
+	status, raw := doSyncRequest(t, server.Client(), server.URL, signer, http.MethodGet, zeros3SyncInfoPath, nil)
+	var info syncDiscoveryResponse
+	if err := json.Unmarshal(raw, &info); err != nil || status != http.StatusOK || info.AuthorityExport == nil {
+		t.Fatalf("authority export discovery: %d %s %v", status, raw, err)
+	}
+	entry, manifest, err := src.s.HeadObject("b", "k3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := authExportRequest{Bucket: "b", Key: "k3", VersionID: entry.manifestUUID, Peer: *info.AuthorityExport}
+	export := func(req authExportRequest) (int, []byte) {
+		t.Helper()
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doSyncRequest(t, server.Client(), server.URL, signer, http.MethodPost, zeros3AuthExportPath, body)
+	}
+	status, wire := export(req)
+	sha, err := decodeHexSHA256(manifest.ObjectSHA256)
+	if err != nil || status != http.StatusOK || !bytes.HasPrefix(wire, []byte(authXferMagic)) {
+		t.Fatalf("closure export: status %d, digest error %v", status, err)
+	}
+	dst := newAuthLab(t)
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(wire)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := dst.s.authProve(mustLoad(t, dst.s, sha), 0); err != nil {
+		t.Fatalf("remote closure produced different bytes: %v", err)
+	}
+	old := req
+	old.Peer = AuthCaps{}
+	if status, body := export(old); status != http.StatusConflict || !bytes.Contains(body, []byte(`"Materialize"`)) {
+		t.Fatalf("incompatible peer did not receive fallback: %d %s", status, body)
+	}
+	src.put("k3", []byte("new revision"))
+	if status, body := export(req); status != http.StatusConflict || !bytes.Contains(body, []byte(`"SourceChanged"`)) {
+		t.Fatalf("stale source version did not get refused: %d %s", status, body)
+	}
+	res, err := server.Client().Post(server.URL+zeros3AuthExportPath, "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsigned export status = %d", res.StatusCode)
+	}
+}
+
+func TestAuthorityClosureSyncReplication(t *testing.T) {
+	src, dst := authMigratedLab(t), newAuthLab(t)
+	src.reclaim()
+	want := src.want["k3"]
+	sha := sha256.Sum256(want)
+	target := mustLoad(t, src.s, sha)
+	if len(target.Bases) == 0 {
+		t.Fatal("fixture has no authority base")
+	}
+	base := target.Bases[0].SHA
+	var baseBytes []byte
+	for _, value := range src.want {
+		if sha256.Sum256(value) == base {
+			baseBytes = value
+			break
+		}
+	}
+	if baseBytes == nil {
+		t.Fatal("fixture base bytes are missing")
+	}
+	var native bytes.Buffer
+	if err := src.s.ExportAuthorityClosure(base, &native); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.s.ImportAuthorityClosure(&native); err != nil {
+		t.Fatal(err)
+	}
+	dst.put("k", baseBytes)
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	source := httptest.NewServer(NewServer(src.s, creds, defaultRegion))
+	defer source.Close()
+	destination := httptest.NewServer(NewServer(dst.s, creds, defaultRegion))
+	defer destination.Close()
+	cfg := replicateConfig{
+		Source:          syncClientConfig{Endpoint: source.URL, Bucket: "b", Key: "k3", Creds: creds, Region: defaultRegion},
+		Dest:            syncClientConfig{Endpoint: destination.URL, Bucket: "b", Key: "k", Creds: creds, Region: defaultRegion},
+		PreferAuthority: true,
+	}
+	plan, err := planReplication(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := executeReplicationPlan(plan)
+	if err != nil || stats.AuthorityBytes <= 0 || stats.AuthorityBytes >= plan.wouldTransferBytes {
+		t.Fatalf("expected economical native replication: %+v, CDC %d, %v", stats, plan.wouldTransferBytes, err)
+	}
+	t.Logf("native upload %d bytes, missing CDC payload %d", stats.AuthorityBytes, plan.wouldTransferBytes)
+	before, manifest, err := dst.s.HeadObject("b", "k")
+	if err != nil || manifest.ObjectSHA256 != fmt.Sprintf("%x", sha) {
+		t.Fatalf("destination did not publish expected identity: %v", err)
+	}
+	missing := 0
+	for _, c := range manifest.Chunks {
+		key, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dst.s.casStat(key); os.IsNotExist(err) {
+			missing++
+		}
+	}
+	if missing == 0 {
+		t.Fatal("native import stored a complete CDC copy")
+	}
+	assertVersion := func() {
+		t.Helper()
+		after, _, err := dst.s.HeadObject("b", "k")
+		if err != nil || before.manifestUUID != after.manifestUUID {
+			t.Fatalf("retry changed the visible version: %v", err)
+		}
+	}
+	if again, err := replicateObject(cfg); err != nil || again.UploadedBytes != 0 {
+		t.Fatalf("equivalent retry: %+v %v", again, err)
+	}
+	assertVersion()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: defaultRegion}
+	resp := doSignedRequest(t, destination.Client(), destination.URL, signer, http.MethodGet, "/b/k", nil, nil)
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(got, want) {
+		t.Fatalf("fresh S3 GET after native replication: %d %v", resp.StatusCode, err)
+	}
+	destination.Close()
+	dst.close()
+	dst.open()
+	dst.want["k"] = want
+	dst.exact("reopened native replica")
+	dst.verifyOK("reopened native replica")
+}
+
+func TestAuthorityClosureSyncImportRejectsBadPayload(t *testing.T) {
+	src, dst := authMigratedLab(t), newAuthLab(t)
+	src.reclaim()
+	man := src.man("k3")
+	sum, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := mustLoad(t, src.s, sum)
+	if len(root.Bases) == 0 {
+		t.Fatal("fixture needs an omitted base")
+	}
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	server := httptest.NewServer(NewServer(dst.s, creds, defaultRegion))
+	defer server.Close()
+	control := authImportRequest{Version: authXferVersion, SHA256: man.ObjectSHA256, syncCommitRequest: syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: "b", Key: "replica", ContentType: man.ContentType, ExpectAbsent: true,
+	}}
+	for _, ref := range man.Chunks {
+		control.Chunks = append(control.Chunks, syncChunkDescriptor{SHA256: ref.SHA256, Length: ref.Length})
+	}
+	send := func(control authImportRequest, closure []byte, wrongDigest bool) (int, []byte) {
+		t.Helper()
+		header, err := json.Marshal(control)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire := binary.BigEndian.AppendUint32(nil, uint32(len(header)))
+		wire = append(wire, header...)
+		wire = append(wire, closure...)
+		digest := sha256.Sum256(wire)
+		if wrongDigest {
+			digest[0] ^= 1
+		}
+		req, err := http.NewRequest(http.MethodPost, server.URL+zeros3AuthImportPath, bytes.NewReader(wire))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := signSigV4Request(req, creds, defaultRegion, fmt.Sprintf("%x", digest), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		res, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.StatusCode, body
+	}
+	var thin, full bytes.Buffer
+	if err := src.s.ExportAuthorityClosureThin(sum, func(sha [32]byte) bool { return sha == root.Bases[0].SHA }, &thin); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.s.ExportAuthorityClosure(sum, &full); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := send(control, thin.Bytes(), false); status != http.StatusConflict || !bytes.Contains(body, []byte("MissingAuthorityDependency")) {
+		t.Fatalf("missing base: %d %s", status, body)
+	}
+	wrong := control
+	wrong.SHA256 = strings.Repeat("1", 64)
+	if status, body := send(wrong, full.Bytes(), false); status != http.StatusConflict || !bytes.Contains(body, []byte("unexpected content root")) {
+		t.Fatalf("wrong root identity: %d %s", status, body)
+	}
+	if status, body := send(control, full.Bytes(), true); status != http.StatusForbidden || !bytes.Contains(body, []byte("XAmzContentSHA256Mismatch")) {
+		t.Fatalf("bad signed digest: %d %s", status, body)
+	}
+	if rec, err := dst.s.authLoad(sum); err != nil || rec != nil {
+		t.Fatalf("rejected transfer published a root record: %v", err)
+	}
+	if _, _, err := dst.s.HeadObject("b", "replica"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("rejected transfer published an object: %v", err)
+	}
+	status, body := send(control, full.Bytes(), false)
+	if status != http.StatusOK {
+		t.Fatalf("valid import after failure: %d %s", status, body)
+	}
+	var first, retry syncCommitResponse
+	if err := json.Unmarshal(body, &first); err != nil || first.VersionID == "" {
+		t.Fatalf("invalid import acknowledgement: %s", body)
+	}
+	status, body = send(control, full.Bytes(), false)
+	if status != http.StatusOK || json.Unmarshal(body, &retry) != nil || retry.VersionID != first.VersionID {
+		t.Fatalf("retry after lost acknowledgement published another version: %d %s", status, body)
+	}
+}
+
 func TestAuthorityNativeClosureTransferAndInterruption(t *testing.T) {
 	l := authMigratedLab(t)
 	l.reclaim()

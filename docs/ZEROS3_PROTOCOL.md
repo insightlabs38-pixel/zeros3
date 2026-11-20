@@ -379,6 +379,22 @@ reconstructs each new record and verifies its logical SHA-256 before publication
 After an interrupted read the receiver discards pending staging files. A retry
 can reuse components that were already durable.
 
+`replicate -authority-closure` opts into native transfer when both ZeroS3
+peers advertise it and the frame plus import header cost less than the missing
+CDC payload. The SigV4-signed export request binds the source manifest version
+and advertises the destination's decoder capabilities. The client can offer the
+current authoritative content at the destination key as a base. Outdated
+source identity fails the transfer. Older peers, unsupported forms, uneconomical
+frames and missing destination dependencies use the existing CDC replication path.
+
+Import receives a four-byte big-endian header length, a JSON object descriptor
+and the closure frame. It checks the signed whole-request SHA-256 as well as
+the frame digest, proves each new authority record and verifies reconstructed
+content against both the descriptor's chunk hashes and whole-object SHA-256.
+The destination publishes an ordinary S3 manifest through the existing
+journal commit and enforces the same destination preconditions. A retry for
+equivalent content and metadata returns the existing version.
+
 ## Peer repair
 
 Repair reuses the v1 chunk fetch endpoint.
