@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50370    Windowed and estimated similarity deltas (extracted dcore)
-//    51892    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59532    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65804    CLI dispatch, HTTP server/startup, and main
+//    50511    Windowed and estimated similarity deltas (extracted dcore)
+//    52033    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59673    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65945    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46739,6 +46739,7 @@ type AuthPolicy struct {
 	// bound: it can skip a representation that would have won.
 	RepSkipIfDeltaAtMost float64 `json:"rep_skip_if_delta_at_most"`
 	cache                *authPlanCache
+	similarity           *authSimilarityQuery
 }
 
 // authPlanCache carries the expensive results of a plan-only pass into the
@@ -46928,6 +46929,9 @@ type AuthReport struct {
 	// CacheHits/CacheMisses/DecodedBytes describe the shared decoded-source cache of the pass: a miss decodes
 	// DecodedBytes once, a hit avoids decoding that many bytes again.
 	CacheHits, CacheMisses, DecodedBytes int64
+	SimilarityQueries                    int  `json:"similarity_queries,omitempty"`
+	SimilarityMatches                    int  `json:"similarity_matches,omitempty"`
+	SimilarityFallback                   bool `json:"similarity_fallback,omitempty"`
 }
 
 type authObj struct {
@@ -47311,22 +47315,23 @@ func cdcAmp4K(man manifestV1) float64 {
 }
 
 type authMigrator struct {
-	s      *Store
-	pol    AuthPolicy
-	objs   map[[32]byte]*authObj
-	order  []*authObj
-	refs   map[[32]byte]int // chunk -> distinct CDC-authoritative objects/closures using it
-	phys   map[[32]byte]int64
-	index  map[uint64][]int // feature -> order indexes (newest 64)
-	sketch map[int][]uint64
-	done   []int // order indexes of objects eligible as bases (processed or bodied)
-	repC   map[int]*authRepCand
-	byKey  map[string][]int // bucket/key -> admitted-or-eligible base indexes
-	depth  map[int]int
-	zl     map[int]*authZN7Info // tensor layouts of model-shaped contents (nil entry: not a model)
-	wc     *authWinCache        // decoded sources and windows shared by this pass's planning readers
-	idx    *authIdxCache        // anchor indexes of bases, built once however many targets use them
-	rep    AuthReport
+	s            *Store
+	pol          AuthPolicy
+	objs         map[[32]byte]*authObj
+	order        []*authObj
+	refs         map[[32]byte]int // chunk -> distinct CDC-authoritative objects/closures using it
+	phys         map[[32]byte]int64
+	index        map[uint64][]int // feature -> order indexes (newest 64)
+	sketch       map[int][]uint64
+	done         []int // order indexes of objects eligible as bases (processed or bodied)
+	indexedBases map[[32]byte]int
+	repC         map[int]*authRepCand
+	byKey        map[string][]int // bucket/key -> admitted-or-eligible base indexes
+	depth        map[int]int
+	zl           map[int]*authZN7Info // tensor layouts of model-shaped contents (nil entry: not a model)
+	wc           *authWinCache        // decoded sources and windows shared by this pass's planning readers
+	idx          *authIdxCache        // anchor indexes of bases, built once however many targets use them
+	rep          AuthReport
 }
 
 // authIdxCache keeps the single-base anchor indexes of the most recently used bases within a byte budget: a base
@@ -47436,6 +47441,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	t0 := time.Now()
 	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
+	if pol.AllowDelta && pol.similarity != nil {
+		m.indexedBases = make(map[[32]byte]int)
+	}
 	if pol.cache != nil {
 		if pol.cache.wc == nil {
 			pol.cache.wc = newAuthWinCache(authPlanWinCacheBytes)
@@ -47768,6 +47776,9 @@ func (m *authMigrator) recDepth(sha [32]byte) int {
 
 func (m *authMigrator) addBase(i int) {
 	m.done = append(m.done, i)
+	if m.indexedBases != nil {
+		m.indexedBases[m.order[i].sha] = i
+	}
 	k := m.order[i].bucket + "\x00" + m.order[i].key
 	m.byKey[k] = append(m.byKey[k], i)
 	if sk := m.sketch[i]; sk != nil {
@@ -47787,6 +47798,18 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 	for _, f := range sk {
 		for _, j := range m.index[f] {
 			score[j]++
+		}
+	}
+	if q := m.pol.similarity; q != nil && !q.failed {
+		m.rep.SimilarityQueries++
+		extra, err := m.indexedCandidates(i, sk)
+		if err != nil {
+			q.failed = true
+		} else {
+			m.rep.SimilarityMatches += len(extra)
+			for j, n := range extra {
+				score[j] += n
+			}
 		}
 	}
 	// Same-key neighbours are always worth a trial: version histories are the common case.
@@ -47812,6 +47835,42 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 		out = append(out, c.j)
 	}
 	return out
+}
+
+func (m *authMigrator) indexedCandidates(i int, sk []uint64) (map[int]int, error) {
+	q := m.pol.similarity
+	target := m.order[i]
+	if (m.pol.Bucket != "" && target.bucket != m.pol.Bucket) || !strings.HasPrefix(target.key, m.pol.Prefix) {
+		return nil, nil
+	}
+	score := make(map[int]int)
+	resolved := make(map[uint32]int)
+	for _, feature := range sk {
+		best, err := q.postings(feature)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range best {
+			j, visited := resolved[id]
+			if !visited {
+				sha, size, err := q.content(id)
+				if err != nil {
+					return nil, err
+				}
+				pos, eligible := m.indexedBases[sha]
+				j = -1
+				if eligible && pos != i && m.order[pos].bucket == target.bucket &&
+					strings.HasPrefix(m.order[pos].key, m.pol.Prefix) && m.order[pos].man.TotalLength == size {
+					j = pos
+				}
+				resolved[id] = j
+			}
+			if j >= 0 && !slices.Contains(m.index[feature], j) {
+				score[j]++
+			}
+		}
+	}
+	return score, nil
 }
 
 func (m *authMigrator) unsharedBytes(o *authObj) int64 {
@@ -50159,30 +50218,90 @@ func (s *Store) authSimilarityCurrentName() (string, error) {
 	return string(name[:len(name)-1]), nil
 }
 
-// similarityPostingIDs caps the newest IDs globally before applying tombstones.
-func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]uint32, error) {
-	var best []uint32
+type authSimilarityQuery struct {
+	report  authSimilarityStageReport
+	catalog *os.File
+	files   []*os.File
+	runs    []*authSimilarityRun
+	failed  bool
+}
+
+func openAuthSimilarityQuery(report authSimilarityStageReport) (*authSimilarityQuery, error) {
+	catalog, err := os.Open(filepath.Join(report.Directory, "catalog.zsc"))
+	if err != nil {
+		return nil, err
+	}
+	q := &authSimilarityQuery{report: report, catalog: catalog}
+	ok := false
+	defer func() {
+		if !ok {
+			q.close()
+		}
+	}()
+	if err := verifyAuthSimilarityCatalog(catalog, report); err != nil {
+		return nil, err
+	}
 	for _, desc := range report.Runs {
 		f, err := os.Open(filepath.Join(report.Directory, desc.Name))
 		if err != nil {
 			return nil, err
 		}
-		var ids []uint32
-		if st, err := f.Stat(); err == nil {
-			var run *authSimilarityRun
-			run, err = openAuthSimilarityRun(f, st.Size())
-			if err == nil && (run.generation != report.Generation || run.count != desc.Postings ||
-				run.highestID > report.Objects || hex.EncodeToString(run.digest[:]) != desc.SHA256) {
-				err = errAuthSimilarityRun
-			}
-			if err == nil {
-				ids, err = run.lookup(feature, authSimilarityRunLimit)
-			}
-			if err := errors.Join(err, f.Close()); err != nil {
-				return nil, err
-			}
-		} else {
-			f.Close()
+		q.files = append(q.files, f)
+		st, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if !st.Mode().IsRegular() {
+			return nil, errAuthSimilarityRun
+		}
+		run, err := openAuthSimilarityRun(f, st.Size())
+		if err != nil {
+			return nil, err
+		}
+		if run.generation != report.Generation || run.count != desc.Postings ||
+			run.highestID > report.Objects || hex.EncodeToString(run.digest[:]) != desc.SHA256 {
+			return nil, errAuthSimilarityRun
+		}
+		q.runs = append(q.runs, run)
+	}
+	ok = true
+	return q, nil
+}
+
+func (q *authSimilarityQuery) close() {
+	q.catalog.Close()
+	for _, f := range q.files {
+		f.Close()
+	}
+}
+
+func (q *authSimilarityQuery) content(id uint32) ([32]byte, int64, error) {
+	var sha [32]byte
+	if id == 0 || id > q.report.Objects {
+		return sha, 0, errors.New("invalid similarity catalog ID")
+	}
+	var row [44]byte
+	if _, err := q.catalog.ReadAt(row[:], 12+44*int64(id-1)); err != nil {
+		return sha, 0, err
+	}
+	size := int64(binary.LittleEndian.Uint64(row[36:]))
+	if binary.LittleEndian.Uint32(row[:]) != id || size < 0 {
+		return sha, 0, errors.New("invalid similarity catalog row")
+	}
+	copy(sha[:], row[4:36])
+	return sha, size, nil
+}
+
+// postings caps the newest IDs globally before applying tombstones.
+func (q *authSimilarityQuery) postings(feature uint64) ([]uint32, error) {
+	var best []uint32
+	for i := len(q.runs) - 1; i >= 0; i-- {
+		run := q.runs[i]
+		if len(best) == authSimilarityRunLimit && run.highestID <= best[0] {
+			continue
+		}
+		ids, err := run.lookup(feature, authSimilarityRunLimit)
+		if err != nil {
 			return nil, err
 		}
 		best = append(best, ids...)
@@ -50194,9 +50313,18 @@ func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]u
 		}
 	}
 	return slices.DeleteFunc(best, func(id uint32) bool {
-		_, retired := slices.BinarySearch(report.retired, id)
+		_, retired := slices.BinarySearch(q.report.retired, id)
 		return retired
 	}), nil
+}
+
+func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]uint32, error) {
+	q, err := openAuthSimilarityQuery(report)
+	if err != nil {
+		return nil, err
+	}
+	defer q.close()
+	return q.postings(feature)
 }
 
 // runAuthority implements the authority maintenance commands.
@@ -50239,6 +50367,7 @@ func runAuthority(args []string) {
 	memMiB := fs.Int64("max-memory-mib", 192, "soft heap limit of this process in MiB (0 = Go default)")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
+	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
 	fs.Parse(args[1:])
 	// An offline maintenance process needs no serving cache and keeps its heap near the
 	// bound: windowed deltas hold an anchor table and per-worker page caches, nothing else.
@@ -50324,6 +50453,17 @@ func runAuthority(args []string) {
 		}
 	case "migrate":
 		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost}
+		if *indexedDiscovery && pol.AllowDelta {
+			report, err := store.readAuthSimilarityCurrent()
+			if err == nil {
+				pol.similarity, err = openAuthSimilarityQuery(report)
+			}
+			if err != nil {
+				log.Printf("zeros3: similarity discovery using existing candidates: %v", err)
+			} else {
+				defer pol.similarity.close()
+			}
+		}
 		if *archive {
 			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
 		}
@@ -50337,6 +50477,7 @@ func runAuthority(args []string) {
 		if err != nil {
 			log.Fatalf("zeros3: authority migrate: %v", err)
 		}
+		rep.SimilarityFallback = *indexedDiscovery && pol.AllowDelta && (pol.similarity == nil || pol.similarity.failed)
 		enc.Encode(rep)
 	case "status":
 		st, err := store.AuthorityStatus()

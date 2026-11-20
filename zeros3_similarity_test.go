@@ -99,6 +99,43 @@ func TestAuthoritySimilarityRunLookup(t *testing.T) {
 	}
 }
 
+func TestAuthoritySimilarityHotPostingsAcrossRuns(t *testing.T) {
+	const hot uint64 = 0x1234000000000004
+	run := func(first, last uint32) *authSimilarityRun {
+		t.Helper()
+		var posts []similarityFixturePosting
+		for id := first; id <= last; id++ {
+			posts = append(posts, similarityFixturePosting{hot, id})
+		}
+		raw := similarityFixtureRun(posts)
+		opened, err := openAuthSimilarityRun(bytes.NewReader(raw), int64(len(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return opened
+	}
+	old, middle, recent := run(1, 20), run(21, 80), run(81, 100)
+	q := authSimilarityQuery{
+		report: authSimilarityStageReport{retired: []uint32{37, 99}},
+		runs:   []*authSimilarityRun{old, middle, recent},
+	}
+	var want []uint32
+	for id := uint32(37); id <= 100; id++ {
+		if !slices.Contains(q.report.retired, id) {
+			want = append(want, id)
+		}
+	}
+	got, err := q.postings(hot)
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("global hot feature candidates differ: got %v want %v error %v", got, want, err)
+	}
+	q.runs = []*authSimilarityRun{run(1, 100)}
+	got, err = q.postings(hot)
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("compacted hot feature candidates differ: got %v want %v error %v", got, want, err)
+	}
+}
+
 func TestAuthoritySimilarityRunCorruption(t *testing.T) {
 	fresh := similarityFixtureRun([]similarityFixturePosting{{2, 1}, {2, 3}, {3, 1}})
 	for _, tc := range []struct {
@@ -739,5 +776,82 @@ func TestAuthoritySimilarityPhysicalMaintenance(t *testing.T) {
 	current, err = lab.s.readAuthSimilarityCurrent()
 	if err != nil || current.Generation != generation.Generation {
 		t.Fatalf("reversion invalidated unchanged logical roots: %+v %v", current, err)
+	}
+}
+
+func TestAuthoritySimilarityIndexedCandidatesScopeAndFallback(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, bucket := range []string{"scope", "other"} {
+		if err := s.CreateBucket(bucket); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := genRandomBytes(207, 200_000)
+	related := bytes.Clone(body)
+	copy(related[95000:], "a small edit in related content")
+	target := bytes.Clone(body)
+	copy(target[165000:], "a later edit in a different key")
+	mustPutObject(t, s, "scope", "public/base", body, "", nil)
+	mustPutObject(t, s, "other", "public/other", related, "", nil)
+	mustPutObject(t, s, "scope", "public/target", target, "", nil)
+	report, err := s.refreshAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.publishAuthSimilarityStage(filepath.Base(report.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	report, err = s.readAuthSimilarityCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := openAuthSimilarityQuery(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.close()
+	targetFeatures := authFeatures(target, 16)
+	otherFeatures := authFeatures(related, 16)
+	indexIncludesOther := false
+	for _, f := range targetFeatures {
+		indexIncludesOther = indexIncludesOther || slices.Contains(otherFeatures, f)
+	}
+	if !indexIncludesOther {
+		t.Fatal("isolation fixture has no common posting in the other bucket")
+	}
+	m := &authMigrator{
+		pol:          AuthPolicy{MaxDepth: 2, Candidates: 4, Prefix: "public/", similarity: q},
+		order:        []*authObj{{sha: sha256.Sum256(body)}, {sha: sha256.Sum256(related)}, {sha: sha256.Sum256(target)}},
+		indexedBases: make(map[[32]byte]int),
+		byKey:        make(map[string][]int),
+		index:        make(map[uint64][]int),
+	}
+	for _, lm := range s.liveManifests() {
+		for _, obj := range m.order {
+			if lm.man.ObjectSHA256 == fmt.Sprintf("%x", obj.sha) {
+				obj.man, obj.bucket, obj.key = lm.man, lm.bucket, lm.key
+			}
+		}
+	}
+	m.addBase(0)
+	m.addBase(1)
+	if got := m.candidates(2, targetFeatures, false); !slices.Equal(got, []int{0}) {
+		t.Fatalf("expected only the same-bucket related key from the index, got %v", got)
+	}
+	m.pol.Prefix = "unrelated/"
+	if got := m.candidates(2, targetFeatures, false); len(got) != 0 {
+		t.Fatalf("indexed candidates escaped migration prefix: %v", got)
+	}
+	m.pol.Prefix = "public/"
+	m.index[targetFeatures[0]] = []int{0}
+	if err := q.catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.candidates(2, targetFeatures, false); !q.failed || !slices.Equal(got, []int{0}) {
+		t.Fatalf("index read failure did not retain existing candidates: failed=%t candidates=%v", q.failed, got)
 	}
 }
