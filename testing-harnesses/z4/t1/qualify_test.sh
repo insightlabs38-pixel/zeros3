@@ -2,6 +2,8 @@
 # Negative controls for qualify.sh: stub steps drive every verdict the gate must reach. usage: qualify_test.sh (from anywhere in the repo)
 set -u
 cd "$(git rev-parse --show-toplevel)"
+# The fixture controls choose their own selection and retain earlier attempts.
+unset QUALIFY_ONLY QUALIFY_FRESH
 Q=$(pwd)/testing-harnesses/z4/t1; W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; fails=0
 cat > "$W/steps.sh" <<'S'
 MANDATORY=(a b c)
