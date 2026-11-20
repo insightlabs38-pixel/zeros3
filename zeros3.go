@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50581    Windowed and estimated similarity deltas (extracted dcore)
-//    52103    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59743    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66015    CLI dispatch, HTTP server/startup, and main
+//    50655    Windowed and estimated similarity deltas (extracted dcore)
+//    52177    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59822    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66094    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46279,6 +46279,7 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 // authObjAt is a concurrency-safe ReaderAt over one object's served bytes: every
 // concurrent caller works on its own manifestReaderAt (they hold stream state).
 type authObjAt struct {
+	ctx  context.Context
 	s    *Store
 	man  manifestV1
 	wc   *authWinCache
@@ -46295,6 +46296,11 @@ func (s *Store) newAuthObjAtC(man manifestV1, wc *authWinCache) *authObjAt {
 }
 
 func (a *authObjAt) ReadAt(p []byte, off int64) (int, error) {
+	if a.ctx != nil {
+		if err := a.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
 	a.mu.Lock()
 	var r *manifestReaderAt
 	if n := len(a.free); n > 0 {
@@ -46345,6 +46351,9 @@ func (w *authPieceWriter) Write(p []byte) (int, error) {
 
 func (w *authPieceWriter) flushPiece() {
 	if len(w.buf) == 0 || w.err != nil {
+		return
+	}
+	if w.err = authFaultAt("pieces-write"); w.err != nil {
 		return
 	}
 	sum, err := w.b.Add(w.buf)
@@ -46852,8 +46861,8 @@ var authTierLimits = map[string]struct {
 }
 
 // authCostOf measures the candidate's read and classifies its replay path.
-func (s *Store) authCostOf(rec *authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
-	dAuth, dCDC, err := s.authReadTiming(rec, man)
+func (s *Store) authCostOf(runCtx context.Context, rec *authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
+	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, man)
 	if err != nil {
 		return nil, err
 	}
@@ -47135,7 +47144,7 @@ func (s *Store) manifestBytes(man manifestV1) ([]byte, error) {
 }
 
 // authWritePieces durably stores a blob as fixed-size CAS chunks.
-func (s *Store) authWritePieces(blob []byte) ([]authPiece, error) {
+func (s *Store) authWritePieces(ctx context.Context, blob []byte) ([]authPiece, error) {
 	if err := authFaultAt("pieces-write"); err != nil {
 		return nil, err
 	}
@@ -47143,6 +47152,9 @@ func (s *Store) authWritePieces(blob []byte) ([]authPiece, error) {
 	defer b.Abort()
 	var ps []authPiece
 	for off := 0; off < len(blob); off += xdPieceSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		end := min(off+xdPieceSize, len(blob))
 		sum, err := b.Add(blob[off:end])
 		if err != nil {
@@ -47172,7 +47184,14 @@ func chunkPieces(man manifestV1) ([]authPiece, error) {
 // candidate record, resolves it (and its published bases) through the normal
 // read path from the durable CAS, and checks exact length and SHA-256. The
 // overlay lets an unpublished candidate be resolved; returns bytes fetched.
-func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetched float64, err error) {
+func (s *Store) authProve(rec *authRecord, probes int) (int64, float64, error) {
+	return s.authProveContext(context.Background(), rec, probes)
+}
+
+func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, probes int) (fetched int64, probeFetched float64, err error) {
+	if err := runCtx.Err(); err != nil {
+		return 0, 0, err
+	}
 	data, err := rec.marshal()
 	if err != nil {
 		return 0, 0, err
@@ -47196,6 +47215,9 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 	h := sha256.New()
 	buf := make([]byte, authReadPiece)
 	for off := int64(0); off < body.Size(); {
+		if err := runCtx.Err(); err != nil {
+			return 0, 0, err
+		}
 		k := int(min(int64(len(buf)), body.Size()-off))
 		if n, err := body.ReadAt(buf[:k], off); n != k {
 			if err == nil || err == io.EOF {
@@ -47217,6 +47239,9 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 		var tot int64
 		rng := rand.New(rand.NewPCG(binary.LittleEndian.Uint64(cand.SHA[:8]), 7))
 		for i := 0; i < probes; i++ {
+			if err := runCtx.Err(); err != nil {
+				return 0, 0, err
+			}
 			pc := s.newAuthScanCtx()
 			pc.overlay = ctx.overlay
 			pb, _, perr := pc.body(cand.SHA, 0, 1)
@@ -47237,8 +47262,8 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 
 // authReadRatio is the whole-object read throughput of a candidate body relative to
 // the CDC read of the same object (best of two warm passes each; above 1 is faster).
-func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) {
-	dAuth, dCDC, err := s.authReadTiming(rec, man)
+func (s *Store) authReadRatio(runCtx context.Context, rec *authRecord, man manifestV1) (float64, error) {
+	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, man)
 	if err != nil || dAuth <= 0 {
 		return 0, err
 	}
@@ -47246,7 +47271,7 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 }
 
 // authReadTiming is the best warm whole-object read of the candidate and of the CDC chunks of the same content.
-func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
+func (s *Store) authReadTiming(runCtx context.Context, rec *authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
 	timed := func(read func() error) (time.Duration, error) {
 		best := time.Duration(math.MaxInt64)
 		for i := 0; i < 2; i++ {
@@ -47275,6 +47300,9 @@ func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC tim
 		}
 		buf := make([]byte, authReadPiece)
 		for off := int64(0); off < body.Size(); {
+			if err := runCtx.Err(); err != nil {
+				return err
+			}
 			k := int(min(int64(len(buf)), body.Size()-off))
 			if n, err := body.ReadAt(buf[:k], off); n != k {
 				return fmt.Errorf("read ratio: %v", err)
@@ -47290,6 +47318,9 @@ func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC tim
 		rd := s.newManifestReader(man, byteRange{0, man.TotalLength - 1})
 		defer rd.close()
 		for {
+			if err := runCtx.Err(); err != nil {
+				return err
+			}
 			if _, err := rd.next(); err == io.EOF {
 				return nil
 			} else if err != nil {
@@ -47315,6 +47346,7 @@ func cdcAmp4K(man manifestV1) float64 {
 }
 
 type authMigrator struct {
+	ctx          context.Context
 	s            *Store
 	pol          AuthPolicy
 	objs         map[[32]byte]*authObj
@@ -47388,6 +47420,14 @@ func (c *authIdxCache) get(sha [32]byte, b []byte, p dwDcoreParams) (*dwDcoreInd
 // authoritative physical body of live objects. With Apply false it only plans
 // (components for rep candidates may be staged and are collectible garbage).
 func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
+	return s.AuthorityMigrateContext(context.Background(), pol)
+}
+
+// AuthorityMigrateContext stops at bounded read and publication boundaries when canceled.
+func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (AuthReport, error) {
+	if err := ctx.Err(); err != nil {
+		return AuthReport{}, err
+	}
 	pol = pol.norm()
 	if pol.HardCodecs { // nested planning passes restore what the outer pass set
 		defer s.rep.hardCodecs.Store(s.rep.hardCodecs.Swap(true))
@@ -47421,11 +47461,11 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		rp.AllowDelta, rp.Apply, rp.Strategy = false, false, "forced"
 		pol.cache = newAuthPlanCache()
 		dp.cache, rp.cache = pol.cache, pol.cache
-		dr, err := s.AuthorityMigrate(dp)
+		dr, err := s.AuthorityMigrateContext(ctx, dp)
 		if err != nil {
 			return dr, err
 		}
-		rr, err := s.AuthorityMigrate(rp)
+		rr, err := s.AuthorityMigrateContext(ctx, rp)
 		if err != nil {
 			return rr, err
 		}
@@ -47439,7 +47479,7 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		}
 	}
 	t0 := time.Now()
-	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
+	m := &authMigrator{ctx: ctx, s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
 	if pol.AllowDelta && pol.similarity != nil {
 		m.indexedBases = make(map[[32]byte]int)
@@ -47470,7 +47510,7 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	var scanErr error
 	s.eachLiveManifest(nil, func(lm liveMan) {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
-		if scanErr != nil || err != nil || lm.man.TotalLength < 1 {
+		if scanErr = cmp.Or(scanErr, ctx.Err()); scanErr != nil || err != nil || lm.man.TotalLength < 1 {
 			return
 		}
 		if scopedRun && !scoped[sha] { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
@@ -47539,9 +47579,14 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		m.wc.setBudget(min(max(4*largest, authPlanSrcCacheMin), authPlanWinCacheMax))
 	}
 	if pol.AllowRep {
-		m.planRepGroups()
+		if err := m.planRepGroups(); err != nil {
+			return m.rep, err
+		}
 	}
 	for i, o := range m.order {
+		if err := ctx.Err(); err != nil {
+			return m.rep, err
+		}
 		m.rep.Objects++
 		if o.hasRec {
 			m.depth[i] = m.recDepth(o.sha)
@@ -47557,7 +47602,7 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	if pol.cache != nil {
 		m.rep.PlanReuse, m.rep.RepNotBuilt = pol.cache.reuseHits, pol.cache.rejected
 	}
-	return m.rep, nil
+	return m.rep, ctx.Err()
 }
 
 // authRepAbandonMin is the group size above which a representation group may be abandoned before all its
@@ -47576,11 +47621,14 @@ type authRepCand struct {
 // and admits a kind's group only when the union of its components (shared
 // across versions) beats the group's unshared CDC bytes: a lone first-sight
 // representation is usually larger than CDC, its value is the reuse.
-func (m *authMigrator) planRepGroups() {
+func (m *authMigrator) planRepGroups() error {
 	// A lone first-sight object cannot amortize its components: kinds seen once are not even built.
 	kinds := map[int]repKind{}
 	count := map[repKind]int{}
 	for i, o := range m.order {
+		if err := m.ctx.Err(); err != nil {
+			return err
+		}
 		if o.hasRec || o.man.TotalLength < m.pol.MinObject || o.man.TotalLength > repMaxInspect {
 			continue
 		}
@@ -47593,7 +47641,7 @@ func (m *authMigrator) planRepGroups() {
 		kinds[i] = kind
 		count[kind]++
 	}
-	m.planRepGroupsUnion(kinds, count)
+	return m.planRepGroupsUnion(kinds, count)
 }
 
 // groupReclaimable is the exact CDC volume a group frees: the physical bytes
@@ -47645,7 +47693,7 @@ func (m *authMigrator) groupChunkBytes(idxs []int) int64 {
 // planRepGroupsUnion admits a kind's group by union accounting, constructing
 // members progressively and abandoning the group as soon as its projected
 // cost cannot beat the delta plan (or CDC) for the same members.
-func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKind]int) {
+func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKind]int) error {
 	groups := map[repKind][]int{}
 	for i := range m.order {
 		if kind, ok := kinds[i]; ok && count[kind] >= m.pol.MinRepGroup {
@@ -47692,6 +47740,9 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 		built := 0
 		abandoned := false
 		for k, i := range members {
+			if err := m.ctx.Err(); err != nil {
+				return err
+			}
 			var rc *authRepCand
 			if cache != nil {
 				rc = cache.repC[m.order[i].sha]
@@ -47703,7 +47754,10 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 						src = bytes.NewReader(b)
 					}
 				}
-				root, _, err := m.s.repConstructAt(m.order[i].man, src, nil)
+				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil })
+				if errors.Is(err, syscall.ENOSPC) {
+					return err
+				}
 				if err != nil {
 					continue
 				}
@@ -47765,6 +47819,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 			}
 		}
 	}
+	return m.ctx.Err()
 }
 
 func (m *authMigrator) recDepth(sha [32]byte) int {
@@ -48174,12 +48229,15 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		m.addBase(i)
 		return nil
 	}
+	if err := m.ctx.Err(); err != nil {
+		return err
+	}
 	// --- build durable components, publish bases' pins, prove, commit
 	var rec *authRecord
 	var pins []int
 	if choice == "delta" {
 		rec, pins = best.rec, best.pins
-		ps, err := m.s.authWritePieces(best.blob)
+		ps, err := m.s.authWritePieces(m.ctx, best.blob)
 		if err != nil {
 			return err
 		}
@@ -48197,6 +48255,9 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 	pol := m.pol
 	fireTestHook(hookAuthComponentsFlushed)
 	for _, j := range pins {
+		if err := m.ctx.Err(); err != nil {
+			return err
+		}
 		if err := m.s.authEnsurePin(m.order[j]); err != nil {
 			return err
 		}
@@ -48208,8 +48269,11 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 	if _, tiered := authTierLimits[pol.Tier]; pol.MaxReadAmp <= 0 && !(tiered && !pol.NoReadCost) {
 		probes = 2
 	}
-	_, probe, err := m.s.authProve(rec, probes)
+	_, probe, err := m.s.authProveContext(m.ctx, rec, probes)
 	if err != nil {
+		if ctxErr := m.ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		plan.Reason = "proof failed: " + err.Error()
 		plan.Form = "cdc"
 		if pol.cache != nil {
@@ -48232,7 +48296,7 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		return nil
 	}
 	if _, tiered := authTierLimits[pol.Tier]; tiered && !pol.NoReadCost {
-		cost, err := m.s.authCostOf(rec, o.man, probe, plan.Depth)
+		cost, err := m.s.authCostOf(m.ctx, rec, o.man, probe, plan.Depth)
 		if err != nil {
 			return err
 		}
@@ -48252,7 +48316,7 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 	}
 	if pol.MaxReadAmp > 0 && pol.MinReadRatio > 0 {
-		ratio, err := m.s.authReadRatio(rec, o.man)
+		ratio, err := m.s.authReadRatio(m.ctx, rec, o.man)
 		if err != nil {
 			return err
 		}
@@ -48269,6 +48333,9 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 	}
 	fireTestHook(hookAuthProofDone)
+	if err := m.ctx.Err(); err != nil {
+		return err
+	}
 	if err := m.s.authPublish(rec); err != nil {
 		return err
 	}
@@ -48319,6 +48386,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		return m.commitRep(i, o, repRoot, repAdded, plan, finish)
 	}
 	tgt := m.s.newAuthObjAtC(o.man, m.wc)
+	tgt.ctx = m.ctx
 	defer tgt.close()
 	sk := pol.cache.sketchOf(o.sha)
 	if sk == nil {
@@ -48342,6 +48410,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		return keep("delta depth exceeds the policy")
 	}
 	base := m.s.newAuthObjAtC(bo.man, m.wc)
+	base.ctx = m.ctx
 	defer base.close()
 	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
@@ -48386,6 +48455,9 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	pw := m.s.newAuthPieceWriter()
 	defer pw.abort()
 	if _, err := dwDcoreWEncode(pw, tgt, o.man.TotalLength, base, bo.man.TotalLength, idx, wp); err != nil {
+		if storeErr := cmp.Or(pw.err, m.ctx.Err()); storeErr != nil {
+			return storeErr
+		}
 		return keep("windowed encoding failed: " + err.Error())
 	}
 	ps, err := pw.finish()
@@ -50522,6 +50594,8 @@ func runAuthority(args []string) {
 			log.Fatalf("zeros3: authority index-status: %v", err)
 		}
 	case "migrate":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
 		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost}
 		if *indexedDiscovery && pol.AllowDelta {
 			report, err := store.readAuthSimilarityCurrent()
@@ -50543,7 +50617,7 @@ func runAuthority(args []string) {
 				pol.Order = "oldest"
 			}
 		}
-		rep, err := store.AuthorityMigrate(pol)
+		rep, err := store.AuthorityMigrateContext(ctx, pol)
 		if err != nil {
 			log.Fatalf("zeros3: authority migrate: %v", err)
 		}
@@ -59575,6 +59649,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 		cs = cs[:min(pol.MaxBases, 3)]
 	}
 	tgt := m.s.newAuthObjAt(o.man)
+	tgt.ctx = m.ctx
 	defer tgt.close()
 	var bases []ncNumcoreBaseIn
 	var closers []*authObjAt
@@ -59588,6 +59663,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 	for _, c := range cs {
 		bo := m.order[c.j]
 		ra := m.s.newAuthObjAt(bo.man)
+		ra.ctx = m.ctx
 		closers = append(closers, ra)
 		bases = append(bases, ncNumcoreBaseIn{ID: ncNumcoreID(bo.sha), Len: bo.man.TotalLength, Src: ncNumcoreRawSource{R: ra, L: m.zn7Info(c.j).lay}})
 		js = append(js, c.j)
@@ -59623,7 +59699,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 		added = c.znAdded[o.sha]
 	} else {
 		var cw authCountWriter
-		if _, err := ncNumcoreEncode(context.Background(), &cw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+		if _, err := ncNumcoreEncode(m.ctx, &cw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
 			return false, nil // not codable as a container: the generic paths decide
 		}
 		added = cw.n + 96 + 160
@@ -59664,7 +59740,10 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 	}
 	pw := m.s.newAuthPieceWriter()
 	defer pw.abort()
-	if _, err := ncNumcoreEncode(context.Background(), pw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+	if _, err := ncNumcoreEncode(m.ctx, pw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+		if storeErr := cmp.Or(pw.err, m.ctx.Err()); storeErr != nil {
+			return true, storeErr
+		}
 		return false, nil
 	}
 	ps, err := pw.finish()

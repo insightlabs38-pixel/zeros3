@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/binary"
@@ -837,7 +838,7 @@ func TestAuthorityGraphLimits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ps, _ := s.authWritePieces(blob)
+			ps, _ := s.authWritePieces(context.Background(), blob)
 			d := byte(min(i, authHardDepth))
 			rec := &authRecord{SHA: sum, Size: int64(len(v)), Gen: 1, Form: authFormDelta, Depth: d, Bases: refs, Pieces: ps}
 			rawPublish(t, s, rec)
@@ -868,8 +869,8 @@ func TestAuthorityCycleRejected(t *testing.T) {
 	shaA, shaB := sha256.Sum256(a), sha256.Sum256(b)
 	blobA, refsA, _ := xdEncode([]xdSrc{{shaB, b}}, a, 64<<10)
 	blobB, refsB, _ := xdEncode([]xdSrc{{shaA, a}}, b, 64<<10)
-	psA, _ := l.s.authWritePieces(blobA)
-	psB, _ := l.s.authWritePieces(blobB)
+	psA, _ := l.s.authWritePieces(context.Background(), blobA)
+	psB, _ := l.s.authWritePieces(context.Background(), blobB)
 	rawPublish(t, l.s, &authRecord{SHA: shaA, Size: int64(len(a)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsA, Pieces: psA})
 	rawPublish(t, l.s, &authRecord{SHA: shaB, Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsB, Pieces: psB})
 	ctx := l.s.newAuthCtx()
@@ -1806,7 +1807,7 @@ func TestAuthorityPublishRefusesIncompleteClosure(t *testing.T) {
 	b := authVersion(a, 9)
 	shaA, shaB := sha256.Sum256(a), sha256.Sum256(b)
 	blob, refs, _ := xdEncode([]xdSrc{{shaA, a}}, b, 64<<10)
-	ps, _ := l.s.authWritePieces(blob)
+	ps, _ := l.s.authWritePieces(context.Background(), blob)
 	rec := &authRecord{SHA: shaB, Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 1, Bases: refs, Pieces: ps}
 	if err := l.s.authPublish(rec); !errors.Is(err, errAuthMissing) {
 		t.Fatalf("delta without a committed base published: %v", err)
@@ -2185,7 +2186,7 @@ func g1Retire(s *Store, st *g1Store, man manifestV1) error {
 			return fmt.Errorf("no copy against the shifted base (%v)", err)
 		}
 		rec = &authRecord{SHA: sha, Size: man.TotalLength, Gen: 1, Form: authFormDelta, Depth: 1, Bases: refs}
-		if rec.Pieces, err = s.authWritePieces(blob); err != nil {
+		if rec.Pieces, err = s.authWritePieces(context.Background(), blob); err != nil {
 			return err
 		}
 		if _, _, err := s.authProve(rec, 2); err != nil {
@@ -2250,6 +2251,81 @@ func TestAuthorityRevertAllLowersFloorAndOldBinaryReopens(t *testing.T) {
 		t.Fatalf("floor lowered with records present: %d %v", lowered, err)
 	}
 	l.close()
+}
+
+func TestAuthorityMigrationCancellationBeforePublication(t *testing.T) {
+	for _, cut := range []string{hookAuthComponentsFlushed, hookAuthProofDone} {
+		t.Run(cut, func(t *testing.T) {
+			l := authHistoryLab(t, 491, 3, 520_000)
+			l.reclaim()
+			pol := AuthPolicy{Apply: true, AllowDelta: true, NoZN7: true, MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			canceledAtCut := false
+			withTestHook(t, func(point string) {
+				if point == cut && !canceledAtCut {
+					canceledAtCut = true
+					cancel()
+				}
+			})
+			report, err := l.s.AuthorityMigrateContext(ctx, pol)
+			if !canceledAtCut || !errors.Is(err, context.Canceled) || report.Admitted != 0 {
+				t.Fatalf("cancel before publication: fired=%t report=%+v error=%v", canceledAtCut, report, err)
+			}
+			l.close()
+			l.open()
+			l.exact("reopened after cancellation")
+			l.verifyOK("reopened after cancellation")
+			for key := range l.want {
+				sum, err := decodeHexSHA256(l.man(key).ObjectSHA256)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rec, err := l.s.authLoad(sum)
+				if err != nil || rec != nil && rec.Form != authFormPin {
+					t.Fatalf("canceled pass published a target record for %s: %+v %v", key, rec, err)
+				}
+			}
+			l.reclaim()
+			retried, err := l.s.AuthorityMigrate(pol)
+			if err != nil || retried.Admitted == 0 {
+				t.Fatalf("retry after cancellation did not admit a delta: %+v %v", retried, err)
+			}
+			l.reclaim()
+			l.exact("reclaimed retry")
+			l.verifyOK("reclaimed retry")
+		})
+	}
+}
+
+func TestAuthorityWindowedMigrationReportsStagingENOSPC(t *testing.T) {
+	defer func(a, b int64) { authWindowMin, authWindowSize = a, b }(authWindowMin, authWindowSize)
+	authWindowMin, authWindowSize = 64<<10, 64<<10
+	l := authHistoryLab(t, 492, 3, 520_000)
+	l.reclaim()
+	pol := AuthPolicy{Apply: true, AllowDelta: true, NoZN7: true, MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1}
+	authFault = func(point string) error {
+		if point == "pieces-write" {
+			return syscall.ENOSPC
+		}
+		return nil
+	}
+	defer func() { authFault = nil }()
+	report, err := l.s.AuthorityMigrate(pol)
+	if !errors.Is(err, syscall.ENOSPC) || report.Admitted != 0 {
+		t.Fatalf("windowed writer failure was not reported: report=%+v error=%v", report, err)
+	}
+	authFault = nil
+	l.reclaim()
+	l.exact("reopened after ENOSPC")
+	l.verifyOK("reopened after ENOSPC")
+	retried, err := l.s.AuthorityMigrate(pol)
+	if err != nil || retried.Admitted == 0 {
+		t.Fatalf("retry after ENOSPC did not admit a delta: %+v %v", retried, err)
+	}
+	l.reclaim()
+	l.exact("reclaimed retry")
+	l.verifyOK("reclaimed retry")
 }
 
 // Objects above the in-memory window take the windowed single-base delta: exact
