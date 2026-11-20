@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50363    Windowed and estimated similarity deltas (extracted dcore)
-//    51885    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59525    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65797    CLI dispatch, HTTP server/startup, and main
+//    50370    Windowed and estimated similarity deltas (extracted dcore)
+//    51892    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59532    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65804    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -49158,6 +49158,7 @@ const (
 	authSimilarityRunEntry   = 10
 	authSimilarityRunBase    = authSimilarityRunHeader + (authSimilarityRunBuckets+1)*4
 	authSimilarityRunLimit   = 64
+	authSimilarityMaxRuns    = 256
 )
 
 var errAuthSimilarityRun = errors.New("invalid similarity posting run")
@@ -49573,6 +49574,9 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 			return err
 		}
 		report.Runs = append(report.Runs, run)
+		if len(report.Runs) > authSimilarityMaxRuns {
+			return errAuthSimilarityNeedsRebuild
+		}
 		batch = batch[:0]
 		return nil
 	}
@@ -49875,7 +49879,7 @@ func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStag
 
 const authSimilarityMaxTombstones = 1 << 20
 
-var errAuthSimilarityNeedsRebuild = errors.New("similarity tombstones require a compact rebuild")
+var errAuthSimilarityNeedsRebuild = errors.New("similarity generation exceeds its run or tombstone limit")
 
 func writeAuthSimilarityTombstones(dir string, report *authSimilarityStageReport) error {
 	report.Tombstones = uint32(len(report.retired))
@@ -50027,6 +50031,9 @@ func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageRe
 	}
 	if report.StoreID != s.formatSnapshot().StoreID {
 		return report, errors.New("wrong-store similarity generation")
+	}
+	if len(report.Runs) > authSimilarityMaxRuns {
+		return report, errAuthSimilarityNeedsRebuild
 	}
 	catalog, err := os.Open(filepath.Join(dir, "catalog.zsc"))
 	if err != nil {

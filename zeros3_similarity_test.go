@@ -340,6 +340,75 @@ func TestAuthoritySimilarityRefresh(t *testing.T) {
 	}
 }
 
+func TestAuthoritySimilarityMultipartAndCopy(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("similar"); err != nil {
+		t.Fatal(err)
+	}
+	refresh := func(want uint32) authSimilarityStageReport {
+		t.Helper()
+		report, err := s.refreshAuthSimilarityStage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.LiveObjects != want || report.Objects != want {
+			t.Fatalf("catalog has %d live of %d total, want %d", report.LiveObjects, report.Objects, want)
+		}
+		if err := s.publishAuthSimilarityStage(filepath.Base(report.Directory)); err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	upload := func(key string, body []byte) (string, string) {
+		t.Helper()
+		id, err := s.CreateMultipartUpload("similar", key, "application/octet-stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		etag, err := s.UploadPart("similar", key, id, 1, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id, etag
+	}
+	first := refresh(0)
+	body := bytes.Repeat([]byte("complete multipart index identity"), 140)
+	id, _ := upload("aborted", bytes.Repeat([]byte("unpublished multipart part"), 100))
+	if report := refresh(0); len(report.Runs) != 0 || report.JournalSeq <= first.JournalSeq {
+		t.Fatal("index did not advance past staged multipart without adding postings")
+	}
+	if err := s.AbortMultipartUpload("similar", "aborted", id); err != nil {
+		t.Fatal(err)
+	}
+	id, etag := upload("complete", body)
+	refresh(0)
+	if _, _, err := s.CompleteMultipartUpload("similar", "complete", id, []completedPart{{PartNumber: 1, ETag: etag}}); err != nil {
+		t.Fatal(err)
+	}
+	complete := refresh(1)
+	if complete.Generation != first.Generation || len(complete.Runs) != 1 {
+		t.Fatal("multipart completion did not incrementally add the verified object")
+	}
+	if _, _, err := s.CopyObject(CopyObjectRequest{
+		SrcBucket: "similar", SrcKey: "complete", DstBucket: "similar", DstKey: "copy",
+		Directive: metadataDirectiveCopy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	copied := refresh(1)
+	if copied.CatalogSHA != complete.CatalogSHA || !slices.Equal(copied.Runs, complete.Runs) {
+		t.Fatal("alias copy changed catalog identities or duplicated postings")
+	}
+	_, got, err := s.GetObject("similar", "copy")
+	if err != nil || sha256.Sum256(got) != sha256.Sum256(body) {
+		t.Fatalf("multipart copy changed logical bytes: %v", err)
+	}
+}
+
 func TestAuthoritySimilaritySnapshotPinsAndReactivation(t *testing.T) {
 	s, err := OpenStore(t.TempDir())
 	if err != nil {

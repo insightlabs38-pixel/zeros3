@@ -132,11 +132,19 @@ reconciles current, historical and snapshot roots and writes a checksummed
 list of retired IDs. Content that becomes eligible again reactivates its
 original postings. Snapshot fence changes trigger an authoritative rebuild.
 Eight small tail runs compact within one bounded posting batch without
-rereading object bodies. Diagnostic lookup examines the newest 64 distinct
-IDs for a feature across runs before applying tombstones, keeping results
-consistent across compaction.
+rereading object bodies. Generations allow at most 256 runs. An incremental
+refresh that would exceed the cap rebuilds and leaves the previous generation
+intact if the new generation also exceeds the cap. Diagnostic lookup examines
+the newest 64 distinct IDs for a feature across runs before applying
+tombstones, keeping results consistent across compaction.
 
 The lifecycle tests also kill a fresh process before and after generation
 rename and CURRENT publication. Reopen and retry preserve the previous
 authoritative object bytes. Post-crash data checks cover the exact content
 and the complete active generation.
+
+A legacy P8 server opened a store with an active v2 index, accepted a signed
+PUT of an 86,658-byte body and returned identical bytes through S3 GET. The
+index rejected the stale fence after that write and caught up without changing
+the catalog generation. Both binaries passed deep verification of the updated
+store. The same replay checked refusal and rebuild of the v1 prototype.
