@@ -273,10 +273,29 @@ func TestAuthoritySimilarityRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	rebuilt, err := s.refreshAuthSimilarityStage()
-	if err != nil || rebuilt.Objects != 1 || rebuilt.Generation == original.Generation {
-		t.Fatalf("pruned content was not removed by rebuild: %+v %v", rebuilt, err)
+	if err != nil || rebuilt.LiveObjects != 1 || rebuilt.Objects != 2 || rebuilt.Tombstones != 1 ||
+		rebuilt.Generation != original.Generation || !slices.Equal(rebuilt.retired, []uint32{1}) {
+		t.Fatalf("pruned content was not tombstoned: %+v %v", rebuilt, err)
 	}
 	if err := s.publishAuthSimilarityStage(filepath.Base(rebuilt.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	active, err := s.readAuthSimilarityCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := similarityPostingIDs(active, authFeatures(a, 16)[0])
+	if err != nil || slices.Contains(ids, uint32(1)) {
+		t.Fatalf("retired ID appeared in diagnostic lookup: %v %v", ids, err)
+	}
+	tombstones := filepath.Join(rebuilt.Directory, "tombstones.bin")
+	if err := os.Rename(tombstones, tombstones+".backup"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.readAuthSimilarityCurrent(); err == nil {
+		t.Fatal("missing tombstones did not invalidate the active generation")
+	}
+	if err := os.Rename(tombstones+".backup", tombstones); err != nil {
 		t.Fatal(err)
 	}
 	runPath := filepath.Join(rebuilt.Directory, rebuilt.Runs[0].Name)
@@ -321,6 +340,86 @@ func TestAuthoritySimilarityRefresh(t *testing.T) {
 	}
 }
 
+func TestAuthoritySimilaritySnapshotPinsAndReactivation(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("similar"); err != nil {
+		t.Fatal(err)
+	}
+	a := bytes.Repeat([]byte("snapshot-retained index body"), 512)
+	mustPutObject(t, s, "similar", "a", a, "", nil)
+	entries, err := s.captureSnapshotEntries("similar", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := snapshotDescriptorV1{SnapshotFormatVersion: snapshotFormatVersion, SnapshotID: newUUIDv7(),
+		CreatedAt: time.Now().UTC(), SourceBucket: "similar", Entries: entries}
+	if err := s.publishSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	refresh := func() authSimilarityStageReport {
+		t.Helper()
+		report, err := s.refreshAuthSimilarityStage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.publishAuthSimilarityStage(filepath.Base(report.Directory)); err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	prune := func(key string) {
+		t.Helper()
+		if err := s.DeleteObject("similar", key); err != nil {
+			t.Fatal(err)
+		}
+		keep := 0
+		plan, err := s.PlanHistoryPrune(historyPruneOptions{Bucket: "similar", KeepLast: &keep})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ApplyHistoryPrune(&plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initial := refresh()
+	prune("a")
+	pinned := refresh()
+	if pinned.Generation != initial.Generation || pinned.LiveObjects != 1 || pinned.Tombstones != 0 {
+		t.Fatalf("prune lost a snapshot-pinned identity: %+v", pinned)
+	}
+	if err := s.deleteSnapshot(snapshot.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if empty := refresh(); empty.LiveObjects != 0 || empty.Generation == pinned.Generation {
+		t.Fatalf("snapshot deletion did not rebuild an empty index: %+v", empty)
+	}
+	mustPutObject(t, s, "similar", "a", a, "", nil)
+	initial = refresh()
+	prune("a")
+	retired := refresh()
+	if retired.LiveObjects != 0 || retired.Objects != 1 || retired.Tombstones != 1 {
+		t.Fatalf("prune failed to retire the identity: %+v", retired)
+	}
+	mustPutObject(t, s, "similar", "alias", a, "", nil)
+	restored := refresh()
+	if restored.Generation != initial.Generation || restored.Objects != 1 || restored.LiveObjects != 1 ||
+		restored.Tombstones != 0 || !slices.Equal(restored.Runs, initial.Runs) {
+		t.Fatalf("returning content did not reactivate its original ID and postings: %+v", restored)
+	}
+	active, err := s.readAuthSimilarityCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := similarityPostingIDs(active, authFeatures(a, 16)[0])
+	if err != nil || !slices.Equal(ids, []uint32{1}) {
+		t.Fatalf("lookup did not find the reactivated ID: %v %v", ids, err)
+	}
+}
+
 func TestAuthoritySimilarityPublicationRecovery(t *testing.T) {
 	if point := os.Getenv("ZEROS3_SIMILARITY_KILL_POINT"); point != "" {
 		dir, name := os.Getenv("ZEROS3_SIMILARITY_STORE"), os.Getenv("ZEROS3_SIMILARITY_GENERATION")
@@ -342,7 +441,8 @@ func TestAuthoritySimilarityPublicationRecovery(t *testing.T) {
 			}
 		})
 		switch point {
-		case "similarity-before-generation-rename", "similarity-after-generation-rename":
+		case "similarity-before-generation-sync", "similarity-before-generation-rename",
+			"similarity-after-generation-rename", "similarity-after-generation-sync":
 			if _, err := s.refreshAuthSimilarityStage(); err != nil {
 				t.Fatal(err)
 			}
@@ -354,8 +454,9 @@ func TestAuthoritySimilarityPublicationRecovery(t *testing.T) {
 		t.Fatal("publication kill point not reached")
 	}
 	for _, point := range []string{
-		"similarity-before-generation-rename", "similarity-after-generation-rename",
-		"similarity-before-current-publish", "similarity-after-current-publish",
+		"similarity-before-generation-sync", "similarity-before-generation-rename",
+		"similarity-after-generation-rename", "similarity-after-generation-sync",
+		"similarity-before-current-publish", "similarity-after-current-publish", "similarity-after-current-sync",
 	} {
 		t.Run(point, func(t *testing.T) {
 			dir := t.TempDir()
@@ -427,6 +528,76 @@ func TestAuthoritySimilarityPublicationRecovery(t *testing.T) {
 	}
 }
 
+func TestAuthoritySimilarityRebuildAfterIndexLoss(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("similar"); err != nil {
+		t.Fatal(err)
+	}
+	a := bytes.Repeat([]byte("independent rebuild fixture"), 300)
+	mustPutObject(t, s, "similar", "a", a, "", nil)
+	first, err := s.buildAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.publishAuthSimilarityStage(filepath.Base(first.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	feature := authFeatures(a, 16)[0]
+	want, err := similarityPostingIDs(first, feature)
+	if err != nil || len(want) == 0 {
+		t.Fatalf("opening source generation returned %v %v", want, err)
+	}
+	manifest := filepath.Join(first.Directory, "index.json")
+	report := first
+	report.StoreID = newUUIDv7()
+	wrongStore, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, wrongStore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.readAuthSimilarityCurrent(); err == nil {
+		t.Fatal("wrong-store index was accepted")
+	}
+	s.Close()
+	if err := os.Rename(filepath.Join(dir, "similarity-index"), filepath.Join(t.TempDir(), "lost-index")); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, got, err := s.GetObject("similar", "a")
+	if err != nil || sha256.Sum256(got) != sha256.Sum256(a) {
+		t.Fatalf("losing the complete index changed visible bytes: %v", err)
+	}
+	if _, err := s.readAuthSimilarityCurrent(); !os.IsNotExist(err) {
+		t.Fatalf("index absence was not reported: %v", err)
+	}
+	rebuilt, err := s.refreshAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.publishAuthSimilarityStage(filepath.Base(rebuilt.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	active, err := s.readAuthSimilarityCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotIDs, err := similarityPostingIDs(active, feature)
+	if err != nil || !slices.Equal(gotIDs, want) || active.JournalSHA != first.JournalSHA ||
+		active.Generation == first.Generation || active.LiveObjects != first.LiveObjects {
+		t.Fatalf("rebuild changed the fenced candidates: got %v want %v, error %v", gotIDs, want, err)
+	}
+}
+
 func TestAuthoritySimilarityCompaction(t *testing.T) {
 	s, err := OpenStore(t.TempDir())
 	if err != nil {
@@ -472,5 +643,32 @@ func TestAuthoritySimilarityCompaction(t *testing.T) {
 	}
 	if _, err := s.readAuthSimilarityGeneration(filepath.Base(prior.Directory)); err != nil {
 		t.Fatalf("compaction damaged its input generation: %v", err)
+	}
+}
+
+func TestAuthoritySimilarityPhysicalMaintenance(t *testing.T) {
+	lab := authMigratedLab(t)
+	generation, err := lab.s.buildAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lab.s.publishAuthSimilarityStage(filepath.Base(generation.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	lab.reclaim()
+	lab.exact("repacked store")
+	lab.verifyOK("repacked store")
+	current, err := lab.s.readAuthSimilarityCurrent()
+	if err != nil || current.Generation != generation.Generation {
+		t.Fatalf("physical maintenance invalidated content identity: %+v %v", current, err)
+	}
+	if _, err := lab.s.AuthorityRevertAll(); err != nil {
+		t.Fatal(err)
+	}
+	lab.exact("reverted store")
+	lab.verifyOK("reverted store")
+	current, err = lab.s.readAuthSimilarityCurrent()
+	if err != nil || current.Generation != generation.Generation {
+		t.Fatalf("reversion invalidated unchanged logical roots: %+v %v", current, err)
 	}
 }

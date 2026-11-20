@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50190    Windowed and estimated similarity deltas (extracted dcore)
-//    51712    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59352    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65624    CLI dispatch, HTTP server/startup, and main
+//    50363    Windowed and estimated similarity deltas (extracted dcore)
+//    51885    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59525    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65797    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -49405,18 +49405,23 @@ func writeAuthSimilarityRun(w io.Writer, generation uint64, entries []authSimila
 }
 
 type authSimilarityStageReport struct {
-	Version     int                      `json:"version"`
-	Profile     int                      `json:"profile"`
-	StoreID     string                   `json:"store_id"`
-	Generation  uint64                   `json:"generation"`
-	JournalEnd  int64                    `json:"journal_end"`
-	JournalSeq  uint64                   `json:"journal_sequence"`
-	JournalSHA  string                   `json:"journal_sha256"`
-	SnapshotSHA string                   `json:"snapshots_sha256"`
-	CatalogSHA  string                   `json:"catalog_sha256"`
-	Objects     uint32                   `json:"objects"`
-	Runs        []authSimilarityStageRun `json:"runs"`
-	Directory   string                   `json:"directory"`
+	Version       int                      `json:"version"`
+	Profile       int                      `json:"profile"`
+	StoreID       string                   `json:"store_id"`
+	Generation    uint64                   `json:"generation"`
+	JournalEnd    int64                    `json:"journal_end"`
+	JournalSeq    uint64                   `json:"journal_sequence"`
+	JournalSHA    string                   `json:"journal_sha256"`
+	SnapshotSHA   string                   `json:"snapshots_sha256"`
+	CatalogSHA    string                   `json:"catalog_sha256"`
+	LiveObjects   uint32                   `json:"live_objects"`
+	Tombstones    uint32                   `json:"tombstones"`
+	TombstonesSHA string                   `json:"tombstones_sha256,omitempty"`
+	Objects       uint32                   `json:"objects"`
+	Runs          []authSimilarityStageRun `json:"runs"`
+	Directory     string                   `json:"directory"`
+	CandidateIDs  []uint32                 `json:"candidate_ids,omitempty"`
+	retired       []uint32
 }
 
 type authSimilarityStageRun struct {
@@ -49457,7 +49462,7 @@ func (r *authSimilaritySketchReader) ReadAt(p []byte, off int64) (int, error) {
 
 func (s *Store) authSimilarityFence() (authSimilarityStageReport, []snapshotDescriptorV1, error) {
 	var report authSimilarityStageReport
-	report.Version, report.Profile = 1, 1
+	report.Version, report.Profile = 2, 1
 	report.StoreID = s.formatSnapshot().StoreID
 	report.JournalEnd, report.JournalSeq = s.journal.writeOffset, s.journal.nextSeq-1
 	journalHash := sha256.New()
@@ -49488,6 +49493,14 @@ func (s *Store) buildAuthSimilarityStage() (authSimilarityStageReport, error) {
 		return report, err
 	}
 	report.Generation = uint64(time.Now().UnixNano())
+	roots, err := s.authSimilarityRoots(snapshots)
+	if err != nil {
+		return report, err
+	}
+	return s.writeAuthSimilarityStage(report, roots, nil, nil, false)
+}
+
+func (s *Store) authSimilarityRoots(snapshots []snapshotDescriptorV1) ([]authSimilarityRoot, error) {
 	var roots []authSimilarityRoot
 	for _, obj := range s.snapshotNamespace() {
 		roots = append(roots, authSimilarityRoot{obj.entry.manifestUUID, obj.entry.manifestSHA256})
@@ -49499,16 +49512,16 @@ func (s *Store) buildAuthSimilarityStage() (authSimilarityStageReport, error) {
 		for _, entry := range snap.Entries {
 			sum, err := decodeHexSHA256(entry.ManifestSHA256)
 			if err != nil {
-				return report, err
+				return nil, err
 			}
 			roots = append(roots, authSimilarityRoot{entry.ManifestUUID, sum})
 		}
 	}
 	slices.SortFunc(roots, func(a, b authSimilarityRoot) int { return cmp.Compare(a.uuid, b.uuid) })
-	return s.writeAuthSimilarityStage(report, roots, nil)
+	return roots, nil
 }
 
-func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots []authSimilarityRoot, prior *authSimilarityStageReport) (authSimilarityStageReport, error) {
+func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots []authSimilarityRoot, prior *authSimilarityStageReport, live map[[32]byte]struct{}, reconcile bool) (authSimilarityStageReport, error) {
 	parent := filepath.Join(s.root, "similarity-index")
 	if err := os.Mkdir(parent, 0o700); err != nil && !os.IsExist(err) {
 		return report, err
@@ -49546,7 +49559,7 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 	batch := make([]authSimilarityEntry, 0, min(len(roots), limit/16)*16)
 	contents := make(map[[32]byte]int64)
 	if prior != nil {
-		if err := reuseAuthSimilarityCatalog(*prior, stage, out, contents); err != nil {
+		if err := reuseAuthSimilarityCatalog(*prior, stage, out, contents, live, reconcile, &report.retired); err != nil {
 			return report, err
 		}
 		report.Runs = slices.Clone(prior.Runs)
@@ -49617,6 +49630,9 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 			return report, err
 		}
 	}
+	if err := writeAuthSimilarityTombstones(stage, &report); err != nil {
+		return report, err
+	}
 	if err := out.Flush(); err != nil {
 		return report, err
 	}
@@ -49643,6 +49659,7 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 	if err := writeFileDurable(stage, filepath.Join(stage, "index.json"), append(data, '\n')); err != nil {
 		return report, err
 	}
+	fireTestHook("similarity-before-generation-sync")
 	if err := syncDir(stage); err != nil {
 		return report, err
 	}
@@ -49654,6 +49671,7 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 	if err := syncDir(parent); err != nil {
 		return report, err
 	}
+	fireTestHook("similarity-after-generation-sync")
 	return report, nil
 }
 
@@ -49768,7 +49786,7 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 	if err != nil {
 		return s.buildAuthSimilarityStage()
 	}
-	report, _, err := s.authSimilarityFence()
+	report, snapshots, err := s.authSimilarityFence()
 	if err != nil {
 		return report, err
 	}
@@ -49781,7 +49799,7 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 		hex.EncodeToString(h.Sum(nil)) != prior.JournalSHA {
 		return s.buildAuthSimilarityStage()
 	}
-	roots, ok := similarityJournalAdditions(s.journal.f, prior, report)
+	roots, pruned, ok := similarityJournalAdditions(s.journal.f, prior, report)
 	if !ok {
 		return s.buildAuthSimilarityStage()
 	}
@@ -49789,12 +49807,38 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 		return prior, nil
 	}
 	report.Generation, report.Objects = prior.Generation, prior.Objects
-	return s.writeAuthSimilarityStage(report, roots, &prior)
+	if pruned {
+		roots, err = s.authSimilarityRoots(snapshots)
+		if err != nil {
+			return report, err
+		}
+	}
+	var live map[[32]byte]struct{}
+	if pruned || len(prior.retired) > 0 {
+		live = make(map[[32]byte]struct{})
+		for _, root := range roots {
+			man, err := s.readVerifiedManifest(root.uuid, root.sha)
+			if err != nil {
+				return report, err
+			}
+			sum, err := decodeHexSHA256(man.ObjectSHA256)
+			if err != nil {
+				return report, err
+			}
+			live[sum] = struct{}{}
+		}
+	}
+	result, err := s.writeAuthSimilarityStage(report, roots, &prior, live, pruned)
+	if errors.Is(err, errAuthSimilarityNeedsRebuild) {
+		return s.buildAuthSimilarityStage()
+	}
+	return result, err
 }
 
-func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStageReport) ([]authSimilarityRoot, bool) {
+func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStageReport) ([]authSimilarityRoot, bool, bool) {
 	rebuild := errors.New("visibility transition requires a similarity rebuild")
 	var roots []authSimilarityRoot
+	var pruned bool
 	end, seq, _, applyErr, err := replayJournalRange(f, prior.JournalEnd, current.JournalEnd, prior.JournalSeq, false, func(r journalRecord) error {
 		var uuid, digest string
 		switch r.recType {
@@ -49813,6 +49857,9 @@ func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStag
 		case recordTypeCreateBucket, recordTypeDeleteBucket, recordTypeDeleteObjectRootV2,
 			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload:
 			return nil
+		case recordTypePruneHistory:
+			pruned = true
+			return nil
 		default:
 			return rebuild
 		}
@@ -49823,10 +49870,68 @@ func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStag
 		roots = append(roots, authSimilarityRoot{uuid, sum})
 		return nil
 	})
-	return roots, err == nil && applyErr == nil && end == current.JournalEnd && seq == current.JournalSeq
+	return roots, pruned, err == nil && applyErr == nil && end == current.JournalEnd && seq == current.JournalSeq
 }
 
-func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, out io.Writer, contents map[[32]byte]int64) error {
+const authSimilarityMaxTombstones = 1 << 20
+
+var errAuthSimilarityNeedsRebuild = errors.New("similarity tombstones require a compact rebuild")
+
+func writeAuthSimilarityTombstones(dir string, report *authSimilarityStageReport) error {
+	report.Tombstones = uint32(len(report.retired))
+	report.LiveObjects = report.Objects - report.Tombstones
+	if len(report.retired) == 0 {
+		return nil
+	}
+	if len(report.retired) > authSimilarityMaxTombstones {
+		return errAuthSimilarityNeedsRebuild
+	}
+	data := make([]byte, 4*len(report.retired))
+	for i, id := range report.retired {
+		binary.LittleEndian.PutUint32(data[4*i:], id)
+	}
+	sum := sha256.Sum256(data)
+	report.TombstonesSHA = hex.EncodeToString(sum[:])
+	return writeFileDurable(dir, filepath.Join(dir, "tombstones.bin"), data)
+}
+
+func readAuthSimilarityTombstones(dir string, report *authSimilarityStageReport) error {
+	if report.Tombstones > authSimilarityMaxTombstones || report.Tombstones > report.Objects ||
+		report.LiveObjects != report.Objects-report.Tombstones {
+		return errors.New("invalid similarity tombstone count")
+	}
+	if report.Tombstones == 0 {
+		if report.TombstonesSHA != "" {
+			return errors.New("unexpected similarity tombstone digest")
+		}
+		return nil
+	}
+	f, err := os.Open(filepath.Join(dir, "tombstones.bin"))
+	if err != nil {
+		return err
+	}
+	size := int(report.Tombstones) * 4
+	data, err := io.ReadAll(io.LimitReader(f, int64(size)+1))
+	if err := errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	sum := sha256.Sum256(data)
+	if len(data) != size || hex.EncodeToString(sum[:]) != report.TombstonesSHA {
+		return errors.New("similarity tombstone digest or length mismatch")
+	}
+	var prev uint32
+	for i := 0; i < size; i += 4 {
+		id := binary.LittleEndian.Uint32(data[i:])
+		if id <= prev || id > report.Objects {
+			return errors.New("invalid or unordered similarity tombstone ID")
+		}
+		report.retired = append(report.retired, id)
+		prev = id
+	}
+	return nil
+}
+
+func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, out io.Writer, contents map[[32]byte]int64, live map[[32]byte]struct{}, reconcile bool, retired *[]uint32) error {
 	f, err := os.Open(filepath.Join(prior.Directory, "catalog.zsc"))
 	if err != nil {
 		return err
@@ -49843,7 +49948,16 @@ func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, o
 		}
 		var sum [32]byte
 		copy(sum[:], row[4:36])
-		contents[sum] = int64(binary.LittleEndian.Uint64(row[36:]))
+		_, wasRetired := slices.BinarySearch(prior.retired, i+1)
+		_, isLive := live[sum]
+		if (wasRetired || reconcile) && !isLive {
+			*retired = append(*retired, i+1)
+			if len(*retired) > authSimilarityMaxTombstones {
+				return errAuthSimilarityNeedsRebuild
+			}
+		} else {
+			contents[sum] = int64(binary.LittleEndian.Uint64(row[36:]))
+		}
 		if _, err := out.Write(row[:]); err != nil {
 			return err
 		}
@@ -49908,7 +50022,7 @@ func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageRe
 	if err := json.Unmarshal(body, &report); err != nil {
 		return report, err
 	}
-	if report.Version != 1 || report.Profile != 1 || report.Generation == 0 {
+	if report.Version != 2 || report.Profile != 1 || report.Generation == 0 {
 		return report, errors.New("unsupported similarity generation manifest")
 	}
 	if report.StoreID != s.formatSnapshot().StoreID {
@@ -49925,6 +50039,9 @@ func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageRe
 	if err := catalog.Close(); err != nil {
 		return report, err
 	}
+	if err := readAuthSimilarityTombstones(dir, &report); err != nil {
+		return report, err
+	}
 	seen := make(map[string]bool, len(report.Runs))
 	for _, desc := range report.Runs {
 		if !strings.HasSuffix(desc.Name, ".zsr") || filepath.Base(desc.Name) != desc.Name || seen[desc.Name] {
@@ -49935,6 +50052,7 @@ func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageRe
 			return report, err
 		}
 	}
+	report.CandidateIDs = nil
 	report.Directory = dir
 	return report, nil
 }
@@ -50004,7 +50122,11 @@ func (s *Store) publishAuthSimilarityStage(name string) error {
 		return err
 	}
 	fireTestHook("similarity-after-current-publish")
-	return syncDir(parent)
+	if err := syncDir(parent); err != nil {
+		return err
+	}
+	fireTestHook("similarity-after-current-sync")
+	return nil
 }
 
 func (s *Store) readAuthSimilarityCurrent() (authSimilarityStageReport, error) {
@@ -50028,6 +50150,46 @@ func (s *Store) authSimilarityCurrentName() (string, error) {
 		return "", errors.New("invalid similarity current pointer")
 	}
 	return string(name[:len(name)-1]), nil
+}
+
+// similarityPostingIDs caps the newest IDs globally before applying tombstones.
+func similarityPostingIDs(report authSimilarityStageReport, feature uint64) ([]uint32, error) {
+	var best []uint32
+	for _, desc := range report.Runs {
+		f, err := os.Open(filepath.Join(report.Directory, desc.Name))
+		if err != nil {
+			return nil, err
+		}
+		var ids []uint32
+		if st, err := f.Stat(); err == nil {
+			var run *authSimilarityRun
+			run, err = openAuthSimilarityRun(f, st.Size())
+			if err == nil && (run.generation != report.Generation || run.count != desc.Postings ||
+				run.highestID > report.Objects || hex.EncodeToString(run.digest[:]) != desc.SHA256) {
+				err = errAuthSimilarityRun
+			}
+			if err == nil {
+				ids, err = run.lookup(feature, authSimilarityRunLimit)
+			}
+			if err := errors.Join(err, f.Close()); err != nil {
+				return nil, err
+			}
+		} else {
+			f.Close()
+			return nil, err
+		}
+		best = append(best, ids...)
+		slices.Sort(best)
+		best = slices.Compact(best)
+		if len(best) > authSimilarityRunLimit {
+			copy(best, best[len(best)-authSimilarityRunLimit:])
+			best = best[:authSimilarityRunLimit]
+		}
+	}
+	return slices.DeleteFunc(best, func(id uint32) bool {
+		_, retired := slices.BinarySearch(report.retired, id)
+		return retired
+	}), nil
 }
 
 // runAuthority implements the authority maintenance commands.
@@ -50069,6 +50231,7 @@ func runAuthority(args []string) {
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
 	memMiB := fs.Int64("max-memory-mib", 192, "soft heap limit of this process in MiB (0 = Go default)")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
+	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
 	fs.Parse(args[1:])
 	// An offline maintenance process needs no serving cache and keeps its heap near the
 	// bound: windowed deltas hold an anchor table and per-worker page caches, nothing else.
@@ -50138,6 +50301,16 @@ func runAuthority(args []string) {
 		report, err := store.readAuthSimilarityCurrent()
 		if err != nil {
 			log.Fatalf("zeros3: authority index-status: %v", err)
+		}
+		if *indexFeature != "" {
+			feature, err := strconv.ParseUint(*indexFeature, 0, 64)
+			if err != nil {
+				log.Fatalf("zeros3: authority index-status: %v", err)
+			}
+			report.CandidateIDs, err = similarityPostingIDs(report, feature)
+			if err != nil {
+				log.Fatalf("zeros3: authority index-status: %v", err)
+			}
 		}
 		if err := enc.Encode(report); err != nil {
 			log.Fatalf("zeros3: authority index-status: %v", err)

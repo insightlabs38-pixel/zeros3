@@ -16,8 +16,8 @@ versions. Identical bytes behind several keys share one catalog entry and one
 posting per distinct feature.
 
 Within a catalog generation, a nonzero uint32 ID maps to exactly one catalog
-entry. IDs are monotonic and never reused, including after tombstoning. A full
-generation may assign new IDs while rebuilding. Files from different catalog
+entry. IDs are assigned monotonically. A tombstoned ID can become live again only
+for the same content identity. A full generation may assign new IDs while rebuilding. Files from different catalog
 generations cannot be combined. The manifest binds the run and catalog versions
 and a stable store ID from the format record.
 
@@ -102,7 +102,7 @@ inputs and measured lifecycle costs.
 The draft `zeros3 authority index-run-verify -run FILE` command checks an
 individual ZSR1 run, optionally against an expected SHA-256 or with one
 bounded feature lookup. The command does not open a store or publish index
-files. Generation publication and catalog validation are pending.
+files.
 
 The draft `zeros3 authority index-build -store DIR` writes a sealed offline
 generation under the existing store lock. It verifies logical content digests,
@@ -111,8 +111,7 @@ runs and catalog before the generation directory is renamed into place. The
 optional `-apply` publishes a CURRENT pointer after rechecking the journal,
 snapshots, catalog and runs. The `index-status` command rechecks the active
 generation under the same lock and rejects stale or damaged derived state.
-Incremental updates, extended recovery coverage and migration routing remain
-pending.
+The status command can query one feature. Migration routing remains pending.
 
 A standalone reader smoke test verified a 100262172-byte synthetic ZSR1 run
 with ten million postings in one skewed prefix bucket, including six million
@@ -128,9 +127,14 @@ verification and the independent whole-object and range checks.
 The draft `index-refresh` reuses an intact catalog and immutable posting runs
 after verifying the committed journal prefix. It scans the durable suffix for
 new put and multipart roots. Overwrites and deletes preserve their archived
-references, and identical logical bodies reuse their catalog entry. Prune and
-snapshot changes use an authoritative rebuild. Eight small tail runs compact
-within one bounded posting batch, without rereading object bodies.
+references, and identical logical bodies reuse their catalog entry. Pruning
+reconciles current, historical and snapshot roots and writes a checksummed
+list of retired IDs. Content that becomes eligible again reactivates its
+original postings. Snapshot fence changes trigger an authoritative rebuild.
+Eight small tail runs compact within one bounded posting batch without
+rereading object bodies. Diagnostic lookup examines the newest 64 distinct
+IDs for a feature across runs before applying tombstones, keeping results
+consistent across compaction.
 
 The lifecycle tests also kill a fresh process before and after generation
 rename and CURRENT publication. Reopen and retry preserve the previous
