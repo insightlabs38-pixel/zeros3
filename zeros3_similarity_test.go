@@ -123,7 +123,7 @@ func TestAuthoritySimilarityHotPostingsAcrossRuns(t *testing.T) {
 		runs:   []*authSimilarityRun{old, middle, recent},
 	}
 	var want []uint32
-	for id := uint32(37); id <= 100; id++ {
+	for id := uint32(35); id <= 100; id++ {
 		if !slices.Contains(q.report.retired, id) {
 			want = append(want, id)
 		}
@@ -136,6 +136,17 @@ func TestAuthoritySimilarityHotPostingsAcrossRuns(t *testing.T) {
 	got, err = q.postings(hot)
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("compacted hot feature candidates differ: got %v want %v error %v", got, want, err)
+	}
+
+	q.report.retired = nil
+	for id := uint32(73); id <= 200; id++ {
+		q.report.retired = append(q.report.retired, id)
+	}
+	for _, runs := range [][]*authSimilarityRun{{run(1, 100), run(101, 200)}, {run(1, 200)}} {
+		q.runs = runs
+		if got, err := q.postings(hot); err != nil || len(got) != 0 {
+			t.Fatalf("hot feature exceeded its scan budget with %d runs: %v %v", len(runs), got, err)
+		}
 	}
 }
 

@@ -134,9 +134,10 @@ original postings. Snapshot fence changes trigger an authoritative rebuild.
 Eight small tail runs compact within one bounded posting batch without
 rereading object bodies. Generations allow at most 256 runs. An incremental
 refresh that would exceed the cap rebuilds and leaves the previous generation
-intact if the new generation also exceeds the cap. Diagnostic lookup examines
-the newest 64 distinct IDs for a feature across runs before applying
-tombstones, keeping results consistent across compaction.
+intact if the new generation also exceeds the cap. A feature lookup considers
+the newest 64 distinct IDs across runs and allows up to 64 further IDs to
+replace tombstones. It returns at most 64 live IDs. The same global scan cap
+applies after compaction.
 
 The lifecycle tests also kill a fresh process before and after generation
 rename and CURRENT publication. Reopen and retry preserve the previous

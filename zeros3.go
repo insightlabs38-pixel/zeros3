@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44776    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50841    Windowed and estimated similarity deltas (extracted dcore)
-//    52363    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    60011    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66283    CLI dispatch, HTTP server/startup, and main
+//    50850    Windowed and estimated similarity deltas (extracted dcore)
+//    52372    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    60020    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66292    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -49404,6 +49404,7 @@ const (
 	authSimilarityRunEntry          = 10
 	authSimilarityRunBase           = authSimilarityRunHeader + (authSimilarityRunBuckets+1)*4
 	authSimilarityRunLimit          = 64
+	authSimilarityRunScanLimit      = 2 * authSimilarityRunLimit
 	authSimilarityMaxRuns           = 256
 	authSimilarityCachedDirectories = 32
 	authSimilarityPostingBatch      = 1 << 18
@@ -49489,6 +49490,10 @@ func openAuthSimilarityRun(src io.ReaderAt, size int64) (*authSimilarityRun, err
 
 // lookup bounds reads even for a bucket containing millions of postings.
 func (r *authSimilarityRun) lookup(feature uint64, limit int) ([]uint32, error) {
+	return r.lookupNewest(feature, min(limit, authSimilarityRunLimit))
+}
+
+func (r *authSimilarityRun) lookupNewest(feature uint64, limit int) ([]uint32, error) {
 	bucket := feature >> 48
 	want := feature & (1<<48 - 1)
 	if limit <= 0 {
@@ -49510,7 +49515,7 @@ func (r *authSimilarityRun) lookup(feature uint64, limit int) ([]uint32, error) 
 	if start == end {
 		return nil, nil
 	}
-	var raw [authSimilarityRunLimit * authSimilarityRunEntry]byte
+	var raw [authSimilarityRunScanLimit * authSimilarityRunEntry]byte
 	if n := end - start; n <= authSimilarityRunLimit {
 		if _, err := r.src.ReadAt(raw[:n*authSimilarityRunEntry], authSimilarityRunBase+int64(start)*authSimilarityRunEntry); err != nil {
 			return nil, err
@@ -49552,7 +49557,7 @@ func (r *authSimilarityRun) lookup(feature uint64, limit int) ([]uint32, error) 
 	if hi <= lo {
 		return nil, nil
 	}
-	n := min(hi-lo, uint32(min(limit, authSimilarityRunLimit)))
+	n := min(hi-lo, uint32(min(limit, authSimilarityRunScanLimit)))
 	if _, err := r.src.ReadAt(raw[:n*authSimilarityRunEntry], authSimilarityRunBase+int64(hi-n)*authSimilarityRunEntry); err != nil {
 		return nil, err
 	}
@@ -50610,30 +50615,34 @@ func (q *authSimilarityQuery) content(id uint32) ([32]byte, int64, error) {
 	return sha, size, nil
 }
 
-// postings caps the newest IDs globally before applying tombstones.
+// postings looks past a bounded number of retired IDs before returning the
+// newest live candidates. Applying the scan cap globally preserves the same
+// results when runs are compacted.
 func (q *authSimilarityQuery) postings(feature uint64) ([]uint32, error) {
+	limit := min(authSimilarityRunLimit+len(q.report.retired), authSimilarityRunScanLimit)
 	var best []uint32
 	for i := len(q.runs) - 1; i >= 0; i-- {
 		run := q.runs[i]
-		if len(best) == authSimilarityRunLimit && run.highestID <= best[0] {
+		if len(best) == limit && run.highestID <= best[0] {
 			continue
 		}
-		ids, err := run.lookup(feature, authSimilarityRunLimit)
+		ids, err := run.lookupNewest(feature, limit)
 		if err != nil {
 			return nil, err
 		}
 		best = append(best, ids...)
 		slices.Sort(best)
 		best = slices.Compact(best)
-		if len(best) > authSimilarityRunLimit {
-			copy(best, best[len(best)-authSimilarityRunLimit:])
-			best = best[:authSimilarityRunLimit]
+		if len(best) > limit {
+			copy(best, best[len(best)-limit:])
+			best = best[:limit]
 		}
 	}
-	return slices.DeleteFunc(best, func(id uint32) bool {
+	best = slices.DeleteFunc(best, func(id uint32) bool {
 		_, retired := slices.BinarySearch(q.report.retired, id)
 		return retired
-	}), nil
+	})
+	return best[max(0, len(best)-authSimilarityRunLimit):], nil
 }
 
 // runAuthority implements the authority maintenance commands.
