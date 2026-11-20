@@ -1,0 +1,136 @@
+{
+  "buffered": [
+    {
+      "bytes": 67108864,
+      "random_read_4k_latency": {
+        "advised-drop": {
+          "p50_ms": 0.214263,
+          "p95_ms": 2.378906,
+          "p99_ms": 8.135382
+        },
+        "warm-repeat": {
+          "p50_ms": 0.001504,
+          "p95_ms": 0.002311,
+          "p99_ms": 0.005513
+        }
+      },
+      "random_write_batch_with_final_sync_iops": 33507.69551347664,
+      "random_write_fsync_latency": {
+        "p50_ms": 0.319273,
+        "p95_ms": 2.742624,
+        "p99_ms": 4.22278
+      },
+      "sequential_with_final_sync_mib_s": 51.990539148365414,
+      "sync_operations": 128
+    },
+    {
+      "bytes": 67108864,
+      "random_read_4k_latency": {
+        "advised-drop": {
+          "p50_ms": 0.18312,
+          "p95_ms": 2.019644,
+          "p99_ms": 3.583669
+        },
+        "warm-repeat": {
+          "p50_ms": 0.001277,
+          "p95_ms": 0.002701,
+          "p99_ms": 0.016577
+        }
+      },
+      "random_write_batch_with_final_sync_iops": 32895.759762266454,
+      "random_write_fsync_latency": {
+        "p50_ms": 1.338338,
+        "p95_ms": 9.123131,
+        "p99_ms": 34.232294
+      },
+      "sequential_with_final_sync_mib_s": 153.13794936144836,
+      "sync_operations": 128
+    },
+    {
+      "bytes": 67108864,
+      "random_read_4k_latency": {
+        "advised-drop": {
+          "p50_ms": 0.184219,
+          "p95_ms": 1.059503,
+          "p99_ms": 1.917471
+        },
+        "warm-repeat": {
+          "p50_ms": 0.001242,
+          "p95_ms": 0.004376,
+          "p99_ms": 0.514306
+        }
+      },
+      "random_write_batch_with_final_sync_iops": 22770.144640228158,
+      "random_write_fsync_latency": {
+        "p50_ms": 0.351653,
+        "p95_ms": 2.596288,
+        "p99_ms": 4.526186
+      },
+      "sequential_with_final_sync_mib_s": 716.1609209113282,
+      "sync_operations": 128
+    }
+  ],
+  "direct": [
+    {
+      "bytes": 67108864,
+      "random_read_4k_latency": {
+        "direct": {
+          "p50_ms": 0.258883,
+          "p95_ms": 2.787594,
+          "p99_ms": 5.21526
+        }
+      },
+      "random_write_batch_with_final_sync_iops": 1647.9465729541248,
+      "random_write_fsync_latency": {
+        "p50_ms": 0.395792,
+        "p95_ms": 3.098746,
+        "p99_ms": 5.169689
+      },
+      "sequential_with_final_sync_mib_s": 69.45128889307989,
+      "sync_operations": 128
+    },
+    {
+      "bytes": 67108864,
+      "random_read_4k_latency": {
+        "direct": {
+          "p50_ms": 0.247122,
+          "p95_ms": 1.866328,
+          "p99_ms": 3.383677
+        }
+      },
+      "random_write_batch_with_final_sync_iops": 1388.5949274410332,
+      "random_write_fsync_latency": {
+        "p50_ms": 0.607017,
+        "p95_ms": 6.576515,
+        "p99_ms": 38.286877
+      },
+      "sequential_with_final_sync_mib_s": 53.566823259453884,
+      "sync_operations": 128
+    },
+    {
+      "bytes": 67108864,
+      "random_read_4k_latency": {
+        "direct": {
+          "p50_ms": 0.293061,
+          "p95_ms": 2.327521,
+          "p99_ms": 6.016631
+        }
+      },
+      "random_write_batch_with_final_sync_iops": 1615.6174264383196,
+      "random_write_fsync_latency": {
+        "p50_ms": 0.64284,
+        "p95_ms": 2.484443,
+        "p99_ms": 8.713049
+      },
+      "sequential_with_final_sync_mib_s": 90.5367718097736,
+      "sync_operations": 128
+    }
+  ],
+  "environment": {
+    "cpu_quota": "200000 100000",
+    "nvme": [],
+    "visible_block_devices": "vda   disk virtio   64G\npmem0 disk        14.7G",
+    "workspace_mount": "overlay overlay"
+  },
+  "load": "Concurrent ZeroS3 S3 fixture ingestion and qualification, shared two-CPU quota"
+}
