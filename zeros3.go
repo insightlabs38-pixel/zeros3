@@ -118,9 +118,9 @@ import (
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44744    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
 //    49257    Windowed and estimated similarity deltas (extracted dcore)
-//    50779    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58419    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64691    CLI dispatch, HTTP server/startup, and main
+//    50786    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58426    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64698    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -50760,7 +50760,14 @@ func (w *dwDcoreWRecord) DecodeRangeInto(out []byte, scratch *[]byte, v *dwDcore
 			hi = m
 		}
 	}
-	if int64(cap(*scratch)) < w.maxWindow {
+	if lo < len(w.frames) && w.tstart[lo] == off && w.frames[lo].tlen == n {
+		out = slices.Grow(out, int(n))[:n]
+		if err := w.decodeFrame(lo, v, out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	if n > 0 && int64(cap(*scratch)) < w.maxWindow {
 		*scratch = make([]byte, w.maxWindow)
 	}
 	for i := lo; i < len(w.frames) && int64(len(out)) < n; i++ {

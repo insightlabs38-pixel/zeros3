@@ -1,0 +1,7 @@
+=== RUN   TestAuthorityLargeCheck
+    zeros3_authority_test.go:2427: v0 exact 2147483648 bytes at 185 MiB/s, peak RSS so far 55 MiB
+    zeros3_authority_test.go:2427: v1 exact 2147483648 bytes at 165 MiB/s, peak RSS so far 67 MiB
+    zeros3_authority_test.go:2427: v2 exact 2147483648 bytes at 123 MiB/s, peak RSS so far 77 MiB
+    zeros3_authority_test.go:2440: 64 random 4 KiB ranges of v1: 16.978936ms each
+--- PASS: TestAuthorityLargeCheck (59.68s)
+PASS
