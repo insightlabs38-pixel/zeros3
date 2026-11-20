@@ -23,6 +23,16 @@ type similarityFixturePosting struct {
 	id      uint32
 }
 
+type similarityReadCounter struct {
+	*bytes.Reader
+	reads int
+}
+
+func (r *similarityReadCounter) ReadAt(p []byte, off int64) (int, error) {
+	r.reads++
+	return r.Reader.ReadAt(p, off)
+}
+
 // Encode the documented research layout independently of the production reader.
 func similarityFixtureRun(entries []similarityFixturePosting) []byte {
 	const header, directory, entry = 20, 65537 * 4, 10
@@ -57,9 +67,15 @@ func TestAuthoritySimilarityRunLookup(t *testing.T) {
 	for i := uint32(1); i <= 1000; i++ {
 		entries = append(entries, similarityFixturePosting{hot, i})
 	}
-	entries = append(entries, similarityFixturePosting{hot + 1, 202}, similarityFixturePosting{^uint64(0), 999})
+	entries = append(entries, similarityFixturePosting{hot + 1, 202})
+	const medium = 0x5678000000000001
+	for id := uint32(1); id <= 88; id++ {
+		entries = append(entries, similarityFixturePosting{medium, id})
+	}
+	entries = append(entries, similarityFixturePosting{^uint64(0), 999})
 	body := similarityFixtureRun(entries)
-	r, err := openAuthSimilarityRun(bytes.NewReader(body), int64(len(body)))
+	source := &similarityReadCounter{Reader: bytes.NewReader(body)}
+	r, err := openAuthSimilarityRun(source, int64(len(body)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +95,13 @@ func TestAuthoritySimilarityRunLookup(t *testing.T) {
 			t.Fatalf("lookup %x: got %v, want %v, err=%v", tc.feature, got, tc.want, err)
 		}
 	}
-	if got, err := r.lookup(hot, 5000); err != nil || len(got) != 64 || got[0] != 937 {
-		t.Fatalf("hot feature was not bounded: %v %v", got, err)
+	source.reads = 0
+	if got, err := r.lookup(hot, 5000); err != nil || len(got) != 64 || got[0] != 937 || source.reads > 11 {
+		t.Fatalf("hot feature was not bounded: IDs %v, reads %d, error %v", got, source.reads, err)
+	}
+	source.reads = 0
+	if got, err := r.lookup(medium, 3); err != nil || !slices.Equal(got, []uint32{86, 87, 88}) || source.reads != 1 {
+		t.Fatalf("medium bucket: IDs %v, reads %d, error %v", got, source.reads, err)
 	}
 	f := filepath.Join(t.TempDir(), "research.zsr")
 	if err := os.WriteFile(f, body, 0o600); err != nil {

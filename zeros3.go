@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44776    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50870    Windowed and estimated similarity deltas (extracted dcore)
-//    52392    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    60040    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66312    CLI dispatch, HTTP server/startup, and main
+//    50859    Windowed and estimated similarity deltas (extracted dcore)
+//    52381    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    60029    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66301    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -49512,64 +49512,53 @@ func (r *authSimilarityRun) lookupNewest(feature uint64, limit int) ([]uint32, e
 			return nil, fmt.Errorf("%w: bucket directory changed after verification", errAuthSimilarityRun)
 		}
 	}
-	if start == end {
-		return nil, nil
-	}
-	var raw [authSimilarityRunScanLimit * authSimilarityRunEntry]byte
-	if n := end - start; n <= authSimilarityRunLimit {
-		if _, err := r.src.ReadAt(raw[:n*authSimilarityRunEntry], authSimilarityRunBase+int64(start)*authSimilarityRunEntry); err != nil {
-			return nil, err
-		}
-		var ids []uint32
-		for i := uint32(0); i < n; i++ {
-			got, id := authSimilarityPosting(raw[i*authSimilarityRunEntry:])
-			if got == want {
-				ids = append(ids, id)
-			}
-		}
-		return ids[max(0, len(ids)-limit):], nil
-	}
-	bound := func(after bool) (uint32, error) {
+	limit = min(limit, authSimilarityRunScanLimit)
+	if end-start > authSimilarityRunScanLimit {
+		// Only the newest matches are needed. Find their upper bound, then
+		// read a bounded suffix which may also contain preceding features.
 		lo, hi := start, end
 		var entry [authSimilarityRunEntry]byte
 		for lo < hi {
 			mid := lo + (hi-lo)/2
 			if _, err := r.src.ReadAt(entry[:], authSimilarityRunBase+int64(mid)*authSimilarityRunEntry); err != nil {
-				return 0, err
+				return nil, err
 			}
 			got, _ := authSimilarityPosting(entry[:])
-			if got < want || after && got == want {
+			if got <= want {
 				lo = mid + 1
 			} else {
 				hi = mid
 			}
 		}
-		return lo, nil
+		end = lo
+		start = end - min(end-start, uint32(limit))
 	}
-	lo, err := bound(false)
-	if err != nil {
-		return nil, err
-	}
-	hi, err := bound(true)
-	if err != nil {
-		return nil, err
-	}
-	if hi <= lo {
+	n := end - start
+	if n == 0 {
 		return nil, nil
 	}
-	n := min(hi-lo, uint32(min(limit, authSimilarityRunScanLimit)))
-	if _, err := r.src.ReadAt(raw[:n*authSimilarityRunEntry], authSimilarityRunBase+int64(hi-n)*authSimilarityRunEntry); err != nil {
+	var raw [authSimilarityRunScanLimit * authSimilarityRunEntry]byte
+	if _, err := r.src.ReadAt(raw[:n*authSimilarityRunEntry], authSimilarityRunBase+int64(start)*authSimilarityRunEntry); err != nil {
 		return nil, err
 	}
-	ids := make([]uint32, n)
-	for i := range ids {
+	var matches [authSimilarityRunScanLimit]uint32
+	ids := matches[:0]
+	var prev uint32
+	for i := uint32(0); i < n; i++ {
 		got, id := authSimilarityPosting(raw[i*authSimilarityRunEntry:])
-		if got != want || id == 0 || i > 0 && id <= ids[i-1] {
+		if got != want {
+			continue
+		}
+		if id <= prev {
 			return nil, fmt.Errorf("%w: posting changed during lookup", errAuthSimilarityRun)
 		}
-		ids[i] = id
+		ids = append(ids, id)
+		prev = id
 	}
-	return ids, nil
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return slices.Clone(ids[max(0, len(ids)-limit):]), nil
 }
 
 func inspectAuthSimilarityRun(args []string, out io.Writer) error {
