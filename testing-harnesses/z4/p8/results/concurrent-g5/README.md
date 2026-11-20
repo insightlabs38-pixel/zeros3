@@ -1,8 +1,11 @@
 # Concurrent 2 GiB G5 memory checks
 
 The two concurrent migrations in each cohort used independent copies of the
-same G5 fixture, with three 2 GiB versions per store. The P8 baseline is
-af9b39db08db and the candidate is the #120 memory implementation at 1c4e4917de2f.
+same G5 fixture, with three 2 GiB versions per store. The P8 binary was built
+at af9b39db08db. The candidate is the pre-freeze development build for the
+memory implementation recorded in 50490fd5b714. Its embedded VCS metadata
+identifies the dirty worktree based on 4ede37c842cd. The separate T1 gate uses
+the frozen #120 Git head. See build-identity.log for the measured executables.
 Both binaries used Go 1.27.0. Each process migrated with
 `authority migrate -apply -max-depth 2 -archive`.
 
