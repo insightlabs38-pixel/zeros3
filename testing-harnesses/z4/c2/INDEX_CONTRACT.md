@@ -108,11 +108,19 @@ The draft `zeros3 authority index-build -store DIR` writes a sealed offline
 generation under the existing store lock. It verifies logical content digests,
 deduplicates catalog rows, bounds each posting batch, and verifies the synced
 runs and catalog before the generation directory is renamed into place. The
-draft produces no active generation pointer. Incremental updates, active
-manifest publication, recovery and migration routing remain pending.
+optional `-apply` publishes a CURRENT pointer after rechecking the journal,
+snapshots, catalog and runs. The `index-status` command rechecks the active
+generation under the same lock and rejects stale or damaged derived state.
+Incremental updates, extended recovery coverage and migration routing remain
+pending.
 
-A standalone reader smoke test verified a 100262168-byte synthetic ZSR1 run
+A standalone reader smoke test verified a 100262172-byte synthetic ZSR1 run
 with ten million postings in one skewed prefix bucket, including six million
 postings for one feature. It returned the newest 64 IDs using 10196 KiB peak
 RSS and 0.542 CPU seconds. That test covers the reader and its query bound.
 The production churn and lifecycle scale gate is separate.
+
+The publication controls exercise an interruption before CURRENT changes and
+reject a generation after a new durable journal mutation. A fresh P8 binary
+opened a 2 MiB three-version store after explicit publication and passed deep
+verification and the independent whole-object and range checks.

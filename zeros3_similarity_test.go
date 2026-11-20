@@ -179,6 +179,36 @@ func TestAuthoritySimilarityStage(t *testing.T) {
 	if _, err := os.Stat(runPath); err != nil {
 		t.Fatalf("second build removed the first run: %v", err)
 	}
+	if err := s.publishAuthSimilarityStage(filepath.Base(first.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("interrupted-publish", func(t *testing.T) {
+		withTestHook(t, func(point string) {
+			if point == "similarity-before-current-publish" {
+				panic(simulatedCrash{point: point})
+			}
+		})
+		runExpectingSimulatedCrash(t, func() {
+			if err := s.publishAuthSimilarityStage(filepath.Base(second.Directory)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	current, err := s.readAuthSimilarityCurrent()
+	if err != nil || current.Directory != first.Directory {
+		t.Fatalf("interruption replaced the previous pointer: %+v %v", current, err)
+	}
+	if err := s.publishAuthSimilarityStage(filepath.Base(second.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	current, err = s.readAuthSimilarityCurrent()
+	if err != nil || current.Directory != second.Directory {
+		t.Fatalf("complete publication did not advance the pointer: %+v %v", current, err)
+	}
+	mustPutObject(t, s, "similar", "new", a, "", nil)
+	if _, err := s.readAuthSimilarityCurrent(); err == nil {
+		t.Fatal("active generation was accepted after durable journal change")
+	}
 	_, body, err := s.GetObject("similar", "a")
 	if err != nil || !bytes.Equal(body, b) {
 		t.Fatal("staged index changed visible bytes")
