@@ -331,3 +331,15 @@ func TestJudge(t *testing.T) {
 		}
 	}
 }
+
+func TestIdleSchedulerAdmitsLargeUnitAfterFractionalCPU(t *testing.T) {
+	s := scheduler{cpuUsed: 1e-15, memBudget: 1024, diskBudget: 2048}
+	large := unit{cpu: 0.5, mem: 2048, disk: 128}
+	if !s.fits(large) {
+		t.Fatal("the idle scheduler left the final large unit queued")
+	}
+	s.memUsed = 64
+	if s.fits(large) {
+		t.Fatal("the large unit must wait while another unit holds memory")
+	}
+}
