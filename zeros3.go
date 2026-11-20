@@ -48833,7 +48833,7 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 			if err := b.Flush(); err != nil {
 				return err
 			}
-			b, pending = s.newCASBatch(), 0
+			pending = 0
 		}
 	}
 	want := h.Sum(nil)

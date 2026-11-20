@@ -1,0 +1,8 @@
+=== RUN   TestAuthorityNativeClosureTransferAndInterruption
+--- PASS: TestAuthorityNativeClosureTransferAndInterruption (3.41s)
+=== RUN   TestAuthorityClosureDiscardsStagedTailAfterFlush
+--- PASS: TestAuthorityClosureDiscardsStagedTailAfterFlush (2.00s)
+=== RUN   TestAuthorityThinClosureUsesDestinationBasesAndFallsBack
+--- PASS: TestAuthorityThinClosureUsesDestinationBasesAndFallsBack (0.57s)
+PASS
+ok  	zeros3	6.019s

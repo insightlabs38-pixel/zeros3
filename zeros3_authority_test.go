@@ -1165,6 +1165,45 @@ func TestAuthorityNativeClosureTransferAndInterruption(t *testing.T) {
 	}
 }
 
+func TestAuthorityClosureDiscardsStagedTailAfterFlush(t *testing.T) {
+	src, dst := newAuthLab(t), newAuthLab(t)
+	body := genRandomBytes(827, 17<<20)
+	sum := sha256.Sum256(body)
+	pieces, err := src.s.authWritePieces(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &authRecord{SHA: sum, Size: int64(len(body)), Gen: 1, Form: authFormPin, Pieces: pieces}
+	if err := src.s.authPublish(rec); err != nil {
+		t.Fatal(err)
+	}
+	var wire bytes.Buffer
+	if err := src.s.ExportAuthorityClosure(sum, &wire); err != nil {
+		t.Fatal(err)
+	}
+	truncated := wire.Bytes()[:wire.Len()-sha256.Size]
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(truncated)); err == nil {
+		t.Fatal("closure with a missing trailer imported")
+	}
+	if _, err := dst.s.casStat(pieces[0].SHA); err != nil {
+		t.Fatalf("the import did not reach a durable chunk flush: %v", err)
+	}
+	if files, err := dst.s.authFiles(); err != nil || len(files) != 0 {
+		t.Fatalf("truncated closure published authority records: %v %v", files, err)
+	}
+	if staged, err := filepath.Glob(filepath.Join(dst.dir, "tmp", "cas-*.tmp")); err != nil || len(staged) != 0 {
+		t.Fatalf("truncated closure left %d staged CAS files: %v", len(staged), err)
+	}
+	dst.close()
+	dst.open()
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(wire.Bytes())); err != nil {
+		t.Fatalf("retry after reopen: %v", err)
+	}
+	if _, _, err := dst.s.authProve(mustLoad(t, dst.s, sum), 0); err != nil {
+		t.Fatalf("retried closure did not reproduce the source SHA-256: %v", err)
+	}
+}
+
 func mustLoad(t *testing.T, s *Store, h [32]byte) *authRecord {
 	r, err := s.authLoad(h)
 	if err != nil || r == nil {
