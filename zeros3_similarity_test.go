@@ -118,3 +118,69 @@ func TestAuthoritySimilarityRunCorruption(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthoritySimilarityStage(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateBucket("similar"); err != nil {
+		t.Fatal(err)
+	}
+	a := bytes.Repeat([]byte("retained object"), 200)
+	b := bytes.Repeat([]byte("updated object"), 201)
+	mustPutObject(t, s, "similar", "a", a, "", nil)
+	mustPutObject(t, s, "similar", "b", a, "", nil)
+	mustPutObject(t, s, "similar", "a", b, "", nil)
+	first, err := s.buildAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Objects != 2 || len(first.Runs) != 1 || first.JournalSeq == 0 || first.JournalEnd <= 0 ||
+		first.StoreID != s.formatSnapshot().StoreID {
+		t.Fatalf("invalid stage metadata: %+v", first)
+	}
+	blob, err := os.ReadFile(filepath.Join(first.Directory, "catalog.zsc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blob) != 12+44*2 || string(blob[:4]) != "ZSC1" || first.CatalogSHA != fmt.Sprintf("%x", sha256.Sum256(blob)) {
+		t.Fatal("catalog metadata differs from its bytes")
+	}
+	expected := map[[32]byte]bool{sha256.Sum256(a): false, sha256.Sum256(b): false}
+	for i := 0; i < 2; i++ {
+		row := blob[12+44*i : 12+44*(i+1)]
+		if binary.LittleEndian.Uint32(row) != uint32(i+1) {
+			t.Fatal("nonmonotonic catalog IDs")
+		}
+		var sum [32]byte
+		copy(sum[:], row[4:36])
+		if seen, ok := expected[sum]; !ok || seen {
+			t.Fatalf("unexpected or repeated catalog digest %x", sum)
+		}
+		expected[sum] = true
+	}
+	runPath := filepath.Join(first.Directory, first.Runs[0].Name)
+	runData, err := os.ReadFile(runPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Runs[0].SHA256 != fmt.Sprintf("%x", sha256.Sum256(runData)) {
+		t.Fatal("wrong run digest")
+	}
+	second, err := s.buildAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Directory == second.Directory || first.JournalSHA != second.JournalSHA || first.SnapshotSHA != second.SnapshotSHA {
+		t.Fatal("rebuild changed authoritative fencing or reused a directory")
+	}
+	if _, err := os.Stat(runPath); err != nil {
+		t.Fatalf("second build removed the first run: %v", err)
+	}
+	_, body, err := s.GetObject("similar", "a")
+	if err != nil || !bytes.Equal(body, b) {
+		t.Fatal("staged index changed visible bytes")
+	}
+}
