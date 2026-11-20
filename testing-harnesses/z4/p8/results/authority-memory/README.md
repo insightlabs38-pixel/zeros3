@@ -35,3 +35,10 @@ python3 concurrent-g5.py WORKDIR TESTBIN P8_BINARY CANDIDATE_BINARY 2147483648
 
 The repository's 36-step T1 gate is separate from these results. Qualify the
 candidate with pinned real-model and Parquet corpora before merging.
+
+The first T1 attempt used Go 1.27.4 and GOMAXPROCS=2. All 12 preflight
+steps passed. The normal root step failed because the mandatory pipeline
+reader close test skipped. On both the unchanged P8 binary and the candidate
+it skips at GOMAXPROCS=2 and passes at GOMAXPROCS=4. The retired attempt and
+its interruption remain recorded. The rerun uses four logical Go processors
+on the same two-CPU-quota workspace and retains the original test requirements.
