@@ -28,3 +28,9 @@ ZEROS3_B2_CORPUS=/path/to/corpus ZEROS3_RANGE_OUT=/tmp/p8-ranges.jsonl \
   go test -tags p8rangeexperiment -run '^TestP8NestedRangeExperiment$' \
   -count=1 -timeout 60m -v .
 ```
+
+The optional harness accepts comma-separated byte sizes in
+`ZEROS3_RANGE_WINDOWS`. It requires the selected fixture to reach depth 2,
+checks two range fetch costs through the production reader, and publishes
+the result only after every selected window succeeds. Set
+`ZEROS3_RANGE_DEEP=1` to run deep verification after maintenance as well.

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,10 +35,27 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 		}
 		corpus[sha256.Sum256(data)] = data
 	}
-	f, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	windows := []int64{1 << 20, 128 << 10}
+	if selection := os.Getenv("ZEROS3_RANGE_WINDOWS"); selection != "" {
+		windows = nil
+		for _, value := range strings.Split(selection, ",") {
+			window, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			params := dwDcoreDefaultWParams()
+			params.Window = window
+			if err != nil || window > authWinMaxWindow || !params.valid() || slices.Contains(windows, window) {
+				t.Fatalf("invalid or repeated window size %q", value)
+			}
+			windows = append(windows, window)
+		}
+	}
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Fatalf("results path must be unused: %s (%v)", out, err)
+	}
+	f, err := os.CreateTemp(filepath.Dir(out), ".p8-range-*.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer os.Remove(f.Name())
 	defer f.Close()
 	rows := json.NewEncoder(f)
 	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
@@ -47,7 +65,7 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 	cdcBytes := dirBytes(t, cdc)
 	t.Logf("CDC fixture retained %d bytes", cdcBytes)
 
-	for _, window := range []int64{1 << 20, 128 << 10} {
+	for _, window := range windows {
 		t.Run(strconv.FormatInt(window, 10), func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "store")
 			if err := econCopyTree(cdc, dir); err != nil {
@@ -115,8 +133,14 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 				}
 			}
 			t.Logf("window=%d whole digests match, depth counts=%v", window, depths)
-			if maxDepth < 2 {
-				t.Logf("window %d: actual maximum depth %d", window, maxDepth)
+			if maxDepth != 2 {
+				t.Fatalf("window %d did not exercise a depth-2 range: %d", window, maxDepth)
+			}
+			if os.Getenv("ZEROS3_RANGE_DEEP") == "1" {
+				verification, err := s.Verify(true)
+				if err != nil || !verification.OK() {
+					t.Fatalf("post-maintenance verification failed: %v %+v", err, verification.Issues)
+				}
 			}
 			if report.Admitted == 0 {
 				t.Fatal("no admitted deltas")
@@ -128,6 +152,14 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 			offsets := make([]int64, n)
 			for i := range offsets {
 				offsets[i] = rng.Int64N(chosen.TotalLength - 4096)
+			}
+			var rangeFetched []int64
+			for _, offset := range offsets[:2] {
+				fetched, handled, err := s.AuthorityReadCost(chosen, offset, 4096)
+				if err != nil || !handled {
+					t.Fatalf("could not price the authority range at %d: %v", offset, err)
+				}
+				rangeFetched = append(rangeFetched, fetched)
 			}
 			for _, cacheMiB := range []int64{0, 64} {
 				s.SetAuthorityCache(cacheMiB << 20)
@@ -165,11 +197,24 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 				if err := rows.Encode(map[string]any{
 					"window_bytes": window, "cache_mib": cacheMiB, "depths": depths,
 					"target_sha256": chosen.ObjectSHA256, "range_us": times, "migrate_s": wall,
-					"cpu_s": cpu, "rss_mib": rss, "cdc_bytes": cdcBytes, "phys_after": kept,
+					"cold_range_fetched_bytes": rangeFetched,
+					"cpu_s":                    cpu, "rss_mib": rss, "cdc_bytes": cdcBytes, "phys_after": kept,
 				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 		})
+	}
+	if t.Failed() {
+		return
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(f.Name(), out); err != nil {
+		t.Fatal(err)
 	}
 }
