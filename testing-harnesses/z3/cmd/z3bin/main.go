@@ -42,6 +42,8 @@ func main() {
 		runVerify(os.Args[2:])
 	case "pair":
 		runPair(os.Args[2:])
+	case "exact-delta":
+		runExactExecutableDelta(os.Args[2:])
 	default:
 		fatal(fmt.Errorf("unknown command %q", os.Args[1]))
 	}
