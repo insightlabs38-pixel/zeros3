@@ -1,0 +1,34 @@
+/workspace/work/zeros3/p8-main-large256/zeros3: go1.27.0
+	path	zeros3
+	mod	zeros3	v0.0.0-20261119153824-af9b39db08db
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=af9b39db08db135709dd8c7a4f687ab2543c9ad1
+	build	vcs.time=2026-11-19T15:38:24Z
+	build	vcs.modified=false
+/workspace/work/zeros3/c2-compat-v2.P80v7K/zeros3: go1.27.4
+	path	zeros3
+	mod	zeros3	v0.1.2-0.20261120014456-811379ec0a16+dirty
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=811379ec0a16bc771c28776a77ecb61f831dcfd7
+	build	vcs.time=2026-11-20T01:44:56Z
+	build	vcs.modified=true
