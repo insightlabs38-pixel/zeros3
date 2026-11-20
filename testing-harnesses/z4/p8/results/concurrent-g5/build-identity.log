@@ -1,6 +1,6 @@
 /workspace/work/zeros3/p8-baseline-2g/zeros3: go1.27.0
 	path	zeros3
-	mod	zeros3	v0.0.0-20261119153824-af9b39db08db	
+	mod	zeros3	v0.0.0-20261119153824-af9b39db08db
 	build	-buildmode=exe
 	build	-compiler=gc
 	build	CGO_ENABLED=1
@@ -17,7 +17,7 @@
 	build	vcs.modified=false
 /workspace/work/zeros3/p8r-candidate-2g/zeros3: go1.27.0
 	path	zeros3
-	mod	zeros3	v0.0.0-20261119232640-4ede37c842cd+dirty	
+	mod	zeros3	v0.0.0-20261119232640-4ede37c842cd+dirty
 	build	-buildmode=exe
 	build	-compiler=gc
 	build	CGO_ENABLED=1
