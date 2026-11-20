@@ -117,10 +117,10 @@ import (
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44750    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49259    Windowed and estimated similarity deltas (extracted dcore)
-//    50781    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58421    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64693    CLI dispatch, HTTP server/startup, and main
+//    49263    Windowed and estimated similarity deltas (extracted dcore)
+//    50785    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58425    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64697    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47339,38 +47339,42 @@ type authIdxEnt struct {
 	once sync.Once
 	x    *dwDcoreIndex
 	err  error
+	cost int64
 }
 
 const authIdxCacheBytes = 48 << 20
 
-// get returns the index of the base b (identified by its content SHA-256), building it on first use.
+// get shares in-flight builds. Only completed, retained entries join the eviction list.
 func (c *authIdxCache) get(sha [32]byte, b []byte, p dwDcoreParams) (*dwDcoreIndex, error) {
 	c.mu.Lock()
 	e := c.m[sha]
 	if e == nil {
 		e = &authIdxEnt{}
 		c.m[sha] = e
-		c.order = append(c.order, sha)
 	}
 	c.mu.Unlock()
 	e.once.Do(func() {
-		e.x, e.err = dwDcoreBuildIndex([][]byte{b}, p)
-		if e.err != nil {
+		x, err := dwDcoreBuildIndex([][]byte{b}, p)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		e.x, e.err = x, err
+		if err != nil {
+			delete(c.m, sha)
 			return
 		}
-		c.mu.Lock()
-		c.used += int64(len(e.x.table)) * 8
-		for c.used > c.budget && len(c.order) > 1 {
+		e.cost = int64(len(x.table))*8 + int64(cap(b))
+		if e.cost > c.budget {
+			delete(c.m, sha)
+			return
+		}
+		for c.used+e.cost > c.budget {
 			old := c.order[0]
 			c.order = c.order[1:]
-			if o := c.m[old]; o != nil && o != e {
-				if o.x != nil {
-					c.used -= int64(len(o.x.table)) * 8
-				}
-				delete(c.m, old)
-			}
+			c.used -= c.m[old].cost
+			delete(c.m, old)
 		}
-		c.mu.Unlock()
+		c.order = append(c.order, sha)
+		c.used += e.cost
 	})
 	return e.x, e.err
 }
