@@ -124,3 +124,15 @@ The publication controls exercise an interruption before CURRENT changes and
 reject a generation after a new durable journal mutation. A fresh P8 binary
 opened a 2 MiB three-version store after explicit publication and passed deep
 verification and the independent whole-object and range checks.
+
+The draft `index-refresh` reuses an intact catalog and immutable posting runs
+after verifying the committed journal prefix. It scans the durable suffix for
+new put and multipart roots. Overwrites and deletes preserve their archived
+references, and identical logical bodies reuse their catalog entry. Prune and
+snapshot changes use an authoritative rebuild. Eight small tail runs compact
+within one bounded posting batch, without rereading object bodies.
+
+The lifecycle tests also kill a fresh process before and after generation
+rename and CURRENT publication. Reopen and retry preserve the previous
+authoritative object bytes. Post-crash data checks cover the exact content
+and the complete active generation.
