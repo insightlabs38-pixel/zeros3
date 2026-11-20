@@ -1,3 +1,5 @@
+//go:build p8rangeexperiment
+
 package main
 
 import (
@@ -43,6 +45,7 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 	econBuild(t, cdc, inputs, repModeOff)
 	econCompact(t, cdc)
 	cdcBytes := dirBytes(t, cdc)
+	t.Logf("CDC fixture retained %d bytes", cdcBytes)
 
 	for _, window := range []int64{1 << 20, 128 << 10} {
 		t.Run(strconv.FormatInt(window, 10), func(t *testing.T) {
@@ -60,8 +63,10 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 			}()
 			wall := time.Since(start).Seconds()
 			cpu = procCPUSeconds() - cpu
+			t.Logf("window=%d migrated=%d CPU=%.2f wall=%.2f", window, report.Admitted, cpu, wall)
 			econReclaim(t, dir)
 			kept := dirBytes(t, dir)
+			t.Logf("window=%d retained=%d", window, kept)
 			s, err := OpenStore(dir)
 			if err != nil {
 				t.Fatal(err)
@@ -109,6 +114,7 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 					maxDepth, chosen = depth, m
 				}
 			}
+			t.Logf("window=%d whole digests match, depth counts=%v", window, depths)
 			if maxDepth < 2 {
 				t.Logf("window %d: actual maximum depth %d", window, maxDepth)
 			}
