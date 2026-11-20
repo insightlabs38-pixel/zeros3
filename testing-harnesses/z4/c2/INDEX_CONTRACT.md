@@ -32,10 +32,10 @@ older runs never require unbounded probing for a single feature.
 ## Snapshot of authoritative state
 
 A publication fence binds the immutable generation to the validated durable
-journal sequence, valid end offset, and last-frame checksum. It also binds the
-identity of the journal incarnation and a digest of the sorted, verified live
-snapshot roots. Replacing or truncating the journal and a mismatch in the
-snapshot set invalidate incremental reuse. A fresh opener compares the index
+journal sequence, end offset and SHA-256 of the committed prefix. It also binds
+the digest of the sorted, verified live snapshot roots. Incremental refresh
+checks the previous prefix and derives the new fence in one sequential pass.
+A changed committed prefix or snapshot set invalidates incremental reuse. A fresh opener compares the index
 fence to the authoritative replay result. Unknown format or profile versions
 and ahead-of-journal state make the generation unusable. An index behind replay
 can catch up before use or fall back while a rebuild is pending.
@@ -158,9 +158,9 @@ The migration command can reserve filesystem headroom with
 `-reserve-free-mib`. It checks the current free blocks before staging encoded
 delta or model output and again before publishing new pins and records.
 Earlier staged output and retained shared packs remain charged. Structural
-representations check the floor before and after construction, where the
-candidate's encoded size is known. The reserve is an estimate. Actual write
-errors still propagate, and aborted staging remains collectible.
+representation checks include unflushed pack or segment data when pricing
+each new component. The reserve is an estimate. Actual write errors still
+propagate, and aborted staging remains collectible.
 
 The repeated-query reader retains the verified bucket directories of at
 most 32 runs. Older verified runs read one pair of directory offsets on

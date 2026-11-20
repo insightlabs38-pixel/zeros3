@@ -2315,6 +2315,23 @@ func TestAuthorityMigrationCancellationBeforePublication(t *testing.T) {
 	}
 }
 
+func TestAuthorityRepresentationStagingHonorsDiskReserve(t *testing.T) {
+	l := newAuthLab(t)
+	body := genRandomBytes(497, 16<<10)
+	for _, logicalSize := range []int64{int64(len(body)), 128 << 20} {
+		b := l.s.newRepBuilder(logicalSize, l.s.repDescLookup, nil)
+		b.reserve = math.MaxUint64
+		_, err := b.putBlob(body)
+		b.close()
+		if !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("representation stage exceeded headroom for %d-byte object: %v", logicalSize, err)
+		}
+		if _, err := l.s.casStat(sha256.Sum256(body)); !os.IsNotExist(err) {
+			t.Fatalf("refused representation staged bytes: %v", err)
+		}
+	}
+}
+
 func TestAuthorityMigrationDiskReserve(t *testing.T) {
 	l := authHistoryLab(t, 493, 3, 520_000)
 	l.reclaim()

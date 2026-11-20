@@ -116,11 +116,11 @@ import (
 //    25844    Portable snapshot bundles (`zeros3 bundle`)
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50788    Windowed and estimated similarity deltas (extracted dcore)
-//    52310    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59958    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66230    CLI dispatch, HTTP server/startup, and main
+//    44776    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    50827    Windowed and estimated similarity deltas (extracted dcore)
+//    52349    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59997    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66269    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -32437,6 +32437,7 @@ func (bd *repBudget) entries(n int) error {
 // descriptors of the virtual components it creates and proves children as it goes.
 type repBuilder struct {
 	s       *Store
+	reserve uint64
 	big     bool // large object: components stream into immutable packs, not loose files
 	size    int64
 	sink    chunkSink
@@ -32489,6 +32490,26 @@ func (b *repBuilder) flush() error {
 	return nil
 }
 
+func (b *repBuilder) putChunk(sum [32]byte, data []byte) error {
+	if b.reserve != 0 {
+		bytes, records := uint64(len(data)), uint64(1)
+		switch sink := b.sink.(type) {
+		case *packSink:
+			if sink.cur != nil {
+				bytes += uint64(sink.cur.LogicalBytes())
+				records += uint64(len(sink.pending))
+			}
+		case *segSink:
+			bytes += uint64(sink.bytes)
+			records += uint64(len(sink.recs))
+		}
+		if err := b.s.checkAuthDiskReserve(b.reserve, bytes, records); err != nil {
+			return err
+		}
+	}
+	return b.sink.Put(sum, data)
+}
+
 // putBlob stores one logical component: nothing for an empty one, one ordinary
 // chunk up to repDirectMax, otherwise production CDC chunks plus a descriptor.
 func (b *repBuilder) putBlob(data []byte) ([32]byte, error) {
@@ -32500,7 +32521,7 @@ func (b *repBuilder) putBlob(data []byte) ([32]byte, error) {
 		return sum, nil
 	}
 	if len(data) <= repDirectMax {
-		if err := b.sink.Put(sum, data); err != nil {
+		if err := b.putChunk(sum, data); err != nil {
 			return sum, err
 		}
 		b.written[sum] = struct{}{}
@@ -32544,7 +32565,7 @@ func (b *repBuilder) putStream(r io.Reader, size int64) ([32]byte, error) {
 			return [32]byte{}, err
 		}
 		cs := sha256.Sum256(chunk)
-		if err := b.sink.Put(cs, chunk); err != nil {
+		if err := b.putChunk(cs, chunk); err != nil {
 			return [32]byte{}, err
 		}
 		h.Write(chunk)
@@ -32574,7 +32595,7 @@ func (b *repBuilder) putCDC(r io.Reader, each func(sum [32]byte, n int64)) error
 		}
 		sum := sha256.Sum256(chunk)
 		if _, ok := b.written[sum]; !ok {
-			if err := b.sink.Put(sum, chunk); err != nil {
+			if err := b.putChunk(sum, chunk); err != nil {
 				return err
 			}
 			b.written[sum] = struct{}{}
@@ -33624,12 +33645,12 @@ func (s *Store) repConstruct(man manifestV1) (*repRoot, error) {
 // manifest's object without publishing a root for it; floor is the capability
 // level its closure needs.
 func (s *Store) repConstructFor(man manifestV1, live func() bool) (*repRoot, int, error) {
-	return s.repConstructAt(man, nil, live)
+	return s.repConstructAt(man, nil, live, 0)
 }
 
 // repConstructAt is repConstructFor over src, the object's logical bytes when the caller already holds them
 // (nil: read them through the manifest). The caller must have read src from this manifest's verified chunks.
-func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool) (*repRoot, int, error) {
+func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64) (*repRoot, int, error) {
 	if man.TotalLength < 1 {
 		return nil, 0, errRepUnsupported
 	}
@@ -33654,6 +33675,7 @@ func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool
 	fireTestHook(hookRepAnalysisStarted)
 	t0 := time.Now()
 	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
+	b.reserve = reserve
 	defer b.close()
 	var rep *repObject
 	if err := func() (err error) {
@@ -47775,7 +47797,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 						src = bytes.NewReader(b)
 					}
 				}
-				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil })
+				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil }, m.pol.ReserveFreeBytes)
 				if errors.Is(err, syscall.ENOSPC) {
 					return err
 				}
@@ -49702,15 +49724,34 @@ func (r *authSimilaritySketchReader) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func (s *Store) authSimilarityFence() (authSimilarityStageReport, []snapshotDescriptorV1, error) {
+	return s.authSimilarityFenceAt(0, nil)
+}
+
+// authSimilarityFenceAt checks the old prefix and new fence in one sequential scan.
+func (s *Store) authSimilarityFenceAt(prefixEnd int64, prefixDigest *[32]byte) (authSimilarityStageReport, []snapshotDescriptorV1, error) {
 	var report authSimilarityStageReport
 	report.Version, report.Profile = 2, 1
 	report.StoreID = s.formatSnapshot().StoreID
 	report.JournalEnd, report.JournalSeq = s.journal.writeOffset, s.journal.nextSeq-1
 	journalHash := sha256.New()
-	if n, err := io.Copy(journalHash, io.NewSectionReader(s.journal.f, 0, report.JournalEnd)); err != nil {
+	hashRange := func(off, length int64) error {
+		n, err := io.Copy(journalHash, io.NewSectionReader(s.journal.f, off, length))
+		if err == nil && n != length {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	if prefixDigest != nil {
+		if prefixEnd < 0 || prefixEnd > report.JournalEnd {
+			return report, nil, errors.New("similarity prefix is outside the durable journal")
+		}
+		if err := hashRange(0, prefixEnd); err != nil {
+			return report, nil, err
+		}
+		journalHash.Sum(prefixDigest[:0])
+	}
+	if err := hashRange(prefixEnd, report.JournalEnd-prefixEnd); err != nil {
 		return report, nil, err
-	} else if n != report.JournalEnd {
-		return report, nil, io.ErrUnexpectedEOF
 	}
 	report.JournalSHA = hex.EncodeToString(journalHash.Sum(nil))
 	snapshots, issues := s.scanSnapshots()
@@ -50030,17 +50071,15 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 	if err != nil {
 		return s.buildAuthSimilarityStage()
 	}
-	report, snapshots, err := s.authSimilarityFence()
+	if prior.JournalEnd < 0 || prior.JournalEnd > s.journal.writeOffset || prior.JournalSeq >= s.journal.nextSeq {
+		return s.buildAuthSimilarityStage()
+	}
+	var prefixDigest [32]byte
+	report, snapshots, err := s.authSimilarityFenceAt(prior.JournalEnd, &prefixDigest)
 	if err != nil {
 		return report, err
 	}
-	if prior.SnapshotSHA != report.SnapshotSHA || prior.JournalEnd < 0 ||
-		prior.JournalEnd > report.JournalEnd || prior.JournalSeq > report.JournalSeq {
-		return s.buildAuthSimilarityStage()
-	}
-	h := sha256.New()
-	if n, err := io.Copy(h, io.NewSectionReader(s.journal.f, 0, prior.JournalEnd)); err != nil || n != prior.JournalEnd ||
-		hex.EncodeToString(h.Sum(nil)) != prior.JournalSHA {
+	if prior.SnapshotSHA != report.SnapshotSHA || hex.EncodeToString(prefixDigest[:]) != prior.JournalSHA {
 		return s.buildAuthSimilarityStage()
 	}
 	roots, pruned, ok := similarityJournalAdditions(s.journal.f, prior, report)
