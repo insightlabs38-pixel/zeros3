@@ -1,7 +1,7 @@
 # P8R production model comparison
 
 Each cohort verifies its fixture hashes against the repository's model pins.
-Five Pythia-14m checkpoints or the SmolLM2 f16, imatrix and Q4_0 inputs were
+Five Pythia-14m checkpoints or the SmolLM2 f16, imatrix and selected quantized inputs were
 uploaded in their listed order through the archived P8 server. Each side
 migrated a separate clone of one compacted CDC store, using Go 1.27.0 and two
 logical Go processors. Migration used the default newest order and
@@ -12,11 +12,12 @@ The measured executable identities and hashes accompany the plans.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Pythia-14m | 141,193,216 | 124,395,520 | 124,395,520 | 13.11 / 14.75 | 93,732 / 93,936 |
 | SmolLM2 Q4_0 | 363,376,640 | 322,469,888 | 322,473,984 | 23.56 / 23.47 | 102,748 / 104,104 |
+| SmolLM2 IQ3_M / IQ3_XS | 376,836,096 | 346,607,616 | 346,603,520 | 36.48 / 42.18 | 112,972 / 103,192 |
 
-The four Pythia ZN7 choices and the one SmolLM2 ZN7 choice matched across
-both builds. Allocated bytes were measured after GC, repack, compact and
+The four Pythia, one SmolLM2 Q4_0 and two SmolLM2 IQ3 ZN7 choices matched
+across both builds. Allocated bytes were measured after GC, repack, compact and
 GC. All objects matched their independent SHA-256 hashes through fresh
 S3 processes, and both stores in each cohort passed deep verification.
 Each comparison is one cohort under ongoing host work. The CPU and RSS
-samples describe these runs. Mixed IQ variants, additional model sizes
-and dependency pruning are outside these two comparisons.
+samples describe these runs. Dependency pruning is outside these
+comparisons.
