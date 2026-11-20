@@ -1,6 +1,6 @@
 /workspace/work/zeros3/p8-main-large256/zeros3: go1.27.0
 	path	zeros3
-	mod	zeros3	v0.0.0-20261119153824-af9b39db08db	
+	mod	zeros3	v0.0.0-20261119153824-af9b39db08db
 	build	-buildmode=exe
 	build	-compiler=gc
 	build	CGO_ENABLED=1
@@ -17,7 +17,7 @@
 	build	vcs.modified=false
 /workspace/work/zeros3/c2-compat-v2.P80v7K/zeros3: go1.27.4
 	path	zeros3
-	mod	zeros3	v0.1.2-0.20261120014456-811379ec0a16+dirty	
+	mod	zeros3	v0.1.2-0.20261120014456-811379ec0a16+dirty
 	build	-buildmode=exe
 	build	-compiler=gc
 	build	CGO_ENABLED=1
