@@ -1,0 +1,11 @@
+build	input	driver_exit
+baseline	coreutils-9.7.l3.tar.zst	0
+candidate	coreutils-9.7.l3.tar.zst	0
+baseline	coreutils-9.7.l19.tar.zst	1
+candidate	coreutils-9.7.l19.tar.zst	1
+baseline	ref155_text.zst	0
+candidate	ref155_text.zst	0
+baseline	ref157_json.zst	0
+candidate	ref157_json.zst	0
+baseline	nested.zst	0
+candidate	nested.zst	0
