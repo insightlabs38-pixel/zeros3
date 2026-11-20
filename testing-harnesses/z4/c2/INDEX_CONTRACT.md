@@ -167,3 +167,8 @@ most 32 runs. Older verified runs read one pair of directory offsets on
 demand. This bounds retained directories to about 8 MiB at the generation
 run cap. The migration report distinguishes verified index open time from
 candidate lookup time. The lookup timer covers the reported planning pass.
+
+For a verified current index, `index-inspect` reports active catalog, posting,
+and tombstone payload bytes. Its rebuild estimate uses live object count, the
+16-feature limit and worst-case run headers. These payload figures exclude
+filesystem block rounding, manifests and retained generations.

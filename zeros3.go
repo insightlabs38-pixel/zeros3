@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44776    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50827    Windowed and estimated similarity deltas (extracted dcore)
-//    52349    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59997    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66269    CLI dispatch, HTTP server/startup, and main
+//    50841    Windowed and estimated similarity deltas (extracted dcore)
+//    52363    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    60011    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66283    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -49406,6 +49406,7 @@ const (
 	authSimilarityRunLimit          = 64
 	authSimilarityMaxRuns           = 256
 	authSimilarityCachedDirectories = 32
+	authSimilarityPostingBatch      = 1 << 18
 )
 
 var errAuthSimilarityRun = errors.New("invalid similarity posting run")
@@ -49837,7 +49838,7 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 		return report, err
 	}
 
-	const limit = 1 << 18
+	const limit = authSimilarityPostingBatch
 	batch := make([]authSimilarityEntry, 0, min(len(roots), limit/16)*16)
 	contents := make(map[[32]byte]int64)
 	if prior != nil {
@@ -50456,12 +50457,14 @@ func (s *Store) authSimilarityCurrentName() (string, error) {
 }
 
 type authSimilarityInventory struct {
-	State      string                     `json:"state"`
-	Current    string                     `json:"current,omitempty"`
-	Inactive   int                        `json:"inactive_generations"`
-	Incomplete int                        `json:"staging_directories"`
-	Issue      string                     `json:"issue,omitempty"`
-	Generation *authSimilarityStageReport `json:"generation,omitempty"`
+	State                    string                     `json:"state"`
+	Current                  string                     `json:"current,omitempty"`
+	Inactive                 int                        `json:"inactive_generations"`
+	Incomplete               int                        `json:"staging_directories"`
+	Issue                    string                     `json:"issue,omitempty"`
+	Generation               *authSimilarityStageReport `json:"generation,omitempty"`
+	ActivePayloadBytes       uint64                     `json:"active_payload_bytes,omitempty"`
+	RebuildPayloadUpperBytes uint64                     `json:"rebuild_payload_upper_bytes,omitempty"`
 }
 
 func (s *Store) inspectAuthSimilarityIndex() (authSimilarityInventory, error) {
@@ -50481,6 +50484,17 @@ func (s *Store) inspectAuthSimilarityIndex() (authSimilarityInventory, error) {
 		switch {
 		case err == nil:
 			info.State, info.Generation = "current", &report
+			const runOverhead = authSimilarityRunBase + 4
+			info.ActivePayloadBytes = 12 + 44*uint64(report.Objects) + 4*uint64(report.Tombstones)
+			for _, run := range report.Runs {
+				info.ActivePayloadBytes += runOverhead + uint64(run.Postings)*authSimilarityRunEntry
+			}
+			maxPostings := 16 * uint64(report.LiveObjects)
+			// A batch can end 15 entries short if the next object's features would exceed it.
+			const minBatch = authSimilarityPostingBatch - 15
+			maxRuns := (maxPostings + minBatch - 1) / minBatch
+			info.RebuildPayloadUpperBytes = 12 + 44*uint64(report.LiveObjects) +
+				maxPostings*authSimilarityRunEntry + maxRuns*runOverhead
 		case errors.Is(err, errAuthSimilarityStale):
 			info.State = "stale"
 		default:

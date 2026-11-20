@@ -977,6 +977,10 @@ func TestAuthoritySimilarityIndexInventory(t *testing.T) {
 		info.Current != filepath.Base(active.Directory) || info.Inactive != 1 || info.Incomplete != 1 {
 		t.Fatalf("incorrect index inventory: %+v %v", info, err)
 	}
+	want := uint64(12 + 44 + authSimilarityRunBase + 4 + authSimilarityRunEntry*int(active.Runs[0].Postings))
+	if info.ActivePayloadBytes != want || info.RebuildPayloadUpperBytes < want {
+		t.Fatalf("incorrect verified payload accounting: got %+v want at least %d bytes", info, want)
+	}
 	mustPutObject(t, s, "similar", "second", body, "", nil)
 	info, err = s.inspectAuthSimilarityIndex()
 	if err != nil || info.State != "stale" || info.Generation != nil || info.Inactive != 1 || info.Incomplete != 1 {

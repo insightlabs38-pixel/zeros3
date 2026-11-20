@@ -23,3 +23,12 @@ process startup, store replay and index verification.
 This run exercises production build, catch-up, deduplication and reopen.
 It is a scaled-down churn screen. The 10 million chunk gate, sustained
 churn and comparative cold and warm query latency remain open.
+
+The next expansion reached 26,624 live objects, 26,624 historical roots,
+29,351 verified chunks and 425,984 postings across three retained runs.
+The hottest features held 88 postings each. An independent reader scanned
+the encoded posting records and matched all 64 returned IDs from a fresh
+query. The index occupied 7,446,528 allocated bytes within the
+1,186,250,752-byte store footprint. Refresh used 112.96 CPU seconds and
+173,388 KiB peak RSS under concurrent qualification load. Fresh deep
+verification passed after the append.
