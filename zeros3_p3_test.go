@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1105,8 +1106,13 @@ func TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames(t *testin
 	useProductionLayout(t)
 	s, dir := p1cOpen(t)
 	stop := make(chan struct{})
-	acked := make(chan string, 1<<16)
 	done := make(chan struct{})
+	var keys []string
+	stopWriter := sync.OnceFunc(func() {
+		close(stop)
+		<-done
+	})
+	defer stopWriter()
 	go func() {
 		defer close(done)
 		for i := 0; ; i++ {
@@ -1120,7 +1126,7 @@ func TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames(t *testin
 				t.Error(err)
 				return
 			}
-			acked <- k
+			keys = append(keys, k)
 		}
 	}()
 	for i := 0; i < 25; i++ {
@@ -1136,13 +1142,7 @@ func TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames(t *testin
 		}
 		ro.Close()
 	}
-	close(stop)
-	<-done
-	close(acked)
-	var keys []string
-	for k := range acked {
-		keys = append(keys, k)
-	}
+	stopWriter()
 	s.Close()
 	s2, err := OpenStore(dir)
 	if err != nil {

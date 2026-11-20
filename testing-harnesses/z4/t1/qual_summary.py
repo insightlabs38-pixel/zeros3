@@ -15,7 +15,10 @@ COLS = ["step", "status", "rc", "seconds", "note", "fingerprint", "finished", "c
 
 
 def git(*a):
-    return subprocess.run(["git", *a], capture_output=True, text=True).stdout
+    result = subprocess.run(["git", *a], capture_output=True, text=True)
+    if result.returncode:
+        sys.exit(f"could not read source provenance from git {a[0]}: {result.stderr.strip()}")
+    return result.stdout
 
 
 def fingerprint():
