@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44754    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50751    Windowed and estimated similarity deltas (extracted dcore)
-//    52273    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59921    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66193    CLI dispatch, HTTP server/startup, and main
+//    50760    Windowed and estimated similarity deltas (extracted dcore)
+//    52282    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59930    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66202    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47503,13 +47503,18 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 	// Only the contents in scope are kept; the chunk sharing of everything else is counted as the manifests stream by
 	// (a store of a million objects must not be held in memory to migrate a prefix of it).
 	scopedRun := pol.Bucket != "" || pol.Prefix != ""
-	scoped := map[[32]byte]bool{}
+	scoped := map[[32]byte]liveMan{}
 	if scopedRun {
 		s.eachLiveManifest(func(bucket, key string) bool {
 			return (pol.Bucket == "" || bucket == pol.Bucket) && strings.HasPrefix(key, pol.Prefix)
 		}, func(lm liveMan) {
-			if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil {
-				scoped[sha] = true
+			sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+			if err != nil {
+				return
+			}
+			prior, exists := scoped[sha]
+			if !exists || lm.man.CreatedAt.Before(prior.man.CreatedAt) {
+				scoped[sha] = lm
 			}
 		})
 	}
@@ -47520,7 +47525,8 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 		if scanErr = cmp.Or(scanErr, ctx.Err()); scanErr != nil || err != nil || lm.man.TotalLength < 1 {
 			return
 		}
-		if scopedRun && !scoped[sha] { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
+		matched, inScope := scoped[sha]
+		if scopedRun && !inScope { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
 			if outSeen[sha] {
 				return
 			}
@@ -47536,6 +47542,9 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 				}
 			}
 			return
+		}
+		if inScope {
+			lm = matched
 		}
 		o := m.objs[sha]
 		if o == nil {

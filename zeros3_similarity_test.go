@@ -856,6 +856,48 @@ func TestAuthoritySimilarityIndexedCandidatesScopeAndFallback(t *testing.T) {
 	}
 }
 
+func TestAuthoritySimilarityUsesScopedAliasForIndexedDiscovery(t *testing.T) {
+	l := newAuthLab(t)
+	if err := l.s.CreateBucket("a"); err != nil {
+		t.Fatal(err)
+	}
+	base := genRandomBytes(834, 530_000)
+	target := bytes.Clone(base)
+	copy(target[210000:], genRandomBytes(845, 10_000))
+	mustPutObject(t, l.s, "a", "outside-alias", base, "", nil)
+	l.put("keep/base", base)
+	l.put("keep/target", target)
+	l.reclaim()
+	if err := l.s.authEnsurePin(&authObj{sha: sha256.Sum256(base), man: l.man("keep/base")}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := l.s.buildAuthSimilarityStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.s.publishAuthSimilarityStage(filepath.Base(report.Directory)); err != nil {
+		t.Fatal(err)
+	}
+	query, err := l.s.openCurrentAuthSimilarityQuery()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer query.close()
+	pol := AuthPolicy{Bucket: "b", Prefix: "keep/", Order: "oldest", Apply: true, AllowDelta: true,
+		NoZN7: true, MaxDepth: 2, MaxReadAmp: -1, similarity: query}
+	migration, err := l.s.AuthorityMigrate(pol)
+	if err != nil || migration.SimilarityMatches == 0 || migration.Admitted != 1 {
+		t.Fatalf("scoped alias failed to resolve the indexed base: %+v %v", migration, err)
+	}
+	l.reclaim()
+	l.exact("scoped indexed migration")
+	l.verifyOK("scoped indexed migration")
+	_, outside, err := l.s.GetObject("a", "outside-alias")
+	if err != nil || !bytes.Equal(outside, base) {
+		t.Fatalf("aliased bytes outside the scoped migration changed: %v", err)
+	}
+}
+
 func TestAuthoritySimilarityIndexInventory(t *testing.T) {
 	s, err := OpenStore(t.TempDir())
 	if err != nil {
