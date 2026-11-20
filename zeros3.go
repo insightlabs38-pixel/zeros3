@@ -97,30 +97,30 @@ import (
 //    11129    CopyObject
 //    11434    Multipart upload
 //    12374    Stats and reachability scanning
-//    13849    Verify
-//    14062    Store locking and safe offline GC
-//    14365    Offline compaction (`zeros3 compact`)
-//    15431    Pack reclamation and repacking (`zeros3 repack`)
-//    15916    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16429    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17494    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18298    Delta sync client, credentials, and parallel transfer
-//    20521    Bulk logical-chunk transport (v2)
-//    21432    Recursive directory sync
-//    21737    Remote replication (`zeros3 replicate`)
-//    22631    Peer-assisted corruption repair (`zeros3 repair`)
-//    23199    Namespace (prefix/bucket) replication
-//    23515    Copy-on-write namespace fork (`zeros3 fork`)
-//    23723    Snapshots and restore
-//    24884    Structural diff and inspect (introspection)
-//    26223    Portable snapshot bundles (`zeros3 bundle`)
-//    27420    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28055    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45133    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49923    Windowed and estimated similarity deltas (extracted dcore)
-//    51445    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59085    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65357    CLI dispatch, HTTP server/startup, and main
+//    13878    Verify
+//    14093    Store locking and safe offline GC
+//    14396    Offline compaction (`zeros3 compact`)
+//    15462    Pack reclamation and repacking (`zeros3 repack`)
+//    15947    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16460    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17525    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18329    Delta sync client, credentials, and parallel transfer
+//    20552    Bulk logical-chunk transport (v2)
+//    21463    Recursive directory sync
+//    21768    Remote replication (`zeros3 replicate`)
+//    22662    Peer-assisted corruption repair (`zeros3 repair`)
+//    23230    Namespace (prefix/bucket) replication
+//    23546    Copy-on-write namespace fork (`zeros3 fork`)
+//    23754    Snapshots and restore
+//    24915    Structural diff and inspect (introspection)
+//    26261    Portable snapshot bundles (`zeros3 bundle`)
+//    27458    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28093    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45171    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    50082    Windowed and estimated similarity deltas (extracted dcore)
+//    51604    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59244    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65516    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -12677,6 +12677,7 @@ type reachabilityResult struct {
 	AuthDeltas       int
 	AuthLogicalBytes int64
 	AuthFiles        int
+	AuthFaults       int
 	AuthOrphans      []string // hex content hashes
 	AuthLive         []string
 }
@@ -13591,6 +13592,23 @@ func parallelFor(n, workers, block int, fn func(i int)) {
 	wg.Wait()
 }
 
+// AuthorityStorage describes store-wide authority data. Component bytes are
+// already counted in the chunk store, including any copies shared with CDC.
+type AuthorityStorage struct {
+	LiveByForm          map[string]int `json:"live_by_form"`
+	OrphanRecords       int            `json:"orphan_records"`
+	UnavailableRecords  int            `json:"unavailable_records"`
+	RecordFileBytes     int64          `json:"record_file_bytes"`
+	LiveRecordFileBytes int64          `json:"live_record_file_bytes"`
+	OrphanFileBytes     int64          `json:"orphan_record_file_bytes"`
+	ComponentCount      int            `json:"closure_component_count"`
+	ComponentLogical    int64          `json:"closure_component_logical_bytes"`
+	ComponentFiles      int64          `json:"closure_component_stored_bytes"`
+	MaxDepth            int            `json:"max_depth"`
+	MaxBases            int            `json:"max_bases_per_record"`
+	MaxDirectDependents int            `json:"max_direct_dependents"`
+}
+
 // StatsResult is the exact set of fields STATS_SPEC.md defines for one
 // scan, human-readable field names doubling as stable JSON field names.
 type StatsResult struct {
@@ -13655,6 +13673,8 @@ type StatsResult struct {
 	RepresentationReachableChunkCount   int   `json:"representation_reachable_chunk_count"`
 	RepresentationReachableChunkBytes   int64 `json:"representation_reachable_chunk_bytes"`
 	RepresentationOrphanRootCount       int   `json:"representation_orphan_root_count"`
+
+	Authority *AuthorityStorage `json:"authority,omitempty"`
 
 	DedupAvoidedBytes    int64   `json:"dedup_avoided_bytes"`
 	DedupReduction       float64 `json:"dedup_reduction"`
@@ -13842,6 +13862,15 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	res.ActualStoreFileBytes += rootBytes
 	res.ReclaimableBytes += s.repOrphanRootBytes(rr.RepOrphanRoots)
 
+	if rr.AuthFiles > 0 || rr.AuthFaults > 0 {
+		authority, err := s.authorityStorage(rr)
+		if err != nil {
+			return StatsResult{}, fmt.Errorf("stats: authority storage: %w", err)
+		}
+		res.Authority = &authority
+		res.ActualStoreFileBytes += authority.RecordFileBytes
+		res.ReclaimableBytes += authority.OrphanFileBytes
+	}
 	return res, nil
 }
 
@@ -13890,9 +13919,10 @@ type VerifyResult struct {
 
 	// Authoritative bodies (section 16e): live body records and those deep
 	// verification reconstructed exactly from the physical store.
-	AuthorityBodies     int `json:"authority_bodies"`
-	AuthoritiesVerified int `json:"authorities_verified"`
-	AuthorityOrphans    int `json:"authority_orphan_bodies"`
+	AuthorityBodies      int `json:"authority_bodies"`
+	AuthoritiesVerified  int `json:"authorities_verified"`
+	AuthorityOrphans     int `json:"authority_orphan_bodies"`
+	AuthorityUnavailable int `json:"authority_unavailable_bodies,omitempty"`
 
 	UnreachableManifests int   `json:"unreachable_manifests"`
 	UnreachableChunks    int   `json:"unreachable_chunks"`
@@ -13951,6 +13981,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
 	res.AuthorityBodies = len(rr.AuthLive)
 	res.AuthorityOrphans = len(rr.AuthOrphans)
+	res.AuthorityUnavailable = rr.AuthFaults
 	s.verifyPacks(deep, &res)
 
 	// --- Deep only: whole-object digest ---
@@ -25451,6 +25482,12 @@ func printStatsHuman(w io.Writer, r StatsResult) {
 			r.RepresentationRootCount, r.RepresentationObjectCount, r.RepresentationComponentCount, r.RepresentationComponentLogicalBytes,
 			r.RepresentationReachableChunkCount, r.RepresentationReachableChunkBytes, r.RepresentationMetadataFileBytes, r.RepresentationOrphanRootCount)
 	}
+	if a := r.Authority; a != nil {
+		fmt.Fprintf(w, "authority        %d pins | %d reps | %d deltas | %d unavailable | %d orphan records\n",
+			a.LiveByForm["pin"], a.LiveByForm["rep"], a.LiveByForm["delta"], a.UnavailableRecords, a.OrphanRecords)
+		fmt.Fprintf(w, "authority files  %d record bytes | %d components (%d stored bytes, included in chunk storage) | depth %d | max dependents %d\n",
+			a.RecordFileBytes, a.ComponentCount, a.ComponentFiles, a.MaxDepth, a.MaxDirectDependents)
+	}
 	fmt.Fprintf(w, "store files      %d bytes chunks | %d bytes manifests | %d bytes journal | %d bytes temp\n",
 		r.ChunkStoreFileBytes, r.ManifestFileBytes, r.JournalFileBytes, r.TemporaryFileBytes)
 	fmt.Fprintf(w, "actual/reclaim   %d bytes actual | %d bytes reclaimable\n", r.ActualStoreFileBytes, r.ReclaimableBytes)
@@ -25469,8 +25506,9 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	if r.PacksChecked > 0 {
 		fmt.Fprintf(w, "packs            %d checked\n", r.PacksChecked)
 	}
-	if r.AuthorityBodies > 0 || r.AuthorityOrphans > 0 {
-		fmt.Fprintf(w, "authority        %d live bodies | %d verified exact | %d orphan bodies\n", r.AuthorityBodies, r.AuthoritiesVerified, r.AuthorityOrphans)
+	if r.AuthorityBodies > 0 || r.AuthorityOrphans > 0 || r.AuthorityUnavailable > 0 {
+		fmt.Fprintf(w, "authority        %d live bodies | %d verified exact | %d orphan bodies | %d unavailable\n",
+			r.AuthorityBodies, r.AuthoritiesVerified, r.AuthorityOrphans, r.AuthorityUnavailable)
 	}
 	if r.RepresentationRoots > 0 || r.RepresentationOrphanRoots > 0 {
 		fmt.Fprintf(w, "representations  %d live roots | %d verified exact | %d orphan roots\n", r.RepresentationRoots, r.RepresentationsVerified, r.RepresentationOrphanRoots)
@@ -47029,6 +47067,7 @@ func (a *authReachCtx) observe(man manifestV1, want func([]chunkRef)) (handled b
 func (a *authReachCtx) finish() {
 	files := slices.SortedFunc(maps.Keys(a.files), func(x, y [32]byte) int { return bytes.Compare(x[:], y[:]) })
 	a.res.AuthFiles = len(files)
+	a.res.AuthFaults = len(a.faulty)
 	for _, f := range files {
 		switch {
 		case a.live[f]:
@@ -48984,18 +49023,115 @@ func (s *Store) materializeCDC(man manifestV1) error {
 	return b.Flush()
 }
 
+func (s *Store) authorityStorage(rr reachabilityResult) (AuthorityStorage, error) {
+	st := AuthorityStorage{
+		LiveByForm:    map[string]int{"pin": rr.AuthPins, "rep": rr.AuthReps, "delta": rr.AuthDeltas},
+		OrphanRecords: len(rr.AuthOrphans), UnavailableRecords: rr.AuthFaults,
+	}
+	files, err := s.authFiles()
+	if err != nil {
+		return st, err
+	}
+	for _, sum := range files {
+		size, err := fileSizeOrZero(s.authPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.RecordFileBytes += size
+	}
+	for _, id := range rr.AuthOrphans {
+		sum, _ := decodeHexSHA256(id)
+		size, err := fileSizeOrZero(s.authPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.OrphanFileBytes += size
+	}
+	components := newDigestTable(1024)
+	dependents := make(map[[32]byte]int)
+	for _, id := range rr.AuthLive {
+		sum, _ := decodeHexSHA256(id)
+		size, err := fileSizeOrZero(s.authPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.LiveRecordFileBytes += size
+		r, err := s.authLoad(sum)
+		if err != nil {
+			return st, err
+		}
+		if r == nil {
+			continue
+		}
+		st.MaxDepth = max(st.MaxDepth, int(r.Depth))
+		st.MaxBases = max(st.MaxBases, len(r.Bases))
+		for _, base := range r.Bases {
+			dependents[base.SHA]++
+			st.MaxDirectDependents = max(st.MaxDirectDependents, dependents[base.SHA])
+		}
+		chunks, err := s.authRecordChunks(r)
+		if err != nil {
+			return st, err
+		}
+		for _, c := range chunks {
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil {
+				return st, err
+			}
+			components.add(sum, c.Length)
+		}
+	}
+	st.ComponentCount = len(components.lens)
+	packs := s.packSnap()
+	var locations [4]packLoc
+	for i, sum := range components.keys {
+		st.ComponentLogical += components.lens[i]
+		size, err := fileSizeOrZero(s.chunkPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.ComponentFiles += size
+		for _, loc := range packs.appendLocs(locations[:0], sum) {
+			st.ComponentFiles += int64(loc.stored) + packRecordHeaderSize
+			if !packs.packs[loc.pack].open {
+				st.ComponentFiles += packIndexEntrySize
+			}
+		}
+	}
+	return st, nil
+}
+
+type authorityAdmissionTier struct {
+	ReplayMiBs  float64 `json:"min_replay_mib_s"`
+	RelativeAmp float64 `json:"max_4k_amplification_vs_cdc"`
+	Depth       int     `json:"max_depth"`
+	MemoryMiB   int     `json:"max_read_memory_mib"`
+	HardCodecs  bool    `json:"permits_producer_replay"`
+}
+
+type authorityRangeProbe struct {
+	Offset   int64 `json:"offset"`
+	Length   int64 `json:"length"`
+	CASBytes int64 `json:"logical_cas_bytes_read"`
+}
+
 // AuthorityStatus summarizes the committed bodies.
 type AuthStatus struct {
-	Records            int            `json:"records"`
-	Pins, Reps, Deltas int            `json:"-"`
-	ByForm             map[string]int `json:"by_form"`
-	RecordBytes        int64          `json:"record_bytes"`
-	MaxDepth           int            `json:"max_depth"`
-	FormatVersion      int            `json:"format_version"`
+	Records            int                               `json:"records"`
+	Pins, Reps, Deltas int                               `json:"-"`
+	ByForm             map[string]int                    `json:"by_form"`
+	RecordBytes        int64                             `json:"record_bytes"`
+	MaxDepth           int                               `json:"max_depth"`
+	FormatVersion      int                               `json:"format_version"`
+	AdmissionTiers     map[string]authorityAdmissionTier `json:"admission_tiers"`
+	RangeProbe         *authorityRangeProbe              `json:"range_probe,omitempty"`
 }
 
 func (s *Store) AuthorityStatus() (AuthStatus, error) {
-	st := AuthStatus{ByForm: map[string]int{}}
+	st := AuthStatus{ByForm: map[string]int{}, AdmissionTiers: make(map[string]authorityAdmissionTier, len(authTierLimits))}
+	for name, limit := range authTierLimits {
+		st.AdmissionTiers[name] = authorityAdmissionTier{limit.Replay, limit.Amp, limit.Depth, limit.Mem, limit.Hard}
+	}
 	s.formatMu.Lock()
 	st.FormatVersion = s.format.StoreFormatVersion
 	s.formatMu.Unlock()
@@ -49657,12 +49793,19 @@ func (s *Store) AuthorityReadCost(man manifestV1, off, n int64) (fetched int64, 
 		return 0, false, lerr
 	}
 	ctx := s.newAuthCtx()
+	defer ctx.close()
 	body, _, err := ctx.body(sha, 0, 1)
 	if err != nil {
 		return 0, true, err
 	}
+	if off < 0 || off >= body.Size() || n <= 0 {
+		return 0, true, errors.New("authority: read cost range is outside the body")
+	}
 	buf := make([]byte, min(n, body.Size()-off))
 	if k, rerr := body.ReadAt(buf, off); k != len(buf) {
+		if rerr == nil {
+			rerr = io.ErrUnexpectedEOF
+		}
 		return ctx.fetched, true, rerr
 	}
 	return ctx.fetched, true, nil
@@ -49819,7 +49962,8 @@ func runAuthority(args []string) {
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
 	peer := fs.String("from", "", "recover: compatible ZeroS3 peer endpoint")
-	key := fs.String("key", "", "recover: exact object key at both stores")
+	key := fs.String("key", "", "recover: exact key at both stores; status: key to probe")
+	probeOffset := fs.Int64("probe-offset", -1, "status: measure a 4 KiB authority read at this object offset")
 	accessKey := fs.String("access-key", defaultAccessKeyID, "recover: peer access key (default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "recover: peer secret key (default: AWS_SECRET_ACCESS_KEY)")
 	region := fs.String("region", defaultRegion, "recover: peer region (default: AWS_REGION)")
@@ -49888,6 +50032,21 @@ func runAuthority(args []string) {
 		st, err := store.AuthorityStatus()
 		if err != nil {
 			log.Fatalf("zeros3: authority status: %v", err)
+		}
+		if *probeOffset >= 0 {
+			_, m, err := store.headServed(*bucket, *key)
+			if err != nil {
+				log.Fatalf("zeros3: authority status probe: %v", err)
+			}
+			const probeBytes = 4096
+			n, handled, err := store.AuthorityReadCost(m.man, *probeOffset, probeBytes)
+			if err != nil {
+				log.Fatalf("zeros3: authority status probe: %v", err)
+			}
+			if !handled {
+				log.Fatal("zeros3: authority status probe: object uses CDC")
+			}
+			st.RangeProbe = &authorityRangeProbe{Offset: *probeOffset, Length: min(probeBytes, m.man.TotalLength-*probeOffset), CASBytes: n}
 		}
 		enc.Encode(st)
 	case "recover":

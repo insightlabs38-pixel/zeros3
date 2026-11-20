@@ -416,6 +416,20 @@ records are published bases-first after validation of the complete frame
 and reconstruction of each record. A failed replacement keeps the existing
 record until a fully written, fsynced replacement can be renamed over it.
 
+### Authority diagnostics
+
+`stats` reports store-wide live authority forms, recorded depth, direct
+dependents, record file bytes and storage occupied by closure components.
+The component amount includes the stored payload and per-record metadata
+for packed copies, plus loose copies. These bytes are already in the chunk
+store total. Comparing two stores after the same GC and repack policy gives
+the measured savings for that workload.
+
+`verify` and `doctor` report unavailable authority records and their issues.
+`authority status` shows the static admission limits. Pass
+`-bucket BUCKET -key KEY -probe-offset OFFSET` to measure logical CAS bytes
+read by an individual 4 KiB authority range.
+
 ## Optional bulk transport v2
 
 Bulk v2 is an optimization for moving the **same logical chunks** with far fewer

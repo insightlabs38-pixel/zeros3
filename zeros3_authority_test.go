@@ -1830,11 +1830,12 @@ func TestAuthorityReplicationToNewAndOldDestinations(t *testing.T) {
 	run := func(dstEndpoint string, dstCreds Credentials, client *http.Client, tag string) {
 		for key, want := range l.want {
 			cfg := replicateConfig{
-				Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
-				Dest:   syncClientConfig{Endpoint: dstEndpoint, Bucket: "dst", Key: key, Creds: dstCreds, Region: "us-east-1", HTTPClient: client},
+				Source:          syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
+				Dest:            syncClientConfig{Endpoint: dstEndpoint, Bucket: "dst", Key: key, Creds: dstCreds, Region: "us-east-1", HTTPClient: client},
+				PreferAuthority: true,
 			}
-			if _, err := replicateObject(cfg); err != nil {
-				t.Fatalf("%s: replicate %s: %v", tag, key, err)
+			if stats, err := replicateObject(cfg); err != nil || tag == "old-binary-destination" && (stats.AuthorityBytes != 0 || stats.AuthorityProbeBytes != 0) {
+				t.Fatalf("%s: replicate %s: %+v, %v", tag, key, stats, err)
 			}
 			signer := testSigner{accessKey: dstCreds.AccessKeyID, secretKey: dstCreds.SecretAccessKey, region: "us-east-1"}
 			r := doSignedRequest(t, client, dstEndpoint, signer, http.MethodGet, "/dst/"+key, nil, nil)
@@ -1867,6 +1868,20 @@ func TestAuthorityReplicationToNewAndOldDestinations(t *testing.T) {
 	r := doSignedRequest(t, oc, "http://"+addr, testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}, http.MethodPut, "/dst", nil, nil)
 	r.Body.Close()
 	run("http://"+addr, oldCreds, oc, "old-binary-destination")
+	mustOK(t, dst.CreateBucket("roundtrip"))
+	for key, want := range l.want {
+		stats, err := replicateObject(replicateConfig{
+			Source:          syncClientConfig{Endpoint: "http://" + addr, Bucket: "dst", Key: key, Creds: oldCreds, Region: defaultRegion},
+			Dest:            syncClientConfig{Endpoint: dstTS.URL, Bucket: "roundtrip", Key: key, Creds: creds, Region: defaultRegion},
+			PreferAuthority: true,
+		})
+		if err != nil || stats.AuthorityBytes != 0 || stats.AuthorityProbeBytes != 0 {
+			t.Fatalf("older source did not use CDC: %+v, %v", stats, err)
+		}
+		if _, got, err := dst.GetObject("roundtrip", key); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("older source round trip changed %s: %v", key, err)
+		}
+	}
 }
 
 // Syncing a new revision into a store whose older revisions are body-only: shared chunks
@@ -2139,6 +2154,43 @@ func TestAuthorityPeerAssistedComponentRepair(t *testing.T) {
 	}
 	if res, _ := l.s.Verify(true); res.OK() {
 		t.Fatal("verify must stay failing while a component is unrecoverable")
+	}
+}
+
+func TestAuthorityStorageDiagnostics(t *testing.T) {
+	l := authMigratedLab(t)
+	l.reclaim()
+	st, err := l.s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := st.Authority
+	if a == nil || a.LiveByForm["delta"] == 0 || a.LiveByForm["pin"] == 0 ||
+		a.RecordFileBytes <= 0 || a.LiveRecordFileBytes != a.RecordFileBytes ||
+		a.ComponentCount <= 0 || a.ComponentFiles <= 0 || a.ComponentLogical <= 0 ||
+		a.MaxDepth < 1 || a.MaxBases < 1 || a.MaxDirectDependents < 1 ||
+		a.UnavailableRecords != 0 || a.OrphanRecords != 0 {
+		t.Fatalf("incomplete authority accounting: %+v", a)
+	}
+	format, err := fileSizeOrZero(filepath.Join(l.dir, "FORMAT.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := st.ChunkStoreFileBytes + st.ManifestFileBytes + st.JournalFileBytes + st.TemporaryFileBytes +
+		format + st.RepresentationMetadataFileBytes + a.RecordFileBytes
+	if st.ActualStoreFileBytes != want {
+		t.Fatalf("record files omitted or component files counted twice: actual %d expected %d", st.ActualStoreFileBytes, want)
+	}
+	status, err := l.s.AuthorityStatus()
+	if err != nil || status.AdmissionTiers["cold"].RelativeAmp != authTierLimits["cold"].Amp {
+		t.Fatalf("missing tier policy: %+v %v", status, err)
+	}
+	man := l.man("k3")
+	if n, ok, err := l.s.AuthorityReadCost(man, 0, 4096); err != nil || !ok || n < 4096 {
+		t.Fatalf("authority range cost: bytes %d handled %t error %v", n, ok, err)
+	}
+	if _, _, err := l.s.AuthorityReadCost(man, man.TotalLength, 4096); err == nil {
+		t.Fatal("probe accepted end-of-file offset")
 	}
 }
 
@@ -3589,11 +3641,12 @@ func TestAuthorityFiveGenerationMatrix(t *testing.T) {
 			r.Body.Close()
 			for key, want := range l.want {
 				cfg := replicateConfig{
-					Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
-					Dest:   syncClientConfig{Endpoint: "http://" + addr, Bucket: "dst", Key: key, Creds: oc2, Region: "us-east-1", HTTPClient: oc},
+					Source:          syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
+					Dest:            syncClientConfig{Endpoint: "http://" + addr, Bucket: "dst", Key: key, Creds: oc2, Region: "us-east-1", HTTPClient: oc},
+					PreferAuthority: true,
 				}
-				if _, err := replicateObject(cfg); err != nil {
-					t.Fatalf("replicate %s: %v", key, err)
+				if stats, err := replicateObject(cfg); err != nil || stats.AuthorityBytes != 0 || stats.AuthorityProbeBytes != 0 {
+					t.Fatalf("replicate %s using legacy transport: %+v, %v", key, stats, err)
 				}
 				r := doSignedRequest(t, oc, "http://"+addr, testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}, http.MethodGet, "/dst/"+key, nil, nil)
 				got, _ := io.ReadAll(r.Body)
