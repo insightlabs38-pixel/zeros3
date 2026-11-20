@@ -564,3 +564,47 @@ func TestP8SketchSlicedEqualsSequential(t *testing.T) {
 		}
 	}
 }
+
+func TestP8IndexCacheConcurrentEviction(t *testing.T) {
+	cache := &authIdxCache{budget: 2 << 20, m: make(map[[32]byte]*authIdxEnt)}
+	inputs := make([][]byte, 8)
+	for i := range inputs {
+		inputs[i] = genRandomBytes(int64(i+1), 32<<10)
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, input := range inputs {
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				sum := sha256.Sum256(input)
+				x, err := cache.get(sum, input, dwDcoreDefaultParams())
+				if err != nil || x == nil {
+					t.Errorf("index %x: %v", sum[:4], err)
+				}
+			}()
+		}
+	}
+	close(start)
+	wg.Wait()
+	var total int64
+	for _, entry := range cache.m {
+		total += entry.cost
+		if entry.cost <= int64(len(entry.x.table))*8 {
+			t.Fatal("cache budget omitted the retained source")
+		}
+	}
+	if total != cache.used || total > cache.budget || len(cache.order) != len(cache.m) {
+		t.Fatalf("inconsistent cache accounting: computed=%d used=%d budget=%d order=%d map=%d",
+			total, cache.used, cache.budget, len(cache.order), len(cache.m))
+	}
+	oversize := &authIdxCache{budget: 1, m: make(map[[32]byte]*authIdxEnt)}
+	if x, err := oversize.get(sha256.Sum256(inputs[0]), inputs[0], dwDcoreDefaultParams()); err != nil || x == nil {
+		t.Fatalf("oversize entry did not produce a usable index: %v", err)
+	}
+	if oversize.used != 0 || len(oversize.m) != 0 || len(oversize.order) != 0 {
+		t.Fatal("oversize entry was retained")
+	}
+}

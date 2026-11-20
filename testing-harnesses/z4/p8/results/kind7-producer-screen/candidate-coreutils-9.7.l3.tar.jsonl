@@ -1,0 +1,2 @@
+{"alloc_mib":784.5558547973633,"build_s":18.555383733,"bytes":10608200,"cpu_s":7.876861,"err":"\u003cnil\u003e","exact":true,"file":"coreutils-9.7.l3.tar.zst","mibps":0.5452200843094674,"p8":"rep","rep":0,"rep_phys":70343259,"replay_s":7.486709035,"rss_mib":124.81640625}
+{"alloc_mib":783.8027648925781,"build_s":19.60672045,"bytes":10608200,"cpu_s":11.37985,"err":"\u003cnil\u003e","exact":true,"file":"coreutils-9.7.l3.tar.zst","mibps":0.5159847058104396,"p8":"rep","rep":1,"rep_phys":70343259,"replay_s":5.874437426,"rss_mib":132.84765625}
