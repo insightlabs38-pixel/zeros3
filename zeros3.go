@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44776    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50850    Windowed and estimated similarity deltas (extracted dcore)
-//    52372    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    60020    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66292    CLI dispatch, HTTP server/startup, and main
+//    50870    Windowed and estimated similarity deltas (extracted dcore)
+//    52392    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    60040    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66312    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -49789,13 +49789,33 @@ func (s *Store) buildAuthSimilarityStage() (authSimilarityStageReport, error) {
 }
 
 func (s *Store) authSimilarityRoots(snapshots []snapshotDescriptorV1) ([]authSimilarityRoot, error) {
-	var roots []authSimilarityRoot
-	for _, obj := range s.snapshotNamespace() {
-		roots = append(roots, authSimilarityRoot{obj.entry.manifestUUID, obj.entry.manifestSHA256})
+	s.mu.Lock()
+	count := 0
+	for _, bucket := range s.buckets {
+		count += len(bucket.objects)
 	}
-	for _, obj := range s.snapshotHistory() {
-		roots = append(roots, authSimilarityRoot{obj.entry.manifestUUID, obj.entry.manifestSHA256})
+	for _, keys := range s.history {
+		for _, entries := range keys {
+			count += len(entries)
+		}
 	}
+	for _, snap := range snapshots {
+		count += len(snap.Entries)
+	}
+	roots := make([]authSimilarityRoot, 0, count)
+	for _, bucket := range s.buckets {
+		for _, obj := range bucket.objects {
+			roots = append(roots, authSimilarityRoot{obj.manifestUUID, obj.manifestSHA256})
+		}
+	}
+	for _, keys := range s.history {
+		for _, entries := range keys {
+			for _, obj := range entries {
+				roots = append(roots, authSimilarityRoot{obj.manifestUUID, obj.manifestSHA256})
+			}
+		}
+	}
+	s.mu.Unlock()
 	for _, snap := range snapshots {
 		for _, entry := range snap.Entries {
 			sum, err := decodeHexSHA256(entry.ManifestSHA256)
