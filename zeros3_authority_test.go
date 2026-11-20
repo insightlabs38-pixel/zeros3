@@ -1096,6 +1096,39 @@ func OpenStoreT(t *testing.T, dir string) *Store {
 	return s
 }
 
+func TestAuthorityClosureNegotiatesVersionFeaturesAndDepth(t *testing.T) {
+	var s Store
+	required := AuthCaps{
+		Version: authXferVersion, StoreFormat: storeFormatVersionAuthority,
+		Forms: []string{"pin", "delta"}, Features: []string{authZN7Feature, authIQ3Feature}, MaxDepth: 2,
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*AuthCaps)
+	}{
+		{"missing version", func(c *AuthCaps) { c.Version = 0 }},
+		{"future version", func(c *AuthCaps) { c.Version++ }},
+		{"old store format", func(c *AuthCaps) { c.StoreFormat = storeFormatVersionAuthority - 1 }},
+		{"shorter closure", func(c *AuthCaps) { c.MaxDepth = 1 }},
+		{"missing delta", func(c *AuthCaps) { c.Forms = []string{"pin", "rep"} }},
+		{"missing IQ3 replay", func(c *AuthCaps) { c.Features = []string{authZN7Feature} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := s.AuthorityCaps()
+			tc.edit(&dst)
+			if got := AuthTransferMode(required, dst); got != "materialize" {
+				t.Fatalf("incompatible destination chose %s", got)
+			}
+		})
+	}
+	if got := AuthTransferMode(required, s.AuthorityCaps()); got != "native" {
+		t.Fatalf("supported model closure chose %s", got)
+	}
+	if got := AuthTransferMode(required, required); got != "native" {
+		t.Fatalf("peer with the precisely required capabilities chose %s", got)
+	}
+}
+
 func TestAuthorityNativeClosureTransferAndInterruption(t *testing.T) {
 	l := authMigratedLab(t)
 	l.reclaim()
@@ -1479,10 +1512,47 @@ func TestAuthorityThinClosureUsesDestinationBasesAndFallsBack(t *testing.T) {
 	if files, _ := e.s.authFiles(); len(files) != 0 {
 		t.Fatal("refused thin import published records")
 	}
+	components, err := l.s.authRecordChunks(mustLoad(t, l.s, sha3))
+	if err != nil || len(components) == 0 {
+		t.Fatalf("thin fixture needs source components: %v", err)
+	}
+	for _, c := range components {
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.s.casStat(sum); !os.IsNotExist(err) {
+			t.Fatalf("refused thin import installed component %x: %v", sum[:6], err)
+		}
+	}
 	if err := e.s.ImportAuthorityClosure(&full); err != nil {
 		t.Fatalf("full fallback: %v", err)
 	}
 	e.verifyOK("fallback")
+}
+
+func TestAuthorityClosureRejectsReversedRecordsBeforeData(t *testing.T) {
+	src, dst := authMigratedLab(t), newAuthLab(t)
+	sha, err := decodeHexSHA256(src.man("k3").ObjectSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := src.s.authClosureOrder(sha, nil)
+	if err != nil || len(recs) < 2 {
+		t.Fatalf("closure fixture needs a dependency: %v", err)
+	}
+	wire := binary.AppendUvarint([]byte(authXferMagic), uint64(len(recs)))
+	for i := len(recs) - 1; i >= 0; i-- {
+		record, err := recs[i].marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire = binary.AppendUvarint(wire, uint64(len(record)))
+		wire = append(wire, record...)
+	}
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(wire)); !errors.Is(err, errAuthCorrupt) {
+		t.Fatalf("out-of-order records reached the component phase: %v", err)
+	}
 }
 
 // Replication reads retired-CDC source objects through the virtual chunk index and

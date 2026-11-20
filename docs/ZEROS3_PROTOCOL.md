@@ -363,6 +363,20 @@ After commit, the destination is an ordinary S3-visible object.
 Recursive namespace replication adds client-side ListObjectsV2 enumeration and
 reuses the same per-object pipeline.
 
+### Authority closure framing
+
+The `ZS3C` version 1 closure requires the destination to support the advertised
+record forms, codec features, store format and dependency depth. The closure
+capability check selects materialization when any requirement is missing.
+
+The closure reader checks that records are unique and ordered bases first. A
+thin frame can omit a base already held by the destination. The receiver checks
+that the held base matches the declared size and fits the dependency depth before
+staging components. It verifies component digests and the frame trailer, then
+reconstructs each new record and verifies its logical SHA-256 before publication.
+After an interrupted read the receiver discards pending staging files. A retry
+can reuse components that were already durable.
+
 ## Peer repair
 
 Repair reuses the v1 chunk fetch endpoint.

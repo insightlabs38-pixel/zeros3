@@ -117,10 +117,10 @@ import (
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44750    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49259    Windowed and estimated similarity deltas (extracted dcore)
-//    50781    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58421    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64693    CLI dispatch, HTTP server/startup, and main
+//    49291    Windowed and estimated similarity deltas (extracted dcore)
+//    50813    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58453    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64725    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -48632,24 +48632,43 @@ func (s *Store) AuthorityStatus() (AuthStatus, error) {
 
 // ---- capability negotiation and native closure transfer -----------------------
 
-// AuthCaps is what a store/binary can hold as authoritative state.
+const authXferVersion = 1
+
+// AuthCaps describes a closure's requirements or a destination's support.
 type AuthCaps struct {
+	Version     int      `json:"version"`
 	StoreFormat int      `json:"store_format"`
 	Forms       []string `json:"forms"`
+	Features    []string `json:"features,omitempty"`
 	MaxDepth    int      `json:"max_depth"`
 }
 
 func (s *Store) AuthorityCaps() AuthCaps {
-	return AuthCaps{StoreFormat: storeFormatVersionSupported, Forms: []string{"pin", "rep", "delta"}, MaxDepth: authHardDepth}
+	return AuthCaps{
+		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
+		Forms:    []string{"pin", "rep", "delta"},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature},
+	}
 }
 
-// AuthTransferMode picks native closure transfer only when the destination
-// declares the authority floor; everything else receives exact ordinary bytes.
+// AuthTransferMode requires support for every form and feature the source uses.
 func AuthTransferMode(src, dst AuthCaps) string {
-	if dst.StoreFormat >= storeFormatVersionAuthority && src.StoreFormat >= storeFormatVersionAuthority && dst.MaxDepth >= src.MaxDepth {
-		return "native"
+	if src.Version != authXferVersion || dst.Version != authXferVersion ||
+		src.StoreFormat < storeFormatVersionAuthority || dst.StoreFormat < src.StoreFormat ||
+		src.MaxDepth < 0 || src.MaxDepth > authHardDepth || dst.MaxDepth < src.MaxDepth || len(src.Forms) == 0 {
+		return "materialize"
 	}
-	return "materialize"
+	for _, form := range src.Forms {
+		if !slices.Contains(dst.Forms, form) {
+			return "materialize"
+		}
+	}
+	for _, feature := range src.Features {
+		if !slices.Contains(dst.Features, feature) {
+			return "materialize"
+		}
+	}
+	return "native"
 }
 
 const authXferMagic = "ZS3C\x01"
@@ -48788,6 +48807,7 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 		return fmt.Errorf("import closure: record count")
 	}
 	var recs []*authRecord
+	positions := make(map[[32]byte]int)
 	for i := uint64(0); i < nrec; i++ {
 		l, err := binary.ReadUvarint(rb)
 		if err != nil || l > authMaxRecord {
@@ -48801,7 +48821,33 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 		if err != nil {
 			return err
 		}
+		if _, exists := positions[rec.SHA]; exists {
+			return fmt.Errorf("import closure: %w: repeated record %x", errAuthCorrupt, rec.SHA[:6])
+		}
+		positions[rec.SHA] = len(recs)
 		recs = append(recs, rec)
+	}
+	for i, rec := range recs {
+		for _, b := range rec.Bases {
+			var base *authRecord
+			if j, present := positions[b.SHA]; present {
+				if j >= i {
+					return fmt.Errorf("import closure: %w: record precedes base %x", errAuthCorrupt, b.SHA[:6])
+				}
+				base = recs[j]
+			} else {
+				base, err = s.authLoad(b.SHA)
+				if err != nil {
+					return fmt.Errorf("import closure: read held base %x: %w", b.SHA[:6], err)
+				}
+				if base == nil {
+					return fmt.Errorf("import closure: %w: thin stream needs base %x the destination does not hold", errAuthMissing, b.SHA[:6])
+				}
+			}
+			if base.Size != b.Size || base.Depth >= rec.Depth {
+				return fmt.Errorf("import closure: %w: base %x size or depth inconsistent", errAuthCorrupt, b.SHA[:6])
+			}
+		}
 	}
 	nch, err := binary.ReadUvarint(rb)
 	if err != nil || nch > authMaxPieces*8 {
@@ -48845,20 +48891,6 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 		return err
 	}
 	fireTestHook(hookAuthImportChunks)
-	inStream := map[[32]byte]bool{}
-	for _, rec := range recs {
-		inStream[rec.SHA] = true
-	}
-	for _, rec := range recs {
-		for _, b := range rec.Bases {
-			if inStream[b.SHA] {
-				continue
-			}
-			if held, err := s.authLoad(b.SHA); err != nil || held == nil || held.Size != b.Size {
-				return fmt.Errorf("import closure: %w: thin stream needs base %x the destination does not hold", errAuthMissing, b.SHA[:6])
-			}
-		}
-	}
 	for _, rec := range recs {
 		if cur, err := s.authLoad(rec.SHA); err != nil {
 			return err

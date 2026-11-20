@@ -7,3 +7,9 @@ The fixed receiver aborts the active batch, publishes no authority
 records and reopens successfully. A retry reuses durable components and
 verifies the original SHA-256 through production reconstruction.
 The existing full and thin transfer interruption tests also passed.
+
+The second set of focused tests verifies version, format, depth,
+record-form and IQ3 feature negotiation. The receiver refuses
+out-of-order records and an absent thin base before staging data.
+Valid full and thin transfers, corruption refusal and reopen retries
+still pass with the same closure frame.
