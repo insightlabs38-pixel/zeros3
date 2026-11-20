@@ -29,3 +29,9 @@ GOMAXPROCS=1 testing-harnesses/z4/p8/run.sh TESTBIN OUTDIR TAG rep LEVEL6,LEVEL9
 The original CPU profile accounted for the largest application share in
 predictor search and head accesses. The next comparison should alternate the
 binaries on a quiet host and confirm producer parity on the combined source.
+
+The consolidated source at a8993ab passed the targeted Go 1.27.4 producer
+suite. It compared streaming skeletons and units against one-shot encoding,
+reconstructed the original streams through both paths, and exercised the
+pinned zlib L1–L3 fixtures, warm-up variants, worker parity and work limits.
+The run completed in 74.682 seconds. See combined-producer-oracles.log.
