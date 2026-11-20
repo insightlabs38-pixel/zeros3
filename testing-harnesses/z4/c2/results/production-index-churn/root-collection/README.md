@@ -19,3 +19,16 @@ and their checksums differ by design.
 This single pair used a heavily loaded qualification host. The whole
 operation consumed more time and memory in the candidate trial.
 It establishes exact output parity without a measured end-to-end win.
+
+An isolated follow-up timed only root collection on the already-open
+store. Each of three runs returned all 53,248 roots. Allocation fell
+from 24,304,272 bytes and 72 allocations per call to 2,555,904 bytes
+and one allocation per call. Wall timings varied under concurrent
+qualification. This improvement is for namespace root collection.
+The end-to-end rebuild measurements above remain the observed outcome.
+
+To repeat the isolated measurement, copy collection-benchmark.go.txt
+into each source worktree as zeros3_similarity_roots_bench_test.go,
+point ZEROS3_C2_INDEX_STORE at the verified expanded fixture, and run
+`go test -run '^$' -bench '^BenchmarkSimilarityRootCollection$' -benchmem -benchtime=1s -count=3 .`
+with Go 1.27.4 and GOMAXPROCS=2.
