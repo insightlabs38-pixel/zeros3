@@ -117,10 +117,10 @@ import (
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44750    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49291    Windowed and estimated similarity deltas (extracted dcore)
-//    50813    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58453    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64725    CLI dispatch, HTTP server/startup, and main
+//    49360    Windowed and estimated similarity deltas (extracted dcore)
+//    50882    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58522    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64794    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -45555,7 +45555,7 @@ func (s *Store) authPublish(rec *authRecord) error {
 			if err := s.ensureFeature(authZN7Feature); err != nil {
 				return err
 			}
-			if s.zn7DerivesIQ3(rec.Pieces) {
+			if iq3, _ := zn7DerivesIQ3(newPieceSeq(s.newAuthCtx(), rec.Pieces)); iq3 {
 				if err := s.ensureFeature(authIQ3Feature); err != nil {
 					return err
 				}
@@ -48673,6 +48673,8 @@ func AuthTransferMode(src, dst AuthCaps) string {
 
 const authXferMagic = "ZS3C\x01"
 
+var errAuthTransferUnsupported = errors.New("authority closure requires unsupported peer capabilities")
+
 // authClosureOrder returns the content hashes of sha's closure, bases first.
 func (s *Store) authClosureOrder(sha [32]byte, destHas func([32]byte) bool) ([]*authRecord, error) {
 	var out []*authRecord
@@ -48735,6 +48737,73 @@ func (s *Store) ExportAuthorityClosureThin(sha [32]byte, destHas func([32]byte) 
 	if err != nil {
 		return err
 	}
+	return s.writeAuthorityClosure(recs, w)
+}
+
+// ExportAuthorityClosureFor checks the actual records being sent before
+// writing any bytes. An incompatible peer can receive ordinary S3 bytes.
+func (s *Store) ExportAuthorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32]byte) bool, w io.Writer) error {
+	recs, err := s.authClosureOrder(sha, destHas)
+	if err != nil {
+		return err
+	}
+	required := AuthCaps{Version: authXferVersion, StoreFormat: storeFormatVersionAuthority}
+	addFeature := func(feature string) {
+		if !slices.Contains(required.Features, feature) {
+			required.Features = append(required.Features, feature)
+		}
+	}
+	for _, rec := range recs {
+		required.MaxDepth = max(required.MaxDepth, int(rec.Depth))
+		form := [...]string{"", "pin", "rep", "delta"}[rec.Form]
+		if !slices.Contains(required.Forms, form) {
+			required.Forms = append(required.Forms, form)
+		}
+		switch rec.Form {
+		case authFormDelta:
+			blob := newPieceSeq(s.newAuthCtx(), rec.Pieces)
+			var header [5]byte
+			if _, err := blob.ReadAt(header[:], 0); err != nil {
+				return fmt.Errorf("export closure: read delta header: %w", err)
+			}
+			switch string(header[:4]) {
+			case ncNumcore_zMagic:
+				iq3, err := zn7DerivesIQ3(blob)
+				if err != nil {
+					return fmt.Errorf("export closure: read ZN7 requirements: %w", err)
+				}
+				addFeature(authZN7Feature)
+				if iq3 {
+					addFeature(authIQ3Feature)
+				}
+			case wMagicZW1:
+			case xdMagic:
+				if header[4] != xdVersion {
+					return errAuthTransferUnsupported
+				}
+			default:
+				return errAuthTransferUnsupported
+			}
+		case authFormRep:
+			hard, stream, err := s.repRootHard(rec.Root)
+			if err != nil {
+				return err
+			}
+			if hard {
+				addFeature(authHardFeature)
+			}
+			if stream {
+				addFeature(authStreamFeature)
+			}
+		}
+	}
+	if AuthTransferMode(required, dst) != "native" {
+		return errAuthTransferUnsupported
+	}
+	return s.writeAuthorityClosure(recs, w)
+}
+
+func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer) error {
 	h := sha256.New()
 	mw := io.MultiWriter(w, h)
 	put := func(b []byte) error { _, err := mw.Write(b); return err }
@@ -48782,7 +48851,7 @@ func (s *Store) ExportAuthorityClosureThin(sha [32]byte, destHas func([32]byte) 
 			return err
 		}
 	}
-	_, err = w.Write(h.Sum(nil))
+	_, err := w.Write(h.Sum(nil))
 	return err
 }
 
@@ -58019,21 +58088,21 @@ func authZN7Layout(r io.ReaderAt, size int64) (*ncNumcoreLayout, error) {
 	return lay, nil
 }
 
-// authZN7Locked serializes ReadAt on a reader that is not safe for concurrent use (the window workers share it).
-// zn7DerivesIQ3 reports whether the container made of ps holds a tensor of a type only this quantizer set can derive.
-func (s *Store) zn7DerivesIQ3(ps []authPiece) bool {
-	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: newPieceSeq(s.newAuthCtx(), ps)}, pieceTotal(ps))
+// zn7DerivesIQ3 reports whether a container derives IQ3_S tensors.
+func zn7DerivesIQ3(blob *pieceSeq) (bool, error) {
+	obj, err := ncNumcoreOpenObject(blob, blob.size)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for i := range obj.T {
 		if obj.T[i].DT == ncNumcoreDIQ3_S {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
+// authZN7Locked serializes ReadAt for readers shared by window workers.
 type authZN7Locked struct {
 	mu sync.Mutex
 	r  io.ReaderAt

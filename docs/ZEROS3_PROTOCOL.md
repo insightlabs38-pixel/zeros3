@@ -368,6 +368,8 @@ reuses the same per-object pipeline.
 The `ZS3C` version 1 closure requires the destination to support the advertised
 record forms, codec features, store format and dependency depth. The closure
 capability check selects materialization when any requirement is missing.
+Negotiated export derives the requirements from the records it will send and
+checks them before writing the first frame byte.
 
 The closure reader checks that records are unique and ordered bases first. A
 thin frame can omit a base already held by the destination. The receiver checks

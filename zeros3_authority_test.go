@@ -1142,6 +1142,19 @@ func TestAuthorityNativeClosureTransferAndInterruption(t *testing.T) {
 	if err := l.s.ExportAuthorityClosure(sha, &buf); err != nil {
 		t.Fatal(err)
 	}
+	peer := AuthCaps{
+		Version: authXferVersion, StoreFormat: storeFormatVersionAuthority,
+		Forms: []string{"pin", "delta"}, MaxDepth: authHardDepth,
+	}
+	var negotiated bytes.Buffer
+	if err := l.s.ExportAuthorityClosureFor(sha, peer, nil, &negotiated); err != nil || !bytes.Equal(negotiated.Bytes(), buf.Bytes()) {
+		t.Fatalf("negotiated baseline closure differs: %v", err)
+	}
+	peer.Forms = []string{"pin"}
+	negotiated.Reset()
+	if err := l.s.ExportAuthorityClosureFor(sha, peer, nil, &negotiated); !errors.Is(err, errAuthTransferUnsupported) || negotiated.Len() != 0 {
+		t.Fatalf("unsupported delta wrote %d bytes: %v", negotiated.Len(), err)
+	}
 	if buf.Len() > len(l.want["k3"])/2*3 {
 		t.Fatalf("closure of a depth-2 delta is %d bytes for a %d byte object", buf.Len(), len(l.want["k3"]))
 	}
@@ -5059,6 +5072,25 @@ func zn7QuantDerivation(t *testing.T, qt ncQcoreType, typeID uint32, ar ncQcoreA
 	}
 	if raw, _ := os.ReadFile(filepath.Join(l.dir, "FORMAT.json")); strings.Contains(string(raw), authIQ3Feature) != (qt == ncQcoreIQ3_S) {
 		t.Fatalf("the %s store feature must be recorded exactly for IQ3_S containers: %s", authIQ3Feature, raw)
+	}
+	if qt == ncQcoreIQ3_S {
+		peer := l.s.AuthorityCaps()
+		peer.Features = []string{authZN7Feature}
+		var wire bytes.Buffer
+		if err := l.s.ExportAuthorityClosureFor(qsha, peer, nil, &wire); !errors.Is(err, errAuthTransferUnsupported) || wire.Len() != 0 {
+			t.Fatalf("peer without IQ3 support received %d bytes: %v", wire.Len(), err)
+		}
+		peer.Features = append(peer.Features, authIQ3Feature)
+		if err := l.s.ExportAuthorityClosureFor(qsha, peer, nil, &wire); err != nil {
+			t.Fatal(err)
+		}
+		dst := newAuthLab(t)
+		if err := dst.s.ImportAuthorityClosure(&wire); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := dst.s.authProve(mustLoad(t, dst.s, qsha), 0); err != nil {
+			t.Fatalf("negotiated IQ3 closure lost exact content: %v", err)
+		}
 	}
 	l.exact("derived")
 	l.verifyOK("derived")

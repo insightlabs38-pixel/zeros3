@@ -1,0 +1,30 @@
+=== RUN   TestAuthorityClosureNegotiatesVersionFeaturesAndDepth
+=== RUN   TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/missing_version
+=== RUN   TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/future_version
+=== RUN   TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/old_store_format
+=== RUN   TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/shorter_closure
+=== RUN   TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/missing_delta
+=== RUN   TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/missing_IQ3_replay
+--- PASS: TestAuthorityClosureNegotiatesVersionFeaturesAndDepth (0.00s)
+    --- PASS: TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/missing_version (0.00s)
+    --- PASS: TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/future_version (0.00s)
+    --- PASS: TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/old_store_format (0.00s)
+    --- PASS: TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/shorter_closure (0.00s)
+    --- PASS: TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/missing_delta (0.00s)
+    --- PASS: TestAuthorityClosureNegotiatesVersionFeaturesAndDepth/missing_IQ3_replay (0.00s)
+=== RUN   TestAuthorityNativeClosureTransferAndInterruption
+--- PASS: TestAuthorityNativeClosureTransferAndInterruption (3.67s)
+=== RUN   TestAuthorityThinClosureUsesDestinationBasesAndFallsBack
+--- PASS: TestAuthorityThinClosureUsesDestinationBasesAndFallsBack (3.51s)
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/Q4_K
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S-strict
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ4_XS
+--- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive (385.26s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/Q4_K (33.39s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S (224.10s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S-strict (80.48s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ4_XS (47.29s)
+PASS
+ok  	zeros3	392.638s
