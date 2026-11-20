@@ -1,0 +1,333 @@
+{
+  "go": "1.27.0 linux/amd64",
+  "baseline": "af9b39db08db135709dd8c7a4f687ab2543c9ad1",
+  "candidate": "50490fd5b714c36829bc6dde0b7567fd33d41463",
+  "pdb": [
+    {
+      "repeat": 1,
+      "physical_bytes": 236510,
+      "store": {
+        "rc": 0,
+        "wall_s": 6.990028279000171,
+        "cpu_s": 0.7480439999999999,
+        "rss_kib": 27340
+      },
+      "replay": {
+        "rc": 0,
+        "wall_s": 0.5383534289999261,
+        "cpu_s": 0.070806,
+        "rss_kib": 11408
+      },
+      "exact_count": 5
+    },
+    {
+      "repeat": 2,
+      "physical_bytes": 236510,
+      "store": {
+        "rc": 0,
+        "wall_s": 9.107280665999951,
+        "cpu_s": 0.892847,
+        "rss_kib": 30252
+      },
+      "replay": {
+        "rc": 0,
+        "wall_s": 0.3125041019998207,
+        "cpu_s": 0.047052,
+        "rss_kib": 11280
+      },
+      "exact_count": 5
+    }
+  ],
+  "llvm": [
+    {
+      "repeat": 1,
+      "physical_bytes": 5521238,
+      "store": {
+        "rc": 0,
+        "wall_s": 119.2588001879999,
+        "cpu_s": 17.019405,
+        "rss_kib": 189264
+      },
+      "replay": {
+        "rc": 0,
+        "wall_s": 52.20990492199985,
+        "cpu_s": 5.462489,
+        "rss_kib": 18084
+      },
+      "exact_count": 6
+    },
+    {
+      "repeat": 2,
+      "physical_bytes": 5521238,
+      "store": {
+        "rc": 0,
+        "wall_s": 202.99786784299977,
+        "cpu_s": 17.535432,
+        "rss_kib": 178672
+      },
+      "replay": {
+        "rc": 0,
+        "wall_s": 52.66779039600033,
+        "cpu_s": 5.200725,
+        "rss_kib": 18648
+      },
+      "exact_count": 6
+    }
+  ],
+  "semcas": [
+    {
+      "repeat": 1,
+      "physical_bytes": 482102369,
+      "store": {
+        "rc": 0,
+        "wall_s": 271.76592838099987,
+        "cpu_s": 29.790515,
+        "rss_kib": 1100240
+      },
+      "replay": {
+        "rc": 0,
+        "wall_s": 53.211183710000114,
+        "cpu_s": 6.615511,
+        "rss_kib": 435896
+      },
+      "exact_count": 7
+    },
+    {
+      "repeat": 2,
+      "physical_bytes": 482102369,
+      "store": {
+        "rc": 0,
+        "wall_s": 208.51343702500026,
+        "cpu_s": 31.450515000000003,
+        "rss_kib": 1132396
+      },
+      "replay": {
+        "rc": 0,
+        "wall_s": 62.62261238500014,
+        "cpu_s": 6.840287,
+        "rss_kib": 434540
+      },
+      "exact_count": 7
+    }
+  ],
+  "b5": [
+    {
+      "repeat": 1,
+      "resources": {
+        "rc": 0,
+        "wall_s": 30.749291624000307,
+        "cpu_s": 3.2869710000000003,
+        "rss_kib": 41024
+      },
+      "measurement": {
+        "base": "step2000.safetensors",
+        "label": "pythia14m",
+        "payload": 1572864,
+        "rows": [
+          {
+            "coder": "raw",
+            "bytes": 1572864,
+            "ratio_vs_payload": 1,
+            "enc_mib_s": 113.30816482017164,
+            "dec_mib_s_coder_only": 8739.374377319575,
+            "dec_mib_s_with_predict_and_reconstruct": 64.13207033629233,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "flate-planes",
+            "bytes": 1257743,
+            "ratio_vs_payload": 0.7996514638264974,
+            "enc_mib_s": 8.192727602998467,
+            "dec_mib_s_coder_only": 31.825286475846635,
+            "dec_mib_s_with_predict_and_reconstruct": 13.831724165912453,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "nrc-rans",
+            "bytes": 1197243,
+            "ratio_vs_payload": 0.7611865997314453,
+            "enc_mib_s": 1.7998571842122044,
+            "dec_mib_s_coder_only": 11.856920828960337,
+            "dec_mib_s_with_predict_and_reconstruct": 8.181383765215493,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "rice",
+            "bytes": 1322213,
+            "ratio_vs_payload": 0.8406403859456381,
+            "enc_mib_s": 5.675249982843719,
+            "dec_mib_s_coder_only": 3.7683080893327676,
+            "dec_mib_s_with_predict_and_reconstruct": 7.510205731221242,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "bitplane-rle",
+            "bytes": 4761777,
+            "ratio_vs_payload": 3.027456283569336,
+            "enc_mib_s": 1.653645891986086,
+            "dec_mib_s_coder_only": 3.9063164480704136,
+            "dec_mib_s_with_predict_and_reconstruct": 11.57031854151414,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "pxr",
+            "bytes": 1202583,
+            "ratio_vs_payload": 0.7645816802978516,
+            "enc_mib_s": 0.5075935085360549,
+            "dec_mib_s_coder_only": 0.5206871102908212,
+            "dec_mib_s_with_predict_and_reconstruct": 0.4666577067764755,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "fpe",
+            "bytes": 0,
+            "ratio_vs_payload": 0,
+            "enc_mib_s": 1025290.4989747095,
+            "dec_mib_s_coder_only": 2242152.466367713,
+            "dec_mib_s_with_predict_and_reconstruct": 15306122.448979592,
+            "unsupported_tensors": 12
+          }
+        ],
+        "table_per_tensor_B": 291601.56940492283,
+        "table_shared_B": 300460.52495645586,
+        "target": "step3000.safetensors",
+        "tensors": 12
+      }
+    },
+    {
+      "repeat": 2,
+      "resources": {
+        "rc": 0,
+        "wall_s": 33.804540678000194,
+        "cpu_s": 2.761687,
+        "rss_kib": 45928
+      },
+      "measurement": {
+        "base": "step2000.safetensors",
+        "label": "pythia14m",
+        "payload": 1572864,
+        "rows": [
+          {
+            "coder": "raw",
+            "bytes": 1572864,
+            "ratio_vs_payload": 1,
+            "enc_mib_s": 157.8007374344062,
+            "dec_mib_s_coder_only": 9252.576842650678,
+            "dec_mib_s_with_predict_and_reconstruct": 60.086904892283805,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "flate-planes",
+            "bytes": 1257743,
+            "ratio_vs_payload": 0.7996514638264974,
+            "enc_mib_s": 3.5895769597403095,
+            "dec_mib_s_coder_only": 12.745102879022726,
+            "dec_mib_s_with_predict_and_reconstruct": 14.312263261449736,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "nrc-rans",
+            "bytes": 1197243,
+            "ratio_vs_payload": 0.7611865997314453,
+            "enc_mib_s": 4.980568924610798,
+            "dec_mib_s_coder_only": 67.99984441635598,
+            "dec_mib_s_with_predict_and_reconstruct": 17.7389211833833,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "rice",
+            "bytes": 1322213,
+            "ratio_vs_payload": 0.8406403859456381,
+            "enc_mib_s": 10.523004255418737,
+            "dec_mib_s_coder_only": 28.710480263171746,
+            "dec_mib_s_with_predict_and_reconstruct": 11.635261454137277,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "bitplane-rle",
+            "bytes": 4761777,
+            "ratio_vs_payload": 3.027456283569336,
+            "enc_mib_s": 0.8340275361530503,
+            "dec_mib_s_coder_only": 4.019860749129351,
+            "dec_mib_s_with_predict_and_reconstruct": 4.216246244094061,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "pxr",
+            "bytes": 1202583,
+            "ratio_vs_payload": 0.7645816802978516,
+            "enc_mib_s": 0.4790258016249613,
+            "dec_mib_s_coder_only": 0.46773732442873805,
+            "dec_mib_s_with_predict_and_reconstruct": 0.3129394253685769,
+            "unsupported_tensors": 0
+          },
+          {
+            "coder": "fpe",
+            "bytes": 0,
+            "ratio_vs_payload": 0,
+            "enc_mib_s": 94482.23733938021,
+            "dec_mib_s_coder_only": 2035278.1546811399,
+            "dec_mib_s_with_predict_and_reconstruct": 17857142.85714286,
+            "unsupported_tensors": 12
+          }
+        ],
+        "table_per_tensor_B": 291601.56940492283,
+        "table_shared_B": 300460.52495645586,
+        "target": "step3000.safetensors",
+        "tensors": 12
+      }
+    }
+  ],
+  "native_git": [
+    {
+      "version": "p8",
+      "resources": {
+        "rc": 0,
+        "wall_s": 53.503703764999955,
+        "cpu_s": 3.912562,
+        "rss_kib": 101296
+      }
+    },
+    {
+      "version": "candidate",
+      "resources": {
+        "rc": 0,
+        "wall_s": 45.54140032400028,
+        "cpu_s": 3.4244929999999996,
+        "rss_kib": 95584
+      }
+    }
+  ],
+  "zstd_fixture_baseline": [
+    {
+      "alloc_mib": 67.98563385009766,
+      "build_s": 0.123006455,
+      "bytes": 742891,
+      "cpu_s": 0.084758,
+      "err": "<nil>",
+      "exact": true,
+      "file": "nested.zst",
+      "mibps": 5.759665755665875,
+      "p8": "rep",
+      "rep": 0,
+      "rep_phys": 570793,
+      "replay_s": 0.02106976,
+      "rss_mib": 48.20703125
+    },
+    {
+      "alloc_mib": 67.6956787109375,
+      "build_s": 0.143724516,
+      "bytes": 742891,
+      "cpu_s": 0.081372,
+      "err": "<nil>",
+      "exact": true,
+      "file": "nested.zst",
+      "mibps": 4.929403043454016,
+      "p8": "rep",
+      "rep": 1,
+      "rep_phys": 570793,
+      "replay_s": 0.057752784,
+      "rss_mib": 61.9921875
+    }
+  ]
+}
