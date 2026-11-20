@@ -66,9 +66,11 @@ Incremental maintenance uses the durable journal batch and a derived root-to-con
 catalog. A replacement and archived version are reconciled together. Replays
 are idempotent at the journal watermark. Incremental catch-up reads only
 changed verified manifests and performs no whole-object scan when the digest
-and profile already exist. Rebuild enumerates current, historical and snapshot
-roots individually before de-duplicating by content. It distinguishes damaged
-or unreadable sources from absent roots and reports incomplete coverage.
+and profile already exist. Small journal updates stream the prior catalog and
+retain only the identities needed by the updated roots. Rebuild enumerates
+current, historical and snapshot roots individually before de-duplicating by
+content. It distinguishes damaged or unreadable sources from absent roots and
+reports incomplete coverage.
 
 ## Query and qualification
 

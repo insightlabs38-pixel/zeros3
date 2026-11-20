@@ -117,10 +117,10 @@ import (
 //    27041    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27676    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44776    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50859    Windowed and estimated similarity deltas (extracted dcore)
-//    52381    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    60029    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    66301    CLI dispatch, HTTP server/startup, and main
+//    50861    Windowed and estimated similarity deltas (extracted dcore)
+//    52383    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    60031    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    66303    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -50112,7 +50112,9 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 		}
 	}
 	var live map[[32]byte]struct{}
-	if pruned || len(prior.retired) > 0 {
+	// Small journal suffixes need only the catalog identities they mention.
+	// Large catch-ups can bulk-load the old catalog and read each new manifest once.
+	if pruned || len(prior.retired) > 0 || uint64(len(roots)) <= uint64(prior.Objects)/2 {
 		live = make(map[[32]byte]struct{})
 		for _, root := range roots {
 			man, err := s.readVerifiedManifest(root.uuid, root.sha)
@@ -50253,7 +50255,7 @@ func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, o
 			if len(*retired) > authSimilarityMaxTombstones {
 				return errAuthSimilarityNeedsRebuild
 			}
-		} else {
+		} else if live == nil || isLive {
 			contents[sum] = int64(binary.LittleEndian.Uint64(row[36:]))
 		}
 		if _, err := out.Write(row[:]); err != nil {

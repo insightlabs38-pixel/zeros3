@@ -322,8 +322,30 @@ func TestAuthoritySimilarityRefresh(t *testing.T) {
 	if err := s.publishAuthSimilarityStage(filepath.Base(next.Directory)); err != nil {
 		t.Fatal(err)
 	}
+	// A small suffix can reuse one known digest without retaining every
+	// prior identity or dropping any rows from the staged catalog.
+	var copied bytes.Buffer
+	var retired []uint32
+	digest := sha256.Sum256(b)
+	remembered := make(map[[32]byte]int64)
+	if err := reuseAuthSimilarityCatalog(next, t.TempDir(), &copied, remembered, map[[32]byte]struct{}{digest: {}}, false, &retired); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := os.ReadFile(filepath.Join(next.Directory, "catalog.zsc"))
+	if err != nil || len(catalog) < 12 || !bytes.Equal(copied.Bytes(), catalog[12:]) || len(retired) != 0 ||
+		len(remembered) != 1 || remembered[digest] != int64(len(b)) {
+		t.Fatalf("filtered catalog reuse changed rows or retained unrelated identities: %v, %v", remembered, err)
+	}
+	mustPutObject(t, s, "similar", "reused", b, "", nil)
+	reused, err := s.refreshAuthSimilarityStage()
+	if err != nil || reused.Generation != next.Generation || reused.Objects != next.Objects || !slices.Equal(reused.Runs, next.Runs) {
+		t.Fatalf("an incremental alias changed catalog identity: %+v %v", reused, err)
+	}
+	if err := s.publishAuthSimilarityStage(filepath.Base(reused.Directory)); err != nil {
+		t.Fatal(err)
+	}
 	unchanged, err := s.refreshAuthSimilarityStage()
-	if err != nil || unchanged.Directory != next.Directory {
+	if err != nil || unchanged.Directory != reused.Directory {
 		t.Fatalf("refresh of a current generation did unnecessary work: %+v %v", unchanged, err)
 	}
 	if err := s.DeleteObject("similar", "alias"); err != nil {
