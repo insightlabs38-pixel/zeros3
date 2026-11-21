@@ -7,3 +7,4 @@ fixture-*.bin
 *.bin
 __pycache__/
 *.pyc
+/pid

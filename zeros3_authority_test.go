@@ -5734,9 +5734,9 @@ func TestAuthorityHardCorpusEconomics(t *testing.T) {
 	comps := authComponentSet(t, rep.s)
 	var compBytes int64
 	for c := range comps {
-		if b, err := rep.s.casRead(c); err == nil {
-			compBytes += int64(len(b))
-		}
+		b, err := rep.s.casRead(c)
+		mustOK(t, err)
+		compBytes += int64(len(b))
 	}
 	var added int64
 	forms := map[string]int{}
@@ -5750,7 +5750,7 @@ func TestAuthorityHardCorpusEconomics(t *testing.T) {
 	res["sum_added_bytes_per_object"] = added
 	res["closure_components"] = len(comps)
 	res["closure_bytes"] = compBytes
-	res["reused_bytes"] = added - compBytes
+	res["planned_added_minus_closure_bytes"] = added - compBytes
 	measure("representation", rep)
 	rep.close()
 	cdcB, repB := res["cdc"].(map[string]any)["physical_bytes"].(int64), res["representation"].(map[string]any)["physical_bytes"].(int64)
