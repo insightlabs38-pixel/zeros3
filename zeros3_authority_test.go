@@ -3964,8 +3964,8 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 		}
 	}
 	ops := []op{
-		{"migrate", "cdc", []string{"authority", "migrate", "-apply", "-min-saving", "0.05"}, func(s *Store) error {
-			_, err := s.AuthorityMigrate(AuthPolicy{MinSaving: 0.05, Apply: true, AllowRep: true, AllowDelta: true})
+		{"migrate", "cdc", []string{"authority", "migrate", "-apply", "-archive", "-min-saving", "0.05"}, func(s *Store) error {
+			_, err := s.AuthorityMigrate(AuthPolicy{Order: "oldest", MinSaving: 0.05, Apply: true, AllowRep: true, AllowDelta: true})
 			return err
 		}, nil},
 		{"gc", "migrated", []string{"gc", "-apply"}, nil, nil},
@@ -3985,6 +3985,22 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 				o.cli, o.complete = o.prep(t, fx)
 			}
 			pre, evs, actual := plRun(t, bin, fx.dir, o.cli...)
+			if o.name == "migrate" {
+				check, err := OpenStoreShared(actual)
+				mustOK(t, err)
+				files, err := check.authFiles()
+				mustOK(t, err)
+				wroteDelta := false
+				for _, file := range files {
+					rec, err := check.authLoad(file)
+					mustOK(t, err)
+					wroteDelta = wroteDelta || rec != nil && rec.Form == authFormDelta
+				}
+				mustOK(t, check.Close())
+				if !wroteDelta {
+					t.Fatal("migration trace never published an authority delta")
+				}
+			}
 			m := &plModel{top: pre, fds: map[int]*plFile{}, dirfd: map[int]string{}, byNode: map[*plNode]*plFile{}}
 			// the model root is the store path the CLI was given; the trace names it
 			m.root = ""
@@ -4055,7 +4071,7 @@ func TestAuthorityPersistenceLossModel(t *testing.T) {
 						img := filepath.Join(t.TempDir(), "img")
 						plWrite(t, ctl.top, img, false, true)
 						os.MkdirAll(filepath.Join(img, "tmp"), 0o755)
-						if plProbe(img, fx.want, o.complete) != nil {
+						if plProbe(img, fx.want, nil) != nil {
 							failed++
 						}
 					}

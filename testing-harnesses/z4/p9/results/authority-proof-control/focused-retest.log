@@ -1,0 +1,8 @@
+--- PASS: TestAuthorityRejectedCandidateDoesNotPublishPins (0.30s)
+    zeros3_authority_test.go:4082: control: 22 crash images of the fsync-less trace fail, as they must
+--- PASS: TestAuthorityPersistenceLossModel (25.03s)
+--- PASS: TestAuthorityZN7ModelHistory (2.45s)
+--- PASS: TestAuthorityZN7BaseRetentionRevertAndFeature (1.62s)
+--- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive (38.91s)
+--- PASS: TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds (28.17s)
+ok  	zeros3	96.496s

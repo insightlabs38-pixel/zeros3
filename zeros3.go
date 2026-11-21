@@ -121,10 +121,10 @@ import (
 //    28432    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    29067    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    46240    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    53150    Windowed and estimated similarity deltas (extracted dcore)
-//    54679    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62371    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68643    CLI dispatch, HTTP server/startup, and main
+//    53154    Windowed and estimated similarity deltas (extracted dcore)
+//    54683    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62375    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68647    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47243,6 +47243,13 @@ func (s *Store) newAuthScanCtx() *authCtx {
 
 func (c *authCtx) close() {}
 
+func (c *authCtx) record(sha [32]byte) (*authRecord, error) {
+	if rec := c.overlay[sha]; rec != nil {
+		return rec, nil
+	}
+	return c.s.authLoad(sha)
+}
+
 func (c *authCtx) charge(n int64) error {
 	c.budget -= n
 	if c.budget < 0 {
@@ -47260,12 +47267,9 @@ func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authReco
 	if c.path[sha] {
 		return nil, nil, fmt.Errorf("%w: dependency cycle", errAuthCorrupt)
 	}
-	rec := c.overlay[sha]
-	var err error
-	if rec == nil {
-		if rec, err = c.s.authLoad(sha); err != nil {
-			return nil, nil, err
-		}
+	rec, err := c.record(sha)
+	if err != nil {
+		return nil, nil, err
 	}
 	if rec == nil {
 		return nil, nil, fmt.Errorf("%w: %x", errAuthMissing, sha[:6])
@@ -61958,7 +61962,7 @@ func (r *authZN7Res) Open(ctx context.Context, id ncNumcoreID) (ncNumcoreStored,
 		return ncNumcoreStored{}, errAuthLimit
 	}
 	sha := [32]byte(id)
-	rec, err := r.c.s.authLoad(sha)
+	rec, err := r.c.record(sha)
 	if err != nil {
 		return ncNumcoreStored{}, err
 	}
@@ -61994,7 +61998,7 @@ func (r *authZN7Res) Open(ctx context.Context, id ncNumcoreID) (ncNumcoreStored,
 func (r *authZN7Res) Aux(ctx context.Context, id ncNumcoreID) ([]byte, error) {
 	r.mu.Lock() // the body behind an auxiliary object is not safe for concurrent readers
 	defer r.mu.Unlock()
-	rec, err := r.c.s.authLoad([32]byte(id))
+	rec, err := r.c.record([32]byte(id))
 	if err != nil {
 		return nil, err
 	}

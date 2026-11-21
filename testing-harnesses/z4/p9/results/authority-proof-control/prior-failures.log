@@ -1,0 +1,12 @@
+--- FAIL: TestAuthorityPersistenceLossModel (21.46s)
+    --- FAIL: TestAuthorityPersistenceLossModel/migrate (10.13s)
+        zeros3_authority_test.go:4064: control: a store without any fsync survived every crash image; the simulator cannot detect ordering bugs
+--- FAIL: TestAuthorityZN7ModelHistory (0.39s)
+--- FAIL: TestAuthorityZN7BaseRetentionRevertAndFeature (0.41s)
+--- FAIL: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive (12.81s)
+    --- FAIL: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/Q4_K (1.32s)
+    --- FAIL: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S (5.65s)
+    --- FAIL: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S-strict (3.94s)
+    --- FAIL: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ4_XS (1.90s)
+--- FAIL: TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds (13.81s)
+    --- FAIL: TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds/zn7iq3s (6.10s)
