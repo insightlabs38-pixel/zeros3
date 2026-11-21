@@ -1,4 +1,5 @@
 # ZeroS3
+The `main` branch is the stable public baseline; active development continues on [`research/next`](https://github.com/insightlabs38-pixel/zeros3/tree/research/next).
 
 **S3-compatible at the interface, content-aware underneath.**
 
