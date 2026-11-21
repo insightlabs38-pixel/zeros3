@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52394    Windowed and estimated similarity deltas (extracted dcore)
-//    53923    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61615    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67887    CLI dispatch, HTTP server/startup, and main
+//    52453    Windowed and estimated similarity deltas (extracted dcore)
+//    53982    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61674    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67946    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47733,7 +47733,7 @@ type AuthPolicy struct {
 // authPlanCache carries the expensive results of a plan-only pass into the
 // pass that applies the winner, so no delta or representation is built twice.
 type authPlanCache struct {
-	delta     map[[32]byte]*authDeltaPlan
+	delta     map[[32]byte]*authCand
 	deltaAdd  map[[32]byte]int64 // plan-only added bytes of the best delta per object
 	repC      map[[32]byte]*authRepCand
 	repAbort  map[repKind]bool
@@ -47749,16 +47749,8 @@ type authPlanCache struct {
 	stale bool
 }
 
-type authDeltaPlan struct {
-	rec  *authRecord
-	blob []byte
-	phys int64
-	pins []int
-	plan AuthPlan
-}
-
 func newAuthPlanCache() *authPlanCache {
-	return &authPlanCache{delta: map[[32]byte]*authDeltaPlan{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, winSketch: map[[32]byte][]uint64{}, znAdded: map[[32]byte]int64{}}
+	return &authPlanCache{delta: map[[32]byte]*authCand{}, deltaAdd: map[[32]byte]int64{}, repC: map[[32]byte]*authRepCand{}, repAbort: map[repKind]bool{}, winAdded: map[[32]byte]int64{}, winSketch: map[[32]byte][]uint64{}, znAdded: map[[32]byte]int64{}}
 }
 
 // workers bounds the parallel window workers: resident memory grows by roughly 30 MiB per worker on a 1 GiB base.
@@ -48991,14 +48983,18 @@ func (m *authMigrator) countAuthorityComponents(rec *authRecord) error {
 		m.countChunks(cl.chunks)
 		return nil
 	}
+	m.countPieces(rec.Pieces)
+	return nil
+}
+
+func (m *authMigrator) countPieces(pieces []authPiece) {
 	seen := make(map[[32]byte]bool)
-	for _, p := range rec.Pieces {
+	for _, p := range pieces {
 		if !seen[p.SHA] {
 			seen[p.SHA] = true
 			m.refs[p.SHA]++
 		}
 	}
-	return nil
 }
 
 func (m *authMigrator) unsharedBytes(o *authObj) int64 {
@@ -49034,12 +49030,59 @@ type authCand struct {
 	added int64
 	pins  []int
 	plan  AuthPlan
-	phys  int64
 }
 
-// authEstSlack is how far above the best exact envelope a candidate's optimistic estimate may sit and still be
-// compressed exactly (P5 measured zero regret on 23 real targets at 5%).
-const authEstSlack = 0.05
+// deltaAddedBytes prices the exact record and its distinct pieces using the
+// compaction codec. A piece owned solely by the target remains charged when
+// the new record retains it.
+func (m *authMigrator) deltaAddedBytes(o *authObj, rec *authRecord, blob []byte, pins []int, comp *packCompressor) (int64, error) {
+	targetChunks := make(map[[32]byte]bool, len(o.man.Chunks))
+	for _, c := range o.man.Chunks {
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			return 0, err
+		}
+		targetChunks[sum] = true
+	}
+	var added int64
+	seen := make(map[[32]byte]bool)
+	for off, p := range rec.Pieces {
+		if seen[p.SHA] {
+			continue
+		}
+		seen[p.SHA] = true
+		refs := m.refs[p.SHA]
+		if targetChunks[p.SHA] {
+			refs--
+		}
+		if refs <= 0 {
+			start := off * xdPieceSize
+			data, _ := comp.encode(blob[start : start+int(p.Len)])
+			added += int64(len(data)) + packRecordBytes
+		}
+	}
+	body, err := rec.marshal()
+	if err != nil {
+		return 0, err
+	}
+	added += int64(len(body))
+	for _, j := range pins {
+		base := m.order[j]
+		if base.hasRec {
+			continue
+		}
+		pin, err := authPinFor(base)
+		if err != nil {
+			return 0, err
+		}
+		body, err := pin.marshal()
+		if err != nil {
+			return 0, err
+		}
+		added += int64(len(body))
+	}
+	return added, nil
+}
 
 func xdFromDw(ops []dwDcoreOp) []xdOp {
 	out := make([]xdOp, len(ops))
@@ -49073,11 +49116,9 @@ func authRefine(ops []dwDcoreOp, x *dwDcoreIndex, newBase int) ([]dwDcoreOp, int
 	return out, saved
 }
 
-// bestDelta matches the target against each candidate base (concurrently, bounded; every base is indexed once per
-// pass), then lets the best match borrow from the next-best bases for what it could not copy. Programs are ranked
-// by a cheap estimate and only those whose optimistic estimate can still beat the best exact envelope are
-// serialized (compressed), so candidates that cannot win are never compressed. The chosen envelope is always an
-// exact xdEncodeOps result.
+// bestDelta matches each candidate base once and refines the best estimated
+// single-base program with further bases. It prices the exact encodings of the
+// single-base programs and each useful refinement.
 func (m *authMigrator) bestDelta(o *authObj, target []byte, sk []uint64, srcs []xdSrc, idxs []int) *authCand {
 	pol := m.pol
 	prm := dwDcoreDefaultParams()
@@ -49086,7 +49127,7 @@ func (m *authMigrator) bestDelta(o *authObj, target []byte, sk []uint64, srcs []
 		sel []int // srcs used, in the program's base numbering
 		est dwDcoreEstimate
 	}
-	tries := make([]try, len(srcs), len(srcs)+1)
+	tries := make([]try, len(srcs), len(srcs)+pol.MaxBases-1)
 	xs := make([]*dwDcoreIndex, len(srcs))
 	sem := make(chan struct{}, max(1, pol.workers()))
 	var wg sync.WaitGroup
@@ -49119,20 +49160,20 @@ func (m *authMigrator) bestDelta(o *authObj, target []byte, sk []uint64, srcs []
 			if len(sel) >= pol.MaxBases {
 				break
 			}
-			if r, saved := authRefine(ops, xs[k], len(sel)); saved*50 >= lit {
+			if r, saved := authRefine(ops, xs[k], len(sel)); saved > 0 && saved*50 >= lit {
 				ops, sel, lit = r, append(sel, k), lit-saved
+				tries = append(tries, try{ops: ops, sel: slices.Clone(sel)})
 			}
 		}
-		if len(sel) > 1 {
-			tries = append(tries, try{ops: ops, sel: sel, est: dwDcoreEstimateProgram(ops, dwDcoreEstimateOpts{})})
-			order = append(order, len(tries)-1)
-			sort.SliceStable(order, func(a, b int) bool { return tries[order[a]].est.Est < tries[order[b]].est.Est })
+		for k := len(srcs); k < len(tries); k++ {
+			order = append(order, k)
 		}
 	}
+	comp := newPackCompressor()
 	var best *authCand
 	for _, k := range order {
-		if best != nil && float64(tries[k].est.Lower) > float64(len(best.blob))*(1+authEstSlack) {
-			continue
+		if m.ctx.Err() != nil {
+			return nil
 		}
 		ss := make([]xdSrc, len(tries[k].sel))
 		for n, j := range tries[k].sel {
@@ -49155,18 +49196,17 @@ func (m *authMigrator) bestDelta(o *authObj, target []byte, sk []uint64, srcs []
 		if depth > pol.MaxDepth {
 			continue
 		}
-		phys := int64(min(len(blob), xdDeflateLen(blob, 1))) + 96
-		// pins for bases that have no record yet cost one list entry per chunk
-		var pinCost int64
-		for _, j := range bj {
-			if !m.order[j].hasRec {
-				pinCost += int64(len(m.order[j].man.Chunks)) * 36
-			}
+		rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Sketch: sk, Bases: refs}
+		for start := 0; start < len(blob); start += xdPieceSize {
+			piece := blob[start:min(start+xdPieceSize, len(blob))]
+			rec.Pieces = append(rec.Pieces, authPiece{sha256.Sum256(piece), int64(len(piece))})
 		}
-		added := phys + pinCost + 160
+		added, err := m.deltaAddedBytes(o, rec, blob, bj, comp)
+		if err != nil {
+			continue
+		}
 		if best == nil || added < best.added {
-			rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Sketch: sk, Bases: refs}
-			best = &authCand{rec: rec, blob: blob, added: added, pins: bj, plan: AuthPlan{Form: "delta", Depth: depth}, phys: phys}
+			best = &authCand{rec: rec, blob: blob, added: added, pins: bj, plan: AuthPlan{Form: "delta", Depth: depth}}
 			for _, r := range refs {
 				best.plan.Bases = append(best.plan.Bases, hex.EncodeToString(r.SHA[:6]))
 			}
@@ -49266,28 +49306,26 @@ func (m *authMigrator) process(i int, o *authObj) error {
 			srcs = append(srcs, xdSrc{bo.sha, b})
 			idxs = append(idxs, j)
 		}
-		var cached *authDeltaPlan
+		var cached *authCand
 		if pol.cache != nil && !pol.cache.stale {
 			cached = pol.cache.delta[o.sha]
 		}
 		if cached != nil {
-			// Reuse the plan-only encoding; only the pin charge depends on the
-			// state reached in this pass (bases may have been pinned since).
-			var pinCost int64
-			for _, j := range cached.pins {
-				if !m.order[j].hasRec {
-					pinCost += int64(len(m.order[j].man.Chunks)) * 36
-				}
+			// Reprice the plan's encoding against the state reached in this pass.
+			added, err := m.deltaAddedBytes(o, cached.rec, cached.blob, cached.pins, newPackCompressor())
+			if err != nil {
+				return err
 			}
-			rc := *cached.rec
-			best = &authCand{rec: &rc, blob: cached.blob, added: cached.phys + pinCost + 160, pins: cached.pins, plan: cached.plan}
+			rec, plan := *cached.rec, *cached
+			plan.rec, plan.added = &rec, added
+			best = &plan
 			pol.cache.reuseHits++
 		}
 		if len(srcs) > 0 && cached == nil {
 			best = m.bestDelta(o, target, sk, srcs, idxs)
 		}
 		if pol.cache != nil && best != nil && cached == nil && !pol.Apply {
-			pol.cache.delta[o.sha] = &authDeltaPlan{rec: best.rec, blob: best.blob, phys: best.phys, pins: best.pins, plan: best.plan}
+			pol.cache.delta[o.sha] = best
 			pol.cache.deltaAdd[o.sha] = best.added
 		}
 	}
@@ -49331,6 +49369,15 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		}
 		m.depth[i] = plan.Depth
 		m.release(o)
+		if choice == "delta" {
+			m.countPieces(best.rec.Pieces)
+			for _, j := range best.pins {
+				m.order[j].hasRec = true
+			}
+		} else {
+			m.countChunks(m.repC[i].chunks)
+		}
+		o.hasRec = true
 		finish(plan)
 		m.addBase(i)
 		return nil
@@ -49368,11 +49415,11 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		if bo.hasRec {
 			continue
 		}
-		ps, err := chunkPieces(bo.man)
+		pin, err := authPinFor(bo)
 		if err != nil {
 			return err
 		}
-		pendingPins[bo.sha] = &authRecord{SHA: bo.sha, Size: bo.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}
+		pendingPins[bo.sha] = pin
 	}
 	if pol.ReserveFreeBytes != 0 {
 		data, err := rec.marshal()
@@ -49483,6 +49530,11 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 	o.hasRec = true
 	m.depth[i] = int(rec.Depth)
 	m.release(o)
+	if rec.Form == authFormRep {
+		m.countChunks(m.repC[i].chunks)
+	} else {
+		m.countPieces(rec.Pieces)
+	}
 	finish(plan)
 	m.addBase(i)
 	return nil
@@ -49646,8 +49698,15 @@ func (m *authMigrator) commitRep(i int, o *authObj, root *repRoot, added int64, 
 // (so a representation component equal to it adds no bytes).
 func (s *Store) authChunkKnown(sum [32]byte, refs map[[32]byte]int) bool { return refs[sum] > 0 }
 
-// authEnsurePin gives a still-CDC object a pin record so it can serve as a base
-// without any namespace entry. The pin lists the manifest's own chunks.
+func authPinFor(o *authObj) (*authRecord, error) {
+	ps, err := chunkPieces(o.man)
+	if err != nil {
+		return nil, err
+	}
+	return &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}, nil
+}
+
+// authEnsurePin makes a CDC object available as a base beyond its namespace lifetime.
 func (s *Store) authEnsurePin(o *authObj) error {
 	if rec, err := s.authLoad(o.sha); err != nil || rec != nil {
 		return err
@@ -49655,16 +49714,16 @@ func (s *Store) authEnsurePin(o *authObj) error {
 	if err := authFaultAt("pin"); err != nil {
 		return err
 	}
-	ps, err := chunkPieces(o.man)
+	pin, err := authPinFor(o)
 	if err != nil {
 		return err
 	}
-	for _, p := range ps {
+	for _, p := range pin.Pieces {
 		if n, err := s.casStat(p.SHA); err != nil || n != p.Len {
 			return fmt.Errorf("pin %x: chunk %x unavailable", o.sha[:6], p.SHA[:6])
 		}
 	}
-	return s.authPublish(&authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps})
+	return s.authPublish(pin)
 }
 
 // AuthorityRevert returns a content's physical authority to ordinary CDC:

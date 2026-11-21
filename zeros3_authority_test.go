@@ -2924,6 +2924,54 @@ func TestAuthorityRevertAllLowersFloorAndOldBinaryReopens(t *testing.T) {
 	l.close()
 }
 
+func TestAuthorityMultiBasePortfolioEconomics(t *testing.T) {
+	a, b := genRandomBytes(915, 256<<10), genRandomBytes(916, 256<<10)
+	target := append(bytes.Clone(a), b...)
+	for i := 4095; i < len(target); i += 4096 {
+		target[i] ^= 1
+	}
+	first := append(bytes.Clone(a), genRandomBytes(917, len(b))...)
+	second := append(genRandomBytes(918, len(a)), b...)
+	sha := sha256.Sum256(target)
+	var planned [2]int64
+	var retained [2]int64
+	for _, bases := range []int{1, 2} {
+		t.Run(fmt.Sprintf("max-bases=%d", bases), func(t *testing.T) {
+			l := newAuthLab(t)
+			for _, v := range [][]byte{first, second, target} {
+				l.put("history", v)
+			}
+			pol := AuthPolicy{Order: "oldest", AllowDelta: true, NoZN7: true, MaxBases: bases, MinSaving: 0.01}
+			report, err := l.s.AuthorityMigrate(pol)
+			mustOK(t, err)
+			var targetPlan AuthPlan
+			for _, p := range report.Plans {
+				if p.SHA == hex.EncodeToString(sha[:]) {
+					targetPlan = p
+				}
+			}
+			if targetPlan.Form != "delta?" || len(targetPlan.Bases) != bases {
+				t.Fatalf("target did not plan a %d-base delta: %+v", bases, targetPlan)
+			}
+			planned[bases-1] = targetPlan.AddedBytes
+			pol.Apply = true
+			_, err = l.s.AuthorityMigrate(pol)
+			mustOK(t, err)
+			if rec := mustLoad(t, l.s, sha); len(rec.Bases) != bases {
+				t.Fatalf("applied record has %d bases, want %d", len(rec.Bases), bases)
+			}
+			l.reclaim()
+			l.exact("current revision after reclamation")
+			l.verifyOK("retained history after reclamation")
+			retained[bases-1] = dirBytes(t, l.dir)
+			t.Logf("marginal bytes %d, retained store bytes %d", planned[bases-1], retained[bases-1])
+		})
+	}
+	if planned[1] >= planned[0] || retained[1] >= retained[0] {
+		t.Fatalf("two-base plan did not improve projected and retained cost: planned %v retained %v", planned, retained)
+	}
+}
+
 func TestAuthorityMigrationChargesChunksRetainedByPins(t *testing.T) {
 	l := newAuthLab(t)
 	base := genRandomBytes(914, 1_400_000)
