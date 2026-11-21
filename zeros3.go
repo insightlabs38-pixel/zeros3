@@ -90,38 +90,38 @@ import (
 //     5588    Manifests (immutable, JSON)
 //     6384    Visibility journal (append-only, checksummed)
 //     6901    Store: format, namespace, and object CRUD
-//     8682    Version history/restore, history pruning, ListObjectsV2
-//     9163    SigV4 authentication (header and presigned-URL)
-//    10140    Request payload checksums and S3-shaped XML error/response types
-//    10357    HTTP routing and S3 operation handlers
-//    10773    Conditional operations (PUT/GET/HEAD preconditions)
-//    11468    CopyObject
-//    11773    Multipart upload
-//    12713    Stats and reachability scanning
-//    14188    Verify
-//    14401    Store locking and safe offline GC
-//    14704    Offline compaction (`zeros3 compact`)
-//    15770    Pack reclamation and repacking (`zeros3 repack`)
-//    16255    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16768    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17833    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18637    Delta sync client, credentials, and parallel transfer
-//    20631    Bulk logical-chunk transport (v2)
-//    21542    Recursive directory sync
-//    21847    Remote replication (`zeros3 replicate`)
-//    22606    Peer-assisted corruption repair (`zeros3 repair`)
-//    23174    Namespace (prefix/bucket) replication
-//    23481    Copy-on-write namespace fork (`zeros3 fork`)
-//    23689    Snapshots and restore
-//    24850    Structural diff and inspect (introspection)
-//    26212    Portable snapshot bundles (`zeros3 bundle`)
-//    27409    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28044    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45116    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49638    Windowed and estimated similarity deltas (extracted dcore)
-//    51167    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58807    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65079    CLI dispatch, HTTP server/startup, and main
+//     8752    Version history/restore, history pruning, ListObjectsV2
+//     9233    SigV4 authentication (header and presigned-URL)
+//    10210    Request payload checksums and S3-shaped XML error/response types
+//    10427    HTTP routing and S3 operation handlers
+//    10843    Conditional operations (PUT/GET/HEAD preconditions)
+//    11538    CopyObject
+//    11843    Multipart upload
+//    12783    Stats and reachability scanning
+//    14258    Verify
+//    14471    Store locking and safe offline GC
+//    14774    Offline compaction (`zeros3 compact`)
+//    15840    Pack reclamation and repacking (`zeros3 repack`)
+//    16325    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16838    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17903    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18707    Delta sync client, credentials, and parallel transfer
+//    20701    Bulk logical-chunk transport (v2)
+//    21612    Recursive directory sync
+//    21917    Remote replication (`zeros3 replicate`)
+//    22676    Peer-assisted corruption repair (`zeros3 repair`)
+//    23244    Namespace (prefix/bucket) replication
+//    23551    Copy-on-write namespace fork (`zeros3 fork`)
+//    23759    Snapshots and restore
+//    24920    Structural diff and inspect (introspection)
+//    26282    Portable snapshot bundles (`zeros3 bundle`)
+//    27479    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28114    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45186    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    49708    Windowed and estimated similarity deltas (extracted dcore)
+//    51237    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58877    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65149    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -7169,8 +7169,8 @@ func (s *Store) finishOpen() (*Store, error) {
 
 // The checkpoint is a derived namespace. Its journal prefix SHA-256 prevents
 // a valid last-frame CRC from hiding a damaged earlier frame.
-const namespaceCheckpointName = "namespace-v1.zck"
-const namespaceCheckpointMagic = "ZS3NSC1\n"
+const namespaceCheckpointName = "namespace-v2.zck"
+const namespaceCheckpointMagic = "ZS3NSC2\n"
 const hookNamespaceCheckpointSynced = "namespace-checkpoint-synced"
 const hookNamespaceCheckpointRenamed = "namespace-checkpoint-renamed"
 
@@ -7283,7 +7283,7 @@ func (s *Store) writeNamespaceCheckpoint() error {
 	if err := enc.Encode(header); err != nil {
 		return err
 	}
-	if err := s.encodeNamespaceCheckpoint(enc); err != nil {
+	if err := s.encodeNamespaceCheckpoint(enc, body); err != nil {
 		return err
 	}
 	if _, err := out.Write(hash.Sum(nil)); err != nil {
@@ -7306,15 +7306,24 @@ func (s *Store) writeNamespaceCheckpoint() error {
 	return syncDir(dir)
 }
 
-func (s *Store) encodeNamespaceCheckpoint(enc *gob.Encoder) error {
+func (s *Store) encodeNamespaceCheckpoint(enc *gob.Encoder, output io.Writer) error {
+	var row []byte
 	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
 		b := s.buckets[name]
 		if err := enc.Encode(namespaceCheckpointBucket{Name: name, Created: b.createdAt, Objects: len(b.objects)}); err != nil {
 			return err
 		}
 		for _, key := range slices.Sorted(maps.Keys(b.objects)) {
-			o := b.objects[key]
-			if err := enc.Encode(namespaceCheckpointRoot{key, o.manifestUUID, o.manifestSHA256, o.size, o.etag, o.contentType, o.seq}); err != nil {
+			row = appendCheckpointObject(row[:0], key, b.objects[key])
+			if len(row) > maxNamespaceCheckpointRow {
+				return errors.New("checkpoint: object root exceeds row size limit")
+			}
+			var prefix [4]byte
+			binary.LittleEndian.PutUint32(prefix[:], uint32(len(row)))
+			if _, err := output.Write(prefix[:]); err != nil {
+				return err
+			}
+			if _, err := output.Write(row); err != nil {
 				return err
 			}
 		}
@@ -7352,6 +7361,57 @@ func (s *Store) encodeNamespaceCheckpoint(enc *gob.Encoder) error {
 		}
 	}
 	return nil
+}
+
+const maxNamespaceCheckpointRow = 1 << 20
+
+var errNamespaceCheckpointObject = errors.New("checkpoint: invalid object encoding")
+
+func appendCheckpointObject(buf []byte, key string, root *objectEntry) []byte {
+	buf = append(buf, root.manifestSHA256[:]...)
+	buf = binary.AppendUvarint(buf, uint64(root.size))
+	buf = binary.AppendUvarint(buf, root.seq)
+	for _, value := range [...]string{key, root.manifestUUID, root.etag, root.contentType} {
+		buf = binary.AppendUvarint(buf, uint64(len(value)))
+		buf = append(buf, value...)
+	}
+	return buf
+}
+
+func readCheckpointObject(row []byte, intern *strIntern) (string, objectEntry, error) {
+	if len(row) < sha256.Size {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	var root objectEntry
+	copy(root.manifestSHA256[:], row[:sha256.Size])
+	values := row[sha256.Size:]
+	size, n := binary.Uvarint(values)
+	if n < 1 || int64(size) < 0 {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	root.size = int64(size)
+	values = values[n:]
+	root.seq, n = binary.Uvarint(values)
+	if n < 1 {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	values = values[n:]
+	var strings [4][]byte
+	for i := range strings {
+		length, n := binary.Uvarint(values)
+		if n < 1 || length > uint64(len(values)-n) {
+			return "", objectEntry{}, errNamespaceCheckpointObject
+		}
+		strings[i] = values[n : n+int(length)]
+		values = values[n+int(length):]
+	}
+	if len(values) != 0 {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	root.manifestUUID = string(strings[1])
+	root.etag = string(strings[2])
+	root.contentType = intern.get(strings[3])
+	return string(strings[0]), root, nil
 }
 
 func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error) {
@@ -7396,7 +7456,7 @@ func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error)
 	}
 	staged := &Store{buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{},
 		history: map[string]map[string][]*historyVersionEntry{}, replayIn: s.replayIn}
-	if err := staged.decodeNamespaceCheckpoint(dec, hdr); err != nil {
+	if err := staged.decodeNamespaceCheckpoint(dec, input, hdr); err != nil {
 		return 0, 0, err
 	}
 	var extra namespaceCheckpointBucket
@@ -7407,7 +7467,8 @@ func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error)
 	return hdr.Offset, hdr.Sequence, nil
 }
 
-func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, hdr namespaceCheckpointHeader) error {
+func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr namespaceCheckpointHeader) error {
+	var rowBuffer []byte
 	for range hdr.Buckets {
 		var b namespaceCheckpointBucket
 		if err := dec.Decode(&b); err != nil {
@@ -7418,17 +7479,26 @@ func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, hdr namespaceCheckpo
 		}
 		entry := &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created, objects: map[string]*objectEntry{}}
 		for range b.Objects {
-			var row namespaceCheckpointRoot
-			if err := dec.Decode(&row); err != nil {
+			var prefix [4]byte
+			if _, err := io.ReadFull(input, prefix[:]); err != nil {
 				return err
 			}
-			if row.Sequence == 0 || row.Sequence > hdr.Sequence || row.Size < 0 || entry.objects[row.Key] != nil {
+			n := binary.LittleEndian.Uint32(prefix[:])
+			if n > maxNamespaceCheckpointRow {
+				return errors.New("checkpoint: invalid object root length")
+			}
+			rowBuffer = slices.Grow(rowBuffer[:0], int(n))[:n]
+			if _, err := io.ReadFull(input, rowBuffer); err != nil {
+				return err
+			}
+			key, root, err := readCheckpointObject(rowBuffer, s.replayIn)
+			if err != nil {
+				return err
+			}
+			if root.seq == 0 || root.seq > hdr.Sequence || entry.objects[key] != nil {
 				return errors.New("checkpoint: invalid object root")
 			}
-			entry.objects[row.Key] = &objectEntry{
-				manifestUUID: row.Manifest, manifestSHA256: row.Digest, size: row.Size, etag: row.ETag,
-				contentType: s.replayIn.get([]byte(row.ContentType)), seq: row.Sequence,
-			}
+			entry.objects[key] = &root
 		}
 		s.buckets[entry.name] = entry
 	}

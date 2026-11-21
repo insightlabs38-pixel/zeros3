@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"os/exec"
@@ -63,8 +64,14 @@ func TestNamespaceCheckpointMatchesHistoryMultipartAndTail(t *testing.T) {
 	_, err = s.PutObject("pilot", "temporary", []byte("will be deleted"), "text/plain", nil)
 	mustOK(t, err)
 	mustOK(t, s.DeleteObject("pilot", "temporary"))
+	tailSeq := s.journal.nextSeq - 1
 	mustOK(t, s.Close())
 
+	direct := checkpointTestOpen(t, dir, false)
+	direct.replayIn = &strIntern{m: map[string]string{}}
+	if _, seq, err := direct.loadNamespaceCheckpoint(direct.journal.f); err != nil || seq >= tailSeq {
+		t.Fatalf("checkpoint prefix was not accepted before the journal tail: seq %d of %d, %v", seq, tailSeq, err)
+	}
 	assertCheckpointState(t, dir)
 	accelerated := checkpointTestOpen(t, dir, true)
 	_, got, err := accelerated.GetObject("pilot", "retained")
@@ -130,6 +137,63 @@ func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "crc mismatch") {
 		t.Fatalf("checkpoint masked early journal corruption: %v", err)
+	}
+}
+
+func TestNamespaceCheckpointJournalFaultModel(t *testing.T) {
+	dir, _ := checkpointTestSeed(t)
+	path := filepath.Join(dir, "journal", "visibility.log")
+	writer, err := OpenStore(dir)
+	mustOK(t, err)
+	prefix := writer.journal.writeOffset
+	// The first commit is durable. Model the second frame at various
+	// points between write and its durability boundary.
+	first := []byte("durable revision")
+	second := []byte("in-flight revision")
+	_, err = writer.PutObject("pilot", "retained", first, "text/plain", nil)
+	mustOK(t, err)
+	seam := writer.journal.writeOffset
+	_, err = writer.PutObject("pilot", "retained", second, "text/plain", nil)
+	mustOK(t, err)
+	mustOK(t, writer.Close())
+	intact, err := os.ReadFile(path)
+	mustOK(t, err)
+
+	model := []struct {
+		name  string
+		image []byte
+		want  []byte
+	}{
+		{"all-writes", intact, second},
+		{"last-entire-write-lost", intact[:seam], first},
+		{"last-header-torn", intact[:seam+7], first},
+		{"last-payload-torn", intact[:seam+journalHeaderSize+1], first},
+		{"last-crc-torn", intact[:len(intact)-2], first},
+		{"earlier-write-dropped", append(bytes.Clone(intact[:prefix]), intact[seam:]...), nil},
+		{"complete-writes-reordered", append(append(bytes.Clone(intact[:prefix]), intact[seam:]...), intact[prefix:seam]...), nil},
+	}
+	for _, trial := range model {
+		t.Run(trial.name, func(t *testing.T) {
+			mustOK(t, os.WriteFile(path, trial.image, 0o600))
+			for _, use := range []bool{false, true} {
+				s, err := openStore(dir, false, use)
+				if trial.want == nil {
+					if s != nil {
+						s.Close()
+					}
+					if err == nil || !strings.Contains(err.Error(), "expected sequence") {
+						t.Fatalf("checkpoint=%t accepted a broken ordering: %v", use, err)
+					}
+					continue
+				}
+				mustOK(t, err)
+				_, got, err := s.GetObject("pilot", "retained")
+				s.Close()
+				if err != nil || sha256.Sum256(got) != sha256.Sum256(trial.want) {
+					t.Fatalf("checkpoint=%t modeled current bytes mismatch: %q %v", use, got, err)
+				}
+			}
+		})
 	}
 }
 

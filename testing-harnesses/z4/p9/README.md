@@ -51,3 +51,35 @@ this workspace mount under that load. The idle and service-level I/O
 matrix remains pending.
 
 [Local filesystem raw trials](results/local-fs-mixed.json)
+
+## Checkpoint format iteration and fixture resumption
+
+A 100,000-object store used one independently generated 256-byte S3 body per
+key. The first checkpoint layout took a median 2.73 seconds to open against
+1.43 seconds for the journal in that round. The second uses length-bounded
+binary rows for visible objects, including the original manifest digests.
+Its median was 1.94 seconds against 3.65 seconds for the same journal in that
+round. Runs shared a two-CPU quota with other tests. In the second round,
+allocated memory fell from about 103.2 MB per full open to 77.5 MB, and
+the checkpoint file occupied 15,083,937 apparent bytes. An older binary
+opened the same store and deep-verified 100,000 objects and chunks.
+
+`p0bench mkstream` creates unique objects through signed conditional PUTs
+in bounded batches. The cursor binds the binary, fixture seed, body size and
+store identity. A fresh process reads back a deterministic sample. In a
+deliberately rewound cursor test, the retry used exact GETs for existing keys,
+checked all 799 bodies and kept one visible version per key. The separate
+million-object fixture is used for the larger open comparison.
+
+## Online pack publication experiment
+
+The isolated epoch rig writes immutable packs and verifies every leased read.
+A repack pins its marked packs during copy. Publication reconciles the latest
+roots and keeps source packs for commits missed by the initial mark. Old
+reader leases keep their packs until release, and deleted keys stay deleted.
+The test raced 192 writes and 768 independently checked reads against 32
+publications per trial. Namespace and locator metadata are in memory in this
+rig. Durable locator publication, inter-process leases, repeated power-cut
+recovery and tail latency at production scale remain open.
+
+[Checkpoint comparisons and epoch race results](results/100k-checkpoint-and-online-pack.json)
