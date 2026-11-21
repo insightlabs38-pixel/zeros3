@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
@@ -3410,55 +3411,65 @@ func TestAuthRangeExecutor(t *testing.T) {
 	}
 }
 
-// Damaged ZW1 programs are refused by the shared parser, never executed past their bounds.
+// Damaged ZW1 and ZW2 programs (and ZW2 segment directories) are refused by the shared parser, never
+// executed past their bounds, and a segmented record reconstructs the same bytes as an unsegmented one.
 func TestAuthWindowedProgramValidation(t *testing.T) {
 	base := genRandomBytes(21, 300_000)
 	target := authVersion(base, 77)
-	wp := dwDcoreDefaultWParams()
-	wp.Window = 64 << 10
-	wp.Anchor.MaxAnchors = 1 << 16
-	idx, err := dwDcoreBuildWIndex(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1, nil)
-	mustOK(t, err)
-	var buf bytes.Buffer
-	_, err = dwDcoreWEncode(&buf, bytes.NewReader(target), int64(len(target)), bytes.NewReader(base), int64(len(base)), idx, wp)
-	mustOK(t, err)
-	rec := buf.Bytes()
-	wr, err := dwDcoreOpenWRecord(bytes.NewReader(rec), int64(len(rec)))
-	mustOK(t, err)
-	tableStart := int64(binary.LittleEndian.Uint64(rec[len(rec)-dwDcore_wTrailerLen+4:]))
-	rng := mrand.New(mrand.NewPCG(5, 6))
-	refused := 0
-	for i := 0; i < 400; i++ {
-		bad := bytes.Clone(rec)
-		for k := 0; k < 1+i%3; k++ {
-			bad[4+rng.Int64N(tableStart-4)] ^= byte(1 + rng.IntN(255))
+	for _, segment := range []int64{0, 16 << 10} {
+		wp := dwDcoreDefaultWParams()
+		wp.Window, wp.Segment = 64<<10, segment
+		wp.Anchor.MaxAnchors = 1 << 16
+		idx, err := dwDcoreBuildWIndex(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1, nil)
+		mustOK(t, err)
+		var buf bytes.Buffer
+		_, err = dwDcoreWEncode(&buf, bytes.NewReader(target), int64(len(target)), bytes.NewReader(base), int64(len(base)), idx, wp)
+		mustOK(t, err)
+		rec := buf.Bytes()
+		wr, err := dwDcoreOpenWRecord(bytes.NewReader(rec), int64(len(rec)))
+		mustOK(t, err)
+		if wr.segmented != (segment > 0) {
+			t.Fatalf("segment %d: record segmented=%v", segment, wr.segmented)
 		}
-		w, err := dwDcoreOpenWRecord(bytes.NewReader(bad), int64(len(bad)))
-		mustOK(t, err) // the table is intact; only programs changed
-		for fi := range w.frames {
-			ops, _, err := w.program(fi)
-			if err != nil {
-				refused++
-				continue
+		var out bytes.Buffer
+		if _, err := wr.Decode(&out, bytes.NewReader(base), wp); err != nil || !bytes.Equal(out.Bytes(), target) {
+			t.Fatalf("segment %d: whole decode: %v", segment, err)
+		}
+		for fi := range wr.frames {
+			if _, err := wr.program(fi); err != nil {
+				t.Fatalf("segment %d: intact frame %d refused: %v", segment, fi, err)
 			}
-			pos := w.tstart[fi]
-			for _, o := range ops {
-				if o.tpos != pos || o.n <= 0 || o.base >= 0 && (o.off < 0 || o.off+o.n > w.BaseSize) || o.base < 0 && int64(len(o.lit)) != o.n {
-					t.Fatalf("mutation %d frame %d: out-of-bounds operation %+v", i, fi, o)
+		}
+		tableStart := int64(binary.LittleEndian.Uint64(rec[len(rec)-dwDcore_wTrailerLen+4:]))
+		rng := mrand.New(mrand.NewPCG(5, uint64(segment)))
+		refused := 0
+		for i := 0; i < 400; i++ {
+			bad := bytes.Clone(rec)
+			for k := 0; k < 1+i%3; k++ {
+				bad[4+rng.Int64N(tableStart-4)] ^= byte(1 + rng.IntN(255))
+			}
+			w, err := dwDcoreOpenWRecord(bytes.NewReader(bad), int64(len(bad)))
+			mustOK(t, err) // the table is intact; only programs and directories changed
+			for fi := range w.frames {
+				ops, err := w.program(fi)
+				if err != nil {
+					refused++
+					continue
 				}
-				pos += o.n
-			}
-			if pos != w.tstart[fi]+w.frames[fi].tlen {
-				t.Fatalf("mutation %d frame %d: program covers %d bytes", i, fi, pos-w.tstart[fi])
+				pos := w.tstart[fi]
+				for _, o := range ops {
+					if o.tpos != pos || o.n <= 0 || o.base >= 0 && (o.off < 0 || o.off+o.n > w.BaseSize) || o.base < 0 && int64(len(o.lit)) != o.n {
+						t.Fatalf("segment %d mutation %d frame %d: out-of-bounds operation %+v", segment, i, fi, o)
+					}
+					pos += o.n
+				}
+				if pos != w.tstart[fi]+w.frames[fi].tlen {
+					t.Fatalf("segment %d mutation %d frame %d: program covers %d bytes", segment, i, fi, pos-w.tstart[fi])
+				}
 			}
 		}
-	}
-	if refused == 0 {
-		t.Fatal("no damaged program was refused")
-	}
-	for fi := range wr.frames {
-		if _, _, err := wr.program(fi); err != nil {
-			t.Fatalf("intact frame %d refused: %v", fi, err)
+		if refused == 0 {
+			t.Fatalf("segment %d: no damaged program was refused", segment)
 		}
 	}
 }
@@ -3466,9 +3477,14 @@ func TestAuthWindowedProgramValidation(t *testing.T) {
 // A depth-2 windowed history serves arbitrary ranges by executing only the operations that produce them,
 // through gc, repack and reopen, concurrently, and never returns bytes from damaged or missing dependencies.
 func TestAuthorityNestedRangeExecution(t *testing.T) {
+	t.Run("zw1", func(t *testing.T) { authNestedRangeExecution(t, 0) })
+	t.Run("zw2", func(t *testing.T) { authNestedRangeExecution(t, 16<<10) })
+}
+
+func authNestedRangeExecution(t *testing.T, segment int64) {
 	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
-	defer func(a, b int64) { authWindowMin, authWindowSize = a, b }(authWindowMin, authWindowSize)
-	authWindowMin, authWindowSize = 1<<20, 64<<10
+	defer func(a, b, c int64) { authWindowMin, authWindowSize, authSegmentSize = a, b, c }(authWindowMin, authWindowSize, authSegmentSize)
+	authWindowMin, authWindowSize, authSegmentSize = 1<<20, 64<<10, cmp.Or(segment, 1<<30)
 	l := authHistoryLab(t, 733, 3, 2_500_000)
 	l.reclaim()
 	l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1, NoZN7: true, AllowDelta: true})
@@ -3486,6 +3502,12 @@ func TestAuthorityNestedRangeExecution(t *testing.T) {
 	}
 	if rec == nil || rec.Depth != 2 {
 		t.Fatalf("no depth-2 record: %+v", rec)
+	}
+	if b, _, err := l.s.newAuthCtx().body(rec.SHA, 0, 1); err != nil || b.(*authWinBody).wr.segmented != (segment > 0) {
+		t.Fatalf("record segmented=%v, want %v: %v", b.(*authWinBody).wr.segmented, segment > 0, err)
+	}
+	if slices.Contains(l.s.format.Features, authZW2Feature) != (segment > 0) {
+		t.Fatalf("store features %v for segment %d", l.s.format.Features, segment)
 	}
 	want := l.want[key]
 	size := int64(len(want))
@@ -4818,6 +4840,12 @@ func FuzzAuthWindowRecord(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(rec.Bytes())
+	rec.Reset()
+	wp.Segment = 16 << 10 // the same history as ZW2
+	if _, err := dwDcoreWEncode(&rec, bytes.NewReader(target), int64(len(target)), bytes.NewReader(base), int64(len(base)), idx, wp); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(rec.Bytes())
 	f.Add([]byte("ZW1\x00"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		wr, err := dwDcoreOpenWRecord(bytes.NewReader(data), int64(len(data)))
@@ -4827,6 +4855,19 @@ func FuzzAuthWindowRecord(f *testing.F) {
 		out, _, err := wr.DecodeRange(bytes.NewReader(base), wp, 0, min(wr.Size, 1<<20))
 		if err == nil && int64(len(out)) > wr.Size {
 			t.Fatalf("decoded %d bytes of a %d byte object", len(out), wr.Size)
+		}
+		for fi := range min(len(wr.frames), 8) { // the range executor's parsers accept only bounded programs
+			ops, err := wr.program(fi)
+			if err != nil {
+				continue
+			}
+			pos := wr.tstart[fi]
+			for _, o := range ops {
+				if o.tpos != pos || o.n <= 0 || o.base >= 0 && o.off+o.n > wr.BaseSize {
+					t.Fatalf("frame %d: operation %+v out of bounds", fi, o)
+				}
+				pos += o.n
+			}
 		}
 	})
 }
@@ -6894,6 +6935,12 @@ func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
 			l.put("m/iq3_s.gguf", derived)
 			return l
 		}, AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxBases: 2, MaxReadAmp: -1, AllowDelta: true}},
+		{"zw2", authZW2Feature, func() *authLab {
+			prior := [3]int64{authWindowMin, authWindowSize, authSegmentSize}
+			authWindowMin, authWindowSize, authSegmentSize = 1<<20, 64<<10, 16<<10
+			t.Cleanup(func() { authWindowMin, authWindowSize, authSegmentSize = prior[0], prior[1], prior[2] })
+			return authHistoryLab(t, 734, 3, 1_500_000)
+		}, AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1, AllowDelta: true, NoZN7: true}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

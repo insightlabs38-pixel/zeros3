@@ -121,10 +121,10 @@ import (
 //    28445    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    29080    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    46268    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    53478    Windowed and estimated similarity deltas (extracted dcore)
-//    55073    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62833    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    69105    CLI dispatch, HTTP server/startup, and main
+//    53561    Windowed and estimated similarity deltas (extracted dcore)
+//    55308    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    63069    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    69341    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47075,7 +47075,13 @@ func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 		return err
 	}
 	if rec.Form == authFormDelta && len(rec.Pieces) > 0 {
-		if first, err := s.casRead(rec.Pieces[0].SHA); err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
+		first, err := s.casRead(rec.Pieces[0].SHA)
+		if err == nil && len(first) >= 4 && string(first[:4]) == wMagicZW2 {
+			if err := s.ensureFeature(authZW2Feature); err != nil {
+				return err
+			}
+		}
+		if err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
 			if err := s.ensureFeature(authZN7Feature); err != nil {
 				return err
 			}
@@ -47250,7 +47256,7 @@ type authCtx struct {
 	// instead of reconstructing and digest-checking the whole frame. Proofs and verification leave it off.
 	ranged bool
 	// trace, when set, observes reconstruction events: 'r' chunk requested, 'c' chunk fetched, 'w' window reconstructed,
-	// 'p' program parsed (experiments only; sha names the chunk or the record).
+	// 'p' program parsed, 'i' pinned interval read (experiments only; sha names the chunk or the record).
 	trace func(kind byte, sha [32]byte, off, n int64)
 }
 
@@ -47454,6 +47460,9 @@ type authPinBody struct {
 
 func (b *authPinBody) Size() int64 { return b.rec.Size }
 func (b *authPinBody) ReadAt(p []byte, off int64) (int, error) {
+	if b.c.trace != nil {
+		b.c.trace('i', b.rec.SHA, off, int64(len(p)))
+	}
 	if b.q == nil {
 		b.q = newPieceSeq(b.c, b.rec.Pieces)
 	}
@@ -47522,7 +47531,7 @@ func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
 	blob := newPieceSeq(c, rec.Pieces)
 	if blob.size >= 4 {
 		var magic [4]byte
-		if _, err := blob.ReadAt(magic[:], 0); err == nil && string(magic[:]) == wMagicZW1 {
+		if _, err := blob.ReadAt(magic[:], 0); err == nil && (string(magic[:]) == wMagicZW1 || string(magic[:]) == wMagicZW2) {
 			return c.newWindowed(rec, blob, depth)
 		}
 		if string(magic[:]) == ncNumcore_zMagic {
@@ -47629,15 +47638,17 @@ func (d *authDeltaBody) ReadAt(p []byte, off int64) (int, error) {
 
 const (
 	wMagicZW1        = "ZW1\x00"
-	authWinMaxWindow = 64 << 20 // largest frame a record may declare
+	wMagicZW2        = "ZW2\x00" // ZW1 with restartable program segments; stores holding one carry authZW2Feature
+	authWinMaxWindow = 64 << 20  // largest frame a record may declare
 	authMinWindowKiB = 64
 	authMaxWindowKiB = 1024
 )
 
 // Variables so tests shrink them.
 var (
-	authWindowMin  int64 = 32 << 20 // larger objects use the windowed single-base codec
-	authWindowSize int64 = 1 << 20  // target bytes per independently authenticated frame
+	authWindowMin   int64 = 32 << 20  // larger objects use the windowed single-base codec
+	authWindowSize  int64 = 1 << 20   // target bytes per independently authenticated frame
+	authSegmentSize int64 = 128 << 10 // target bytes per restartable program segment of a new windowed record
 )
 
 // authMaxAnchors caps the anchor table at 16 MiB however large the base is: past 1 GiB the content
@@ -47649,6 +47660,7 @@ const authMaxAnchors = 1 << 20
 func authWParams(workers int, baseSize int64) dwDcoreWParams {
 	p := dwDcoreDefaultWParams()
 	p.Window, p.Workers, p.CachePages = authWindowSize, workers, 32
+	p.Segment = authSegmentSize
 	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), authMaxAnchors))
 	return p
 }
@@ -47805,14 +47817,18 @@ type authWinBody struct {
 	scratch []byte
 	// reqEnd is the end of the sequential request a top-level body is serving (0: each ReadAt alone).
 	reqEnd int64
-	progs  map[int]authWinProg
-	porder []int
+	progs  map[authProgKey]authWinProg
+	porder []authProgKey
 	pbytes int64
 	x      authExecState
 }
 
+// authProgKey names a cached program: a ZW1 frame (seg 0), a ZW2 segment (seg >= 1) or a ZW2 directory (-1).
+type authProgKey struct{ frame, seg int32 }
+
 type authWinProg struct {
 	ops  []xdOp
+	dir  []dwDcore_seg
 	size int64
 }
 
@@ -47926,42 +47942,96 @@ func (b *authWinBody) window(fi int, key authWinKey) error {
 	return nil
 }
 
-// exec produces p = target[off:off+len(p)) inside frame fi from that frame's program, keeping the parsed
-// program when keep is set (a frame reconstructed whole is not executed again).
+// exec produces p = target[off:off+len(p)) inside frame fi by running the frame's program or, in a ZW2 frame,
+// the programs of the segments the range overlaps. Parsed programs are kept when keep is set (a frame
+// reconstructed whole is not executed again); segment directories are always kept.
 func (b *authWinBody) exec(fi int, p []byte, off int64, keep bool) (int, error) {
-	pr, ok := b.progs[fi]
-	if ok {
-		if i := slices.Index(b.porder, fi); i < len(b.porder)-1 { // least recently used first
-			b.porder = append(slices.Delete(b.porder, i, i+1), fi)
-		}
-	} else {
-		ops, prog, err := b.wr.program(fi)
+	n := 0
+	for n < len(p) {
+		ops, err := b.unit(fi, off+int64(n), keep)
 		if err != nil {
 			if errors.Is(err, dwDcoreErrWindowFormat) {
 				err = fmt.Errorf("%w: frame %d: %v", errAuthCorrupt, fi, err)
 			}
-			return 0, err
+			return n, err
 		}
-		pr = authWinProg{ops, int64(len(prog)) + int64(len(ops))*56} // 56: the size of an xdOp
-		b.c.st.progs.Add(1)
-		b.c.st.progBytes.Add(b.wr.frames[fi].plen)
-		if b.c.trace != nil {
-			b.c.trace('p', b.rec.SHA, b.wr.tstart[fi], b.wr.frames[fi].plen)
+		k, err := b.x.exec(ops, b.bases, p[n:], off+int64(n))
+		n += k
+		if err != nil {
+			return n, err
 		}
-		if !keep {
-			return b.x.exec(ops, b.bases, p, off)
+		if k == 0 {
+			return n, fmt.Errorf("%w: frame %d program does not cover %d", errAuthCorrupt, fi, off+int64(n))
 		}
-		if b.progs == nil {
-			b.progs = map[int]authWinProg{}
-		}
-		for len(b.porder) > 0 && b.pbytes+pr.size > authWinProgBytes {
-			b.pbytes -= b.progs[b.porder[0]].size
-			delete(b.progs, b.porder[0])
-			b.porder = b.porder[1:]
-		}
-		b.progs[fi], b.porder, b.pbytes = pr, append(b.porder, fi), b.pbytes+pr.size
 	}
-	return b.x.exec(pr.ops, b.bases, p, off)
+	return n, nil
+}
+
+// unit returns the validated operations that cover target offset off of frame fi.
+func (b *authWinBody) unit(fi int, off int64, keep bool) ([]xdOp, error) {
+	key := authProgKey{int32(fi), 0}
+	at, plen := b.wr.tstart[fi], b.wr.frames[fi].plen
+	var sg dwDcore_seg
+	if b.wr.segmented {
+		d, err := b.cached(authProgKey{int32(fi), -1}, true, func() (authWinProg, error) {
+			dir, err := b.wr.segments(fi)
+			return authWinProg{dir: dir, size: int64(len(dir)) * 40}, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		j := sort.Search(len(d.dir), func(j int) bool { return d.dir[j].tpos+d.dir[j].tlen > off })
+		sg, key.seg = d.dir[j], int32(j+1)
+		at, plen = sg.tpos, sg.plen
+	}
+	pr, err := b.cached(key, keep, func() (authWinProg, error) {
+		var ops []xdOp
+		var err error
+		if b.wr.segmented {
+			ops, err = b.wr.segmentProgram(sg)
+		} else {
+			ops, err = b.wr.program(fi)
+		}
+		if err != nil {
+			return authWinProg{}, err
+		}
+		b.c.st.progs.Add(1)
+		b.c.st.progBytes.Add(plen)
+		if b.c.trace != nil {
+			b.c.trace('p', b.rec.SHA, at, plen)
+		}
+		size := int64(len(ops)) * 64 // an xdOp and its encoding
+		for _, o := range ops {
+			size += int64(len(o.lit))
+		}
+		return authWinProg{ops: ops, size: size}, nil
+	})
+	return pr.ops, err
+}
+
+// cached returns the program or directory k, building it with fn on a miss and keeping it when keep is set
+// (least recently used out once authWinProgBytes is exceeded).
+func (b *authWinBody) cached(k authProgKey, keep bool, fn func() (authWinProg, error)) (authWinProg, error) {
+	if pr, ok := b.progs[k]; ok {
+		if i := slices.Index(b.porder, k); i < len(b.porder)-1 {
+			b.porder = append(slices.Delete(b.porder, i, i+1), k)
+		}
+		return pr, nil
+	}
+	pr, err := fn()
+	if err != nil || !keep {
+		return pr, err
+	}
+	if b.progs == nil {
+		b.progs = map[authProgKey]authWinProg{}
+	}
+	for len(b.porder) > 0 && b.pbytes+pr.size > authWinProgBytes {
+		b.pbytes -= b.progs[b.porder[0]].size
+		delete(b.progs, b.porder[0])
+		b.porder = b.porder[1:]
+	}
+	b.progs[k], b.porder, b.pbytes = pr, append(b.porder, k), b.pbytes+pr.size
+	return pr, nil
 }
 
 // authExecState is the reusable scratch of one body's range executor.
@@ -48528,7 +48598,8 @@ type AuthPolicy struct {
 	HardCodecs          bool   `json:"hard_codecs"`
 	MinRepGroup         int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
 	FrameSpan           int64  `json:"frame_span"`
-	WindowKiB           int64  `json:"window_kib,omitempty"` // ZW1 frame size, zero uses the default
+	WindowKiB           int64  `json:"window_kib,omitempty"`  // ZW1 frame size, zero uses the default
+	SegmentKiB          int64  `json:"segment_kib,omitempty"` // restartable program segment (ZW2) size, zero uses the default, negative writes ZW1
 	Apply               bool   `json:"apply"`
 	ReserveFreeBytes    uint64 `json:"reserve_free_bytes,omitempty"`
 	PriceCurrentStorage bool   `json:"price_current_storage,omitempty"`
@@ -49269,6 +49340,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (AuthReport, error) {
 	if err := ctx.Err(); err != nil {
 		return AuthReport{}, err
+	}
+	if pol.SegmentKiB > 0 && (pol.SegmentKiB < 16 || pol.SegmentKiB > authMaxWindowKiB) {
+		return AuthReport{}, fmt.Errorf("authority: segment size must be between 16 and %d KiB", authMaxWindowKiB)
 	}
 	if pol.WindowKiB != 0 && (pol.WindowKiB < authMinWindowKiB || pol.WindowKiB > authMaxWindowKiB) {
 		return AuthReport{}, fmt.Errorf("authority: window size must be between %d and %d KiB", authMinWindowKiB, authMaxWindowKiB)
@@ -50521,6 +50595,12 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	if pol.WindowKiB != 0 {
 		wp.Window = pol.WindowKiB << 10
 	}
+	switch {
+	case pol.SegmentKiB < 0:
+		wp.Segment = 0
+	case pol.SegmentKiB > 0:
+		wp.Segment = pol.SegmentKiB << 10
+	}
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
 	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers, &bo.sha)
 	if err != nil {
@@ -51003,7 +51083,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature},
 	}
 }
 
@@ -51141,6 +51221,8 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 					addFeature(authIQ3Feature)
 				}
 			case wMagicZW1:
+			case wMagicZW2:
+				addFeature(authZW2Feature)
 			case xdMagic:
 				if header[4] != xdVersion {
 					return nil, errAuthTransferUnsupported
@@ -53266,6 +53348,7 @@ func runAuthority(args []string) {
 	indexGeneration := fs.String("generation", "", "index-publish: activate a verified staged generation by directory name")
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
 	windowKiB := fs.Int64("window-kib", 0, "migrate: ZW1 frame size in KiB (64–1024, 0 uses the default)")
+	segmentKiB := fs.Int64("segment-kib", 0, "migrate: restartable program segment in KiB (16–1024, 0 uses the default 128, -1 writes unsegmented ZW1)")
 	priceCurrent := fs.Bool("price-current-storage", false, "migrate: price existing pack sizes and raw new components instead of assuming recompression")
 	reserveMiB := fs.Uint64("reserve-free-mib", 0, "migrate: require this much free space after estimated staging (0 disables the reserve)")
 	fs.Parse(args[1:])
@@ -53396,7 +53479,7 @@ func runAuthority(args []string) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, ReserveFreeBytes: *reserveMiB << 20, PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20, PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}
 		var similarityOpenNanos int64
 		if *indexedDiscovery && pol.AllowDelta {
 			start := time.Now()
@@ -54166,7 +54249,11 @@ var (
 const (
 	dwDcore_wMagic        = "ZW1\x00"
 	dwDcore_wTrailerMagic = "ZW1T"
-	dwDcore_wTrailerLen   = 4 + 8 + 8 + 4 + 8
+	// ZW2 is ZW1 whose frames are all mode 2: programs split into restartable segments (see segmentFrame).
+	dwDcore_w2Magic        = "ZW2\x00"
+	dwDcore_w2TrailerMagic = "ZW2T"
+	dwDcoreWMaxSegments    = 1 << 12 // per frame
+	dwDcore_wTrailerLen    = 4 + 8 + 8 + 4 + 8
 	// WMaxFrames bounds the frame table a hostile record can request.
 	dwDcoreWMaxFrames = 1 << 22
 )
@@ -54175,6 +54262,7 @@ const (
 type dwDcoreWParams struct {
 	Anchor     dwDcoreParams
 	Window     int64 // target bytes per independent frame
+	Segment    int64 // target bytes per restartable program segment (ZW2); 0 or at least Window writes ZW1
 	PageSize   int   // base read granularity (bytes)
 	CachePages int   // base pages cached per worker
 	Workers    int
@@ -54190,7 +54278,7 @@ func dwDcoreDefaultWParams() dwDcoreWParams {
 }
 
 func (p dwDcoreWParams) valid() bool {
-	return p.Anchor.valid() && p.Window >= 1<<10 && p.Window <= 1<<30 && p.PageSize >= 512 && p.PageSize&(p.PageSize-1) == 0 && p.CachePages >= 2 && p.Workers >= 1 && p.Workers <= 256
+	return p.Anchor.valid() && p.Window >= 1<<10 && p.Window <= 1<<30 && p.Segment >= 0 && p.PageSize >= 512 && p.PageSize&(p.PageSize-1) == 0 && p.CachePages >= 2 && p.Workers >= 1 && p.Workers <= 256
 }
 
 // WIndex is the immutable anchor table over one ReaderAt base. Safe for
@@ -54541,7 +54629,12 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 	if !wp.valid() || idx == nil || idx.size != bsize || tsize < 0 {
 		return st, dwDcoreErrParams
 	}
-	if _, err := dst.Write([]byte(dwDcore_wMagic)); err != nil {
+	segmented := wp.Segment > 0 && wp.Segment < wp.Window
+	magic, trailer := dwDcore_wMagic, dwDcore_wTrailerMagic
+	if segmented {
+		magic, trailer = dwDcore_w2Magic, dwDcore_w2TrailerMagic
+	}
+	if _, err := dst.Write([]byte(magic)); err != nil {
 		return st, err
 	}
 	al, _ := dst.(dwDcore_aligner)
@@ -54555,6 +54648,7 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 		done chan struct{}
 		rec  dwDcore_frameRec
 		out  []byte
+		unit []int64 // sizes of the parts of out a reader fetches alone
 		lit  int64
 		cp   int64
 		rd   int64
@@ -54582,7 +54676,6 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 					close(j.done)
 					continue
 				}
-				prog := dwDcore_buildFrameProgram(ops)
 				for _, o := range ops {
 					if o.Base < 0 {
 						j.lit += o.N
@@ -54591,9 +54684,12 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 					}
 				}
 				j.rec = dwDcore_frameRec{tlen: int64(j.n), sum: sha256.Sum256(j.buf[:j.n])}
-				j.rec.mode, j.out = 0, prog
-				if z := dwDcore_deflateBytes(prog); len(z) < len(prog) {
-					j.rec.mode, j.out = 1, z
+				if segmented {
+					j.rec.mode = 2
+					j.out, j.unit = dwDcore_segmentFrame(ops, int64(j.n), wp.Segment)
+				} else {
+					j.rec.mode, j.out = dwDcore_packProgram(dwDcore_buildFrameProgram(ops))
+					j.unit = []int64{int64(len(j.out))}
 				}
 				j.rec.plen = int64(len(j.out))
 				j.rd = v.Reads - before
@@ -54614,12 +54710,18 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 				wrErr = j.err
 			}
 			if wrErr == nil {
-				if al != nil {
-					al.align(int64(len(j.out)))
+				out := j.out
+				for _, u := range j.unit {
+					if al != nil {
+						al.align(u)
+					}
+					if _, err := dst.Write(out[:u]); err != nil {
+						wrErr = err
+						break
+					}
+					out = out[u:]
 				}
-				if _, err := dst.Write(j.out); err != nil {
-					wrErr = err
-				} else {
+				if wrErr == nil {
 					offset += int64(len(j.out))
 					recs = append(recs, j.rec)
 					st.LiteralBytes += j.lit
@@ -54668,7 +54770,7 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 		tbl = append(tbl, r.sum[:]...)
 	}
 	var tr [dwDcore_wTrailerLen]byte
-	copy(tr[:], dwDcore_wTrailerMagic)
+	copy(tr[:], trailer)
 	binary.LittleEndian.PutUint64(tr[4:], uint64(offset))
 	binary.LittleEndian.PutUint64(tr[12:], uint64(len(tbl)))
 	binary.LittleEndian.PutUint32(tr[20:], crc32.Checksum(tbl, dwDcore_crcTab))
@@ -54716,6 +54818,59 @@ func dwDcore_buildFrameProgram(ops []dwDcoreOp) []byte {
 	return p
 }
 
+// packProgram returns the stored form of a program: deflated (mode 1) when that is smaller, else raw (0).
+func dwDcore_packProgram(prog []byte) (byte, []byte) {
+	if z := dwDcore_deflateBytes(prog); len(z) < len(prog) {
+		return 1, z
+	}
+	return 0, prog
+}
+
+// segmentFrame builds a mode-2 frame payload from frame-relative ops: the program is cut at every span bytes
+// of target (operations crossing a cut are split) and each segment is packed on its own, so a reader can
+// restart at any segment. The payload is the directory length, the directory (segment count, then target
+// length, mode and payload length of each) and the segment payloads. units are the directory and segments.
+func dwDcore_segmentFrame(ops []dwDcoreOp, tlen, span int64) (out []byte, units []int64) {
+	var dir []byte
+	var segs [][]byte
+	var cur []dwDcoreOp
+	start := int64(0)
+	cut := func(end int64) {
+		mode, p := dwDcore_packProgram(dwDcore_buildFrameProgram(cur))
+		dir = binary.AppendUvarint(dir, uint64(end-start))
+		dir = append(dir, mode)
+		dir = binary.AppendUvarint(dir, uint64(len(p)))
+		segs, cur, start = append(segs, p), cur[:0], end
+	}
+	for _, o := range ops {
+		for o.N > 0 {
+			k := min(o.N, start+span-o.TPos)
+			head := o
+			head.N = k
+			if o.Base < 0 {
+				head.Lit, o.Lit = o.Lit[:k], o.Lit[k:]
+			} else {
+				o.Off += k
+			}
+			cur = append(cur, head)
+			o.TPos, o.N = o.TPos+k, o.N-k
+			if o.TPos == start+span && o.TPos < tlen {
+				cut(o.TPos)
+			}
+		}
+	}
+	cut(tlen)
+	hdr := binary.AppendUvarint(nil, uint64(len(segs)))
+	dir = append(hdr, dir...)
+	out = append(binary.AppendUvarint(nil, uint64(len(dir))), dir...)
+	units = []int64{int64(len(out))}
+	for _, p := range segs {
+		out = append(out, p...)
+		units = append(units, int64(len(p)))
+	}
+	return out, units
+}
+
 func dwDcore_deflateBytes(b []byte) []byte {
 	var out bytes.Buffer
 	w := dwDcore_flatePool.Get().(*flate.Writer)
@@ -54738,6 +54893,7 @@ type dwDcoreWRecord struct {
 	tstart    []int64 // target start per frame
 	pstart    []int64 // payload offset per frame
 	maxWindow int64
+	segmented bool // ZW2: every frame is a directory of restartable segments
 }
 
 // OpenWRecord parses and validates the trailer and frame table.
@@ -54746,11 +54902,15 @@ func dwDcoreOpenWRecord(r io.ReaderAt, size int64) (*dwDcoreWRecord, error) {
 		return nil, dwDcoreErrWindowFormat
 	}
 	var head [4]byte
-	if _, err := dwDcore_readFull(r, head[:], 0); err != nil || string(head[:]) != dwDcore_wMagic {
+	if _, err := dwDcore_readFull(r, head[:], 0); err != nil || string(head[:]) != dwDcore_wMagic && string(head[:]) != dwDcore_w2Magic {
 		return nil, dwDcoreErrWindowFormat
 	}
+	segmented, trailer := string(head[:]) == dwDcore_w2Magic, dwDcore_wTrailerMagic
+	if segmented {
+		trailer = dwDcore_w2TrailerMagic
+	}
 	var tr [dwDcore_wTrailerLen]byte
-	if _, err := dwDcore_readFull(r, tr[:], size-dwDcore_wTrailerLen); err != nil || string(tr[:4]) != dwDcore_wTrailerMagic {
+	if _, err := dwDcore_readFull(r, tr[:], size-dwDcore_wTrailerLen); err != nil || string(tr[:4]) != trailer {
 		return nil, dwDcoreErrWindowFormat
 	}
 	toff := binary.LittleEndian.Uint64(tr[4:])
@@ -54766,7 +54926,7 @@ func dwDcoreOpenWRecord(r io.ReaderAt, size int64) (*dwDcoreWRecord, error) {
 	if crc32.Checksum(tbl, dwDcore_crcTab) != binary.LittleEndian.Uint32(tr[20:]) {
 		return nil, dwDcoreErrWindowFormat
 	}
-	rec := &dwDcoreWRecord{r: r}
+	rec := &dwDcoreWRecord{r: r, segmented: segmented}
 	c := dwDcore_cursor{b: tbl}
 	copy(rec.BaseSHA[:], c.take(32))
 	rec.BaseSize = int64(c.uv())
@@ -54784,7 +54944,7 @@ func dwDcoreOpenWRecord(r io.ReaderAt, size int64) (*dwDcoreWRecord, error) {
 		mb := c.take(1)
 		f.plen = int64(c.uv())
 		copy(f.sum[:], c.take(32))
-		if c.err != nil || len(mb) != 1 || mb[0] > 1 || f.tlen <= 0 || f.tlen > 1<<30 || f.plen < 0 {
+		if c.err != nil || len(mb) != 1 || segmented != (mb[0] == 2) || mb[0] > 2 || f.tlen <= 0 || f.tlen > 1<<30 || f.plen < 0 {
 			return nil, dwDcoreErrWindowFormat
 		}
 		f.mode = mb[0]
@@ -54832,17 +54992,22 @@ func (c *dwDcore_cursor) uv() uint64 {
 	return v
 }
 
-// payload reads frame i's program, inflating it when the frame is compressed.
-func (w *dwDcoreWRecord) payload(i int) ([]byte, error) {
-	f := w.frames[i]
-	payload := make([]byte, f.plen)
-	if _, err := dwDcore_readFull(w.r, payload, w.pstart[i]); err != nil {
+// dwDcore_seg is one restartable program segment of a ZW2 frame (absolute target and record offsets).
+type dwDcore_seg struct {
+	tpos, tlen, poff, plen int64
+	mode                   byte
+}
+
+// unpack reads a stored program of plen bytes at off producing tlen bytes of target, inflating mode 1.
+func (w *dwDcoreWRecord) unpack(off, plen, tlen int64, mode byte) ([]byte, error) {
+	payload := make([]byte, plen)
+	if _, err := dwDcore_readFull(w.r, payload, off); err != nil {
 		return nil, err
 	}
-	if f.mode != 1 {
+	if mode == 0 {
 		return payload, nil
 	}
-	limit := 8*f.tlen + 64<<10
+	limit := 8*tlen + 64<<10
 	zr := flate.NewReader(bytes.NewReader(payload))
 	prog, err := io.ReadAll(io.LimitReader(zr, limit+1))
 	if cerr := zr.Close(); err != nil || cerr != nil || int64(len(prog)) > limit {
@@ -54851,10 +55016,9 @@ func (w *dwDcoreWRecord) payload(i int) ([]byte, error) {
 	return prog, nil
 }
 
-// eachOp validates frame i's program and calls fn for every operation in target order: base -1 is a
-// literal (lit aliases prog), base 0 a COPY of n bytes at off. tpos is the absolute target offset.
-func (w *dwDcoreWRecord) eachOp(i int, prog []byte, fn func(xdOp) error) error {
-	f := w.frames[i]
+// parseOps validates a program that produces target[tpos:tpos+tlen) and calls fn for every operation in
+// order: base -1 is a literal (lit aliases prog), base 0 a COPY of n bytes at off; tpos is absolute.
+func (w *dwDcoreWRecord) parseOps(prog []byte, tpos, tlen int64, fn func(xdOp) error) error {
 	c := dwDcore_cursor{b: prog}
 	pos := int64(0)
 	for len(c.b) > 0 {
@@ -54866,7 +55030,7 @@ func (w *dwDcoreWRecord) eachOp(i int, prog []byte, fn func(xdOp) error) error {
 		switch tag[0] {
 		case 0:
 			n := c.uv()
-			if c.err != nil || n == 0 || n > uint64(f.tlen-pos) {
+			if c.err != nil || n == 0 || n > uint64(tlen-pos) {
 				return dwDcoreErrWindowFormat
 			}
 			o = xdOp{n: int64(n), base: -1, lit: c.take(int(n))}
@@ -54875,51 +55039,122 @@ func (w *dwDcoreWRecord) eachOp(i int, prog []byte, fn func(xdOp) error) error {
 			}
 		case 1:
 			off, n := c.uv(), c.uv()
-			if c.err != nil || n == 0 || n > uint64(f.tlen-pos) || off > uint64(w.BaseSize) || n > uint64(w.BaseSize)-off {
+			if c.err != nil || n == 0 || n > uint64(tlen-pos) || off > uint64(w.BaseSize) || n > uint64(w.BaseSize)-off {
 				return dwDcoreErrWindowFormat
 			}
 			o = xdOp{n: int64(n), off: int64(off)}
 		default:
 			return dwDcoreErrWindowFormat
 		}
-		o.tpos = w.tstart[i] + pos
+		o.tpos = tpos + pos
 		if err := fn(o); err != nil {
 			return err
 		}
 		pos += o.n
 	}
-	if pos != f.tlen {
+	if pos != tlen {
 		return dwDcoreErrWindowFormat
 	}
 	return nil
 }
 
-// program returns frame i's validated operations (see eachOp) and the inflated program they alias.
-func (w *dwDcoreWRecord) program(i int) ([]xdOp, []byte, error) {
-	prog, err := w.payload(i)
-	if err != nil {
-		return nil, nil, err
+// segments reads and validates the directory of ZW2 frame i.
+func (w *dwDcoreWRecord) segments(i int) ([]dwDcore_seg, error) {
+	f := w.frames[i]
+	var head [binary.MaxVarintLen64]byte
+	h := head[:min(int64(len(head)), f.plen)]
+	if _, err := dwDcore_readFull(w.r, h, w.pstart[i]); err != nil {
+		return nil, err
 	}
+	dl, k := binary.Uvarint(h)
+	if k <= 0 || dl > uint64(f.plen-int64(k)) {
+		return nil, dwDcoreErrWindowFormat
+	}
+	dir := make([]byte, dl)
+	if _, err := dwDcore_readFull(w.r, dir, w.pstart[i]+int64(k)); err != nil {
+		return nil, err
+	}
+	c := dwDcore_cursor{b: dir}
+	n := c.uv()
+	if c.err != nil || n == 0 || n > dwDcoreWMaxSegments {
+		return nil, dwDcoreErrWindowFormat
+	}
+	segs := make([]dwDcore_seg, 0, n)
+	tpos, poff := w.tstart[i], w.pstart[i]+int64(k)+int64(dl)
+	tend, pend := w.tstart[i]+f.tlen, w.pstart[i]+f.plen
+	for range n {
+		tl, mb, pl := c.uv(), c.take(1), c.uv()
+		if c.err != nil || tl == 0 || tl > uint64(tend-tpos) || mb[0] > 1 || pl > uint64(pend-poff) {
+			return nil, dwDcoreErrWindowFormat
+		}
+		segs = append(segs, dwDcore_seg{tpos, int64(tl), poff, int64(pl), mb[0]})
+		tpos, poff = tpos+int64(tl), poff+int64(pl)
+	}
+	if len(c.b) != 0 || tpos != tend || poff != pend {
+		return nil, dwDcoreErrWindowFormat
+	}
+	return segs, nil
+}
+
+// segmentOps validates segment sg and calls fn for each of its operations (see parseOps).
+func (w *dwDcoreWRecord) segmentOps(sg dwDcore_seg, fn func(xdOp) error) error {
+	prog, err := w.unpack(sg.poff, sg.plen, sg.tlen, sg.mode)
+	if err != nil {
+		return err
+	}
+	return w.parseOps(prog, sg.tpos, sg.tlen, fn)
+}
+
+// frameOps validates frame i and calls fn for each of its operations in target order.
+func (w *dwDcoreWRecord) frameOps(i int, fn func(xdOp) error) error {
+	f := w.frames[i]
+	if f.mode != 2 {
+		prog, err := w.unpack(w.pstart[i], f.plen, f.tlen, f.mode)
+		if err != nil {
+			return err
+		}
+		return w.parseOps(prog, w.tstart[i], f.tlen, fn)
+	}
+	segs, err := w.segments(i)
+	if err != nil {
+		return err
+	}
+	for _, sg := range segs {
+		if err := w.segmentOps(sg, fn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectOps gathers the operations a visitor produces (bounded by xdMaxOps).
+func dwDcore_collectOps(visit func(func(xdOp) error) error) ([]xdOp, error) {
 	var ops []xdOp
-	err = w.eachOp(i, prog, func(o xdOp) error {
+	err := visit(func(o xdOp) error {
 		if len(ops) >= xdMaxOps {
 			return dwDcoreErrWindowFormat
 		}
 		ops = append(ops, o)
 		return nil
 	})
-	return ops, prog, err
+	return ops, err
+}
+
+// program returns frame i's validated operations; literals alias the inflated programs.
+func (w *dwDcoreWRecord) program(i int) ([]xdOp, error) {
+	return dwDcore_collectOps(func(fn func(xdOp) error) error { return w.frameOps(i, fn) })
+}
+
+// segmentProgram is program for one segment of a ZW2 frame.
+func (w *dwDcoreWRecord) segmentProgram(sg dwDcore_seg) ([]xdOp, error) {
+	return dwDcore_collectOps(func(fn func(xdOp) error) error { return w.segmentOps(sg, fn) })
 }
 
 // decodeFrame reconstructs one frame into out (len == frame target length)
 // and authenticates it against the frame SHA-256.
 func (w *dwDcoreWRecord) decodeFrame(i int, base *dwDcore_pageView, out []byte) error {
-	prog, err := w.payload(i)
-	if err != nil {
-		return err
-	}
 	ts := w.tstart[i]
-	if err := w.eachOp(i, prog, func(o xdOp) error {
+	if err := w.frameOps(i, func(o xdOp) error {
 		dst := out[o.tpos-ts : o.tpos-ts+o.n]
 		if o.base < 0 {
 			copy(dst, o.lit)
@@ -62225,6 +62460,7 @@ const (
 	authZN7Feature    = "zn7"
 	authStreamFeature = "hardstream" // Parquet recipes with streaming-Brotli pages (recipe version 3)
 	authIQ3Feature    = "zn7iq3s"    // containers that derive IQ3_S tensors: builds without the quantizer refuse the store
+	authZW2Feature    = "zw2"        // windowed deltas with restartable program segments
 	authZN7MaxAux     = 64 << 20
 	authZN7ReadChunk  = 4 << 20 // decoded span a body keeps between ReadAt calls
 )
@@ -62799,7 +63035,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature {
 			return x
 		}
 	}

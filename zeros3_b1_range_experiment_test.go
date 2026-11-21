@@ -43,6 +43,28 @@ var b1Layouts = []b1Layout{
 	{"zw-mixed", 1 << 20, 256 << 10, 1},
 	{"zw-1m", 1 << 20, 1 << 20, 1},
 	{"xd-multi", 0, 0, 2},
+	{"xd-merge", 0, 0, 2}, // the last revision replaced by the first half of the oldest and the second half of the next
+}
+
+// b1Merged writes the xd-merge object (two bases, one of them the other's base) next to the fixtures.
+func b1Merged(t *testing.T, root string, inputs []string) string {
+	out := filepath.Join(root, "merged.tar")
+	if _, err := os.Stat(out); err == nil {
+		return out
+	}
+	a, err := os.ReadFile(inputs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(inputs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(root, 0o755)
+	if err := os.WriteFile(out, append(a[:len(a)/2:len(a)/2], b[len(b)/2:]...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func b1Inputs(t *testing.T) (string, []string) {
@@ -161,6 +183,10 @@ func TestB1Fixtures(t *testing.T) {
 		os.RemoveAll(dir)
 		t0, cpu := time.Now(), procCPUSeconds()
 		var reports []AuthReport
+		inputs := inputs
+		if lay.name == "xd-merge" {
+			inputs = []string{inputs[0], inputs[1], b1Merged(t, root, inputs)}
+		}
 		if lay.name == "cdc" {
 			b1Put(t, dir, inputs)
 		} else {
@@ -196,6 +222,7 @@ type b1Row struct {
 	Windows, WindowBytes int64            // whole frames reconstructed and digest-checked
 	Progs, ProgBytes     int64            // delta program frames parsed
 	ByRecord             map[string]int64 `json:",omitempty"` // fetched CAS bytes per owning record (depth:sha)
+	LeafAt               map[int64]int64  `json:",omitempty"` // pinned-base bytes a fixed piece size would fetch
 	WallUS, CPUUS        int64
 	AllocBytes, Mallocs  uint64
 	DiskRead             int64 // read_bytes from /proc/self/io (physical, page cache dependent)
@@ -216,6 +243,9 @@ func procIO() (rchar, readBytes int64) {
 	}
 	return
 }
+
+// b1LeafBlocks are the hypothetical fixed leaf piece sizes the pinned-interval trace is priced at.
+var b1LeafBlocks = []int64{8 << 10, 16 << 10, 32 << 10, 64 << 10}
 
 // b1TraceOut, when ZEROS3_B1_TRACE names a file, receives every chunk request of whole reads.
 var b1TraceOut *os.File
@@ -247,20 +277,36 @@ func b1Owner(t *testing.T, s *Store) map[[32]byte]string {
 }
 
 // b1Read reads [off, off+n) as authOpenReader does, on a fresh context, and reports its work.
+// b1Warm keeps the store chunk cache and the page cache between reads (repeated-read mode).
+var b1Warm bool
+
 func b1Read(t *testing.T, s *Store, man manifestV1, off, n int64, owner map[[32]byte]string, want []byte) b1Row {
 	sha, _ := decodeHexSHA256(man.ObjectSHA256)
 	var mu sync.Mutex
 	distinct := map[[32]byte]int64{}
 	by := map[string]int64{}
-	s.ccache.purge()
-	b1DropCaches()
+	if !b1Warm {
+		s.ccache.purge()
+		b1DropCaches()
+	}
 	var m0, m1 runtime.MemStats
 	runtime.ReadMemStats(&m0)
 	_, rd0 := procIO()
 	cpu0 := procCPUSeconds()
 	t0 := time.Now()
 	ctx := s.newAuthCtx()
-	ctx.trace = func(kind byte, sum [32]byte, _, size int64) {
+	leaf := map[[2]int64]bool{}
+	ctx.trace = func(kind byte, sum [32]byte, off, size int64) {
+		if kind == 'i' {
+			mu.Lock()
+			for _, bs := range b1LeafBlocks {
+				for b := off / bs; b <= (off+size-1)/bs; b++ {
+					leaf[[2]int64{bs, b}] = true
+				}
+			}
+			mu.Unlock()
+			return
+		}
 		if kind == 'r' && b1TraceOut != nil {
 			mu.Lock()
 			b1TraceOut.WriteString(owner[sum] + " " + hex.EncodeToString(sum[:8]) + " " + strconv.FormatInt(size, 10) + "\n")
@@ -308,8 +354,14 @@ func b1Read(t *testing.T, s *Store, man manifestV1, off, n int64, owner map[[32]
 	for _, v := range distinct {
 		row.Distinct += v
 	}
-	s.ccache.purge()
-	b1DropCaches()
+	row.LeafAt = map[int64]int64{}
+	for k := range leaf {
+		row.LeafAt[k[0]] += k[0]
+	}
+	if !b1Warm {
+		s.ccache.purge()
+		b1DropCaches()
+	}
 	g0 := time.Now()
 	_, _, data, gerr := s.GetObjectRange("b", filepath.Base(man.ManifestUUID), byteRange{off, off + n - 1})
 	_ = data
@@ -342,6 +394,9 @@ func TestB1RangeBench(t *testing.T) {
 			t.Fatal(err)
 		}
 		corpus[filepath.Base(in)] = data
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "merged.tar")); err == nil {
+		corpus["merged.tar"] = data
 	}
 	var rows []b1Row
 	emit := func(r b1Row) {
@@ -388,7 +443,7 @@ func TestB1RangeBench(t *testing.T) {
 		for _, key := range keys {
 			_, man, err := s.HeadObject("b", key)
 			if err != nil {
-				t.Fatal(err)
+				continue // the layout does not hold this key
 			}
 			man.ManifestUUID = key // b1Read addresses the S3 key through this field
 			sha, _ := decodeHexSHA256(man.ObjectSHA256)
@@ -430,6 +485,15 @@ func TestB1RangeBench(t *testing.T) {
 			}
 			for _, off := range offs {
 				measure("cold-4k", off, 4096)
+			}
+			if s.ccache.enabled() {
+				for _, off := range offs[:4] { // the third read of the same range, caches kept
+					b1Read(t, s, man, off, 4096, owner, want)
+					b1Warm = true
+					b1Read(t, s, man, off, 4096, owner, want)
+					measure("repeat-4k", off, 4096)
+					b1Warm = false
+				}
 			}
 			for _, off := range offs[:2] {
 				measure("seq-1m", off, min(1<<20, size-off))
@@ -525,7 +589,7 @@ func TestB1Anatomy(t *testing.T) {
 				nframes = len(wr.frames)
 				for i := range wr.frames {
 					payload += wr.frames[i].plen
-					ops, _, err := wr.program(i)
+					ops, err := wr.program(i)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -565,6 +629,53 @@ func TestB1Anatomy(t *testing.T) {
 			}
 			t.Logf("%s depth %d %x: %d frames, payload %d (mean %d), %d copies, %d literals (%d bytes); copy lengths <64,<256,<1K,<4K,<16K,<64K,<256K,more: %v",
 				lay.name, rec.Depth, sha[:4], nframes, payload, payload/int64(max(1, nframes)), copies, lits, litBytes, hist)
+		}
+		s.Close()
+	}
+}
+
+// TestB1SegmentCost re-encodes every unsegmented frame program as ZW2 segments of several spans (the
+// writer's own segmentFrame) and reports the payload growth against the stored frames.
+func TestB1SegmentCost(t *testing.T) {
+	family, _ := b1Inputs(t)
+	root := filepath.Join(b1Dir(t), family)
+	spans := []int64{16 << 10, 64 << 10, 128 << 10}
+	for _, lay := range []string{"zw-mixed", "zw-1m"} {
+		s, err := OpenStore(filepath.Join(root, lay))
+		if err != nil {
+			t.Fatal(err)
+		}
+		shas, _ := s.authFiles()
+		for _, sha := range shas {
+			rec, _ := s.authLoad(sha)
+			if rec == nil || rec.Form != authFormDelta {
+				continue
+			}
+			blob := newPieceSeq(s.newAuthCtx(), rec.Pieces)
+			wr, err := dwDcoreOpenWRecord(blob, blob.size)
+			if err != nil || wr.segmented {
+				continue
+			}
+			var stored int64
+			seg := map[int64]int64{}
+			for i := range wr.frames {
+				stored += wr.frames[i].plen
+				ops, err := wr.program(i)
+				if err != nil {
+					t.Fatal(err)
+				}
+				dops := make([]dwDcoreOp, len(ops))
+				for k, o := range ops {
+					dops[k] = dwDcoreOp{TPos: o.tpos - wr.tstart[i], N: o.n, Base: o.base, Off: o.off, Lit: o.lit}
+				}
+				for _, span := range spans {
+					out, _ := dwDcore_segmentFrame(dops, wr.frames[i].tlen, span)
+					seg[span] += int64(len(out))
+				}
+			}
+			for _, span := range spans {
+				t.Logf("%s depth %d frame %d KiB: stored programs %d, %d KiB segments %d (%+.1f%%)", lay, rec.Depth, wr.maxWindow>>10, stored, span>>10, seg[span], 100*float64(seg[span]-stored)/float64(stored))
+			}
 		}
 		s.Close()
 	}
