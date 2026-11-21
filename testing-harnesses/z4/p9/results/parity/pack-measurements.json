@@ -1,0 +1,9 @@
+{
+  "pack_bytes": 67163592,
+  "pack_hash_matches_after_repair": true,
+  "pack_sha256": "1cb8596fb596d972cd1c86fa2acf54bce485550d149f45199de3f87dbf9e0869",
+  "protected_bytes": 8388608,
+  "repair_us": 149859,
+  "restored_window_offset": 8392704,
+  "sidecar_bytes": 1048906
+}

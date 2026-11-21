@@ -1,0 +1,196 @@
+{
+  "binary_sha256": "9c5b6276f1d5bf8fc209a64be96532ccc04ea0b9221b954ab75216595a4f5734",
+  "rate_bytes_per_second": 2097152,
+  "trials": [
+    {
+      "attempts": [
+        {
+          "client_cpu_seconds": 0.286327,
+          "exit": 0,
+          "fault": null,
+          "forwarded_payload_bytes": 28210333,
+          "label": "reliable",
+          "native_requested": false,
+          "reopened_sha256": "b0a3043c5439763023203afb86a4c1edc1ed2cca3a4b32f165361baaaf9c9880",
+          "request_metrics": [
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/info",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "HEAD",
+              "path": "/models/step64000.safetensors",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 14420,
+              "fault": null,
+              "forwarded_body_bytes": 14420,
+              "method": "POST",
+              "path": "/_zeros3/v2/negotiate",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 3068606,
+              "fault": null,
+              "forwarded_body_bytes": 3068606,
+              "method": "POST",
+              "path": "/_zeros3/v2/chunks/upload",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8347396,
+              "fault": null,
+              "forwarded_body_bytes": 8347396,
+              "method": "POST",
+              "path": "/_zeros3/v2/chunks/upload",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8376431,
+              "fault": null,
+              "forwarded_body_bytes": 8376431,
+              "method": "POST",
+              "path": "/_zeros3/v2/chunks/upload",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8365967,
+              "fault": null,
+              "forwarded_body_bytes": 8365967,
+              "method": "POST",
+              "path": "/_zeros3/v2/chunks/upload",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 37513,
+              "fault": null,
+              "forwarded_body_bytes": 37513,
+              "method": "POST",
+              "path": "/_zeros3/v1/commit",
+              "upstream_status": 200
+            }
+          ],
+          "wall_seconds": 26.055294789999607
+        }
+      ],
+      "trial": "cdc",
+      "verify": {
+        "authorities_verified": 1,
+        "authority_bodies": 1,
+        "authority_orphan_bodies": 0,
+        "chunks_checked": 808,
+        "corrupt": 0,
+        "current_root_count": 2,
+        "deep": true,
+        "historical_root_count": 1,
+        "invalid": 0,
+        "issues": null,
+        "journal_frames_checked": 4,
+        "journal_ok": true,
+        "manifests_checked": 3,
+        "missing": 0,
+        "multipart_root_count": 0,
+        "packs_checked": 2,
+        "reclaimable_bytes": 0,
+        "representation_orphan_roots": 0,
+        "representation_roots": 0,
+        "representations_verified": 0,
+        "snapshot_root_count": 0,
+        "unreachable_chunks": 0,
+        "unreachable_manifests": 0
+      },
+      "versions": 2
+    },
+    {
+      "attempts": [
+        {
+          "client_cpu_seconds": 0.10185200000000005,
+          "exit": 0,
+          "fault": null,
+          "forwarded_payload_bytes": 23988704,
+          "label": "reliable",
+          "native_requested": true,
+          "reopened_sha256": "b0a3043c5439763023203afb86a4c1edc1ed2cca3a4b32f165361baaaf9c9880",
+          "request_metrics": [
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/info",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "HEAD",
+              "path": "/models/step64000.safetensors",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 14420,
+              "fault": null,
+              "forwarded_body_bytes": 14420,
+              "method": "POST",
+              "path": "/_zeros3/v2/negotiate",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/object?bucket=models&closure=1&key=step64000.safetensors",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 23974284,
+              "fault": null,
+              "forwarded_body_bytes": 23974284,
+              "method": "POST",
+              "path": "/_zeros3/v1/authority/import",
+              "upstream_status": 200
+            }
+          ],
+          "wall_seconds": 13.345572499994887
+        }
+      ],
+      "trial": "native",
+      "verify": {
+        "authorities_verified": 2,
+        "authority_bodies": 2,
+        "authority_orphan_bodies": 0,
+        "chunks_checked": 1137,
+        "corrupt": 0,
+        "current_root_count": 2,
+        "deep": true,
+        "historical_root_count": 1,
+        "invalid": 0,
+        "issues": null,
+        "journal_frames_checked": 4,
+        "journal_ok": true,
+        "manifests_checked": 3,
+        "missing": 0,
+        "multipart_root_count": 0,
+        "packs_checked": 2,
+        "reclaimable_bytes": 0,
+        "representation_orphan_roots": 0,
+        "representation_roots": 0,
+        "representations_verified": 0,
+        "snapshot_root_count": 0,
+        "unreachable_chunks": 0,
+        "unreachable_manifests": 0
+      },
+      "versions": 2
+    }
+  ]
+}

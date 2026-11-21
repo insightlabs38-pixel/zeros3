@@ -13,6 +13,9 @@
 // summary.
 package main
 
+//go:generate python3 testing-harnesses/z4/c1/srcmap.py zeros3.go
+//go:generate python3 testing-harnesses/z4/c1/srcmap.py zeros3_test.go
+
 import (
 	"bufio"
 	"bytes"
@@ -83,45 +86,45 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      536    Content-defined chunking (CDC)
-//      723    Content-addressed chunk storage (CAS)
-//     2466    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4348    Small-object segments (inline manifests, store level 11)
-//     5588    Manifests (immutable, JSON)
-//     6384    Visibility journal (append-only, checksummed)
-//     6906    Store: format, namespace, and object CRUD
-//     8765    Version history/restore, history pruning, ListObjectsV2
-//     9246    SigV4 authentication (header and presigned-URL)
-//    10223    Request payload checksums and S3-shaped XML error/response types
-//    10440    HTTP routing and S3 operation handlers
-//    10866    Conditional operations (PUT/GET/HEAD preconditions)
-//    11561    CopyObject
-//    11866    Multipart upload
-//    12806    Stats and reachability scanning
-//    14310    Verify
-//    14525    Store locking and safe offline GC
-//    14828    Offline compaction (`zeros3 compact`)
-//    15894    Pack reclamation and repacking (`zeros3 repack`)
-//    16379    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16892    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17957    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18761    Delta sync client, credentials, and parallel transfer
-//    21033    Bulk logical-chunk transport (v2)
-//    21944    Recursive directory sync
-//    22249    Remote replication (`zeros3 replicate`)
-//    23152    Peer-assisted corruption repair (`zeros3 repair`)
-//    23720    Namespace (prefix/bucket) replication
-//    24036    Copy-on-write namespace fork (`zeros3 fork`)
-//    24244    Snapshots and restore
-//    25405    Structural diff and inspect (introspection)
-//    26774    Portable snapshot bundles (`zeros3 bundle`)
-//    27971    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28606    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45712    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52271    Windowed and estimated similarity deltas (extracted dcore)
-//    53800    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61492    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67764    CLI dispatch, HTTP server/startup, and main
+//      539    Content-defined chunking (CDC)
+//      726    Content-addressed chunk storage (CAS)
+//     2469    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     4351    Small-object segments (inline manifests, store level 11)
+//     5591    Manifests (immutable, JSON)
+//     6387    Visibility journal (append-only, checksummed)
+//     6909    Store: format, namespace, and object CRUD
+//     8768    Version history/restore, history pruning, ListObjectsV2
+//     9249    SigV4 authentication (header and presigned-URL)
+//    10226    Request payload checksums and S3-shaped XML error/response types
+//    10443    HTTP routing and S3 operation handlers
+//    10869    Conditional operations (PUT/GET/HEAD preconditions)
+//    11564    CopyObject
+//    11869    Multipart upload
+//    12809    Stats and reachability scanning
+//    14313    Verify
+//    14528    Store locking and safe offline GC
+//    14831    Offline compaction (`zeros3 compact`)
+//    15897    Pack reclamation and repacking (`zeros3 repack`)
+//    16382    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16895    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17960    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18764    Delta sync client, credentials, and parallel transfer
+//    21036    Bulk logical-chunk transport (v2)
+//    21947    Recursive directory sync
+//    22252    Remote replication (`zeros3 replicate`)
+//    23155    Peer-assisted corruption repair (`zeros3 repair`)
+//    23723    Namespace (prefix/bucket) replication
+//    24039    Copy-on-write namespace fork (`zeros3 fork`)
+//    24247    Snapshots and restore
+//    25408    Structural diff and inspect (introspection)
+//    26777    Portable snapshot bundles (`zeros3 bundle`)
+//    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    52293    Windowed and estimated similarity deltas (extracted dcore)
+//    53822    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61514    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67786    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -34238,7 +34241,7 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 			}
 		}
 	}
-	if repLooksONNX(hd) {
+	if os.Getenv("ZEROS3_EXPERIMENTAL_ONNX") == "1" && repLooksONNX(hd) {
 		return repKindModel, true
 	}
 	return 0, false
@@ -48907,11 +48910,13 @@ func (m *authMigrator) indexedCandidates(i int, sk []uint64) (map[int]int, error
 	score := make(map[int]int)
 	resolved := make(map[uint32]int)
 	for _, feature := range sk {
-		best, err := q.postings(feature)
+		best, err := q.postingWindow(feature, authSimilarityRunScanLimit)
 		if err != nil {
 			return nil, err
 		}
-		for _, id := range best {
+		eligibleCount := 0
+		for k := len(best) - 1; k >= 0 && eligibleCount < authSimilarityRunLimit; k-- {
+			id := best[k]
 			j, visited := resolved[id]
 			if !visited {
 				sha, size, err := q.content(id)
@@ -48928,6 +48933,7 @@ func (m *authMigrator) indexedCandidates(i int, sk []uint64) (map[int]int, error
 			}
 			if j >= 0 && !slices.Contains(m.index[feature], j) {
 				score[j]++
+				eligibleCount++
 			}
 		}
 	}
@@ -51678,7 +51684,8 @@ func (s *Store) checkAuthSimilarityFence(report authSimilarityStageReport) error
 
 func (s *Store) readAuthSimilarityManifest(name string) (authSimilarityStageReport, error) {
 	var report authSimilarityStageReport
-	if !strings.HasPrefix(name, "generation-") || filepath.Base(name) != name {
+	if !strings.HasPrefix(name, "generation-") || filepath.Base(name) != name ||
+		len(name) > 255 || strings.ContainsAny(name, "\r\n") {
 		return report, errors.New("invalid similarity generation name")
 	}
 	dir := filepath.Join(s.root, "similarity-index", name)
@@ -52005,36 +52012,40 @@ func (q *authSimilarityQuery) content(id uint32) ([32]byte, int64, error) {
 // newest live candidates. Applying the scan cap globally preserves the same
 // results when runs are compacted.
 func (q *authSimilarityQuery) postings(feature uint64) ([]uint32, error) {
-	limit := min(authSimilarityRunLimit+len(q.report.retired), authSimilarityRunScanLimit)
+	return q.postingWindow(feature, authSimilarityRunLimit)
+}
+
+func (q *authSimilarityQuery) postingWindow(feature uint64, limit int) ([]uint32, error) {
+	scanLimit := min(limit+len(q.report.retired), authSimilarityRunScanLimit)
 	var best []uint32
 	for i := len(q.runs) - 1; i >= 0; i-- {
 		run := q.runs[i]
-		if len(best) == limit && run.highestID <= best[0] {
+		if len(best) == scanLimit && run.highestID <= best[0] {
 			continue
 		}
-		ids, err := run.lookupNewest(feature, limit)
+		ids, err := run.lookupNewest(feature, scanLimit)
 		if err != nil {
 			return nil, err
 		}
 		best = append(best, ids...)
 		slices.Sort(best)
 		best = slices.Compact(best)
-		if len(best) > limit {
-			copy(best, best[len(best)-limit:])
-			best = best[:limit]
+		if len(best) > scanLimit {
+			copy(best, best[len(best)-scanLimit:])
+			best = best[:scanLimit]
 		}
 	}
 	best = slices.DeleteFunc(best, func(id uint32) bool {
 		_, retired := slices.BinarySearch(q.report.retired, id)
 		return retired
 	})
-	return best[max(0, len(best)-authSimilarityRunLimit):], nil
+	return best[max(0, len(best)-limit):], nil
 }
 
 // runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, recover, index-build, index-refresh, index-status, index-inspect or index-run-verify")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -52077,6 +52088,7 @@ func runAuthority(args []string) {
 	memMiB := fs.Int64("max-memory-mib", 192, "soft heap limit of this process in MiB (0 = Go default)")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
+	indexGeneration := fs.String("generation", "", "index-publish: activate a verified staged generation by directory name")
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
 	reserveMiB := fs.Uint64("reserve-free-mib", 0, "migrate: require this much free space after estimated staging (0 disables the reserve)")
 	fs.Parse(args[1:])
@@ -52108,10 +52120,13 @@ func runAuthority(args []string) {
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(25)
 	}
-	indexOp := sub == "index-build" || sub == "index-refresh" || sub == "index-status" || sub == "index-inspect"
+	indexOp := sub == "index-build" || sub == "index-refresh" || sub == "index-publish" || sub == "index-status" || sub == "index-inspect"
 	if indexOp {
 		if fs.NArg() != 0 {
 			log.Fatalf("zeros3: authority %s: unexpected arguments", sub)
+		}
+		if sub == "index-publish" && *indexGeneration == "" {
+			log.Fatal("zeros3: authority index-publish requires -generation")
 		}
 		if _, err := os.Stat(filepath.Join(*storeDir, "FORMAT.json")); err != nil {
 			log.Fatalf("zeros3: authority %s: %v", sub, err)
@@ -52151,6 +52166,13 @@ func runAuthority(args []string) {
 		}
 		if err := enc.Encode(report); err != nil {
 			log.Fatalf("zeros3: authority index-build: %v", err)
+		}
+	case "index-publish":
+		if err := store.publishAuthSimilarityStage(*indexGeneration); err != nil {
+			log.Fatalf("zeros3: authority index-publish: %v", err)
+		}
+		if err := enc.Encode(map[string]string{"state": "current", "generation": *indexGeneration}); err != nil {
+			log.Fatalf("zeros3: authority index-publish: %v", err)
 		}
 	case "index-inspect":
 		info, err := store.inspectAuthSimilarityIndex()

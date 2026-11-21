@@ -111,9 +111,11 @@ generation under the existing store lock. It verifies logical content digests,
 deduplicates catalog rows, bounds each posting batch, and verifies the synced
 runs and catalog before the generation directory is renamed into place. The
 optional `-apply` publishes a CURRENT pointer after rechecking the journal,
-snapshots, catalog and runs. The `index-status` command rechecks the active
-generation under the same lock and rejects stale or damaged derived state.
-The status command can query one feature. Migration routing remains pending.
+snapshots, catalog and runs. To activate a generation from a prior build or
+refresh, run `zeros3 authority index-publish -store DIR -generation NAME`
+using the directory's basename. This uses the same validation and publication
+under the exclusive store lock. A stale or damaged stage leaves CURRENT
+unchanged. `index-status` rechecks the active generation and can query one feature.
 
 A standalone reader smoke test verified a 100262172-byte synthetic ZSR1 run
 with ten million postings in one skewed prefix bucket, including six million
@@ -170,6 +172,10 @@ most 32 runs. Older verified runs read one pair of directory offsets on
 demand. This bounds retained directories to about 8 MiB at the generation
 run cap. The migration report distinguishes verified index open time from
 candidate lookup time. The lookup timer covers the reported planning pass.
+For migration, the planner inspects at most 128 recent posting IDs per
+feature and counts up to 64 eligible discoveries. Same-bucket and prefix
+checks happen before counting an indexed match. Entries already scored by
+the in-memory planner do not consume the persistent match budget.
 
 For a verified current index, `index-inspect` reports active catalog, posting,
 and tombstone payload bytes. Its rebuild estimate uses live object count, the

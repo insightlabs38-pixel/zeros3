@@ -1,0 +1,23 @@
+/workspace/work/zeros3/p9-open-scale-2m-16/zeros3: OK
+/workspace/work/zeros3/p9-open-scale-2m-16/p0bench: OK
+106496/2000000 acknowledged fixture objects
+204800/2000000 acknowledged fixture objects
+303104/2000000 acknowledged fixture objects
+401408/2000000 acknowledged fixture objects
+507904/2000000 acknowledged fixture objects
+606208/2000000 acknowledged fixture objects
+704512/2000000 acknowledged fixture objects
+802816/2000000 acknowledged fixture objects
+901120/2000000 acknowledged fixture objects
+1007616/2000000 acknowledged fixture objects
+1105920/2000000 acknowledged fixture objects
+1204224/2000000 acknowledged fixture objects
+1302528/2000000 acknowledged fixture objects
+1400832/2000000 acknowledged fixture objects
+1507328/2000000 acknowledged fixture objects
+1605632/2000000 acknowledged fixture objects
+1703936/2000000 acknowledged fixture objects
+1802240/2000000 acknowledged fixture objects
+1900544/2000000 acknowledged fixture objects
+2000000/2000000 acknowledged fixture objects
+{"binary_sha256":"dfd94c9da0cee70f88fc457c253f9e9d1f33bdec7e36676a4e490b6ed0054aa8","ingest_s":2595.546875074,"label":"unique16","logical_bytes":32000000,"object_bytes":16,"objects":2000000,"resumed_objects":0,"sampled_exact_reads":81,"scenario":"mkstream","seed":910036,"store":{"Total":2195856549,"Chunks":0,"Packs":1477856102,"Journal":718000096,"Tmp":0,"Other":351,"Files":44,"ChunkFiles":0,"PackFiles":38},"store_id":"01a1fbc1-f6f8-7162-9019-2aff7a866825","ts":"2026-11-21T02:26:13Z"}

@@ -1,18 +1,26 @@
-# ZeroS3 Z4 continuation
+# ZeroS3 research development
 
-The [queue](QUEUE.json) tracks 44 acceptance items from the continuation brief. Its
-dependencies indicate implementation or verification prerequisites. Each milestone
-still uses its own qualification criteria.
+`research/next` is the long-lived development branch. `main` is the stable
+public pre-1.0 baseline. Commit coherent work directly to the research branch
+and push it at engineering checkpoints.
 
-- Item 1 merged in PR #117. The driver rejects failed children and partial results.
-- Item 2 has exact 2 GiB single-store and concurrent memory evidence. Frozen
-  PR #120 remains subject to its release qualification.
-- Items 3–7 have measured results in the consolidated P8R milestone PR #127.
-  Remaining corpus checks, regressions and qualification are tracked per item.
-- Item 8 delivered and verified the append-only private archive. The runtime
-  root cause remains open and the investigation is paused.
-- Item 42 gained the merged PR #123 provenance and runner liveness fixes.
-  The final integrated CI and conventional runner audit remains open.
+The [ledger](QUEUE.json) retains the original 44 items and their historical
+evidence. The `research` fields govern current scheduling.
 
-At each milestone, record the tested source fingerprint and remote merge commit.
-Record only the private incident archive's append path and commit in this repository.
+| Milestone | Outcome |
+| --- | --- |
+| R0 | Unified development tree, including the retained draft ancestry and [original patches](retained-drafts/README.md). |
+| R1 | Persistent, bounded cross-history discovery and exact, physically priced representation selection. |
+| R2 | Negotiated native closure transfer, durable resumption and digest-verified repair. |
+| R3 | Exact representations with measured storage and read costs. |
+| R4 | Durable namespace, recovery and lower-interruption maintenance. |
+
+Run focused exactness, compatibility and fault tests as the code changes.
+Regenerate both checked source maps with `go generate .`. Preserve failures
+and competing results. Full qualification and large release campaigns are
+deferred to a release decision. The Go P3 investigation remains paused.
+
+The [index contract](../c2/INDEX_CONTRACT.md) describes staged publication,
+the scoped planner and recovery. The previous C2A qualification ended at the
+transition after 34 passing mandatory stages and one interrupted stage.
+[Recorded stages](../c2/results/qualification/transition-stages.tsv)

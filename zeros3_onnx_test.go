@@ -26,6 +26,11 @@ func TestRepONNXInlineTensorLayout(t *testing.T) {
 	tensor = message(tensor, 0x42, []byte("layer.weight"))
 	write := func(tensor []byte) []byte { return message([]byte{8, 8}, 0x3a, message(nil, 0x2a, tensor)) }
 	model := write(append(bytes.Clone(tensor), raw...))
+	t.Setenv("ZEROS3_EXPERIMENTAL_ONNX", "")
+	if _, ok := repCandidate(bytes.NewReader(model), int64(len(model))); ok {
+		t.Fatal("experimental inline model was recognized without opt-in")
+	}
+	t.Setenv("ZEROS3_EXPERIMENTAL_ONNX", "1")
 	kind, ok := repCandidate(bytes.NewReader(model), int64(len(model)))
 	if !ok || kind != repKindModel {
 		t.Fatal("inline model was not recognized")
@@ -53,6 +58,7 @@ func TestRepONNXInlineTensorLayout(t *testing.T) {
 }
 
 func TestAuthorityONNXCrossFormatEconomics(t *testing.T) {
+	t.Setenv("ZEROS3_EXPERIMENTAL_ONNX", "1")
 	root, checkpoint := os.Getenv("ZEROS3_C5_TENSOR_EXPORTS"), os.Getenv("ZEROS3_C5_TENSOR_SOURCE")
 	if root == "" || checkpoint == "" {
 		t.Skip("set ZEROS3_C5_TENSOR_EXPORTS and ZEROS3_C5_TENSOR_SOURCE for the pinned export corpus")

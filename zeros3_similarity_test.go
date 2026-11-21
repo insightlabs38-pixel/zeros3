@@ -926,6 +926,73 @@ func TestAuthoritySimilarityIndexedCandidatesScopeAndFallback(t *testing.T) {
 	}
 }
 
+func TestAuthoritySimilarityHotPostingsRetainOlderScopedBase(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	mustOK(t, err)
+	defer s.Close()
+	mustOK(t, s.CreateBucket("scope"))
+	mustOK(t, s.CreateBucket("other"))
+	body := genRandomBytes(208, 196_608)
+	mustPutObject(t, s, "scope", "public/base", body, "", nil)
+	first, err := s.refreshAuthSimilarityStage()
+	mustOK(t, err)
+	mustOK(t, s.publishAuthSimilarityStage(filepath.Base(first.Directory)))
+
+	for i := range authSimilarityRunLimit + 1 {
+		noise := bytes.Clone(body)
+		noise[95_000] = byte(i)
+		noise[95_001] ^= 1
+		mustPutObject(t, s, "other", fmt.Sprintf("public/noise-%d", i), noise, "", nil)
+	}
+	target := bytes.Clone(body)
+	target[165_000] ^= 1
+	mustPutObject(t, s, "scope", "public/target", target, "", nil)
+	next, err := s.refreshAuthSimilarityStage()
+	mustOK(t, err)
+	mustOK(t, s.publishAuthSimilarityStage(filepath.Base(next.Directory)))
+	q, err := s.openCurrentAuthSimilarityQuery()
+	mustOK(t, err)
+	defer q.close()
+
+	objs := make([]*authObj, 0, next.Objects)
+	for _, lm := range s.liveManifests() {
+		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+		mustOK(t, err)
+		objs = append(objs, &authObj{sha: sha, man: lm.man, bucket: lm.bucket, key: lm.key})
+	}
+	m := &authMigrator{
+		pol:          AuthPolicy{MaxDepth: 2, Candidates: 4, Prefix: "public/", similarity: q},
+		order:        objs,
+		indexedBases: make(map[[32]byte]int),
+		byKey:        make(map[string][]int),
+	}
+	var basePos, targetPos int
+	for i, obj := range objs {
+		if obj.key == "public/target" {
+			targetPos = i
+			continue
+		}
+		m.addBase(i)
+		if obj.key == "public/base" {
+			basePos = i
+		}
+	}
+	for _, feature := range authFeatures(target, 16) {
+		newest, err := q.postings(feature)
+		mustOK(t, err)
+		older, err := q.postingWindow(feature, authSimilarityRunScanLimit)
+		mustOK(t, err)
+		if len(newest) != authSimilarityRunLimit || slices.Contains(newest, uint32(1)) || !slices.Contains(older, uint32(1)) {
+			continue
+		}
+		if got := m.candidates(targetPos, []uint64{feature}, false); !slices.Equal(got, []int{basePos}) {
+			t.Fatalf("scope filtered out the older eligible base: got %v, want %d", got, basePos)
+		}
+		return
+	}
+	t.Fatal("fixture has no hot feature shared with the older base")
+}
+
 func TestAuthoritySimilarityUsesScopedAliasForIndexedDiscovery(t *testing.T) {
 	l := newAuthLab(t)
 	if err := l.s.CreateBucket("a"); err != nil {

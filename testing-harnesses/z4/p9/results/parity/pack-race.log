@@ -1,0 +1,9 @@
+=== RUN   TestSingleLossAndDamagedParity
+--- PASS: TestSingleLossAndDamagedParity (0.00s)
+=== RUN   TestActualArchiveSliceRepair
+    parity_test.go:68: set ZEROS3_PARITY_ARCHIVE and ZEROS3_PARITY_OUT for the real archive control
+--- SKIP: TestActualArchiveSliceRepair (0.00s)
+=== RUN   TestRepairPublishedPackWindow
+--- PASS: TestRepairPublishedPackWindow (1.46s)
+PASS
+ok  	zeros3-z4/p9/parity	2.485s
