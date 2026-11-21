@@ -1160,6 +1160,25 @@ func TestAuthorityClosureSyncExport(t *testing.T) {
 	if err != nil || status != http.StatusOK || !bytes.HasPrefix(wire, []byte(authXferMagic)) {
 		t.Fatalf("closure export: status %d, digest error %v", status, err)
 	}
+	for _, budget := range []int64{-1, 1, int64(len(wire)), int64(len(wire)) + 1} {
+		request := req
+		request.MaxBytes = budget
+		got, payload := export(request)
+		switch {
+		case budget < 0:
+			if got != http.StatusBadRequest {
+				t.Fatalf("negative budget: %d %s", got, payload)
+			}
+		case budget <= int64(len(wire)):
+			if got != http.StatusConflict || !bytes.Contains(payload, []byte(`"Materialize"`)) {
+				t.Fatalf("insufficient budget %d: %d %s", budget, got, payload)
+			}
+		default:
+			if got != http.StatusOK || !bytes.Equal(payload, wire) {
+				t.Fatalf("budget %d changed the original closure: status %d, bytes %d", budget, got, len(payload))
+			}
+		}
+	}
 	dst := newAuthLab(t)
 	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(wire)); err != nil {
 		t.Fatal(err)

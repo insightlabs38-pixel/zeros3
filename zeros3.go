@@ -105,22 +105,22 @@ import (
 //    16464    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
 //    17529    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
 //    18333    Delta sync client, credentials, and parallel transfer
-//    20590    Bulk logical-chunk transport (v2)
-//    21501    Recursive directory sync
-//    21806    Remote replication (`zeros3 replicate`)
-//    22708    Peer-assisted corruption repair (`zeros3 repair`)
-//    23276    Namespace (prefix/bucket) replication
-//    23592    Copy-on-write namespace fork (`zeros3 fork`)
-//    23800    Snapshots and restore
-//    24961    Structural diff and inspect (introspection)
-//    26307    Portable snapshot bundles (`zeros3 bundle`)
-//    27504    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28139    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45233    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    51733    Windowed and estimated similarity deltas (extracted dcore)
-//    53262    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    60910    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67182    CLI dispatch, HTTP server/startup, and main
+//    20605    Bulk logical-chunk transport (v2)
+//    21516    Recursive directory sync
+//    21821    Remote replication (`zeros3 replicate`)
+//    22724    Peer-assisted corruption repair (`zeros3 repair`)
+//    23292    Namespace (prefix/bucket) replication
+//    23608    Copy-on-write namespace fork (`zeros3 fork`)
+//    23816    Snapshots and restore
+//    24977    Structural diff and inspect (introspection)
+//    26323    Portable snapshot bundles (`zeros3 bundle`)
+//    27520    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28155    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45249    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    51803    Windowed and estimated similarity deltas (extracted dcore)
+//    53332    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    60980    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67252    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -18960,6 +18960,7 @@ type authExportRequest struct {
 	Peer            AuthCaps `json:"peer"`
 	KnownBase       string   `json:"known_base,omitempty"`
 	KnownComponents []string `json:"known_components,omitempty"`
+	MaxBytes        int64    `json:"max_bytes,omitempty"`
 }
 
 type authImportRequest struct {
@@ -19089,6 +19090,10 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "bucket, key, version and peer capabilities are required")
 		return
 	}
+	if req.MaxBytes < 0 {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "closure byte budget cannot be negative")
+		return
+	}
 	entry, man, err := srv.store.headServed(req.Bucket, req.Key)
 	if err != nil {
 		if errors.Is(err, errNoSuchBucket) || errors.Is(err, errNoSuchKey) {
@@ -19142,8 +19147,18 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
+	wire, err := srv.store.planAuthorityClosure(recs, components)
+	if err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	if req.MaxBytes > 0 && wire.size >= req.MaxBytes {
+		writeSyncError(w, http.StatusConflict, "Materialize", "closure exceeds the receiver's transfer budget")
+		return
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if err := srv.store.writeAuthorityClosure(recs, w, components); err != nil {
+	w.Header().Set("Content-Length", strconv.FormatInt(wire.size, 10))
+	if err := wire.write(srv.store, w); err != nil {
 		// Failed streams must surface as an incomplete HTTP response.
 		panic(http.ErrAbortHandler)
 	}
@@ -22215,6 +22230,7 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	if len(header) > maxAuthCommitHeader || budget <= 0 {
 		return stats, false, nil
 	}
+	export.MaxBytes = budget
 	control, err := json.Marshal(export)
 	if err != nil {
 		return stats, false, err
@@ -49635,7 +49651,70 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 	return recs, nil
 }
 
+type authClosureWire struct {
+	records []*authRecord
+	chunks  []chunkRef
+	size    int64
+}
+
+func (s *Store) planAuthorityClosure(recs []*authRecord, held map[[32]byte]bool) (authClosureWire, error) {
+	wire := authClosureWire{records: recs}
+	var scratch [binary.MaxVarintLen64]byte
+	prefix := func(n int64) int64 {
+		return int64(binary.PutUvarint(scratch[:], uint64(n)))
+	}
+	wire.size = int64(len(authXferMagic)+sha256.Size) + prefix(int64(len(recs)))
+	add := func(n int64) error {
+		if n < 0 || wire.size > math.MaxInt64-n {
+			return errAuthLimit
+		}
+		wire.size += n
+		return nil
+	}
+	seen := map[[32]byte]bool{}
+	for _, r := range recs {
+		rb, err := r.marshal()
+		if err != nil {
+			return wire, err
+		}
+		length := int64(len(rb))
+		if err := add(prefix(length) + length); err != nil {
+			return wire, err
+		}
+		refs, err := s.authRecordChunks(r)
+		if err != nil {
+			return wire, err
+		}
+		for _, c := range refs {
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil || c.Length <= 0 || c.Length > maxSyncChunkBytes {
+				return wire, errAuthCorrupt
+			}
+			if seen[sum] || held[sum] {
+				continue
+			}
+			seen[sum] = true
+			wire.chunks = append(wire.chunks, c)
+			if err := add(int64(sha256.Size) + prefix(c.Length) + c.Length); err != nil {
+				return wire, err
+			}
+		}
+	}
+	if err := add(prefix(int64(len(wire.chunks)))); err != nil {
+		return wire, err
+	}
+	return wire, nil
+}
+
 func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer, held map[[32]byte]bool) error {
+	wire, err := s.planAuthorityClosure(recs, held)
+	if err != nil {
+		return err
+	}
+	return wire.write(s, w)
+}
+
+func (wire authClosureWire) write(s *Store, w io.Writer) error {
 	h := sha256.New()
 	mw := io.MultiWriter(w, h)
 	put := func(b []byte) error { _, err := mw.Write(b); return err }
@@ -49644,12 +49723,10 @@ func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer, held map[
 	if err := put([]byte(authXferMagic)); err != nil {
 		return err
 	}
-	if err := putLength(len(recs)); err != nil {
+	if err := putLength(len(wire.records)); err != nil {
 		return err
 	}
-	seen := map[[32]byte]bool{}
-	var chunks []chunkRef
-	for _, r := range recs {
+	for _, r := range wire.records {
 		rb, err := r.marshal()
 		if err != nil {
 			return err
@@ -49660,25 +49737,18 @@ func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer, held map[
 		if err := put(rb); err != nil {
 			return err
 		}
-		cs, err := s.authRecordChunks(r)
-		if err != nil {
-			return err
-		}
-		for _, c := range cs {
-			if sum, _ := decodeHexSHA256(c.SHA256); !seen[sum] && !held[sum] {
-				seen[sum] = true
-				chunks = append(chunks, c)
-			}
-		}
 	}
-	if err := putLength(len(chunks)); err != nil {
+	if err := putLength(len(wire.chunks)); err != nil {
 		return err
 	}
-	for _, c := range chunks {
-		sum, _ := decodeHexSHA256(c.SHA256)
+	for _, c := range wire.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256) // validated during planning
 		data, err := s.casRead(sum)
 		if err != nil {
 			return fmt.Errorf("export closure: component %s: %w", c.SHA256[:12], err)
+		}
+		if int64(len(data)) != c.Length {
+			return fmt.Errorf("export closure: component %s: %w", c.SHA256[:12], errAuthMismatch)
 		}
 		if err := put(sum[:]); err != nil {
 			return err

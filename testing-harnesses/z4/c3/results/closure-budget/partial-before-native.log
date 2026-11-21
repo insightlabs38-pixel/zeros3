@@ -1,0 +1,7 @@
+Logical scanned:     14.41 MiB
+Chunks:              242
+Chunks reused:       0
+Uploaded payload:    14.35 MiB (239 unique chunks)
+Discarded closure:   14.33 MiB source download
+Transfer avoided:    54.46 KiB
+Reuse:               0.4%

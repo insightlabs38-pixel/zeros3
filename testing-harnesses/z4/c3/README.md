@@ -32,3 +32,7 @@ as a historical destination.
 A destination-side loopback proxy limited uploads to 2 MiB/s. The matched CDC and native runs forwarded 14,913,828 and 11,565,721 HTTP body bytes respectively. Native took 6.26 s and CDC 5.30 s in these single runs. After a two-thirds native upload, the server refused the partial closure and a fresh process served the exact old release. With the successful native acknowledgement dropped, a fresh process served the exact new release. Retrying sent only 8,624 control bytes, preserved one current and one historical version and passed deep verification. This is a controlled loopback transfer with a modeled bandwidth limit.
 
 [Shaped transfer and fault observations](results/coreutils-shaped-relay.json)
+
+The partial-overlap and unrelated destination seeds previously discarded a 14.33 MiB closure probe before uploading the ordinary CDC payload. The export request now carries the sender's exact envelope budget. The source prices framed records and unique component lengths before streaming and returns the existing materialization response if the closure cannot save bytes. Older sources may ignore the field, so the client retains its bounded streaming check. Both unfavorable seeds avoided the probe after the change and still served the exact release through CDC. The retained-base run still took native transfer and sent 11.02 MiB. Focused signed HTTP tests covered budgets below, equal to and above the actual frame length.
+
+[Measured closure budget and fallback](results/closure-budget)

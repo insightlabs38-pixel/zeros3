@@ -107,6 +107,7 @@ def main():
     p.add_argument("--after", required=True, type=Path)
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--bytes-per-second", type=int, default=2 << 20)
+    p.add_argument("--reliable-only", action="store_true", help="compare complete transfers from an alternate seed")
     a = p.parse_args()
     if a.bytes_per_second <= 0:
         p.error("a positive upload budget is required")
@@ -151,11 +152,14 @@ def main():
                 raise RuntimeError("native publication did not complete before dropping the acknowledgement")
             return result
 
-        for trial, steps in (
+        scenarios = [
             ("cdc", (("reliable", False, None),)),
             ("native", (("reliable", True, None),)),
-            ("recovery", (("interrupted", True, "cut-body"), ("ack-lost", True, "drop-ack"), ("retry", True, None))),
-        ):
+        ]
+        if not a.reliable_only:
+            scenarios.append(("recovery", (("interrupted", True, "cut-body"), ("ack-lost", True, "drop-ack"),
+                                           ("retry", True, None))))
+        for trial, steps in scenarios:
             attempt = output / trial
             attempt.mkdir()
             store = attempt / "store"
