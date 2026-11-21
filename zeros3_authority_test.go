@@ -2906,8 +2906,8 @@ func TestAuthorityMigrationCancellationBeforePublication(t *testing.T) {
 					t.Fatal(err)
 				}
 				rec, err := l.s.authLoad(sum)
-				if err != nil || rec != nil && rec.Form != authFormPin {
-					t.Fatalf("canceled pass published a target record for %s: %+v %v", key, rec, err)
+				if err != nil || rec != nil {
+					t.Fatalf("canceled pass published an authority record for %s: %+v %v", key, rec, err)
 				}
 			}
 			l.reclaim()
@@ -2920,6 +2920,32 @@ func TestAuthorityMigrationCancellationBeforePublication(t *testing.T) {
 			l.verifyOK("reclaimed retry")
 		})
 	}
+}
+
+func TestAuthorityRejectedCandidateDoesNotPublishPins(t *testing.T) {
+	l := authHistoryLab(t, 491, 3, 520_000)
+	pol := AuthPolicy{Apply: true, AllowDelta: true, NoZN7: true, MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: 0.001}
+	report, err := l.s.AuthorityMigrate(pol)
+	mustOK(t, err)
+	if report.Admitted != 0 || !slices.ContainsFunc(report.Plans, func(p AuthPlan) bool {
+		return strings.HasPrefix(p.Reason, "modeled read amplification")
+	}) {
+		t.Fatalf("fixture must reach and refuse the read gate: %+v", report)
+	}
+	files, err := l.s.authFiles()
+	mustOK(t, err)
+	if len(files) != 0 {
+		t.Fatalf("a refused candidate left behind %d authority records", len(files))
+	}
+	pol.MaxReadAmp = -1
+	report, err = l.s.AuthorityMigrate(pol)
+	mustOK(t, err)
+	if report.Admitted == 0 {
+		t.Fatalf("permissive retry did not admit a delta: %+v", report)
+	}
+	l.reclaim()
+	l.exact("admitted retry")
+	l.verifyOK("admitted retry")
 }
 
 func TestAuthorityRepresentationStagingHonorsDiskReserve(t *testing.T) {

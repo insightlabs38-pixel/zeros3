@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52300    Windowed and estimated similarity deltas (extracted dcore)
-//    53829    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61521    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67793    CLI dispatch, HTTP server/startup, and main
+//    52310    Windowed and estimated similarity deltas (extracted dcore)
+//    53839    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61531    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67803    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47840,8 +47840,8 @@ var authTierLimits = map[string]struct {
 }
 
 // authCostOf measures the candidate's read and classifies its replay path.
-func (s *Store) authCostOf(runCtx context.Context, rec *authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
-	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, man)
+func (s *Store) authCostOf(runCtx context.Context, rec *authRecord, pins map[[32]byte]*authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
+	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, pins, man)
 	if err != nil {
 		return nil, err
 	}
@@ -48166,30 +48166,41 @@ func chunkPieces(man manifestV1) ([]authPiece, error) {
 // read path from the durable CAS, and checks exact length and SHA-256. The
 // overlay lets an unpublished candidate be resolved; returns bytes fetched.
 func (s *Store) authProve(rec *authRecord, probes int) (int64, float64, error) {
-	return s.authProveContext(context.Background(), rec, probes)
+	return s.authProveContext(context.Background(), rec, nil, probes)
 }
 
-func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, probes int) (fetched int64, probeFetched float64, err error) {
+func authCandidateOverlay(rec *authRecord, pins map[[32]byte]*authRecord) (map[[32]byte]*authRecord, error) {
+	data, err := rec.marshal()
+	if err != nil {
+		return nil, err
+	}
+	cand, err := unmarshalAuthRecord(data)
+	if err != nil {
+		return nil, err
+	}
+	overlay := make(map[[32]byte]*authRecord, len(pins)+1)
+	maps.Copy(overlay, pins)
+	overlay[cand.SHA] = cand
+	return overlay, nil
+}
+
+func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, pins map[[32]byte]*authRecord, probes int) (fetched int64, probeFetched float64, err error) {
 	if err := runCtx.Err(); err != nil {
 		return 0, 0, err
 	}
-	data, err := rec.marshal()
-	if err != nil {
-		return 0, 0, err
-	}
-	cand, err := unmarshalAuthRecord(data)
+	overlay, err := authCandidateOverlay(rec, pins)
 	if err != nil {
 		return 0, 0, err
 	}
 	ctx := s.newAuthScanCtx()
-	ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
-	if cand.Size > authWindowMin {
+	ctx.overlay = overlay
+	if rec.Size > authWindowMin {
 		// A windowed body re-reads nearby base windows and chunks while it is checked: keep them for this one
 		// proof. Every chunk is still read from physical storage and verified once, by this context.
 		ctx.wc, ctx.pieceCap = newAuthWinCache(authProofWinBytes), authProofPieceBytes
 	}
 	ctx.frameCap = authProofFrames
-	body, _, err := ctx.body(cand.SHA, 0, 1)
+	body, _, err := ctx.body(rec.SHA, 0, 1)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -48215,26 +48226,26 @@ func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, probes
 	}
 	var got [32]byte
 	copy(got[:], h.Sum(nil))
-	if got != cand.SHA {
+	if got != rec.SHA {
 		return 0, 0, errAuthMismatch
 	}
 	fetched = ctx.fetched
 	if probes > 0 {
 		// Cold probes: fresh context so decoded state is not shared.
 		var tot int64
-		rng := rand.New(rand.NewPCG(binary.LittleEndian.Uint64(cand.SHA[:8]), 7))
+		rng := rand.New(rand.NewPCG(binary.LittleEndian.Uint64(rec.SHA[:8]), 7))
 		for i := 0; i < probes; i++ {
 			if err := runCtx.Err(); err != nil {
 				return 0, 0, err
 			}
 			pc := s.newAuthScanCtx()
 			pc.overlay = ctx.overlay
-			pb, _, perr := pc.body(cand.SHA, 0, 1)
+			pb, _, perr := pc.body(rec.SHA, 0, 1)
 			if perr != nil {
 				return 0, 0, perr
 			}
-			off := rng.Int64N(max(1, cand.Size-4096))
-			p4 := make([]byte, min(4096, cand.Size-off))
+			off := rng.Int64N(max(1, rec.Size-4096))
+			p4 := make([]byte, min(4096, rec.Size-off))
 			if n, perr := pb.ReadAt(p4, off); n != len(p4) {
 				return 0, 0, fmt.Errorf("probe read: %v", perr)
 			}
@@ -48247,8 +48258,8 @@ func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, probes
 
 // authReadRatio is the whole-object read throughput of a candidate body relative to
 // the CDC read of the same object (best of two warm passes each; above 1 is faster).
-func (s *Store) authReadRatio(runCtx context.Context, rec *authRecord, man manifestV1) (float64, error) {
-	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, man)
+func (s *Store) authReadRatio(runCtx context.Context, rec *authRecord, pins map[[32]byte]*authRecord, man manifestV1) (float64, error) {
+	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, pins, man)
 	if err != nil || dAuth <= 0 {
 		return 0, err
 	}
@@ -48256,7 +48267,7 @@ func (s *Store) authReadRatio(runCtx context.Context, rec *authRecord, man manif
 }
 
 // authReadTiming is the best warm whole-object read of the candidate and of the CDC chunks of the same content.
-func (s *Store) authReadTiming(runCtx context.Context, rec *authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
+func (s *Store) authReadTiming(runCtx context.Context, rec *authRecord, pins map[[32]byte]*authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
 	timed := func(read func() error) (time.Duration, error) {
 		best := time.Duration(math.MaxInt64)
 		for i := 0; i < 2; i++ {
@@ -48268,18 +48279,14 @@ func (s *Store) authReadTiming(runCtx context.Context, rec *authRecord, man mani
 		}
 		return best, nil
 	}
-	data, err := rec.marshal()
-	if err != nil {
-		return 0, 0, err
-	}
-	cand, err := unmarshalAuthRecord(data)
+	overlay, err := authCandidateOverlay(rec, pins)
 	if err != nil {
 		return 0, 0, err
 	}
 	dAuth, err = timed(func() error {
 		ctx := s.newAuthScanCtx()
-		ctx.overlay = map[[32]byte]*authRecord{cand.SHA: cand}
-		body, _, err := ctx.body(cand.SHA, 0, 1)
+		ctx.overlay = overlay
+		body, _, err := ctx.body(rec.SHA, 0, 1)
 		if err != nil {
 			return err
 		}
@@ -49277,7 +49284,7 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	if err := m.ctx.Err(); err != nil {
 		return err
 	}
-	// --- build durable components, publish bases' pins, prove, commit
+	// --- build durable components, prove, publish pins and candidate
 	var rec *authRecord
 	var pins []int
 	if choice == "delta" {
@@ -49301,22 +49308,25 @@ func (m *authMigrator) process(i int, o *authObj) error {
 // amplification gate and publishes it. A refusal keeps the object in CDC.
 func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, plan AuthPlan, choice string, finish func(AuthPlan)) error {
 	pol := m.pol
+	pendingPins := make(map[[32]byte]*authRecord, len(pins))
+	for _, j := range pins {
+		bo := m.order[j]
+		if bo.hasRec {
+			continue
+		}
+		ps, err := chunkPieces(bo.man)
+		if err != nil {
+			return err
+		}
+		pendingPins[bo.sha] = &authRecord{SHA: bo.sha, Size: bo.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}
+	}
 	if pol.ReserveFreeBytes != 0 {
 		data, err := rec.marshal()
 		if err != nil {
 			return err
 		}
 		metaBytes, files := uint64(len(data)), uint64(1)
-		for _, j := range pins {
-			bo := m.order[j]
-			if bo.hasRec {
-				continue
-			}
-			ps, err := chunkPieces(bo.man)
-			if err != nil {
-				return err
-			}
-			pin := authRecord{SHA: bo.sha, Size: bo.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}
+		for _, pin := range pendingPins {
 			data, err := pin.marshal()
 			if err != nil {
 				return err
@@ -49330,22 +49340,13 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 	}
 	fireTestHook(hookAuthComponentsFlushed)
-	for _, j := range pins {
-		if err := m.ctx.Err(); err != nil {
-			return err
-		}
-		if err := m.s.authEnsurePin(m.order[j]); err != nil {
-			return err
-		}
-		m.order[j].hasRec = true
-	}
 	// Cold read probes feed the read-amplification and tier gates; without a gate they only annotate the plan,
 	// and each one decodes whole windows through the dependency chain, so two suffice.
 	probes := 8
 	if _, tiered := authTierLimits[pol.Tier]; pol.MaxReadAmp <= 0 && !(tiered && !pol.NoReadCost) {
 		probes = 2
 	}
-	_, probe, err := m.s.authProveContext(m.ctx, rec, probes)
+	_, probe, err := m.s.authProveContext(m.ctx, rec, pendingPins, probes)
 	if err != nil {
 		if ctxErr := m.ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -49372,7 +49373,7 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		return nil
 	}
 	if _, tiered := authTierLimits[pol.Tier]; tiered && !pol.NoReadCost {
-		cost, err := m.s.authCostOf(m.ctx, rec, o.man, probe, plan.Depth)
+		cost, err := m.s.authCostOf(m.ctx, rec, pendingPins, o.man, probe, plan.Depth)
 		if err != nil {
 			return err
 		}
@@ -49392,7 +49393,7 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 	}
 	if pol.MaxReadAmp > 0 && pol.MinReadRatio > 0 {
-		ratio, err := m.s.authReadRatio(m.ctx, rec, o.man)
+		ratio, err := m.s.authReadRatio(m.ctx, rec, pendingPins, o.man)
 		if err != nil {
 			return err
 		}
@@ -49409,6 +49410,15 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 	}
 	fireTestHook(hookAuthProofDone)
+	for _, j := range pins {
+		if err := m.ctx.Err(); err != nil {
+			return err
+		}
+		if err := m.s.authEnsurePin(m.order[j]); err != nil {
+			return err
+		}
+		m.order[j].hasRec = true
+	}
 	if err := m.ctx.Err(); err != nil {
 		return err
 	}
