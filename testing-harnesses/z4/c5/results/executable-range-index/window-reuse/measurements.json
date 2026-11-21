@@ -1,0 +1,458 @@
+{
+  "asm": {
+    "independent": [
+      {
+        "mode": "raw",
+        "encoded_bytes": 666344,
+        "base_stored_bytes": 2119860,
+        "base_open_micros": 51781,
+        "encode_ms": 748,
+        "whole_replay_micros": 22641,
+        "range_4k_replay_micros": 1949,
+        "range_base_read_bytes": 2686976,
+        "decoded_sha256": "a67997d99985e3ef3ecd30f029685d67d778a0c8f78b852396ef7738426c04b5"
+      },
+      {
+        "mode": "normalized",
+        "encoded_bytes": 249935,
+        "base_stored_bytes": 2089538,
+        "base_open_micros": 45574,
+        "encode_ms": 309,
+        "whole_replay_micros": 23894,
+        "range_4k_replay_micros": 20659,
+        "range_base_read_bytes": 6341358,
+        "decoded_sha256": "a67997d99985e3ef3ecd30f029685d67d778a0c8f78b852396ef7738426c04b5",
+        "indexed_table_bytes": 2310,
+        "indexed_4k_ranges": [
+          {
+            "offset": 0,
+            "length": 4096,
+            "replay_us": 7942,
+            "base_read_bytes": 8257536,
+            "delta_read_bytes": 9317,
+            "decoded_windows": 7
+          },
+          {
+            "offset": 776522,
+            "length": 4096,
+            "replay_us": 4545,
+            "base_read_bytes": 4915200,
+            "delta_read_bytes": 20173,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 1811885,
+            "length": 4096,
+            "replay_us": 6170,
+            "base_read_bytes": 5373952,
+            "delta_read_bytes": 20664,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 2717828,
+            "length": 4096,
+            "replay_us": 8054,
+            "base_read_bytes": 4915200,
+            "delta_read_bytes": 197769,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 4348525,
+            "length": 4096,
+            "replay_us": 8832,
+            "base_read_bytes": 5308416,
+            "delta_read_bytes": 223392,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 5431561,
+            "length": 4096,
+            "replay_us": 1088,
+            "base_read_bytes": 1410524,
+            "delta_read_bytes": 1347,
+            "decoded_windows": 3
+          }
+        ]
+      }
+    ],
+    "cached": [
+      {
+        "mode": "raw",
+        "encoded_bytes": 666344,
+        "base_stored_bytes": 2119860,
+        "base_open_micros": 49834,
+        "encode_ms": 309,
+        "whole_replay_micros": 22353,
+        "range_4k_replay_micros": 1952,
+        "range_base_read_bytes": 2686976,
+        "decoded_sha256": "a67997d99985e3ef3ecd30f029685d67d778a0c8f78b852396ef7738426c04b5"
+      },
+      {
+        "mode": "normalized",
+        "encoded_bytes": 249935,
+        "base_stored_bytes": 2089538,
+        "base_open_micros": 51503,
+        "encode_ms": 281,
+        "whole_replay_micros": 24988,
+        "range_4k_replay_micros": 22394,
+        "range_base_read_bytes": 6341358,
+        "decoded_sha256": "a67997d99985e3ef3ecd30f029685d67d778a0c8f78b852396ef7738426c04b5",
+        "indexed_table_bytes": 2310,
+        "indexed_4k_ranges": [
+          {
+            "offset": 0,
+            "length": 4096,
+            "replay_us": 1670,
+            "base_read_bytes": 1179648,
+            "delta_read_bytes": 1331,
+            "decoded_windows": 1
+          },
+          {
+            "offset": 776522,
+            "length": 4096,
+            "replay_us": 2598,
+            "base_read_bytes": 2359296,
+            "delta_read_bytes": 17511,
+            "decoded_windows": 2
+          },
+          {
+            "offset": 1811885,
+            "length": 4096,
+            "replay_us": 5452,
+            "base_read_bytes": 3276800,
+            "delta_read_bytes": 19333,
+            "decoded_windows": 3
+          },
+          {
+            "offset": 2717828,
+            "length": 4096,
+            "replay_us": 6486,
+            "base_read_bytes": 3342336,
+            "delta_read_bytes": 196438,
+            "decoded_windows": 3
+          },
+          {
+            "offset": 4348525,
+            "length": 4096,
+            "replay_us": 8175,
+            "base_read_bytes": 3538944,
+            "delta_read_bytes": 222061,
+            "decoded_windows": 3
+          },
+          {
+            "offset": 5431561,
+            "length": 4096,
+            "replay_us": 1070,
+            "base_read_bytes": 1295086,
+            "delta_read_bytes": 1339,
+            "decoded_windows": 2
+          }
+        ]
+      }
+    ]
+  },
+  "compile": {
+    "independent": [
+      {
+        "mode": "raw",
+        "encoded_bytes": 4229336,
+        "base_stored_bytes": 9520989,
+        "base_open_micros": 329386,
+        "encode_ms": 843,
+        "whole_replay_micros": 133676,
+        "range_4k_replay_micros": 1600,
+        "range_base_read_bytes": 1376256,
+        "decoded_sha256": "40307e5f5c65a4b4220bbf35dbe014348780589ea2964003f0bf318fa14640e1"
+      },
+      {
+        "mode": "normalized",
+        "encoded_bytes": 1962141,
+        "base_stored_bytes": 9190234,
+        "base_open_micros": 204873,
+        "encode_ms": 483,
+        "whole_replay_micros": 117171,
+        "range_4k_replay_micros": 131201,
+        "range_base_read_bytes": 32211993,
+        "decoded_sha256": "40307e5f5c65a4b4220bbf35dbe014348780589ea2964003f0bf318fa14640e1",
+        "indexed_table_bytes": 2312,
+        "indexed_4k_ranges": [
+          {
+            "offset": 0,
+            "length": 4096,
+            "replay_us": 7414,
+            "base_read_bytes": 8257536,
+            "delta_read_bytes": 15435,
+            "decoded_windows": 7
+          },
+          {
+            "offset": 4038903,
+            "length": 4096,
+            "replay_us": 19361,
+            "base_read_bytes": 13041664,
+            "delta_read_bytes": 346974,
+            "decoded_windows": 7
+          },
+          {
+            "offset": 9424107,
+            "length": 4096,
+            "replay_us": 20107,
+            "base_read_bytes": 12124160,
+            "delta_read_bytes": 342860,
+            "decoded_windows": 7
+          },
+          {
+            "offset": 14136161,
+            "length": 4096,
+            "replay_us": 8218,
+            "base_read_bytes": 6094848,
+            "delta_read_bytes": 169178,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 22617857,
+            "length": 4096,
+            "replay_us": 12271,
+            "base_read_bytes": 7602176,
+            "delta_read_bytes": 332494,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 28268226,
+            "length": 4096,
+            "replay_us": 2851,
+            "base_read_bytes": 4261938,
+            "delta_read_bytes": 3709,
+            "decoded_windows": 3
+          }
+        ]
+      }
+    ],
+    "cached": [
+      {
+        "mode": "raw",
+        "encoded_bytes": 4229336,
+        "base_stored_bytes": 9520989,
+        "base_open_micros": 357920,
+        "encode_ms": 708,
+        "whole_replay_micros": 212855,
+        "range_4k_replay_micros": 1894,
+        "range_base_read_bytes": 1376256,
+        "decoded_sha256": "40307e5f5c65a4b4220bbf35dbe014348780589ea2964003f0bf318fa14640e1"
+      },
+      {
+        "mode": "normalized",
+        "encoded_bytes": 1962141,
+        "base_stored_bytes": 9190234,
+        "base_open_micros": 293105,
+        "encode_ms": 663,
+        "whole_replay_micros": 139551,
+        "range_4k_replay_micros": 127738,
+        "range_base_read_bytes": 32211993,
+        "decoded_sha256": "40307e5f5c65a4b4220bbf35dbe014348780589ea2964003f0bf318fa14640e1",
+        "indexed_table_bytes": 2312,
+        "indexed_4k_ranges": [
+          {
+            "offset": 0,
+            "length": 4096,
+            "replay_us": 1139,
+            "base_read_bytes": 1179648,
+            "delta_read_bytes": 2205,
+            "decoded_windows": 1
+          },
+          {
+            "offset": 4038903,
+            "length": 4096,
+            "replay_us": 15873,
+            "base_read_bytes": 9633792,
+            "delta_read_bytes": 344769,
+            "decoded_windows": 6
+          },
+          {
+            "offset": 9424107,
+            "length": 4096,
+            "replay_us": 20126,
+            "base_read_bytes": 9502720,
+            "delta_read_bytes": 340655,
+            "decoded_windows": 6
+          },
+          {
+            "offset": 14136161,
+            "length": 4096,
+            "replay_us": 9565,
+            "base_read_bytes": 4784128,
+            "delta_read_bytes": 166973,
+            "decoded_windows": 3
+          },
+          {
+            "offset": 22617857,
+            "length": 4096,
+            "replay_us": 7742,
+            "base_read_bytes": 3670016,
+            "delta_read_bytes": 166247,
+            "decoded_windows": 2
+          },
+          {
+            "offset": 28268226,
+            "length": 4096,
+            "replay_us": 2253,
+            "base_read_bytes": 2720793,
+            "delta_read_bytes": 2957,
+            "decoded_windows": 2
+          }
+        ]
+      }
+    ]
+  },
+  "link": {
+    "independent": [
+      {
+        "mode": "raw",
+        "encoded_bytes": 1045659,
+        "base_stored_bytes": 3080766,
+        "base_open_micros": 59264,
+        "encode_ms": 497,
+        "whole_replay_micros": 36695,
+        "range_4k_replay_micros": 3451,
+        "range_base_read_bytes": 2818048,
+        "decoded_sha256": "e2248a29fbbf15dac1fe72c9d646776dbcd38c9813b78182fe01a4a47f3299c3"
+      },
+      {
+        "mode": "normalized",
+        "encoded_bytes": 598066,
+        "base_stored_bytes": 3058072,
+        "base_open_micros": 64948,
+        "encode_ms": 414,
+        "whole_replay_micros": 35162,
+        "range_4k_replay_micros": 98079,
+        "range_base_read_bytes": 8220905,
+        "decoded_sha256": "e2248a29fbbf15dac1fe72c9d646776dbcd38c9813b78182fe01a4a47f3299c3",
+        "indexed_table_bytes": 2358,
+        "indexed_4k_ranges": [
+          {
+            "offset": 0,
+            "length": 4096,
+            "replay_us": 15158,
+            "base_read_bytes": 8716288,
+            "delta_read_bytes": 10654,
+            "decoded_windows": 7
+          },
+          {
+            "offset": 1041316,
+            "length": 4096,
+            "replay_us": 19752,
+            "base_read_bytes": 6225920,
+            "delta_read_bytes": 104612,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 2429739,
+            "length": 4096,
+            "replay_us": 13772,
+            "base_read_bytes": 6881280,
+            "delta_read_bytes": 110904,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 3644609,
+            "length": 4096,
+            "replay_us": 11439,
+            "base_read_bytes": 5701632,
+            "delta_read_bytes": 191293,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 5831374,
+            "length": 4096,
+            "replay_us": 14787,
+            "base_read_bytes": 6553600,
+            "delta_read_bytes": 339944,
+            "decoded_windows": 4
+          },
+          {
+            "offset": 7285122,
+            "length": 4096,
+            "replay_us": 8091,
+            "base_read_bytes": 5235154,
+            "delta_read_bytes": 168812,
+            "decoded_windows": 3
+          }
+        ]
+      }
+    ],
+    "cached": [
+      {
+        "mode": "raw",
+        "encoded_bytes": 1045659,
+        "base_stored_bytes": 3080766,
+        "base_open_micros": 68868,
+        "encode_ms": 443,
+        "whole_replay_micros": 31668,
+        "range_4k_replay_micros": 3206,
+        "range_base_read_bytes": 2818048,
+        "decoded_sha256": "e2248a29fbbf15dac1fe72c9d646776dbcd38c9813b78182fe01a4a47f3299c3"
+      },
+      {
+        "mode": "normalized",
+        "encoded_bytes": 598066,
+        "base_stored_bytes": 3058072,
+        "base_open_micros": 67790,
+        "encode_ms": 437,
+        "whole_replay_micros": 32845,
+        "range_4k_replay_micros": 29914,
+        "range_base_read_bytes": 8220905,
+        "decoded_sha256": "e2248a29fbbf15dac1fe72c9d646776dbcd38c9813b78182fe01a4a47f3299c3",
+        "indexed_table_bytes": 2358,
+        "indexed_4k_ranges": [
+          {
+            "offset": 0,
+            "length": 4096,
+            "replay_us": 1119,
+            "base_read_bytes": 1245184,
+            "delta_read_bytes": 1522,
+            "decoded_windows": 1
+          },
+          {
+            "offset": 1041316,
+            "length": 4096,
+            "replay_us": 7681,
+            "base_read_bytes": 3473408,
+            "delta_read_bytes": 103090,
+            "decoded_windows": 3
+          },
+          {
+            "offset": 2429739,
+            "length": 4096,
+            "replay_us": 7903,
+            "base_read_bytes": 4063232,
+            "delta_read_bytes": 109382,
+            "decoded_windows": 3
+          },
+          {
+            "offset": 3644609,
+            "length": 4096,
+            "replay_us": 7037,
+            "base_read_bytes": 4063232,
+            "delta_read_bytes": 189771,
+            "decoded_windows": 3
+          },
+          {
+            "offset": 5831374,
+            "length": 4096,
+            "replay_us": 7207,
+            "base_read_bytes": 3211264,
+            "delta_read_bytes": 169972,
+            "decoded_windows": 2
+          },
+          {
+            "offset": 7285122,
+            "length": 4096,
+            "replay_us": 3995,
+            "base_read_bytes": 3174633,
+            "delta_read_bytes": 85167,
+            "decoded_windows": 2
+          }
+        ]
+      }
+    ]
+  }
+}

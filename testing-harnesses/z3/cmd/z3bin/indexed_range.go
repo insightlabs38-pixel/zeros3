@@ -65,7 +65,7 @@ type indexedRange struct {
 	DecodedWindows int   `json:"decoded_windows"`
 }
 
-func measureExecutableIndex(path string, target, want []byte, record *dcore.WRecord, base io.ReaderAt, params dcore.WParams) (int, []indexedRange, error) {
+func measureExecutableIndex(path string, target, want []byte, record *dcore.WRecord, base io.ReaderAt, params dcore.WParams, reuseRangeWindows bool) (int, []indexedRange, error) {
 	spans, err := executableStreamSpans(target)
 	if err != nil {
 		return 0, nil, err
@@ -116,6 +116,16 @@ func measureExecutableIndex(path string, target, want []byte, record *dcore.WRec
 		n := min(int64(4096), size-pos)
 		sample := indexedRange{Offset: pos, Length: n}
 		start := time.Now()
+		decode := func(off, n int64) ([]byte, dcore.WDecodeStats, error) {
+			return record.DecodeRange(base, params, off, n)
+		}
+		if reuseRangeWindows {
+			reader, err := record.NewRangeReader(base, params, 8<<20)
+			if err != nil {
+				return 0, nil, err
+			}
+			decode = reader.DecodeRange
+		}
 		read := func(kind string, region int, off, n int64) ([]byte, error) {
 			span, ok := lookup[key{kind, region}]
 			if !ok && kind == "refs" {
@@ -130,7 +140,7 @@ func measureExecutableIndex(path string, target, want []byte, record *dcore.WRec
 			if n < 0 || n > span.Size-off {
 				return nil, fmt.Errorf("invalid %s/%d stream range", kind, region)
 			}
-			data, stats, err := record.DecodeRange(base, params, span.Offset+off, n)
+			data, stats, err := decode(span.Offset+off, n)
 			sample.BaseReadBytes += stats.BaseReadBytes
 			sample.DeltaReadBytes += stats.PayloadBytes
 			sample.DecodedWindows += stats.Frames

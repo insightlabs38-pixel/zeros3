@@ -1,0 +1,28 @@
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/Q4_K
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S-strict
+=== RUN   TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ4_XS
+--- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive (54.79s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/Q4_K (5.26s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S (32.14s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ3_S-strict (10.95s)
+    --- PASS: TestAuthorityZN7QuantizedDerivationKeepsSourceAndImatrixAlive/IQ4_XS (6.43s)
+=== RUN   TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds
+=== RUN   TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds/hardstream
+=== RUN   TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds/zn7iq3s
+--- PASS: TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds (47.97s)
+    --- PASS: TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds/hardstream (1.82s)
+    --- PASS: TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds/zn7iq3s (24.37s)
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/ordinary
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_values
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_imatrix
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_derived_scale
+--- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes (0.02s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/ordinary (0.01s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_values (0.00s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_imatrix (0.00s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_derived_scale (0.00s)
+PASS
+ok  	zeros3	102.819s

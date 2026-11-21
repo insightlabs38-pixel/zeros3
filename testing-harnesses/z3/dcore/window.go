@@ -787,15 +787,49 @@ func (w *WRecord) Decode(dst io.Writer, base io.ReaderAt, wp WParams) (WDecodeSt
 	return st, nil
 }
 
+// WRangeReader reuses authenticated target frames and source pages across
+// logical slices of one request. Its base and record must remain immutable.
+type WRangeReader struct {
+	record *WRecord
+	base   *pageView
+	limit  int64
+	bytes  int64
+	frames map[int][]byte
+	order  []int
+	buffer []byte
+}
+
+// NewRangeReader bounds retained target frame bytes separately from source
+// pages. A zero frame budget preserves one-shot range decoding.
+func (w *WRecord) NewRangeReader(base io.ReaderAt, wp WParams, frameBytes int64) (*WRangeReader, error) {
+	if !wp.valid() || frameBytes < 0 {
+		return nil, ErrParams
+	}
+	return &WRangeReader{
+		record: w, base: newPageView(base, w.BaseSize, wp.PageSize, wp.CachePages),
+		limit: frameBytes,
+	}, nil
+}
+
 // DecodeRange returns target[off:off+n] by decoding only the covering frames.
 func (w *WRecord) DecodeRange(base io.ReaderAt, wp WParams, off, n int64) ([]byte, WDecodeStats, error) {
+	r, err := w.NewRangeReader(base, wp, 0)
+	if err != nil {
+		return nil, WDecodeStats{}, err
+	}
+	return r.DecodeRange(off, n)
+}
+
+// DecodeRange reports the work of this call, excluding previously authenticated
+// frames and source pages already in the request's caches.
+func (r *WRangeReader) DecodeRange(off, n int64) ([]byte, WDecodeStats, error) {
 	var st WDecodeStats
-	if !wp.valid() || off < 0 || n < 0 || off > w.Size || n > w.Size-off {
+	w := r.record
+	if off < 0 || n < 0 || off > w.Size || n > w.Size-off {
 		return nil, st, ErrParams
 	}
-	v := newPageView(base, w.BaseSize, wp.PageSize, wp.CachePages)
+	before := r.base.Reads
 	out := make([]byte, 0, n)
-	// first frame containing off
 	lo, hi := 0, len(w.frames)
 	for lo < hi {
 		m := (lo + hi) / 2
@@ -805,18 +839,49 @@ func (w *WRecord) DecodeRange(base io.ReaderAt, wp WParams, off, n int64) ([]byt
 			hi = m
 		}
 	}
-	buf := make([]byte, w.maxWindow)
 	for i := lo; i < len(w.frames) && int64(len(out)) < n; i++ {
-		fb := buf[:w.frames[i].tlen]
-		if err := w.decodeFrame(i, v, fb); err != nil {
-			return nil, st, err
+		frame, ok := r.frames[i]
+		if !ok {
+			var err error
+			frame, err = r.loadFrame(i)
+			if err != nil {
+				return nil, st, err
+			}
+			st.Frames++
+			st.PayloadBytes += w.frames[i].plen
 		}
 		from := max(off-w.tstart[i], 0)
-		to := min(int64(len(fb)), off+n-w.tstart[i])
-		out = append(out, fb[from:to]...)
-		st.Frames++
-		st.PayloadBytes += w.frames[i].plen
+		to := min(int64(len(frame)), off+n-w.tstart[i])
+		out = append(out, frame[from:to]...)
 	}
-	st.BaseReadBytes = v.Reads
+	st.BaseReadBytes = r.base.Reads - before
 	return out, st, nil
+}
+
+func (r *WRangeReader) loadFrame(i int) ([]byte, error) {
+	n := r.record.frames[i].tlen
+	if n > r.limit {
+		if r.buffer == nil {
+			r.buffer = make([]byte, r.record.maxWindow)
+		}
+		frame := r.buffer[:n]
+		return frame, r.record.decodeFrame(i, r.base, frame)
+	}
+	for r.bytes+n > r.limit {
+		old := r.order[0]
+		r.order = r.order[1:]
+		r.bytes -= int64(len(r.frames[old]))
+		delete(r.frames, old)
+	}
+	frame := make([]byte, n)
+	if err := r.record.decodeFrame(i, r.base, frame); err != nil {
+		return nil, err
+	}
+	if r.frames == nil {
+		r.frames = make(map[int][]byte)
+	}
+	r.frames[i] = frame
+	r.order = append(r.order, i)
+	r.bytes += n
+	return frame, nil
 }

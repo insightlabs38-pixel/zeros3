@@ -154,7 +154,7 @@ func openExecutableBase(path string, expected [32]byte) ([]byte, int64, error) {
 	return result, stored, nil
 }
 
-func checkExecutableDelta(path, mode string, base, target, want []byte, normalized bool) (exactExecutableDelta, error) {
+func checkExecutableDelta(path, mode string, base, target, want []byte, normalized, reuseRangeWindows bool) (exactExecutableDelta, error) {
 	stats := exactExecutableDelta{Mode: mode}
 	params := dcore.DefaultWParams()
 	params.Window, params.Workers = 1<<20, 2
@@ -234,7 +234,7 @@ func checkExecutableDelta(path, mode string, base, target, want []byte, normaliz
 		return stats, fmt.Errorf("%s range replay mismatch: %v", mode, err)
 	}
 	if normalized {
-		stats.IndexedTableBytes, stats.IndexedRanges, err = measureExecutableIndex(path+".index", target, want, record, baseInput, params)
+		stats.IndexedTableBytes, stats.IndexedRanges, err = measureExecutableIndex(path+".index", target, want, record, baseInput, params, reuseRangeWindows)
 		if err != nil {
 			return stats, err
 		}
@@ -247,6 +247,7 @@ func runExactExecutableDelta(args []string) {
 	baseline := fs.String("base", "", "base binary")
 	current := fs.String("cur", "", "current binary")
 	out := fs.String("out", "", "new directory for the encoded records")
+	independentRanges := fs.Bool("independent-range-streams", false, "measure each stream slice with a fresh decoder")
 	fs.Parse(args)
 	if *baseline == "" || *current == "" || *out == "" {
 		fatal(fmt.Errorf("exact-delta requires -base, -cur and -out"))
@@ -255,7 +256,7 @@ func runExactExecutableDelta(args []string) {
 	if err := os.Mkdir(*out, 0o700); err != nil {
 		fatal(err)
 	}
-	plain, err := checkExecutableDelta(filepath.Join(*out, "raw.zdw"), "raw", base.Data, target.Data, target.Data, false)
+	plain, err := checkExecutableDelta(filepath.Join(*out, "raw.zdw"), "raw", base.Data, target.Data, target.Data, false, false)
 	if err != nil {
 		fatal(err)
 	}
@@ -275,7 +276,7 @@ func runExactExecutableDelta(args []string) {
 		return wire
 	}
 	baseWire, targetWire := normalizeOne(base), normalizeOne(target)
-	norm, err := checkExecutableDelta(filepath.Join(*out, "normalized.zdw"), "normalized", baseWire, targetWire, target.Data, true)
+	norm, err := checkExecutableDelta(filepath.Join(*out, "normalized.zdw"), "normalized", baseWire, targetWire, target.Data, true, !*independentRanges)
 	if err != nil {
 		fatal(err)
 	}

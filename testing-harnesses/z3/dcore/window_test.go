@@ -122,6 +122,49 @@ func TestWindowRange(t *testing.T) {
 	}
 }
 
+func TestWindowRangeReaderReusesVerifiedFrames(t *testing.T) {
+	base := rnd(9, 80_000)
+	target := append([]byte(nil), base...)
+	target[101] ^= 1
+	params := wp(2)
+	encoded, _ := encodeW(t, base, target, params)
+	record, err := OpenWRecord(bytes.NewReader(encoded), int64(len(encoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := record.NewRangeReader(bytes.NewReader(base), params, params.Window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, off := range []int64{101, 120, params.Window + 120, 101} {
+		got, stats, err := reader.DecodeRange(off, 19)
+		if err != nil || !bytes.Equal(got, target[off:off+19]) {
+			t.Fatalf("range %d: %v", off, err)
+		}
+		wantFrames := 1
+		if i == 1 {
+			wantFrames = 0
+			if stats.BaseReadBytes != 0 || stats.PayloadBytes != 0 {
+				t.Fatalf("retained frame fetched bytes: %+v", stats)
+			}
+		}
+		if stats.Frames != wantFrames {
+			t.Fatalf("range %d decoded %d frames, want %d", off, stats.Frames, wantFrames)
+		}
+	}
+	bad := bytes.Clone(base)
+	bad[1010] ^= 1
+	reader, err = record.NewRangeReader(bytes.NewReader(bad), params, params.Window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if got, _, err := reader.DecodeRange(1010, 1); got != nil || err != ErrWindowAuth {
+			t.Fatalf("corrupt frame: bytes %v, err %v", got, err)
+		}
+	}
+}
+
 // A corrupt base byte inside a COPY the frame touches must be detected by the
 // frame hash, and a corrupted record must fail closed; untouched frames still decode.
 func TestWindowAuthentication(t *testing.T) {

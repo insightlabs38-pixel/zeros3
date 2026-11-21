@@ -1,0 +1,6 @@
+4720bbf4ea8c95da4bef7d716b89c914ce678b57e7833f327f3ea2c2f51d16a6  /workspace/work/zeros3/toolchains/go1.27.1/pkg/tool/linux_amd64/asm
+a67997d99985e3ef3ecd30f029685d67d778a0c8f78b852396ef7738426c04b5  /workspace/work/zeros3/toolchains/go1.27.4/pkg/tool/linux_amd64/asm
+3780fc07130d6d45096373acf062cc316940d253e2a1d892ece03a3bdd0d21d4  /workspace/work/zeros3/toolchains/go1.27.1/pkg/tool/linux_amd64/compile
+40307e5f5c65a4b4220bbf35dbe014348780589ea2964003f0bf318fa14640e1  /workspace/work/zeros3/toolchains/go1.27.4/pkg/tool/linux_amd64/compile
+a29ac5e8f64111b0b5c5d31e452f18abf7ee79f44b421081b5509c8939d92ba9  /workspace/work/zeros3/toolchains/go1.27.1/pkg/tool/linux_amd64/link
+e2248a29fbbf15dac1fe72c9d646776dbcd38c9813b78182fe01a4a47f3299c3  /workspace/work/zeros3/toolchains/go1.27.4/pkg/tool/linux_amd64/link

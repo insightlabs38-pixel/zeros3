@@ -1,0 +1,4 @@
+b2f9714a1d49e78aedb3feea987dce7930a3d8cc569049205852cba48e0e098b  testing-harnesses/z3/dcore/window.go
+890477c7dbe499819add191229bf734f6bd9b2dadb4118ee5c26c3ac2efd11da  testing-harnesses/z3/dcore/window_test.go
+44dbd463bd34a69bf5fd40fed359d004be26fe9ede350385ab9483a2e37c8bd8  testing-harnesses/z3/cmd/z3bin/exact_delta.go
+7e2cd3ea9aaa82126a5f508d77c0cab024cc1cc813b93e25d53bfeaed679ed8b  testing-harnesses/z3/cmd/z3bin/indexed_range.go

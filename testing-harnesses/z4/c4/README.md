@@ -58,3 +58,19 @@ target remains unmet, and extended integrity remains **PENDING 30-DAY RUN**.
 [Compaction, repack and integrity results](results/compact-control.json)
 
 Run `python3 testing-harnesses/z4/c4/summarize.py PREPARED_RUN` to review the elapsed observation window, gaps, independent HTTP checks, verification failures and both performance gates without modifying the prepared store. It reports incomplete observations explicitly. Start a new run if the pilot binary or preparation harness changes.
+
+## Research resample
+
+One new preparation and observation at `c1a22bb` used the original
+nine pinned Coreutils and Pythia inputs. Cold admitted one object, used
+2.49% more allocated space, and passed all 96 signed byte checks and
+both deep verifies. Whole-read throughput was 1.00× CDC on
+first-process reads and 0.94× on repeat reads in this one sample.
+These measurements were collected under shared load.
+
+Preserve the cold policy's existing gates and the measured negative
+storage result. Request-local window reuse reduces selected nested
+range costs. It did not make this cohort a blended storage win. The
+30-day observation is deferred release evidence.
+
+[Current sample details](results/research-resample.json)
