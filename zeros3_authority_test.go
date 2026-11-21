@@ -2976,6 +2976,45 @@ func TestAuthorityMultiBasePortfolioEconomics(t *testing.T) {
 			}
 			planned[bases-1] = targetPlan.AddedBytes
 			pol.Apply = true
+			if bases == 2 {
+				allocated := func() int64 {
+					var blocks int64
+					mustOK(t, filepath.WalkDir(l.dir, func(path string, d os.DirEntry, err error) error {
+						if err != nil || d.IsDir() {
+							return err
+						}
+						info, err := d.Info()
+						if err == nil {
+							blocks += info.Sys().(*syscall.Stat_t).Blocks
+						}
+						return err
+					}))
+					return blocks * 512
+				}
+				before := allocated()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				withTestHook(t, func(point string) {
+					if point == hookAuthProofDone {
+						cancel()
+					}
+				})
+				stopped, err := l.s.AuthorityMigrateContext(ctx, pol)
+				if !errors.Is(err, context.Canceled) || stopped.Admitted != 0 {
+					t.Fatalf("canceled two-base proof: %+v %v", stopped, err)
+				}
+				staged := allocated() - before
+				for _, data := range [][]byte{first, second, target} {
+					rec, err := l.s.authLoad(sha256.Sum256(data))
+					if err != nil || rec != nil {
+						t.Fatalf("cancellation published an authority record: %+v %v", rec, err)
+					}
+				}
+				l.exact("after canceled two-base proof")
+				l.verifyOK("after canceled two-base proof")
+				l.reclaim()
+				t.Logf("canceled proof staged %d allocated bytes, store after reclaim %d bytes (original %d)", staged, allocated(), before)
+			}
 			_, err = l.s.AuthorityMigrate(pol)
 			mustOK(t, err)
 			if rec := mustLoad(t, l.s, sha); len(rec.Bases) != bases {

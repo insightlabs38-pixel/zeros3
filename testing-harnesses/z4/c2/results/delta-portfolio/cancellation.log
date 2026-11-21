@@ -1,0 +1,17 @@
+=== RUN   TestAuthorityMultiBasePortfolioEconomics
+=== RUN   TestAuthorityMultiBasePortfolioEconomics/max-bases=1
+    zeros3_authority_test.go:3027: marginal bytes 264166, retained store bytes 1318836
+=== RUN   TestAuthorityMultiBasePortfolioEconomics/max-bases=2
+    zeros3_authority_test.go:3016: canceled proof staged 4096 allocated bytes, store after reclaim 1597440 bytes (original 1597440)
+    zeros3_authority_test.go:3027: marginal bytes 1795, retained store bytes 1056469
+--- PASS: TestAuthorityMultiBasePortfolioEconomics (0.78s)
+    --- PASS: TestAuthorityMultiBasePortfolioEconomics/max-bases=1 (0.36s)
+    --- PASS: TestAuthorityMultiBasePortfolioEconomics/max-bases=2 (0.41s)
+=== RUN   TestAuthorityMigrationCancellationBeforePublication
+=== RUN   TestAuthorityMigrationCancellationBeforePublication/auth-components-flushed
+=== RUN   TestAuthorityMigrationCancellationBeforePublication/auth-proof-done
+--- PASS: TestAuthorityMigrationCancellationBeforePublication (0.31s)
+    --- PASS: TestAuthorityMigrationCancellationBeforePublication/auth-components-flushed (0.15s)
+    --- PASS: TestAuthorityMigrationCancellationBeforePublication/auth-proof-done (0.16s)
+PASS
+ok  	zeros3	1.104s

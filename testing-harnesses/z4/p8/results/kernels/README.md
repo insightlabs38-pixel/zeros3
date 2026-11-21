@@ -23,3 +23,24 @@ the P0 tar fetch and Q6 fetch, then run:
 ZEROS3_KERNEL_CORPUS=CORPUS ZEROS3_KERNEL_RESULTS=ABS_JSONL GOMAXPROCS=2 \
   go -C testing-harnesses/z3 test -run '^TestMatcherKernelsExperiment$' -count=1 -v ./dcore
 ```
+
+## Go 1.27.4 confirmation
+
+The same patch ran on `d893247` without other queue jobs running. All
+36 reconstructions matched the target digest. Median build plus match
+times in milliseconds, three runs per cell:
+
+| Family | P8 | Sorted | Blocked |
+| --- | ---: | ---: | ---: |
+| Coreutils tar | 282.87 | 424.99 | 337.31 |
+| Newtonsoft CLR | 30.08 | 191.63 | 75.71 |
+| F-Droid DEX | 77.89 | 207.84 | 130.30 |
+| Deterministic unrelated | 97.17 | 477.94 | 240.96 |
+
+Blocked saved 44.6% of median allocated bytes on the tar cell, 17.9%
+on CLR and 26.6% on DEX. Unrelated input allocated 21.1% more.
+The best tar size changed by 238 bytes in a roughly 3.2 MB estimated
+envelope. Other envelope lengths were identical. The size column in the
+raw data measures the dcore envelope, without pack allocation or GC.
+The original tar speed advantage did not reproduce. Retain P8 for these
+workloads and keep the memory trade-off as evidence for future designs.

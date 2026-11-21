@@ -47,3 +47,11 @@ recompression. Both modes include pack framing and estimate payload and
 record sizes independently of filesystem rounding.
 
 [Trial reports and hashes](trials.json)
+
+Cancellation after exact proof of the complementary two-base delta left
+one 4 KiB allocated block staged and zero published authority records.
+Reclamation returned the fixture to its original 1,597,440 allocated
+bytes. Retrying selected both bases, and exact current reads and deep
+retained-history verification passed. The separate representative
+history test also canceled at both component flush and completed proof,
+then checked reopen, reclamation and retry.
