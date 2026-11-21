@@ -1,0 +1,6 @@
+=== RUN   TestFixedArchitectureInputs
+    architecture_test.go:109: amd64 identical-input fixture SHA-256 bb33cba346f1ae26ffe0952f9229ea6d1b31f4bac10197e80177527f1c8c9fa0 with 181 vectors
+    architecture_test.go:127: checked 296 profile and input pairs
+--- PASS: TestFixedArchitectureInputs (6.66s)
+PASS
+ok  	zeros3-z3/qcore	6.739s

@@ -1,0 +1,14 @@
+=== RUN   TestConformanceGolden
+--- PASS: TestConformanceGolden (7.95s)
+=== RUN   TestConformanceGoldenFMA
+    conformance_test.go:255: Q2_K/heavy/imatrix: 2/36 blocks differ from oracle (first 24)
+--- FAIL: TestConformanceGoldenFMA (18.49s)
+=== RUN   TestFMA32Exact
+--- PASS: TestFMA32Exact (8.11s)
+=== RUN   TestF16
+--- PASS: TestF16 (0.99s)
+=== RUN   TestIQ3SAbortIsAnError
+--- PASS: TestIQ3SAbortIsAnError (0.25s)
+FAIL
+FAIL	zeros3-z3/qcore	35.861s
+FAIL

@@ -1,0 +1,75 @@
+[
+  {
+    "mode": "raw",
+    "encoded_bytes": 666344,
+    "base_stored_bytes": 2119860,
+    "base_open_micros": 111307,
+    "encode_ms": 1312,
+    "whole_replay_micros": 33648,
+    "range_4k_replay_micros": 6029,
+    "range_base_read_bytes": 2686976,
+    "decoded_sha256": "a67997d99985e3ef3ecd30f029685d67d778a0c8f78b852396ef7738426c04b5"
+  },
+  {
+    "mode": "normalized",
+    "encoded_bytes": 249935,
+    "base_stored_bytes": 2089538,
+    "base_open_micros": 202646,
+    "encode_ms": 1027,
+    "whole_replay_micros": 82229,
+    "range_4k_replay_micros": 75213,
+    "range_base_read_bytes": 6341358,
+    "decoded_sha256": "a67997d99985e3ef3ecd30f029685d67d778a0c8f78b852396ef7738426c04b5",
+    "indexed_table_bytes": 2310,
+    "indexed_4k_ranges": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "replay_us": 10601,
+        "base_read_bytes": 8257536,
+        "delta_read_bytes": 9317,
+        "decoded_windows": 7
+      },
+      {
+        "offset": 776522,
+        "length": 4096,
+        "replay_us": 10053,
+        "base_read_bytes": 4915200,
+        "delta_read_bytes": 20173,
+        "decoded_windows": 4
+      },
+      {
+        "offset": 1811885,
+        "length": 4096,
+        "replay_us": 23439,
+        "base_read_bytes": 5373952,
+        "delta_read_bytes": 20664,
+        "decoded_windows": 4
+      },
+      {
+        "offset": 2717828,
+        "length": 4096,
+        "replay_us": 44240,
+        "base_read_bytes": 4915200,
+        "delta_read_bytes": 197769,
+        "decoded_windows": 4
+      },
+      {
+        "offset": 4348525,
+        "length": 4096,
+        "replay_us": 7806,
+        "base_read_bytes": 5308416,
+        "delta_read_bytes": 223392,
+        "decoded_windows": 4
+      },
+      {
+        "offset": 5431561,
+        "length": 4096,
+        "replay_us": 1048,
+        "base_read_bytes": 1410524,
+        "delta_read_bytes": 1347,
+        "decoded_windows": 3
+      }
+    ]
+  }
+]

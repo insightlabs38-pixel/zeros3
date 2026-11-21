@@ -1,0 +1,490 @@
+[
+  {
+    "trial": 0,
+    "mode": "baseline",
+    "binary_sha256": "7f45d20623ebdc320dfeac0bbb44ed9d77feb3d92835e156510d14826f2b708c",
+    "key": "IQ3_M.gguf",
+    "sha256": "e8a0e942fe93529b7601a7620c8aa1bdc1bede40ff668ed9d6339686384392d7",
+    "whole_seconds": 1.517672,
+    "whole_mib_s": 56.688316869675646,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.455075
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.207665
+      },
+      {
+        "phase": "first-range",
+        "offset": 18042694,
+        "seconds": 0.148632
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 18042694,
+        "seconds": 0.130438
+      },
+      {
+        "phase": "first-range",
+        "offset": 45106736,
+        "seconds": 0.097404
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 45106736,
+        "seconds": 0.097499
+      },
+      {
+        "phase": "first-range",
+        "offset": 67660104,
+        "seconds": 0.172849
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 67660104,
+        "seconds": 0.096141
+      },
+      {
+        "phase": "first-range",
+        "offset": 90209376,
+        "seconds": 0.116857
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 90209376,
+        "seconds": 0.090939
+      }
+    ]
+  },
+  {
+    "trial": 0,
+    "mode": "baseline",
+    "binary_sha256": "7f45d20623ebdc320dfeac0bbb44ed9d77feb3d92835e156510d14826f2b708c",
+    "key": "IQ3_XS.gguf",
+    "sha256": "dfb39501dd5f4b5e0bf0285e195ba044b5fd1b2b26eb12c166c116d5c867bbce",
+    "whole_seconds": 0.979562,
+    "whole_mib_s": 85.87109172222827,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.005875
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.041007
+      },
+      {
+        "phase": "first-range",
+        "offset": 17640416,
+        "seconds": 0.003337
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 17640416,
+        "seconds": 0.002497
+      },
+      {
+        "phase": "first-range",
+        "offset": 44101040,
+        "seconds": 0.00202
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 44101040,
+        "seconds": 0.004367
+      },
+      {
+        "phase": "first-range",
+        "offset": 66151560,
+        "seconds": 0.007979
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 66151560,
+        "seconds": 0.010755
+      },
+      {
+        "phase": "first-range",
+        "offset": 88197984,
+        "seconds": 0.002235
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 88197984,
+        "seconds": 0.035001
+      }
+    ]
+  },
+  {
+    "trial": 1,
+    "mode": "candidate",
+    "binary_sha256": "a602ee04f7d7d7d9ce77483bfb0ab16961447a9bbbd757a96bcc1510c9004061",
+    "key": "IQ3_M.gguf",
+    "sha256": "e8a0e942fe93529b7601a7620c8aa1bdc1bede40ff668ed9d6339686384392d7",
+    "whole_seconds": 0.959828,
+    "whole_mib_s": 89.63509216258994,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.078115
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.076613
+      },
+      {
+        "phase": "first-range",
+        "offset": 18042694,
+        "seconds": 0.071253
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 18042694,
+        "seconds": 0.043842
+      },
+      {
+        "phase": "first-range",
+        "offset": 45106736,
+        "seconds": 0.057248
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 45106736,
+        "seconds": 0.033906
+      },
+      {
+        "phase": "first-range",
+        "offset": 67660104,
+        "seconds": 0.078964
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 67660104,
+        "seconds": 0.079883
+      },
+      {
+        "phase": "first-range",
+        "offset": 90209376,
+        "seconds": 0.060081
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 90209376,
+        "seconds": 0.085965
+      }
+    ]
+  },
+  {
+    "trial": 1,
+    "mode": "candidate",
+    "binary_sha256": "a602ee04f7d7d7d9ce77483bfb0ab16961447a9bbbd757a96bcc1510c9004061",
+    "key": "IQ3_XS.gguf",
+    "sha256": "dfb39501dd5f4b5e0bf0285e195ba044b5fd1b2b26eb12c166c116d5c867bbce",
+    "whole_seconds": 0.557638,
+    "whole_mib_s": 150.84348331643358,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.008468
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.00879
+      },
+      {
+        "phase": "first-range",
+        "offset": 17640416,
+        "seconds": 0.001733
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 17640416,
+        "seconds": 0.001801
+      },
+      {
+        "phase": "first-range",
+        "offset": 44101040,
+        "seconds": 0.002777
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 44101040,
+        "seconds": 0.001678
+      },
+      {
+        "phase": "first-range",
+        "offset": 66151560,
+        "seconds": 0.001879
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 66151560,
+        "seconds": 0.002235
+      },
+      {
+        "phase": "first-range",
+        "offset": 88197984,
+        "seconds": 0.002322
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 88197984,
+        "seconds": 0.00322
+      }
+    ]
+  },
+  {
+    "trial": 2,
+    "mode": "candidate",
+    "binary_sha256": "a602ee04f7d7d7d9ce77483bfb0ab16961447a9bbbd757a96bcc1510c9004061",
+    "key": "IQ3_M.gguf",
+    "sha256": "e8a0e942fe93529b7601a7620c8aa1bdc1bede40ff668ed9d6339686384392d7",
+    "whole_seconds": 1.147012,
+    "whole_mib_s": 75.00729830222734,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.290715
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.173481
+      },
+      {
+        "phase": "first-range",
+        "offset": 18042694,
+        "seconds": 0.083288
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 18042694,
+        "seconds": 0.236129
+      },
+      {
+        "phase": "first-range",
+        "offset": 45106736,
+        "seconds": 0.091026
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 45106736,
+        "seconds": 0.096671
+      },
+      {
+        "phase": "first-range",
+        "offset": 67660104,
+        "seconds": 0.052659
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 67660104,
+        "seconds": 0.095521
+      },
+      {
+        "phase": "first-range",
+        "offset": 90209376,
+        "seconds": 0.037277
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 90209376,
+        "seconds": 0.07384
+      }
+    ]
+  },
+  {
+    "trial": 2,
+    "mode": "candidate",
+    "binary_sha256": "a602ee04f7d7d7d9ce77483bfb0ab16961447a9bbbd757a96bcc1510c9004061",
+    "key": "IQ3_XS.gguf",
+    "sha256": "dfb39501dd5f4b5e0bf0285e195ba044b5fd1b2b26eb12c166c116d5c867bbce",
+    "whole_seconds": 0.814457,
+    "whole_mib_s": 103.27869776993676,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.0127
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.001892
+      },
+      {
+        "phase": "first-range",
+        "offset": 17640416,
+        "seconds": 0.03254
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 17640416,
+        "seconds": 0.001826
+      },
+      {
+        "phase": "first-range",
+        "offset": 44101040,
+        "seconds": 0.011326
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 44101040,
+        "seconds": 0.001279
+      },
+      {
+        "phase": "first-range",
+        "offset": 66151560,
+        "seconds": 0.002014
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 66151560,
+        "seconds": 0.02617
+      },
+      {
+        "phase": "first-range",
+        "offset": 88197984,
+        "seconds": 0.002511
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 88197984,
+        "seconds": 0.001191
+      }
+    ]
+  },
+  {
+    "trial": 3,
+    "mode": "baseline",
+    "binary_sha256": "7f45d20623ebdc320dfeac0bbb44ed9d77feb3d92835e156510d14826f2b708c",
+    "key": "IQ3_M.gguf",
+    "sha256": "e8a0e942fe93529b7601a7620c8aa1bdc1bede40ff668ed9d6339686384392d7",
+    "whole_seconds": 1.369614,
+    "whole_mib_s": 62.816436777248455,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.156166
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.306279
+      },
+      {
+        "phase": "first-range",
+        "offset": 18042694,
+        "seconds": 0.181623
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 18042694,
+        "seconds": 0.173447
+      },
+      {
+        "phase": "first-range",
+        "offset": 45106736,
+        "seconds": 0.094971
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 45106736,
+        "seconds": 0.089871
+      },
+      {
+        "phase": "first-range",
+        "offset": 67660104,
+        "seconds": 0.193159
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 67660104,
+        "seconds": 0.095985
+      },
+      {
+        "phase": "first-range",
+        "offset": 90209376,
+        "seconds": 0.1142
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 90209376,
+        "seconds": 0.060991
+      }
+    ]
+  },
+  {
+    "trial": 3,
+    "mode": "baseline",
+    "binary_sha256": "7f45d20623ebdc320dfeac0bbb44ed9d77feb3d92835e156510d14826f2b708c",
+    "key": "IQ3_XS.gguf",
+    "sha256": "dfb39501dd5f4b5e0bf0285e195ba044b5fd1b2b26eb12c166c116d5c867bbce",
+    "whole_seconds": 0.92392,
+    "whole_mib_s": 91.04257765781603,
+    "ranges": [
+      {
+        "phase": "first-range",
+        "offset": 4194304,
+        "seconds": 0.007827
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 4194304,
+        "seconds": 0.002198
+      },
+      {
+        "phase": "first-range",
+        "offset": 17640416,
+        "seconds": 0.002404
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 17640416,
+        "seconds": 0.001847
+      },
+      {
+        "phase": "first-range",
+        "offset": 44101040,
+        "seconds": 0.034817
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 44101040,
+        "seconds": 0.006665
+      },
+      {
+        "phase": "first-range",
+        "offset": 66151560,
+        "seconds": 0.003872
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 66151560,
+        "seconds": 0.001632
+      },
+      {
+        "phase": "first-range",
+        "offset": 88197984,
+        "seconds": 0.001613
+      },
+      {
+        "phase": "repeat-range",
+        "offset": 88197984,
+        "seconds": 0.006449
+      }
+    ]
+  }
+]

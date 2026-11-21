@@ -1,0 +1,3 @@
+2026/11/20 20:31:21 zeros3: authoritative body of manifest 01a1fbba-a8a2-77d7-877b-99c6177feb6d unreadable, trying its CDC chunk list: authority: reconstruction does not equal the object: pack: chunk a55d093e4db2c2c813a8c08672059da92587e451daa6b924e6b3d5d8bf3699bc is corrupt (content hash mismatch)
+PASS
+ok  	zeros3	86.048s

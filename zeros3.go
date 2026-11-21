@@ -117,10 +117,10 @@ import (
 //    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    44747    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49269    Windowed and estimated similarity deltas (extracted dcore)
-//    50798    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58438    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64710    CLI dispatch, HTTP server/startup, and main
+//    49274    Windowed and estimated similarity deltas (extracted dcore)
+//    50803    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58487    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    64759    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -46451,11 +46451,16 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 	ctx := s.newAuthCtx()
 	body, _, err := ctx.body(sha, 0, 1)
 	if err != nil {
+		ctx.close()
 		return nil, err
+	}
+	if zn, ok := body.(*authZN7Body); ok && !whole && rng.end-rng.start+1 <= authReadPiece {
+		zn.directRange = true
 	}
 	rd := &authObjReader{ctx: ctx, body: body, off: rng.start, end: rng.end, whole: whole, h: sha256.New(), want: sha}
 	first, err := rd.next()
 	if err != nil && err != io.EOF {
+		rd.close()
 		return nil, err
 	}
 	if whole {
@@ -54703,6 +54708,12 @@ func (e *ncNumcore_encoder) planOpaque(ti int, t *ncNumcoreTensor) (*ncNumcore_t
 func (e *ncNumcore_encoder) codeWindow(t *ncNumcoreTDir, pl *ncNumcore_tplan, k int64, tw []byte, dry bool) (ncNumcoreWDir, []byte, error) {
 	wd := ncNumcoreWDir{Sum: ncNumcore_sum16(tw)}
 	var payload []byte
+	storeRaw := func() {
+		wd.Mode, wd.Coder, payload = ncNumcoreMRaw, ncNumcoreCStore, tw
+		if z := ncNumcore_deflateBytes(tw); len(z) < len(tw) {
+			wd.Coder, payload = ncNumcoreCFlate, z
+		}
+	}
 	var baseData ncNumcoreBase
 	haveBase := false
 	base := func(ctx context.Context, lo int64, n int) (ncNumcoreBase, error) {
@@ -54718,7 +54729,11 @@ func (e *ncNumcore_encoder) codeWindow(t *ncNumcoreTDir, pl *ncNumcore_tplan, k 
 	switch {
 	case t.Q != nil:
 		_, by := ncNumcore_qBlock(ncNumcore_mustQ(t.DT))
-		got, err := ncNumcore_quantWindow(e.ctx, t, k, len(tw), base, pl.qw)
+		got, err := ncNumcore_quantWindow(e.ctx, t, k, len(tw), base, pl.qw, true)
+		if errors.Is(err, ncNumcoreErrNonportableQuant) {
+			storeRaw()
+			break
+		}
 		if err != nil {
 			return wd, nil, err
 		}
@@ -54742,10 +54757,7 @@ func (e *ncNumcore_encoder) codeWindow(t *ncNumcoreTDir, pl *ncNumcore_tplan, k 
 				break
 			}
 		}
-		wd.Mode, wd.Coder, payload = ncNumcoreMRaw, ncNumcoreCStore, tw
-		if z := ncNumcore_deflateBytes(tw); len(z) < len(tw) {
-			wd.Coder, payload = ncNumcoreCFlate, z
-		}
+		storeRaw()
 	default:
 		cd, data := t.DT, tw
 		if t.DT == ncNumcoreDF32 && !e.o.NoNarrow {
@@ -56428,7 +56440,10 @@ func ncNumcore_floatsOf(b ncNumcoreBase, viaF16 bool) []float32 {
 }
 
 // quantWindow quantizes the base rows of a window with the recorded producer profile.
-func ncNumcore_quantWindow(ctx context.Context, t *ncNumcoreTDir, k int64, nbytes int, base ncNumcore_baseFn, qw []float32) ([]byte, error) {
+// Retain exact raw bytes when authoring cannot count on the same floating-point replay across peers.
+var ncNumcoreErrNonportableQuant = errors.New("numcore: nonportable quantization input")
+
+func ncNumcore_quantWindow(ctx context.Context, t *ncNumcoreTDir, k int64, nbytes int, base ncNumcore_baseFn, qw []float32, requirePortable bool) ([]byte, error) {
 	q := ncNumcore_mustQ(t.DT)
 	el, by := ncNumcore_qBlock(q)
 	nb := nbytes / by
@@ -56439,9 +56454,28 @@ func ncNumcore_quantWindow(ctx context.Context, t *ncNumcoreTDir, k int64, nbyte
 	if !b.DT.IsFloat() || b.n() != nb*el {
 		return nil, ncNumcoreErrFormat7
 	}
+	floats := ncNumcore_floatsOf(b, t.Q.ViaF16)
+	if requirePortable {
+		for _, values := range [2][]float32{floats, qw} {
+			for _, value := range values {
+				if math.Float32bits(value)&0x7f800000 == 0x7f800000 {
+					return nil, ncNumcoreErrNonportableQuant
+				}
+			}
+		}
+	}
 	out := make([]byte, nbytes)
-	if err := ncQcoreQuantize(out, q, ncNumcore_floatsOf(b, t.Q.ViaF16), int(t.Cols), qw, ncQcoreArith(t.Q.Arith)); err != nil {
+	if err := ncQcoreQuantize(out, q, floats, int(t.Cols), qw, ncQcoreArith(t.Q.Arith)); err != nil {
 		return nil, ncNumcoreErrFormat7
+	}
+	// IQ4_NL's arithmetic can overflow on finite values. Nonfinite scales
+	// reproduced different bits under the same profile on amd64 and arm64.
+	if requirePortable && q == ncQcoreIQ4_NL {
+		for i := 0; i < len(out); i += by {
+			if out[i+1]&0x7c == 0x7c {
+				return nil, ncNumcoreErrNonportableQuant
+			}
+		}
 	}
 	return out, nil
 }
@@ -56520,7 +56554,7 @@ func ncNumcore_rebuildQuant(ctx context.Context, t *ncNumcoreTDir, wd *ncNumcore
 			return ncNumcoreErrMissing7
 		}
 	}
-	out, err := ncNumcore_quantWindow(ctx, t, k, len(dst), base, qw)
+	out, err := ncNumcore_quantWindow(ctx, t, k, len(dst), base, qw, false)
 	if err != nil {
 		return err
 	}
@@ -58111,14 +58145,15 @@ func authZN7IsContainer(c *authCtx, rec *authRecord) bool {
 
 // authZN7Body serves a ZN7 record: windows are decoded on demand from the container and the bases.
 type authZN7Body struct {
-	c    *authCtx
-	rec  *authRecord
-	obj  *ncNumcoreObject
-	res  *authZN7Res
-	opt  ncNumcoreDecOpts
-	mu   sync.Mutex
-	buf  []byte
-	boff int64
+	c           *authCtx
+	rec         *authRecord
+	obj         *ncNumcoreObject
+	res         *authZN7Res
+	opt         ncNumcoreDecOpts
+	mu          sync.Mutex
+	buf         []byte
+	boff        int64
+	directRange bool
 }
 
 func (c *authCtx) newZN7(rec *authRecord, blob *pieceSeq, depth int) (authBody, error) {
@@ -58174,6 +58209,20 @@ func (b *authZN7Body) Size() int64 { return b.rec.Size }
 func (b *authZN7Body) ReadAt(p []byte, off int64) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// Small requests use the container's authenticated window directory.
+	// Sequential reads retain the larger prefetch to amortize reconstruction.
+	if b.directRange && off >= 0 && off < b.rec.Size && len(p) > 0 {
+		n := min(int64(len(p)), b.rec.Size-off)
+		data, _, err := b.obj.ReadRange(context.Background(), off, n, b.res, b.opt)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %v", errAuthMismatch, err)
+		}
+		copied := copy(p, data)
+		if copied < len(p) {
+			return copied, io.EOF
+		}
+		return copied, nil
+	}
 	n := 0
 	for n < len(p) && off < b.rec.Size {
 		if b.boff < 0 || off < b.boff || off >= b.boff+int64(len(b.buf)) {

@@ -71,15 +71,17 @@ func replayExecutableStreams(wire []byte) ([]byte, error) {
 }
 
 type exactExecutableDelta struct {
-	Mode              string `json:"mode"`
-	EncodedBytes      int64  `json:"encoded_bytes"`
-	BaseStoredBytes   int64  `json:"base_stored_bytes"`
-	BaseOpenMicros    int64  `json:"base_open_micros"`
-	EncodeMS          int64  `json:"encode_ms"`
-	WholeReplayMicros int64  `json:"whole_replay_micros"`
-	RangeReplayMicros int64  `json:"range_4k_replay_micros"`
-	RangeBaseRead     int64  `json:"range_base_read_bytes"`
-	DecodedSHA        string `json:"decoded_sha256"`
+	Mode              string         `json:"mode"`
+	EncodedBytes      int64          `json:"encoded_bytes"`
+	BaseStoredBytes   int64          `json:"base_stored_bytes"`
+	BaseOpenMicros    int64          `json:"base_open_micros"`
+	EncodeMS          int64          `json:"encode_ms"`
+	WholeReplayMicros int64          `json:"whole_replay_micros"`
+	RangeReplayMicros int64          `json:"range_4k_replay_micros"`
+	RangeBaseRead     int64          `json:"range_base_read_bytes"`
+	DecodedSHA        string         `json:"decoded_sha256"`
+	IndexedTableBytes int            `json:"indexed_table_bytes,omitempty"`
+	IndexedRanges     []indexedRange `json:"indexed_4k_ranges,omitempty"`
 }
 
 // Persist a comparable base for each experiment, including the decoded size
@@ -230,6 +232,12 @@ func checkExecutableDelta(path, mode string, base, target, want []byte, normaliz
 	stats.RangeReplayMicros = time.Since(started).Microseconds()
 	if err != nil || !bytes.Equal(mid, want[offset:end]) {
 		return stats, fmt.Errorf("%s range replay mismatch: %v", mode, err)
+	}
+	if normalized {
+		stats.IndexedTableBytes, stats.IndexedRanges, err = measureExecutableIndex(path+".index", target, want, record, baseInput, params)
+		if err != nil {
+			return stats, err
+		}
 	}
 	return stats, nil
 }
