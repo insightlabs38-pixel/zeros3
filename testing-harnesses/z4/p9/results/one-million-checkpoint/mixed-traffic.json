@@ -1,0 +1,19 @@
+{
+  "reads_exact": 192,
+  "conditional_puts_exact_after_kill": 24,
+  "original_objects_exact_after_kill": 6,
+  "lock_refusals": {
+    "gc": 1,
+    "repack": 1
+  },
+  "read_end_to_end": {
+    "p50_ms": 56.997,
+    "p95_ms": 102.65,
+    "p99_ms": 201.432
+  },
+  "write_end_to_end": {
+    "p50_ms": 87.087,
+    "p95_ms": 131.71,
+    "p99_ms": 152.631
+  }
+}

@@ -1,0 +1,1 @@
+zeros3: repack: store is currently in use by another process -- repack requires exclusive access; stop `zeros3 serve`/any other maintenance command against this store first
