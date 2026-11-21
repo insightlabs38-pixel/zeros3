@@ -1321,6 +1321,12 @@ func TestRepELFSectionsPreserveGapsAndOverlaps(t *testing.T) {
 		t.Fatalf("expected the existing concat wire kind, got %d", call.Rep.Kind)
 	}
 	l.exact("ELF including unclaimed bytes")
+	for _, off := range edges[1 : len(edges)-1] {
+		start, end := off-2, off+2
+		if got := repReadAll(t, l.s, man, byteRange{start, end}); !bytes.Equal(got, body[start:end+1]) {
+			t.Fatalf("range across ELF boundary %d differs", off)
+		}
+	}
 	writeSection(2, 1, 100_000, 300_000)
 	l.put("bad-elf", body)
 	_, bad := l.manifest("bad-elf")

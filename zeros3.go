@@ -121,10 +121,10 @@ import (
 //    28281    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28916    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    46089    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52991    Windowed and estimated similarity deltas (extracted dcore)
-//    54520    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62212    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68484    CLI dispatch, HTTP server/startup, and main
+//    52998    Windowed and estimated similarity deltas (extracted dcore)
+//    54527    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62219    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68491    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47073,6 +47073,7 @@ const (
 	authPlanSrcCacheMin    = 96 << 20  // floor once whole in-memory sources are in scope
 	authPlanWinCacheMax    = 160 << 20 // and what four of the largest in-memory objects may raise it to
 	authProofWinBytes      = 16 << 20  // decoded windows one proof of a windowed body keeps
+	authNestedReadWinBytes = 8 << 20   // decoded base windows kept within one nested read
 	authProofPieceBytes    = 8 << 20   // verified base chunks the same proof keeps
 	authProofFrames        = 96        // decoded frames per delta body a proof keeps (128 KiB of target each)
 )
@@ -47569,6 +47570,12 @@ func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authB
 	if len(rec.Bases) != 1 || wr.BaseSHA != rec.Bases[0].SHA || wr.BaseSize != rec.Bases[0].Size || wr.Size != rec.Size || wr.SHA != rec.SHA || wr.maxWindow > authWinMaxWindow {
 		return nil, fmt.Errorf("%w: windowed envelope does not match its record", errAuthCorrupt)
 	}
+	wc := c.wc
+	if depth == 1 && rec.Depth > 1 && wc == nil {
+		// COPY ranges within one target window can revisit the same base
+		// window many times. Share verified base windows only for this read.
+		c.wc = newAuthWinCache(authNestedReadWinBytes)
+	}
 	b, brec, err := c.body(wr.BaseSHA, wr.BaseSize, depth+1)
 	if err != nil {
 		return nil, err
@@ -47576,7 +47583,7 @@ func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authB
 	if int(rec.Depth) < int(brec.Depth)+1 {
 		return nil, fmt.Errorf("%w: recorded depth %d below the base's %d", errAuthCorrupt, rec.Depth, int(brec.Depth)+1)
 	}
-	return &authWinBody{c: c, rec: rec, wr: wr, base: b, wc: c.wc, wp: authWParams(1, wr.BaseSize), off: -1}, nil
+	return &authWinBody{c: c, rec: rec, wr: wr, base: b, wc: wc, wp: authWParams(1, wr.BaseSize), off: -1}, nil
 }
 
 func (b *authWinBody) Size() int64 { return b.rec.Size }
