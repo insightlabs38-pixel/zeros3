@@ -988,6 +988,18 @@ func TestAuthoritySimilarityHotPostingsRetainOlderScopedBase(t *testing.T) {
 		if got := m.candidates(targetPos, []uint64{feature}, false); !slices.Equal(got, []int{basePos}) {
 			t.Fatalf("scope filtered out the older eligible base: got %v, want %d", got, basePos)
 		}
+		// Route the base and target through aliases in the crowded bucket.
+		// Index content IDs and feature postings are independent of aliases.
+		m.order[basePos].bucket, m.order[targetPos].bucket = "other", "other"
+		m.depth = make(map[int]int)
+		for j := range m.order {
+			if j != basePos && j != targetPos {
+				m.depth[j] = m.pol.MaxDepth
+			}
+		}
+		if got := m.candidates(targetPos, []uint64{feature}, false); !slices.Equal(got, []int{basePos}) {
+			t.Fatalf("unusable delta bases consumed the search budget: got %v, want %d", got, basePos)
+		}
 		return
 	}
 	t.Fatal("fixture has no hot feature shared with the older base")

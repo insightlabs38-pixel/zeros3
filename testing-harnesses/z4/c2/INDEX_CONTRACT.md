@@ -173,7 +173,7 @@ demand. This bounds retained directories to about 8 MiB at the generation
 run cap. The migration report distinguishes verified index open time from
 candidate lookup time. The lookup timer covers the reported planning pass.
 For migration, the planner inspects at most 128 recent posting IDs per
-feature and counts up to 64 eligible discoveries. Same-bucket and prefix
+feature and counts up to 64 eligible discoveries. Scope, depth and size
 checks happen before counting an indexed match. Entries already scored by
 the in-memory planner do not consume the persistent match budget.
 

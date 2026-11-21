@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52336    Windowed and estimated similarity deltas (extracted dcore)
-//    53865    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61557    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67829    CLI dispatch, HTTP server/startup, and main
+//    52340    Windowed and estimated similarity deltas (extracted dcore)
+//    53869    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61561    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67833    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -48872,7 +48872,7 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 	if q := m.pol.similarity; q != nil && !q.failed {
 		m.rep.SimilarityQueries++
 		start := time.Now()
-		extra, err := m.indexedCandidates(i, sk)
+		extra, err := m.indexedCandidates(i, sk, windowed)
 		m.rep.SimilarityLookupNanos += time.Since(start).Nanoseconds()
 		if err != nil {
 			q.failed = true
@@ -48890,7 +48890,7 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 	type cs struct{ j, n int }
 	var all []cs
 	for j, n := range score {
-		if m.depth[j] >= m.pol.MaxDepth || !windowed && m.order[j].man.TotalLength > xdMaxObject {
+		if !m.canUseDeltaBase(j, windowed) {
 			continue
 		}
 		all = append(all, cs{j, n})
@@ -48908,7 +48908,11 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 	return out
 }
 
-func (m *authMigrator) indexedCandidates(i int, sk []uint64) (map[int]int, error) {
+func (m *authMigrator) canUseDeltaBase(i int, windowed bool) bool {
+	return m.depth[i] < m.pol.MaxDepth && (windowed || m.order[i].man.TotalLength <= xdMaxObject)
+}
+
+func (m *authMigrator) indexedCandidates(i int, sk []uint64, windowed bool) (map[int]int, error) {
 	q := m.pol.similarity
 	target := m.order[i]
 	if (m.pol.Bucket != "" && target.bucket != m.pol.Bucket) || !strings.HasPrefix(target.key, m.pol.Prefix) {
@@ -48932,7 +48936,7 @@ func (m *authMigrator) indexedCandidates(i int, sk []uint64) (map[int]int, error
 				}
 				pos, eligible := m.indexedBases[sha]
 				j = -1
-				if eligible && pos != i && m.order[pos].bucket == target.bucket &&
+				if eligible && pos != i && m.canUseDeltaBase(pos, windowed) && m.order[pos].bucket == target.bucket &&
 					strings.HasPrefix(m.order[pos].key, m.pol.Prefix) && m.order[pos].man.TotalLength == size {
 					j = pos
 				}
