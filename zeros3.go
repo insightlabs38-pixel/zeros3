@@ -120,11 +120,11 @@ import (
 //    27248    Portable snapshot bundles (`zeros3 bundle`)
 //    28445    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    29080    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    46267    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    53198    Windowed and estimated similarity deltas (extracted dcore)
-//    54727    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62487    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68759    CLI dispatch, HTTP server/startup, and main
+//    46268    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    53478    Windowed and estimated similarity deltas (extracted dcore)
+//    55073    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62833    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    69105    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -35091,7 +35091,8 @@ func (m *manifestReaderAt) initAuthBody() {
 	ctx.pieceCap = authReaderAtPieceBytes
 	ctx.wc = m.wc
 	if m.wc != nil {
-		ctx.pieceCap, ctx.frameCap = authPlanPieceBytes, authProofFrames
+		// Planning readers scan bases and share whole decoded windows between them.
+		ctx.pieceCap, ctx.frameCap, ctx.ranged = authPlanPieceBytes, authProofFrames, false
 	}
 	if b, _, err := ctx.body(sha, 0, 1); err == nil {
 		m.abody = b
@@ -47240,6 +47241,25 @@ type authCtx struct {
 	// frameCap is how many decoded frames each in-memory delta body keeps (0: 16); a proof or a planning reader
 	// walking a chain of deltas revisits the frames of its bases.
 	frameCap int
+	st       authReadStats
+	// cc, when set, is the store's chunk cache: served reads share the verified chunks their dependencies
+	// revisit (base chunks are read by every dependent). Proofs, verification and pricing read storage.
+	cc      *chunkCache
+	ccEpoch uint64
+	// ranged lets windowed bodies serve part of a frame by executing its program over authenticated inputs
+	// instead of reconstructing and digest-checking the whole frame. Proofs and verification leave it off.
+	ranged bool
+	// trace, when set, observes reconstruction events: 'r' chunk requested, 'c' chunk fetched, 'w' window reconstructed,
+	// 'p' program parsed (experiments only; sha names the chunk or the record).
+	trace func(kind byte, sha [32]byte, off, n int64)
+}
+
+// authReadStats counts the reconstruction work of one context (pricing, tests and traces).
+type authReadStats struct {
+	pieceReads, pieceBytes atomic.Int64 // CAS chunk reads that missed the context cache, repeats after eviction included
+	sharedHits             atomic.Int64 // chunks served by the store's chunk cache instead
+	windows, windowBytes   atomic.Int64 // whole frames reconstructed and authenticated by their output digest
+	progs, progBytes       atomic.Int64 // delta program frames parsed and their stored payload bytes
 }
 
 const (
@@ -47257,14 +47277,18 @@ const (
 )
 
 func (s *Store) newAuthCtx() *authCtx {
-	return &authCtx{s: s, open: map[[32]byte]authBody{}, path: map[[32]byte]bool{}, budget: authDefaultBudget, pieceCap: authPieceCacheBytes}
+	c := &authCtx{s: s, open: map[[32]byte]authBody{}, path: map[[32]byte]bool{}, budget: authDefaultBudget, pieceCap: authPieceCacheBytes, ranged: true}
+	if s.ccache.enabled() {
+		c.cc, c.ccEpoch = s.ccache, s.ccache.epoch.Load()
+	}
+	return c
 }
 
 // newAuthScanCtx is a context for one sequential pass over a body (proof, deep verify,
 // measurement, materialization): a chunk is rarely read twice, so its cache stays small.
 func (s *Store) newAuthScanCtx() *authCtx {
 	c := s.newAuthCtx()
-	c.pieceCap = authScanPieceBytes
+	c.pieceCap, c.ranged, c.cc = authScanPieceBytes, false, nil
 	return c
 }
 
@@ -47331,25 +47355,41 @@ func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authReco
 // readPiece may be called by concurrent bodies of one closure (ZN7 window workers): the chunk cache
 // is guarded, the chunk read itself is not.
 func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
+	if c.trace != nil {
+		c.trace('r', p.SHA, 0, p.Len)
+	}
 	c.pmu.Lock()
 	d, ok := c.pieces[p.SHA]
 	c.pmu.Unlock()
 	if ok {
 		return d, nil
 	}
-	data, err := c.s.casRead(p.SHA)
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) != p.Len {
-		return nil, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
+	data, shared := c.cc.get(&p.SHA)
+	if shared = shared && int64(len(data)) == p.Len; shared {
+		c.st.sharedHits.Add(1)
+	} else {
+		var err error
+		if data, err = c.s.casRead(p.SHA); err != nil {
+			return nil, err
+		}
+		if int64(len(data)) != p.Len {
+			return nil, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
+		}
+		c.cc.offer(&p.SHA, data, c.ccEpoch)
+		c.st.pieceReads.Add(1)
+		c.st.pieceBytes.Add(p.Len)
+		if c.trace != nil {
+			c.trace('c', p.SHA, 0, p.Len)
+		}
 	}
 	c.pmu.Lock()
 	defer c.pmu.Unlock()
 	if _, dup := c.pieces[p.SHA]; dup {
 		return data, nil
 	}
-	c.fetched += p.Len
+	if !shared {
+		c.fetched += p.Len
+	}
 	if c.pieces == nil {
 		c.pieces = map[[32]byte][]byte{}
 	}
@@ -47475,6 +47515,7 @@ type authDeltaBody struct {
 	bases  []authBody
 	frames map[int][]xdOp // small FIFO of decoded frames (range reads revisit neighbours)
 	order  []int
+	x      authExecState
 }
 
 func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
@@ -47489,7 +47530,11 @@ func (c *authCtx) newDelta(rec *authRecord, depth int) (authBody, error) {
 		}
 	}
 	var hdr xdHeader
-	for want := 4096; ; want *= 4 {
+	want := 4096
+	if len(rec.Pieces) > 0 && rec.Pieces[0].Len >= 64 {
+		want = int(min(rec.Pieces[0].Len, 4096)) // an aligned header is its own piece
+	}
+	for ; ; want *= 4 {
 		n := int(min(int64(want), blob.size))
 		buf := make([]byte, n)
 		if _, err := blob.ReadAt(buf, 0); err != nil && err != io.EOF {
@@ -47544,6 +47589,11 @@ func (d *authDeltaBody) loadFrame(i int) ([]xdOp, error) {
 	if err != nil {
 		return nil, err
 	}
+	d.c.st.progs.Add(1)
+	d.c.st.progBytes.Add(f.plen)
+	if d.c.trace != nil {
+		d.c.trace('p', d.rec.SHA, f.tpos, f.plen)
+	}
 	if len(d.order) >= max(16, d.c.frameCap) {
 		delete(d.frames, d.order[0])
 		d.order = d.order[1:]
@@ -47561,21 +47611,12 @@ func (d *authDeltaBody) ReadAt(p []byte, off int64) (int, error) {
 		if err != nil {
 			return n, err
 		}
-		oi := sort.Search(len(ops), func(i int) bool { return ops[i].tpos > off }) - 1
-		for ; oi < len(ops) && n < len(p); oi++ {
-			o := ops[oi]
-			skip := off - o.tpos
-			take := int(min(o.n-skip, int64(len(p)-n)))
-			if o.base < 0 {
-				copy(p[n:n+take], o.lit[skip:])
-			} else if k, err := d.bases[o.base].ReadAt(p[n:n+take], o.off+skip); k != take {
-				if err == nil || err == io.EOF {
-					err = fmt.Errorf("%w: short base read", errAuthMismatch)
-				}
-				return n + k, err
-			}
-			n += take
-			off += int64(take)
+		f := d.hdr.frames[fi]
+		k, err := d.x.exec(ops, d.bases, p[n:n+int(min(int64(len(p)-n), f.tpos+f.span-off))], off)
+		n += k
+		off += int64(k)
+		if err != nil {
+			return n, err
 		}
 	}
 	if n < len(p) {
@@ -47679,6 +47720,23 @@ func (c *authWinCache) pushFront(e *authWinEnt) {
 	}
 }
 
+// get returns the cached bytes of k without building them (a nil cache holds nothing).
+func (c *authWinCache) get(k authWinKey) ([]byte, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.m[k]
+	if e == nil {
+		return nil, false
+	}
+	c.unlink(e)
+	c.pushFront(e)
+	c.hits.Add(1)
+	return e.data, true
+}
+
 // load returns the cached bytes of k or builds them once with fn (concurrent callers wait for the one build).
 // The result is shared and must not be modified. A nil cache calls fn.
 func (c *authWinCache) load(k authWinKey, fn func() ([]byte, error)) ([]byte, error) {
@@ -47730,19 +47788,35 @@ func (c *authWinCache) load(k authWinKey, fn func() ([]byte, error)) ([]byte, er
 	return data, err
 }
 
-// authWinBody serves a ZW1 record: one base, frames decoded a window at a time.
+// authWinBody serves a ZW1 record. A read covering whole frames reconstructs them and checks their output
+// digests; a read of part of a frame in a ranged context executes only the operations that produce it
+// (see authExec), each frame's program parsed once and kept while its bytes fit authWinProgBytes.
 type authWinBody struct {
 	c       *authCtx
 	rec     *authRecord
 	wr      *dwDcoreWRecord
 	base    authBody
+	bases   []authBody // {base}, for authExec
 	wp      dwDcoreWParams
 	wc      *authWinCache
 	win     []byte
 	off     int64
 	pv      *dwDcore_pageView // base pages kept between windows
 	scratch []byte
+	// reqEnd is the end of the sequential request a top-level body is serving (0: each ReadAt alone).
+	reqEnd int64
+	progs  map[int]authWinProg
+	porder []int
+	pbytes int64
+	x      authExecState
 }
+
+type authWinProg struct {
+	ops  []xdOp
+	size int64
+}
+
+var authWinProgBytes int64 = 8 << 20 // parsed programs one windowed body keeps, least recently used out (at least one)
 
 func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authBody, error) {
 	wr, err := dwDcoreOpenWRecord(blob, blob.size)
@@ -47765,7 +47839,7 @@ func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authB
 	if int(rec.Depth) < int(brec.Depth)+1 {
 		return nil, fmt.Errorf("%w: recorded depth %d below the base's %d", errAuthCorrupt, rec.Depth, int(brec.Depth)+1)
 	}
-	return &authWinBody{c: c, rec: rec, wr: wr, base: b, wc: wc, wp: authWParams(1, wr.BaseSize), off: -1}, nil
+	return &authWinBody{c: c, rec: rec, wr: wr, base: b, bases: []authBody{b}, wc: wc, wp: authWParams(1, wr.BaseSize), off: -1}, nil
 }
 
 func (b *authWinBody) Size() int64 { return b.rec.Size }
@@ -47773,33 +47847,25 @@ func (b *authWinBody) Size() int64 { return b.rec.Size }
 func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 	n := 0
 	for n < len(p) && off < b.rec.Size {
-		ws := off / b.wr.maxWindow * b.wr.maxWindow
-		if b.off != ws {
-			decode := func(reuse []byte) ([]byte, error) {
-				if b.pv == nil {
-					b.pv = dwDcore_newPageView(b.base, b.wr.BaseSize, b.wp.PageSize, b.wp.CachePages)
-				}
-				data, err := b.wr.DecodeRangeInto(reuse, &b.scratch, b.pv, ws, min(b.wr.maxWindow, b.rec.Size-ws))
+		fi := b.wr.frameAt(off)
+		fs, fl := b.wr.tstart[fi], b.wr.frames[fi].tlen
+		if b.off != fs {
+			key := authWinKey{b.rec.SHA, b.rec.Gen, fs}
+			if data, ok := b.wc.get(key); ok {
+				b.win, b.off = data, fs
+			} else if b.c.ranged && (off > fs || max(off+int64(len(p)-n), b.reqEnd) < fs+fl) {
+				k, err := b.exec(fi, p[n:n+int(min(int64(len(p)-n), fs+fl-off))], off, true)
+				n += k
+				off += int64(k)
 				if err != nil {
-					b.pv = nil
-					return nil, fmt.Errorf("%w: %v", errAuthMismatch, err)
+					return n, err
 				}
-				return data, nil
-			}
-			var data []byte
-			var err error
-			if wc := b.wc; wc != nil {
-				data, err = wc.load(authWinKey{b.rec.SHA, b.rec.Gen, ws}, func() ([]byte, error) { return decode(nil) })
-			} else {
-				data, err = decode(b.win)
-			}
-			if err != nil {
-				b.off = -1
+				continue
+			} else if err := b.window(fi, key); err != nil {
 				return n, err
 			}
-			b.win, b.off = data, ws
 		}
-		k := copy(p[n:], b.win[off-ws:])
+		k := copy(p[n:], b.win[off-fs:])
 		n += k
 		off += int64(k)
 	}
@@ -47807,6 +47873,171 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 		return n, io.EOF
 	}
 	return n, nil
+}
+
+// window reconstructs frame fi whole and authenticates it by its output digest. A ranged context runs the
+// frame's program through authExec, so its base is read only where COPY operations point; otherwise the
+// frame decoder walks the base through a page view.
+func (b *authWinBody) window(fi int, key authWinKey) error {
+	fs, fl := b.wr.tstart[fi], b.wr.frames[fi].tlen
+	decode := func(reuse []byte) ([]byte, error) {
+		if b.c.ranged {
+			out := slices.Grow(reuse[:0], int(fl))[:fl]
+			if _, err := b.exec(fi, out, fs, false); err != nil {
+				return nil, err
+			}
+			if sha256.Sum256(out) != b.wr.frames[fi].sum {
+				return nil, fmt.Errorf("%w: frame %d digest", errAuthMismatch, fi)
+			}
+			b.c.st.windows.Add(1)
+			b.c.st.windowBytes.Add(fl)
+			if b.c.trace != nil {
+				b.c.trace('w', b.rec.SHA, fs, fl)
+			}
+			return out, nil
+		}
+		if b.pv == nil {
+			b.pv = dwDcore_newPageView(b.base, b.wr.BaseSize, b.wp.PageSize, b.wp.CachePages)
+		}
+		data, err := b.wr.DecodeRangeInto(reuse, &b.scratch, b.pv, fs, fl)
+		if err != nil {
+			b.pv = nil
+			return nil, fmt.Errorf("%w: %v", errAuthMismatch, err)
+		}
+		b.c.st.windows.Add(1)
+		b.c.st.windowBytes.Add(fl)
+		if b.c.trace != nil {
+			b.c.trace('w', b.rec.SHA, fs, fl)
+		}
+		return data, nil
+	}
+	var data []byte
+	var err error
+	if b.wc != nil {
+		data, err = b.wc.load(key, func() ([]byte, error) { return decode(nil) })
+	} else {
+		data, err = decode(b.win)
+	}
+	if err != nil {
+		b.off = -1
+		return err
+	}
+	b.win, b.off = data, fs
+	return nil
+}
+
+// exec produces p = target[off:off+len(p)) inside frame fi from that frame's program, keeping the parsed
+// program when keep is set (a frame reconstructed whole is not executed again).
+func (b *authWinBody) exec(fi int, p []byte, off int64, keep bool) (int, error) {
+	pr, ok := b.progs[fi]
+	if ok {
+		if i := slices.Index(b.porder, fi); i < len(b.porder)-1 { // least recently used first
+			b.porder = append(slices.Delete(b.porder, i, i+1), fi)
+		}
+	} else {
+		ops, prog, err := b.wr.program(fi)
+		if err != nil {
+			if errors.Is(err, dwDcoreErrWindowFormat) {
+				err = fmt.Errorf("%w: frame %d: %v", errAuthCorrupt, fi, err)
+			}
+			return 0, err
+		}
+		pr = authWinProg{ops, int64(len(prog)) + int64(len(ops))*56} // 56: the size of an xdOp
+		b.c.st.progs.Add(1)
+		b.c.st.progBytes.Add(b.wr.frames[fi].plen)
+		if b.c.trace != nil {
+			b.c.trace('p', b.rec.SHA, b.wr.tstart[fi], b.wr.frames[fi].plen)
+		}
+		if !keep {
+			return b.x.exec(ops, b.bases, p, off)
+		}
+		if b.progs == nil {
+			b.progs = map[int]authWinProg{}
+		}
+		for len(b.porder) > 0 && b.pbytes+pr.size > authWinProgBytes {
+			b.pbytes -= b.progs[b.porder[0]].size
+			delete(b.progs, b.porder[0])
+			b.porder = b.porder[1:]
+		}
+		b.progs[fi], b.porder, b.pbytes = pr, append(b.porder, fi), b.pbytes+pr.size
+	}
+	return b.x.exec(pr.ops, b.bases, p, off)
+}
+
+// authExecState is the reusable scratch of one body's range executor.
+type authExecState struct {
+	cps []authCopy
+	buf []byte
+}
+
+type authCopy struct {
+	base   int
+	src, n int64
+	dst    int
+}
+
+const authExecGap = 512 // COPY sources this close are read from their base as one extent
+
+// exec writes p = target[off:off+len(p)) from ops, a contiguous program in target order that starts at or
+// before off; it stops where ops end and returns the bytes produced. Literals are copied directly. COPY
+// sources are sorted per base and merged when they overlap or nearly touch, so every needed base interval
+// is requested once, in order, and only the needed intervals are reconstructed below.
+func (x *authExecState) exec(ops []xdOp, bases []authBody, p []byte, off int64) (int, error) {
+	i := sort.Search(len(ops), func(i int) bool { return ops[i].tpos+ops[i].n > off })
+	cs := x.cps[:0]
+	n := 0
+	for ; i < len(ops) && n < len(p); i++ {
+		o := ops[i]
+		skip := off + int64(n) - o.tpos
+		take := int(min(o.n-skip, int64(len(p)-n)))
+		if o.base < 0 {
+			copy(p[n:n+take], o.lit[skip:])
+		} else {
+			cs = append(cs, authCopy{o.base, o.off + skip, int64(take), n})
+		}
+		n += take
+	}
+	x.cps = cs
+	if len(cs) > 1 {
+		slices.SortFunc(cs, func(a, b authCopy) int { return cmp.Or(cmp.Compare(a.base, b.base), cmp.Compare(a.src, b.src)) })
+	}
+	for j := 0; j < len(cs); {
+		lo, hi, need := cs[j].src, cs[j].src+cs[j].n, cs[j].n
+		k := j + 1
+		for ; k < len(cs) && cs[k].base == cs[j].base && cs[k].src <= hi+authExecGap; k++ {
+			if h := max(hi, cs[k].src+cs[k].n); h-lo <= 2*(need+cs[k].n)+authExecGap {
+				hi, need = h, need+cs[k].n
+			} else {
+				break
+			}
+		}
+		if k == j+1 {
+			c := cs[j]
+			if err := authReadFull(bases[c.base], p[c.dst:c.dst+int(c.n)], c.src); err != nil {
+				return 0, err
+			}
+		} else {
+			x.buf = slices.Grow(x.buf[:0], int(hi-lo))[:hi-lo]
+			if err := authReadFull(bases[cs[j].base], x.buf, lo); err != nil {
+				return 0, err
+			}
+			for _, c := range cs[j:k] {
+				copy(p[c.dst:c.dst+int(c.n)], x.buf[c.src-lo:])
+			}
+		}
+		j = k
+	}
+	return n, nil
+}
+
+func authReadFull(b authBody, p []byte, off int64) error {
+	if k, err := b.ReadAt(p, off); k != len(p) {
+		if err == nil || err == io.EOF {
+			err = fmt.Errorf("%w: short base read", errAuthMismatch)
+		}
+		return err
+	}
+	return nil
 }
 
 // authObjAt is a concurrency-safe ReaderAt over one object's served bytes: every
@@ -47881,6 +48112,19 @@ func (w *authPieceWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return total - len(p), w.err
+}
+
+// authAlignFill is how full a piece may grow from small units before the next unit starts a new one.
+const authAlignFill = 8 << 10
+
+// align is told that the next n bytes form one unit a reader fetches alone (a frame program, the frame
+// table; n < 0 ends the piece unconditionally). It ends the current piece early when that unit would
+// otherwise straddle a piece boundary or join an already sizeable piece, so a range read fetches its own
+// units instead of whole neighbours. Piece boundaries are not part of any format.
+func (w *authPieceWriter) align(n int64) {
+	if fill := int64(len(w.buf)); fill > 0 && (n < 0 || fill+n > xdPieceSize || fill >= authAlignFill) {
+		w.flushPiece()
+	}
 }
 
 func (w *authPieceWriter) flushPiece() {
@@ -48004,6 +48248,9 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 	}
 	if zn, ok := body.(*authZN7Body); ok && !whole && rng.end-rng.start+1 <= authReadPiece {
 		zn.directRange = true
+	}
+	if wb, ok := body.(*authWinBody); ok {
+		wb.reqEnd = rng.end + 1 // frames the request covers whole are reconstructed and digest-checked
 	}
 	rd := &authObjReader{ctx: ctx, body: body, off: rng.start, end: rng.end, whole: whole, h: sha256.New(), want: sha}
 	first, err := rd.next()
@@ -48694,7 +48941,35 @@ func (s *Store) manifestBytes(man manifestV1) ([]byte, error) {
 	return out, nil
 }
 
-// authWritePieces durably stores a blob as fixed-size CAS chunks.
+// authPieceEnds splits an in-memory blob the way authPieceWriter does: pieces of xdPieceSize, aligned to
+// the header and frame programs when the blob is an xd envelope. It returns each piece's end offset.
+func authPieceEnds(blob []byte) []int {
+	var units []int64
+	if h, more, err := xdParseHeader(blob); err == nil && !more && h.total == int64(len(blob)) {
+		units = append(units, h.hdrLen)
+		for _, f := range h.frames {
+			units = append(units, f.plen)
+		}
+	} else {
+		units = []int64{int64(len(blob))}
+	}
+	var ends []int
+	start, end := 0, 0
+	for _, n := range units {
+		if fill := int64(end - start); fill > 0 && (fill+n > xdPieceSize || fill >= authAlignFill) {
+			ends, start = append(ends, end), end
+		}
+		for end += int(n); end-start >= xdPieceSize; start += xdPieceSize {
+			ends = append(ends, start+xdPieceSize)
+		}
+	}
+	if end > start {
+		ends = append(ends, end)
+	}
+	return ends
+}
+
+// authWritePieces durably stores a blob as CAS chunks split by authPieceEnds.
 func (s *Store) authWritePieces(ctx context.Context, blob []byte) ([]authPiece, error) {
 	if err := authFaultAt("pieces-write"); err != nil {
 		return nil, err
@@ -48702,16 +48977,17 @@ func (s *Store) authWritePieces(ctx context.Context, blob []byte) ([]authPiece, 
 	b := s.newCASBatch()
 	defer b.Abort()
 	var ps []authPiece
-	for off := 0; off < len(blob); off += xdPieceSize {
+	off := 0
+	for _, end := range authPieceEnds(blob) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		end := min(off+xdPieceSize, len(blob))
 		sum, err := b.Add(blob[off:end])
 		if err != nil {
 			return nil, err
 		}
 		ps = append(ps, authPiece{sum, int64(end - off)})
+		off = end
 	}
 	if err := b.Flush(); err != nil {
 		return nil, err
@@ -48809,7 +49085,7 @@ func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, pins m
 				return 0, 0, err
 			}
 			pc := s.newAuthScanCtx()
-			pc.overlay = ctx.overlay
+			pc.overlay, pc.ranged = ctx.overlay, true // priced with the served range reader
 			pb, _, perr := pc.body(rec.SHA, 0, 1)
 			if perr != nil {
 				return 0, 0, perr
@@ -49676,7 +49952,10 @@ func (m *authMigrator) deltaAddedBytes(o *authObj, rec *authRecord, blob []byte,
 	}
 	var added int64
 	seen := make(map[[32]byte]bool)
-	for off, p := range rec.Pieces {
+	start := 0
+	for _, p := range rec.Pieces {
+		piece := blob[start : start+int(p.Len)]
+		start += int(p.Len)
 		if seen[p.SHA] {
 			continue
 		}
@@ -49686,8 +49965,7 @@ func (m *authMigrator) deltaAddedBytes(o *authObj, rec *authRecord, blob []byte,
 			refs--
 		}
 		if refs <= 0 {
-			start := off * xdPieceSize
-			data, _ := comp.encode(blob[start : start+int(p.Len)])
+			data, _ := comp.encode(piece)
 			added += int64(len(data)) + packRecordBytes
 		}
 	}
@@ -49827,9 +50105,10 @@ func (m *authMigrator) bestDelta(o *authObj, target []byte, sk []uint64, srcs []
 			continue
 		}
 		rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth), Sketch: sk, Bases: refs}
-		for start := 0; start < len(blob); start += xdPieceSize {
-			piece := blob[start:min(start+xdPieceSize, len(blob))]
-			rec.Pieces = append(rec.Pieces, authPiece{sha256.Sum256(piece), int64(len(piece))})
+		start := 0
+		for _, end := range authPieceEnds(blob) {
+			rec.Pieces = append(rec.Pieces, authPiece{sha256.Sum256(blob[start:end]), int64(end - start)})
+			start = end
 		}
 		added, err := m.deltaAddedBytes(o, rec, blob, bj, comp)
 		if err != nil {
@@ -51432,6 +51711,7 @@ func (s *Store) AuthorityReadCost(man manifestV1, off, n int64) (fetched int64, 
 		return 0, false, lerr
 	}
 	ctx := s.newAuthCtx()
+	ctx.cc = nil // the cold cost: every chunk from storage
 	defer ctx.close()
 	body, _, err := ctx.body(sha, 0, 1)
 	if err != nil {
@@ -54264,6 +54544,10 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 	if _, err := dst.Write([]byte(dwDcore_wMagic)); err != nil {
 		return st, err
 	}
+	al, _ := dst.(dwDcore_aligner)
+	if al != nil {
+		al.align(-1)
+	}
 	offset := int64(len(dwDcore_wMagic))
 	type job struct {
 		n    int
@@ -54330,6 +54614,9 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 				wrErr = j.err
 			}
 			if wrErr == nil {
+				if al != nil {
+					al.align(int64(len(j.out)))
+				}
 				if _, err := dst.Write(j.out); err != nil {
 					wrErr = err
 				} else {
@@ -54386,6 +54673,9 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 	binary.LittleEndian.PutUint64(tr[12:], uint64(len(tbl)))
 	binary.LittleEndian.PutUint32(tr[20:], crc32.Checksum(tbl, dwDcore_crcTab))
 	binary.LittleEndian.PutUint64(tr[24:], uint64(len(recs)))
+	if al != nil {
+		al.align(int64(len(tbl)) + dwDcore_wTrailerLen)
+	}
 	if _, err := dst.Write(tbl); err != nil {
 		return st, err
 	}
@@ -54401,6 +54691,10 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 }
 
 var dwDcore_crcTab = crc32.MakeTable(crc32.Castagnoli)
+
+// dwDcore_aligner is an optional capability of WEncode's destination: it is told the size of each unit
+// (magic, frame program, table with trailer) before the unit is written.
+type dwDcore_aligner interface{ align(n int64) }
 
 func dwDcore_buildFrameProgram(ops []dwDcoreOp) []byte {
 	var p []byte
@@ -54538,24 +54832,29 @@ func (c *dwDcore_cursor) uv() uint64 {
 	return v
 }
 
-// decodeFrame reconstructs one frame into out (len == frame target length)
-// and authenticates it against the frame SHA-256.
-func (w *dwDcoreWRecord) decodeFrame(i int, base *dwDcore_pageView, out []byte) error {
+// payload reads frame i's program, inflating it when the frame is compressed.
+func (w *dwDcoreWRecord) payload(i int) ([]byte, error) {
 	f := w.frames[i]
 	payload := make([]byte, f.plen)
 	if _, err := dwDcore_readFull(w.r, payload, w.pstart[i]); err != nil {
-		return err
+		return nil, err
 	}
-	prog := payload
-	if f.mode == 1 {
-		limit := 8*f.tlen + 64<<10
-		zr := flate.NewReader(bytes.NewReader(payload))
-		var err error
-		prog, err = io.ReadAll(io.LimitReader(zr, limit+1))
-		if cerr := zr.Close(); err != nil || cerr != nil || int64(len(prog)) > limit {
-			return dwDcoreErrWindowFormat
-		}
+	if f.mode != 1 {
+		return payload, nil
 	}
+	limit := 8*f.tlen + 64<<10
+	zr := flate.NewReader(bytes.NewReader(payload))
+	prog, err := io.ReadAll(io.LimitReader(zr, limit+1))
+	if cerr := zr.Close(); err != nil || cerr != nil || int64(len(prog)) > limit {
+		return nil, dwDcoreErrWindowFormat
+	}
+	return prog, nil
+}
+
+// eachOp validates frame i's program and calls fn for every operation in target order: base -1 is a
+// literal (lit aliases prog), base 0 a COPY of n bytes at off. tpos is the absolute target offset.
+func (w *dwDcoreWRecord) eachOp(i int, prog []byte, fn func(xdOp) error) error {
+	f := w.frames[i]
 	c := dwDcore_cursor{b: prog}
 	pos := int64(0)
 	for len(c.b) > 0 {
@@ -54563,35 +54862,82 @@ func (w *dwDcoreWRecord) decodeFrame(i int, base *dwDcore_pageView, out []byte) 
 		if c.err != nil {
 			return dwDcoreErrWindowFormat
 		}
+		var o xdOp
 		switch tag[0] {
 		case 0:
 			n := c.uv()
 			if c.err != nil || n == 0 || n > uint64(f.tlen-pos) {
 				return dwDcoreErrWindowFormat
 			}
-			s := c.take(int(n))
+			o = xdOp{n: int64(n), base: -1, lit: c.take(int(n))}
 			if c.err != nil {
 				return dwDcoreErrWindowFormat
 			}
-			copy(out[pos:], s)
-			pos += int64(n)
 		case 1:
 			off, n := c.uv(), c.uv()
 			if c.err != nil || n == 0 || n > uint64(f.tlen-pos) || off > uint64(w.BaseSize) || n > uint64(w.BaseSize)-off {
 				return dwDcoreErrWindowFormat
 			}
-			if err := base.copyTo(int64(off), out[pos:pos+int64(n)]); err != nil {
-				return err
-			}
-			pos += int64(n)
+			o = xdOp{n: int64(n), off: int64(off)}
 		default:
 			return dwDcoreErrWindowFormat
 		}
+		o.tpos = w.tstart[i] + pos
+		if err := fn(o); err != nil {
+			return err
+		}
+		pos += o.n
 	}
-	if pos != f.tlen || sha256.Sum256(out) != f.sum {
+	if pos != f.tlen {
+		return dwDcoreErrWindowFormat
+	}
+	return nil
+}
+
+// program returns frame i's validated operations (see eachOp) and the inflated program they alias.
+func (w *dwDcoreWRecord) program(i int) ([]xdOp, []byte, error) {
+	prog, err := w.payload(i)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ops []xdOp
+	err = w.eachOp(i, prog, func(o xdOp) error {
+		if len(ops) >= xdMaxOps {
+			return dwDcoreErrWindowFormat
+		}
+		ops = append(ops, o)
+		return nil
+	})
+	return ops, prog, err
+}
+
+// decodeFrame reconstructs one frame into out (len == frame target length)
+// and authenticates it against the frame SHA-256.
+func (w *dwDcoreWRecord) decodeFrame(i int, base *dwDcore_pageView, out []byte) error {
+	prog, err := w.payload(i)
+	if err != nil {
+		return err
+	}
+	ts := w.tstart[i]
+	if err := w.eachOp(i, prog, func(o xdOp) error {
+		dst := out[o.tpos-ts : o.tpos-ts+o.n]
+		if o.base < 0 {
+			copy(dst, o.lit)
+			return nil
+		}
+		return base.copyTo(o.off, dst)
+	}); err != nil {
+		return err
+	}
+	if sha256.Sum256(out) != w.frames[i].sum {
 		return dwDcoreErrWindowAuth
 	}
 	return nil
+}
+
+// frameAt is the index of the frame holding target offset off (0 <= off < Size).
+func (w *dwDcoreWRecord) frameAt(off int64) int {
+	return sort.Search(len(w.tstart), func(i int) bool { return w.tstart[i] > off }) - 1
 }
 
 func (v *dwDcore_pageView) copyTo(off int64, dst []byte) error {

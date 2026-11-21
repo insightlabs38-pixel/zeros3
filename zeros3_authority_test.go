@@ -3339,6 +3339,257 @@ func TestAuthorityWindowedDelta(t *testing.T) {
 	l.close()
 }
 
+// authFakeBody is an in-memory base that records the intervals requested from it.
+type authFakeBody struct {
+	data  []byte
+	reads [][2]int64
+}
+
+func (b *authFakeBody) Size() int64 { return int64(len(b.data)) }
+func (b *authFakeBody) ReadAt(p []byte, off int64) (int, error) {
+	b.reads = append(b.reads, [2]int64{off, int64(len(p))})
+	if off >= int64(len(b.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// The range executor reproduces every sub-range of a program with literals, overlapping and adjacent
+// COPY sources and two bases, and reads each merged source interval once.
+func TestAuthRangeExecutor(t *testing.T) {
+	b0 := &authFakeBody{data: genRandomBytes(3, 8000)}
+	b1 := &authFakeBody{data: genRandomBytes(4, 300)}
+	bases := []authBody{b0, b1}
+	type seg struct {
+		base   int
+		off, n int64
+		lit    string
+	}
+	segs := []seg{{-1, 0, 0, "AB"}, {0, 100, 10, ""}, {0, 105, 15, ""}, {1, 0, 50, ""}, {0, 120, 10, ""},
+		{-1, 0, 0, "literal"}, {0, 5000, 10, ""}, {0, 101, 3, ""}, {1, 250, 50, ""}}
+	var ops []xdOp
+	var want []byte
+	for _, g := range segs {
+		o := xdOp{tpos: int64(len(want)), base: g.base, off: g.off, n: g.n}
+		if g.base < 0 {
+			o.lit, o.n = []byte(g.lit), int64(len(g.lit))
+			want = append(want, g.lit...)
+		} else {
+			want = append(want, bases[g.base].(*authFakeBody).data[g.off:g.off+g.n]...)
+		}
+		ops = append(ops, o)
+	}
+	var x authExecState
+	for off := 0; off < len(want); off++ {
+		for end := off + 1; end <= len(want); end++ {
+			got := make([]byte, end-off)
+			if n, err := x.exec(ops, bases, got, int64(off)); err != nil || n != len(got) || !bytes.Equal(got, want[off:end]) {
+				t.Fatalf("[%d,%d): n=%d err=%v", off, end, n, err)
+			}
+		}
+	}
+	b0.reads, b1.reads = nil, nil
+	got := make([]byte, len(want))
+	if _, err := x.exec(ops, bases, got, 0); err != nil || !bytes.Equal(got, want) {
+		t.Fatal(err)
+	}
+	if !slices.Equal(b0.reads, [][2]int64{{100, 30}, {5000, 10}}) || !slices.Equal(b1.reads, [][2]int64{{0, 300}}) {
+		t.Fatalf("source intervals not merged once each: %v %v", b0.reads, b1.reads)
+	}
+	// A program the output runs past stops where it ends; a base shorter than a COPY is a mismatch.
+	if n, err := x.exec(ops[:2], bases, make([]byte, 40), 0); err != nil || n != 12 {
+		t.Fatalf("partial program: n=%d err=%v", n, err)
+	}
+	short := []authBody{&authFakeBody{data: b0.data[:104]}, b1}
+	if _, err := x.exec(ops, short, make([]byte, 20), 0); !errors.Is(err, errAuthMismatch) {
+		t.Fatalf("short base accepted: %v", err)
+	}
+}
+
+// Damaged ZW1 programs are refused by the shared parser, never executed past their bounds.
+func TestAuthWindowedProgramValidation(t *testing.T) {
+	base := genRandomBytes(21, 300_000)
+	target := authVersion(base, 77)
+	wp := dwDcoreDefaultWParams()
+	wp.Window = 64 << 10
+	wp.Anchor.MaxAnchors = 1 << 16
+	idx, err := dwDcoreBuildWIndex(bytes.NewReader(base), int64(len(base)), wp.Anchor, 1, nil)
+	mustOK(t, err)
+	var buf bytes.Buffer
+	_, err = dwDcoreWEncode(&buf, bytes.NewReader(target), int64(len(target)), bytes.NewReader(base), int64(len(base)), idx, wp)
+	mustOK(t, err)
+	rec := buf.Bytes()
+	wr, err := dwDcoreOpenWRecord(bytes.NewReader(rec), int64(len(rec)))
+	mustOK(t, err)
+	tableStart := int64(binary.LittleEndian.Uint64(rec[len(rec)-dwDcore_wTrailerLen+4:]))
+	rng := mrand.New(mrand.NewPCG(5, 6))
+	refused := 0
+	for i := 0; i < 400; i++ {
+		bad := bytes.Clone(rec)
+		for k := 0; k < 1+i%3; k++ {
+			bad[4+rng.Int64N(tableStart-4)] ^= byte(1 + rng.IntN(255))
+		}
+		w, err := dwDcoreOpenWRecord(bytes.NewReader(bad), int64(len(bad)))
+		mustOK(t, err) // the table is intact; only programs changed
+		for fi := range w.frames {
+			ops, _, err := w.program(fi)
+			if err != nil {
+				refused++
+				continue
+			}
+			pos := w.tstart[fi]
+			for _, o := range ops {
+				if o.tpos != pos || o.n <= 0 || o.base >= 0 && (o.off < 0 || o.off+o.n > w.BaseSize) || o.base < 0 && int64(len(o.lit)) != o.n {
+					t.Fatalf("mutation %d frame %d: out-of-bounds operation %+v", i, fi, o)
+				}
+				pos += o.n
+			}
+			if pos != w.tstart[fi]+w.frames[fi].tlen {
+				t.Fatalf("mutation %d frame %d: program covers %d bytes", i, fi, pos-w.tstart[fi])
+			}
+		}
+	}
+	if refused == 0 {
+		t.Fatal("no damaged program was refused")
+	}
+	for fi := range wr.frames {
+		if _, _, err := wr.program(fi); err != nil {
+			t.Fatalf("intact frame %d refused: %v", fi, err)
+		}
+	}
+}
+
+// A depth-2 windowed history serves arbitrary ranges by executing only the operations that produce them,
+// through gc, repack and reopen, concurrently, and never returns bytes from damaged or missing dependencies.
+func TestAuthorityNestedRangeExecution(t *testing.T) {
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
+	defer func(a, b int64) { authWindowMin, authWindowSize = a, b }(authWindowMin, authWindowSize)
+	authWindowMin, authWindowSize = 1<<20, 64<<10
+	l := authHistoryLab(t, 733, 3, 2_500_000)
+	l.reclaim()
+	l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1, NoZN7: true, AllowDelta: true})
+	l.reclaim()
+	l.close()
+	l.open()
+	var key string
+	var rec *authRecord
+	for k, v := range l.want {
+		r, err := l.s.authLoad(sha256.Sum256(v))
+		mustOK(t, err)
+		if r != nil && (rec == nil || r.Depth > rec.Depth) {
+			key, rec = k, r
+		}
+	}
+	if rec == nil || rec.Depth != 2 {
+		t.Fatalf("no depth-2 record: %+v", rec)
+	}
+	want := l.want[key]
+	size := int64(len(want))
+	readRanges := func(stage string, seed uint64) {
+		rng := mrand.New(mrand.NewPCG(seed, 17))
+		const frame = 64 << 10
+		for i := 0; i < 48; i++ {
+			off := rng.Int64N(size)
+			n := 1 + rng.Int64N(min(size-off, 300_000))
+			if i%6 == 0 { // whole frames, then a range ending one byte into the next frame
+				off, n = off/frame*frame, min(frame*(1+int64(i%3)), size-off/frame*frame)
+			} else if i%6 == 1 && off/frame*frame+frame+1 <= size {
+				off = off/frame*frame + frame - 3
+				n = min(7, size-off)
+			}
+			_, _, got, err := l.s.GetObjectRange("b", key, byteRange{off, off + n - 1})
+			if err != nil || !bytes.Equal(got, want[off:off+n]) {
+				t.Fatalf("%s: range %d+%d: %v", stage, off, n, err)
+			}
+		}
+	}
+	readRanges("reopened", 1)
+	// A cold 4 KiB read reconstructs no whole frame and fetches far less than frame reconstruction does.
+	cost := func(ranged bool) (int64, int64) {
+		ctx := l.s.newAuthCtx()
+		ctx.ranged, ctx.cc = ranged, nil
+		body, _, err := ctx.body(rec.SHA, 0, 1)
+		mustOK(t, err)
+		p := make([]byte, 4096)
+		off := size/2 + 999
+		if n, err := body.ReadAt(p, off); n != len(p) || !bytes.Equal(p, want[off:off+4096]) {
+			t.Fatalf("4 KiB read (ranged=%v): %v", ranged, err)
+		}
+		return ctx.fetched, ctx.st.windows.Load()
+	}
+	fr, wr := cost(true)
+	fw, ww := cost(false)
+	t.Logf("cold 4 KiB: ranged fetched %d (%d frames), frame reconstruction %d (%d frames)", fr, wr, fw, ww)
+	if wr != 0 || ww == 0 || fr*2 > fw {
+		t.Fatalf("ranged read did not avoid frame reconstruction: %d/%d vs %d/%d", fr, wr, fw, ww)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			rng := mrand.New(mrand.NewPCG(uint64(g), 3))
+			for i := 0; i < 12; i++ {
+				off := rng.Int64N(size - 1)
+				n := 1 + rng.Int64N(min(size-off, 100_000))
+				_, _, got, err := l.s.GetObjectRange("b", key, byteRange{off, off + n - 1})
+				if err != nil || !bytes.Equal(got, want[off:off+n]) {
+					errs <- fmt.Errorf("goroutine %d range %d+%d: %v", g, off, n, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	parent, err := l.s.authLoad(rec.Bases[0].SHA)
+	mustOK(t, err)
+	if parent == nil || parent.Form != authFormDelta || parent.Depth != 1 {
+		t.Fatalf("parent is not a depth-1 delta: %+v", parent)
+	}
+	// Damage one program piece of the parent: ranges that need it fail, the others stay exact.
+	corruptChunkAnyLayout(t, l.s, parent.Pieces[len(parent.Pieces)/2].SHA)
+	l.close()
+	l.open()
+	failed := 0
+	rng := mrand.New(mrand.NewPCG(8, 9))
+	for i := 0; i < 64; i++ {
+		off := rng.Int64N(size - 4096)
+		_, _, got, err := l.s.GetObjectRange("b", key, byteRange{off, off + 4095})
+		if err != nil {
+			failed++
+		} else if !bytes.Equal(got, want[off:off+4096]) {
+			t.Fatalf("damaged parent served wrong bytes at %d", off)
+		}
+	}
+	if failed == 0 || failed == 64 {
+		t.Fatalf("damage to one parent piece failed %d of 64 ranges", failed)
+	}
+	if res, err := l.s.Verify(true); err != nil || res.OK() {
+		t.Fatalf("deep verification missed the damaged parent: %v", err)
+	}
+	// A missing parent record refuses the dependent's body; reads fall back only to verified CDC chunks.
+	mustOK(t, os.Remove(l.s.authPath(parent.SHA)))
+	l.close()
+	l.open()
+	if _, _, err := l.s.newAuthCtx().body(rec.SHA, 0, 1); !errors.Is(err, errAuthMissing) {
+		t.Fatalf("dependent of a missing parent opened: %v", err)
+	}
+	for _, off := range []int64{0, size / 3, size - 4096} {
+		if _, _, got, err := l.s.GetObjectRange("b", key, byteRange{off, off + 4095}); err == nil && !bytes.Equal(got, want[off:off+4096]) {
+			t.Fatalf("missing parent served wrong bytes at %d", off)
+		}
+	}
+}
+
 // ---- G5: 1 GiB windowed history (env-gated; see testing-harnesses/z4/c1/run_large.sh) ----
 
 // c1LargeVersion streams revision v of a deterministic multi-GiB object: random
