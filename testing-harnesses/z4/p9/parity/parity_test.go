@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -128,4 +129,98 @@ func TestActualArchiveSliceRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("one verified restoration for each of eight archive members, sidecar %d bytes", len(wire))
+}
+
+func TestRepairPublishedPackWindow(t *testing.T) {
+	input, out := os.Getenv("ZEROS3_PARITY_PACK"), os.Getenv("ZEROS3_PARITY_OUT")
+	if input == "" || out == "" {
+		t.Skip("set ZEROS3_PARITY_PACK and ZEROS3_PARITY_OUT to protect a published pack")
+	}
+	f, err := os.Open(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = 1 << 20
+	const members = 8
+	if info.Size() < 2*size*members {
+		t.Fatal("pack cannot hold the eight nonadjacent windows")
+	}
+	var marker [4]byte
+	if _, err := f.ReadAt(marker[:], 0); err != nil || string(marker[:]) != "ZSPK" {
+		t.Fatal("the fixture is not a published pack")
+	}
+	var sumOrig [32]byte
+	digest := sha256.New()
+	tmp, err := os.Create(filepath.Join(t.TempDir(), "isolated.pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tmp.Close()
+	n, err := io.Copy(io.MultiWriter(digest, tmp), io.NewSectionReader(f, 0, info.Size()))
+	if err != nil || n != info.Size() {
+		t.Fatal("unable to clone published pack", err)
+	}
+	digest.Sum(sumOrig[:0])
+
+	parts := make([][]byte, members)
+	offsets := make(map[ID]int64, members)
+	for i := range parts {
+		off := int64(i*2*size + 4096)
+		part := make([]byte, size)
+		if _, err := f.ReadAt(part, off); err != nil {
+			t.Fatal(err)
+		}
+		offsets[sha256.Sum256(part)] = off
+		parts[i] = part
+	}
+	sidecar, err := Encode(parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const damaged = 4
+	want := sha256.Sum256(parts[damaged])
+	off := offsets[want]
+	if _, err := tmp.WriteAt([]byte{parts[damaged][17] ^ 1}, off+17); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	id, recovered, err := Repair(sidecar, func(id ID) ([]byte, error) {
+		b := make([]byte, size)
+		_, err := tmp.ReadAt(b, offsets[id])
+		return b, err
+	})
+	elapsed := time.Since(start)
+	if err != nil || id != want || !bytes.Equal(recovered, parts[damaged]) {
+		t.Fatalf("corrupt pack window repair did not recover original bytes: %v", err)
+	}
+	if _, err := tmp.WriteAt(recovered, off); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	digest.Reset()
+	if _, err := io.Copy(digest, io.NewSectionReader(tmp, 0, info.Size())); err != nil || !bytes.Equal(digest.Sum(nil), sumOrig[:]) {
+		t.Fatalf("the full recovered pack has the wrong digest: %v", err)
+	}
+	report := map[string]any{
+		"pack_sha256": fmt.Sprintf("%x", sumOrig), "pack_bytes": info.Size(), "protected_bytes": members * size,
+		"sidecar_bytes": len(sidecar), "repair_us": elapsed.Microseconds(), "restored_window_offset": off,
+		"pack_hash_matches_after_repair": true,
+	}
+	evidence, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "pack-measurements.json"), append(evidence, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
