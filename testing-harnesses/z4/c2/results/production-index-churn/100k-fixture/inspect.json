@@ -1,0 +1,60 @@
+{
+  "state": "current",
+  "current": "generation-150015863",
+  "inactive_generations": 0,
+  "staging_directories": 0,
+  "generation": {
+    "version": 2,
+    "profile": 1,
+    "store_id": "01a1fb63-59fb-79d0-90db-aaf6b69d1437",
+    "generation": 1795219463714851527,
+    "journal_end": 36000096,
+    "journal_sequence": 100001,
+    "journal_sha256": "27d142f40495c4584a0446d10cdd27315269fbea872d5523cd22791374d85665",
+    "snapshots_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "catalog_sha256": "8537ad0707ea90846ceebbbfa0f51467d8d0eab7213dc377c837398c2ea82993",
+    "live_objects": 100000,
+    "tombstones": 0,
+    "objects": 100000,
+    "runs": [
+      {
+        "name": "run-1388840244.zsr",
+        "postings": 262144,
+        "sha256": "8c529ecec9f554862a8732bbfbc9bd19b03c1cbf1ff0e439443a6bb684b8259f"
+      },
+      {
+        "name": "run-3798766776.zsr",
+        "postings": 262144,
+        "sha256": "111377843807c0994a3cf15fc86be7cceaf5f50dd4e61cb758c347661615ffa7"
+      },
+      {
+        "name": "run-3523324750.zsr",
+        "postings": 262144,
+        "sha256": "309fedfb57e1129b1b6c536c67f0d447e2cc06d4d1869de72ff839172dbf5e52"
+      },
+      {
+        "name": "run-1944280514.zsr",
+        "postings": 262144,
+        "sha256": "719618c4cb0cd8a9520b4e4c4b557dd9775391a0f0558e59e974fd800e174d24"
+      },
+      {
+        "name": "run-580180590.zsr",
+        "postings": 262144,
+        "sha256": "823de44f21c3a134f4ef7037356d9dd854346e80f99e18fca6ca8af08594b277"
+      },
+      {
+        "name": "run-720415503.zsr",
+        "postings": 262144,
+        "sha256": "f5c81888a5cfff0c6e4d8a19162e4c470ce2ab09973bb53ceb941c30aaf777e5"
+      },
+      {
+        "name": "run-3203174236.zsr",
+        "postings": 27136,
+        "sha256": "6fde484e5f7d0991d0e14742904f71b7384cef1c026a1dc7a245b2cf8cebcaca"
+      }
+    ],
+    "directory": "/workspace/work/zeros3/c2b-index-100k-verified/store/similarity-index/generation-150015863"
+  },
+  "active_payload_bytes": 22235216,
+  "rebuild_payload_upper_bytes": 22235216
+}
