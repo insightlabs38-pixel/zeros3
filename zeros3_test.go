@@ -95,18 +95,18 @@ import (
 //    28382    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
 //    29319    Streaming reads and aws-chunked SigV4
 //    30176    Packed CAS: pack format, mixed reads, compaction, crash points
-//    31183    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32385    Adaptive pack compression (codec 1, DEFLATE)
-//    33437    Scalable packed-chunk locator (sorted immutable levels)
-//    33923    Z2-07: bulk logical-chunk transport (v2)
-//    35365    Hot/warm/cold physical pack tiers
-//    36151    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    36906    Z2-10: content-aware tier policy and rebalance
-//    37952    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38639    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40088    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41442    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42865    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//    31245    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    32447    Adaptive pack compression (codec 1, DEFLATE)
+//    33499    Scalable packed-chunk locator (sorted immutable levels)
+//    33985    Z2-07: bulk logical-chunk transport (v2)
+//    35427    Hot/warm/cold physical pack tiers
+//    36213    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    36968    Z2-10: content-aware tier policy and rebalance
+//    38014    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38701    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40150    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41504    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42927    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -30850,6 +30850,68 @@ func TestPack_DuplicateCopiesCorruptionPreference(t *testing.T) {
 	}
 	if _, gotBody, err := s.GetObject("b", "random"); err == nil {
 		t.Fatalf("object read returned bytes despite a corrupt chunk (equal=%v)", bytes.Equal(gotBody, data["random"]))
+	}
+}
+
+func TestPack_ParityRestoresExactPackAndRefusesMultipleLoss(t *testing.T) {
+	l := newAuthLab(t)
+	const records = 9 * packParityBlock / maxPackedChunkBytes
+	b, err := l.s.newPackBuilder(tierHot, nil, records)
+	mustOK(t, err)
+	defer b.Abort()
+	for i := range records {
+		block := genRandomBytes(int64(4650+i), maxPackedChunkBytes)
+		b.Add(sha256.Sum256(block), block)
+	}
+	staged, entries, err := b.Finish()
+	mustOK(t, err)
+	info, err := l.s.publishPack(tierHot, staged, entries)
+	mustOK(t, err)
+	original, err := os.ReadFile(info.path)
+	mustOK(t, err)
+	dir := t.TempDir()
+	sidecar, damaged := filepath.Join(dir, "pack.parity"), filepath.Join(dir, "damaged.pack")
+	result, err := makePackParity(info.path, sidecar)
+	mustOK(t, err)
+	want := sha256.Sum256(original)
+	if result.PackSHA256 != hex.EncodeToString(want[:]) || result.PackBytes != int64(len(original)) {
+		t.Fatalf("sidecar did not identify the actual pack: %+v", result)
+	}
+	data := bytes.Clone(original)
+	data[19] ^= 1
+	data[packParityStripe+19] ^= 1
+	mustOK(t, os.WriteFile(damaged, data, 0o600))
+	out := filepath.Join(dir, "restored.pack")
+	restored, err := restorePackParity(damaged, sidecar, out)
+	mustOK(t, err)
+	recovered, err := os.ReadFile(out)
+	mustOK(t, err)
+	if restored.RestoredBlocks != 2 || !bytes.Equal(recovered, original) {
+		t.Fatalf("packed restoration did not reproduce the original: %+v", restored)
+	}
+	if _, err := restorePackParity(damaged, sidecar, out); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("restore did not protect the existing output: %v", err)
+	}
+
+	data[packParityBlock+19] ^= 1
+	mustOK(t, os.WriteFile(damaged, data, 0o600))
+	refused := filepath.Join(dir, "refused.pack")
+	if _, err := restorePackParity(damaged, sidecar, refused); err == nil || !strings.Contains(err.Error(), "multiple damaged blocks") {
+		t.Fatalf("multi-loss stripe did not fail closed: %v", err)
+	}
+	if _, err := os.Stat(refused); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed restoration exposed output: %v", err)
+	}
+	sealed, err := os.ReadFile(sidecar)
+	mustOK(t, err)
+	sealed[len(sealed)-1] ^= 1
+	badSidecar := filepath.Join(dir, "damaged.parity")
+	mustOK(t, os.WriteFile(badSidecar, sealed, 0o600))
+	if _, err := restorePackParity(info.path, badSidecar, refused); err == nil {
+		t.Fatal("corrupt sidecar accepted")
+	}
+	if _, err := os.Stat(refused); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("corrupt sidecar exposed output: %v", err)
 	}
 }
 

@@ -89,42 +89,42 @@ import (
 //      539    Content-defined chunking (CDC)
 //      726    Content-addressed chunk storage (CAS)
 //     2469    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4351    Small-object segments (inline manifests, store level 11)
-//     5591    Manifests (immutable, JSON)
-//     6387    Visibility journal (append-only, checksummed)
-//     6909    Store: format, namespace, and object CRUD
-//     8768    Version history/restore, history pruning, ListObjectsV2
-//     9249    SigV4 authentication (header and presigned-URL)
-//    10226    Request payload checksums and S3-shaped XML error/response types
-//    10443    HTTP routing and S3 operation handlers
-//    10869    Conditional operations (PUT/GET/HEAD preconditions)
-//    11564    CopyObject
-//    11869    Multipart upload
-//    12809    Stats and reachability scanning
-//    14313    Verify
-//    14528    Store locking and safe offline GC
-//    14831    Offline compaction (`zeros3 compact`)
-//    15897    Pack reclamation and repacking (`zeros3 repack`)
-//    16400    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16913    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17978    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18782    Delta sync client, credentials, and parallel transfer
-//    21054    Bulk logical-chunk transport (v2)
-//    21965    Recursive directory sync
-//    22270    Remote replication (`zeros3 replicate`)
-//    23173    Peer-assisted corruption repair (`zeros3 repair`)
-//    23741    Namespace (prefix/bucket) replication
-//    24057    Copy-on-write namespace fork (`zeros3 fork`)
-//    24265    Snapshots and restore
-//    25426    Structural diff and inspect (introspection)
-//    26795    Portable snapshot bundles (`zeros3 bundle`)
-//    27992    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28627    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45733    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52626    Windowed and estimated similarity deltas (extracted dcore)
-//    54155    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61847    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68119    CLI dispatch, HTTP server/startup, and main
+//     4557    Small-object segments (inline manifests, store level 11)
+//     5797    Manifests (immutable, JSON)
+//     6593    Visibility journal (append-only, checksummed)
+//     7115    Store: format, namespace, and object CRUD
+//     8974    Version history/restore, history pruning, ListObjectsV2
+//     9455    SigV4 authentication (header and presigned-URL)
+//    10432    Request payload checksums and S3-shaped XML error/response types
+//    10649    HTTP routing and S3 operation handlers
+//    11075    Conditional operations (PUT/GET/HEAD preconditions)
+//    11770    CopyObject
+//    12075    Multipart upload
+//    13015    Stats and reachability scanning
+//    14519    Verify
+//    14734    Store locking and safe offline GC
+//    15037    Offline compaction (`zeros3 compact`)
+//    16103    Pack reclamation and repacking (`zeros3 repack`)
+//    16606    Physical tiers: status and pack movement (`zeros3 tier`)
+//    17119    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    18184    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18988    Delta sync client, credentials, and parallel transfer
+//    21260    Bulk logical-chunk transport (v2)
+//    22171    Recursive directory sync
+//    22476    Remote replication (`zeros3 replicate`)
+//    23379    Peer-assisted corruption repair (`zeros3 repair`)
+//    23947    Namespace (prefix/bucket) replication
+//    24263    Copy-on-write namespace fork (`zeros3 fork`)
+//    24471    Snapshots and restore
+//    25632    Structural diff and inspect (introspection)
+//    27001    Portable snapshot bundles (`zeros3 bundle`)
+//    28198    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28833    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45939    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    52832    Windowed and estimated similarity deltas (extracted dcore)
+//    54361    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62053    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68325    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -3222,6 +3222,212 @@ func checkPackRecords(path string) error {
 		}
 	}
 	return firstErr
+}
+
+const (
+	packParityMagic     = "ZSPAR1\r\n"
+	packParityBlock     = 1 << 20
+	packParityMembers   = 8
+	packParityStripe    = packParityMembers * packParityBlock
+	lenPackParityHeader = len(packParityMagic) + 8
+)
+
+type packParityReport struct {
+	PackBytes      int64  `json:"pack_bytes"`
+	SidecarBytes   int64  `json:"sidecar_bytes"`
+	PackSHA256     string `json:"pack_sha256"`
+	RestoredBlocks int    `json:"restored_blocks"`
+}
+
+func packParitySize(size int64) int64 {
+	full, tail := size/packParityStripe, size%packParityStripe
+	return int64(lenPackParityHeader+2*sha256.Size) + full*(packParityBlock+packParityMembers*sha256.Size) +
+		(tail+packParityBlock-1)/packParityBlock*sha256.Size + min(tail, packParityBlock)
+}
+
+// A sidecar has fixed-size consecutive stripes, each with a SHA-256 for each
+// member and one XOR block. The trailer binds the complete pack and sidecar.
+func encodePackParity(src io.Reader, size int64, bodySHA string, dst io.Writer) (packParityReport, error) {
+	var report packParityReport
+	sideHash, fullHash, bodyHash := sha256.New(), sha256.New(), sha256.New()
+	out := io.MultiWriter(dst, sideHash)
+	header := binary.LittleEndian.AppendUint64([]byte(packParityMagic), uint64(size))
+	if _, err := out.Write(header); err != nil {
+		return report, err
+	}
+	original, parity := make([]byte, packParityBlock), make([]byte, packParityBlock)
+	for off := int64(0); off < size; {
+		span := min(size-off, packParityStripe)
+		members := (span + packParityBlock - 1) / packParityBlock
+		checksums := make([]byte, 0, members*sha256.Size)
+		blockParity := parity[:min(span, packParityBlock)]
+		clear(blockParity)
+		for pos := int64(0); pos < span; pos += packParityBlock {
+			block := original[:min(span-pos, packParityBlock)]
+			if _, err := io.ReadFull(src, block); err != nil {
+				return report, err
+			}
+			sum := sha256.Sum256(block)
+			checksums = append(checksums, sum[:]...)
+			subtle.XORBytes(blockParity, blockParity, block)
+			fullHash.Write(block)
+			bodyHash.Write(block[:min(int64(len(block)), max(0, size-packFooterSize-off-pos))])
+		}
+		if _, err := out.Write(checksums); err != nil {
+			return report, err
+		}
+		if _, err := out.Write(blockParity); err != nil {
+			return report, err
+		}
+		off += span
+	}
+	if hex.EncodeToString(bodyHash.Sum(nil)) != bodySHA {
+		return report, errors.New("pack changed while encoding parity")
+	}
+	digest := fullHash.Sum(nil)
+	if _, err := out.Write(digest); err != nil {
+		return report, err
+	}
+	if _, err := dst.Write(sideHash.Sum(nil)); err != nil {
+		return report, err
+	}
+	return packParityReport{PackBytes: size, SidecarBytes: packParitySize(size), PackSHA256: hex.EncodeToString(digest)}, nil
+}
+
+func recoverPackParity(pack io.ReaderAt, packSize int64, sidecar io.Reader, sideSize int64, dst io.Writer) (packParityReport, error) {
+	var report packParityReport
+	sideHash, fullHash := sha256.New(), sha256.New()
+	in := io.TeeReader(sidecar, sideHash)
+	out := io.MultiWriter(dst, fullHash)
+	var header [lenPackParityHeader]byte
+	if _, err := io.ReadFull(in, header[:]); err != nil || string(header[:len(packParityMagic)]) != packParityMagic {
+		return report, errors.New("invalid pack parity header")
+	}
+	size := int64(binary.LittleEndian.Uint64(header[len(packParityMagic):]))
+	if size < packFixedBytes || sideSize != packParitySize(size) || packSize > size {
+		return report, errors.New("pack and parity sizes disagree")
+	}
+	stripe, parity := make([]byte, packParityStripe), make([]byte, packParityBlock)
+	var checksums [packParityMembers * sha256.Size]byte
+	restored := 0
+	for off := int64(0); off < size; {
+		span := min(size-off, packParityStripe)
+		members := (span + packParityBlock - 1) / packParityBlock
+		if _, err := io.ReadFull(in, checksums[:members*sha256.Size]); err != nil {
+			return report, err
+		}
+		blockParity := parity[:min(span, packParityBlock)]
+		if _, err := io.ReadFull(in, blockParity); err != nil {
+			return report, err
+		}
+		missing := int64(-1)
+		for pos := int64(0); pos < span; pos += packParityBlock {
+			block := stripe[pos:min(pos+packParityBlock, span)]
+			_, err := pack.ReadAt(block, off+pos)
+			if err != nil && !errors.Is(err, io.EOF) {
+				return report, err
+			}
+			idx := (pos / packParityBlock) * sha256.Size
+			if err != nil || sha256.Sum256(block) != [sha256.Size]byte(checksums[idx:idx+sha256.Size]) {
+				if missing >= 0 {
+					return report, fmt.Errorf("pack parity stripe at %d has multiple damaged blocks", off)
+				}
+				missing = pos
+				continue
+			}
+			subtle.XORBytes(blockParity, blockParity, block)
+		}
+		if missing >= 0 {
+			block := stripe[missing:min(missing+packParityBlock, span)]
+			copy(block, blockParity)
+			idx := (missing / packParityBlock) * sha256.Size
+			if sha256.Sum256(block) != [sha256.Size]byte(checksums[idx:idx+sha256.Size]) {
+				return report, fmt.Errorf("pack parity reconstruction differs at %d", off+missing)
+			}
+			restored++
+		}
+		if _, err := out.Write(stripe[:span]); err != nil {
+			return report, err
+		}
+		off += span
+	}
+	var expected, seal [sha256.Size]byte
+	if _, err := io.ReadFull(in, expected[:]); err != nil {
+		return report, err
+	}
+	if _, err := io.ReadFull(sidecar, seal[:]); err != nil {
+		return report, err
+	}
+	if !bytes.Equal(seal[:], sideHash.Sum(nil)) || !bytes.Equal(expected[:], fullHash.Sum(nil)) {
+		return report, errors.New("pack or parity digest mismatch")
+	}
+	return packParityReport{PackBytes: size, SidecarBytes: sideSize, PackSHA256: hex.EncodeToString(expected[:]), RestoredBlocks: restored}, nil
+}
+
+// stagePackParityOutput links a complete artifact into place without
+// overwriting an existing path.
+func stagePackParityOutput(path string, produce func(*os.File) (packParityReport, error), verify bool) (packParityReport, error) {
+	parent := filepath.Dir(path)
+	tmp, err := os.CreateTemp(parent, ".pack-parity-")
+	if err != nil {
+		return packParityReport{}, err
+	}
+	defer os.Remove(tmp.Name())
+	report, err := produce(tmp)
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if err := errors.Join(err, tmp.Close()); err != nil {
+		return report, err
+	}
+	if verify {
+		if _, _, err := verifyPackFile(tmp.Name()); err != nil {
+			return report, err
+		}
+	}
+	if err := os.Link(tmp.Name(), path); err != nil {
+		return report, err
+	}
+	return report, syncDir(parent)
+}
+
+func makePackParity(pack, sidecar string) (packParityReport, error) {
+	info, _, err := verifyPackFile(pack)
+	if err != nil {
+		return packParityReport{}, err
+	}
+	f, err := os.Open(pack)
+	if err != nil {
+		return packParityReport{}, err
+	}
+	defer f.Close()
+	return stagePackParityOutput(sidecar, func(dst *os.File) (packParityReport, error) {
+		return encodePackParity(f, info.size, info.id, dst)
+	}, false)
+}
+
+func restorePackParity(pack, sidecar, output string) (packParityReport, error) {
+	f, err := os.Open(pack)
+	if err != nil {
+		return packParityReport{}, err
+	}
+	defer f.Close()
+	p, err := os.Open(sidecar)
+	if err != nil {
+		return packParityReport{}, err
+	}
+	defer p.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return packParityReport{}, err
+	}
+	pi, err := p.Stat()
+	if err != nil {
+		return packParityReport{}, err
+	}
+	return stagePackParityOutput(output, func(dst *os.File) (packParityReport, error) {
+		return recoverPackParity(f, fi.Size(), p, pi.Size(), dst)
+	}, true)
 }
 
 // locRec is one locator record. The 52-byte layout has no padding: the
@@ -68119,6 +68325,33 @@ func hcLz4z3XXH32(b []byte, seed uint32) uint32 {
 // 17. Lifecycle / main
 // =============================================================================
 
+func runPackParity(args []string) {
+	if len(args) == 0 || args[0] != "create" && args[0] != "restore" {
+		log.Fatal("zeros3: pack-parity requires create or restore")
+	}
+	fs := flag.NewFlagSet("pack-parity "+args[0], flag.ExitOnError)
+	pack := fs.String("pack", "", "path of the input pack")
+	sidecar := fs.String("sidecar", "", "path of the parity sidecar")
+	output := fs.String("out", "", "restore: write recovered pack to a new path")
+	fs.Parse(args[1:])
+	if *pack == "" || *sidecar == "" || fs.NArg() != 0 || (args[0] == "restore") != (*output != "") {
+		log.Fatal("zeros3: pack-parity requires -pack and -sidecar, with -out for restore")
+	}
+	var report packParityReport
+	var err error
+	if args[0] == "create" {
+		report, err = makePackParity(*pack, *sidecar)
+	} else {
+		report, err = restorePackParity(*pack, *sidecar, *output)
+	}
+	if err != nil {
+		log.Fatalf("zeros3: pack-parity: %v", err)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		log.Fatalf("zeros3: pack-parity: %v", err)
+	}
+}
+
 func main() {
 	args := os.Args[1:]
 	cmd := "serve"
@@ -68147,6 +68380,8 @@ func main() {
 		runCompact(args)
 	case "repack":
 		runRepack(args)
+	case "pack-parity":
+		runPackParity(args)
 	case "tier":
 		runTier(args)
 	case "probe":
@@ -68172,7 +68407,7 @@ func main() {
 	case "authority":
 		runAuthority(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, pack-parity, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
 		os.Exit(2)
 	}
 }

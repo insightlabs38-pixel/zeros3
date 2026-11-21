@@ -95,3 +95,17 @@ per pass, reopens the store between passes and checks every live digest.
 The limit bounds rewrite scope. Each pass still takes the exclusive store
 lock and validates the live set. A fully live, incompressible pack can
 remain eligible when explicit recompression is requested.
+
+## Whole-pack parity
+
+`zeros3 pack-parity create -pack INPUT -sidecar SIDECAR` verifies the
+pack with the production pack verifier before writing its sidecar. The
+versioned sidecar uses consecutive groups of eight 1 MiB blocks, one XOR
+block per group, per-block SHA-256, and digests of the complete original
+pack and sidecar.
+
+`zeros3 pack-parity restore -pack DAMAGED -sidecar SIDECAR -out OUTPUT`
+recovers one unavailable block per group. It checks every block, the
+complete reconstructed pack digest and the existing pack format before
+publishing a new output file. The output path must be unused. This is an
+offline file operation. The serving store and its pack format are unchanged.
