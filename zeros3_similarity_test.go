@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -730,6 +731,18 @@ func TestAuthoritySimilarityRebuildAfterIndexLoss(t *testing.T) {
 	}
 	if _, err := s.readAuthSimilarityCurrent(); err == nil {
 		t.Fatal("wrong-store index was accepted")
+	}
+	report = first
+	report.Runs = make([]authSimilarityStageRun, authSimilarityMaxRuns+1)
+	oversize, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, oversize, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.readAuthSimilarityCurrent(); !errors.Is(err, errAuthSimilarityNeedsRebuild) {
+		t.Fatalf("run count did not invalidate the generation before run I/O: %v", err)
 	}
 	s.Close()
 	if err := os.Rename(filepath.Join(dir, "similarity-index"), filepath.Join(t.TempDir(), "lost-index")); err != nil {

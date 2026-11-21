@@ -13,6 +13,22 @@ expect() { local what=$1 want=$2 got=$3
   if [ "$want" = "$got" ]; then echo "ok   $what (exit $got)"; else echo "FAIL $what: exit $got, wanted $want"; sed 's/^/     /' "$W/log" | tail -8; fails=$((fails+1)); fi; }
 fresh() { rm -rf "$W/out"; }
 
+mkdir "$W/bin"
+cat > "$W/bin/git" <<'G'
+#!/bin/sh
+if [ "$1" = ls-files ]; then
+  echo "injected source inventory failure" >&2
+  exit 9
+fi
+exec "$T1_REAL_GIT" "$@"
+G
+chmod +x "$W/bin/git"
+fresh; expect "a failed source inventory stops qualification" 2 "$(T1_REAL_GIT="$(command -v git)" PATH="$W/bin:$PATH" q)"
+if [ -e "$W/out/summary.tsv" ]; then
+  echo "FAIL qualification recorded steps without a source fingerprint"
+  fails=$((fails+1))
+fi
+
 fresh; expect "all steps pass" 0 "$(q)"
 fresh; expect "one failed step" 1 "$(A_RC=1 q)"
 fresh; expect "two failed steps" 1 "$(A_RC=1 B_RC=2 q)"

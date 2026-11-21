@@ -1,0 +1,7 @@
+=== RUN   TestP8WindowedRangeFanout
+2026/11/20 00:28:19 zeros3: authoritative body of manifest 01a1f76d-4cb9-7691-bff3-ef59a71b254b unreadable, trying its CDC chunk list: authority: reconstruction does not equal the object: pack: chunk e5d3302fe1cdb9e42de92fea71007cac32a8e382558dbfba880fba007b957d6b is corrupt (content hash mismatch)
+2026/11/20 00:28:19 zeros3: authoritative body of manifest 01a1f76d-4cec-7aaf-9595-5839afb7c494 unreadable, trying its CDC chunk list: authority: reconstruction does not equal the object: pack: chunk e5d3302fe1cdb9e42de92fea71007cac32a8e382558dbfba880fba007b957d6b is corrupt (content hash mismatch)
+2026/11/20 00:28:19 zeros3: authoritative body of manifest 01a1f76d-4cfa-75c3-b7da-81b433f2113e unreadable, trying its CDC chunk list: authority: reconstruction does not equal the object: pack: chunk e5d3302fe1cdb9e42de92fea71007cac32a8e382558dbfba880fba007b957d6b is corrupt (content hash mismatch)
+--- PASS: TestP8WindowedRangeFanout (1.30s)
+PASS
+ok  	zeros3	1.311s

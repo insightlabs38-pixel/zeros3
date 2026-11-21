@@ -1,0 +1,9 @@
+=== RUN   TestRepGitRealReexports
+    zeros3_git_test.go:320: REAL_REEXPORT hiredis-full.pack SHA256=70ec68e13dd70398f30dff590dd26f29f7147ef59db3f7f161633f6678cbf48d size=5256288 cumulative_CDC=5262608 cumulative_CDC_plus_rep=11059246 components=2942 shared_previous=0
+    zeros3_git_test.go:320: REAL_REEXPORT hiredis-reordered.pack SHA256=4433f1bff1af9c26a2817295bc517d4364452c6b5aa4e28bb4cfb0856c9fad92 size=5256288 cumulative_CDC=10525120 cumulative_CDC_plus_rep=16434206 components=2942 shared_previous=2939
+    zeros3_git_test.go:320: REAL_REEXPORT hiredis-delta.pack SHA256=79c6b89446483ea7ffa5057eaeb62403a0d129787ed592cf3cdd432f658378b4 size=1085187 cumulative_CDC=11568255 cumulative_CDC_plus_rep=18597760 components=2933 shared_previous=977
+    zeros3_git_test.go:320: REAL_REEXPORT hiredis-full.idx SHA256=5a079e5e6697fc6d208ba0d880c12bef49386ea9d5f8f3292f3f8af64e197905 size=83336 cumulative_CDC=11651679 cumulative_CDC_plus_rep=18764971 components=6 shared_previous=0
+    zeros3_git_test.go:320: REAL_REEXPORT hiredis-reordered.idx SHA256=581b84d3402b822acd6af6949a8f11f8315a5b908310056ad9710e432baea51f size=83336 cumulative_CDC=11707502 cumulative_CDC_plus_rep=18832905 components=6 shared_previous=3
+    zeros3_git_test.go:320: REAL_REEXPORT hiredis-delta.idx SHA256=3f7d60ac62bcb4209bd14e12ff4312f6a87f7acf0522593c6601c2755394e531 size=83336 cumulative_CDC=11763369 cumulative_CDC_plus_rep=18912679 components=6 shared_previous=2
+--- PASS: TestRepGitRealReexports (53.21s)
+PASS

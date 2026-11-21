@@ -1,0 +1,89 @@
+{
+  "Objects": 5,
+  "Admitted": 4,
+  "Pinned": 0,
+  "KeptCDC": 1,
+  "CDCBytes": 140668517,
+  "AddedBytes": 95501993,
+  "Plans": [
+    {
+      "sha256": "116a02532db461f91386a5b20f942ff2c8d4de7341e21b55caafc3d7b25f49a1",
+      "size": 28143920,
+      "form": "cdc",
+      "depth": 0,
+      "cdc_unshared_bytes": 28133425,
+      "added_bytes": 0,
+      "saving": 0,
+      "reason": "no admissible exact representation"
+    },
+    {
+      "sha256": "b0a3043c5439763023203afb86a4c1edc1ed2cca3a4b32f165361baaaf9c9880",
+      "size": 28143920,
+      "form": "delta",
+      "bases": [
+        "116a02532db4"
+      ],
+      "depth": 1,
+      "cdc_unshared_bytes": 28133524,
+      "added_bytes": 23900445,
+      "saving": 0.15046387363346306,
+      "read_amp_4k": 3711871,
+      "cdc_amp_4k": 93652.12972983152,
+      "reason": "zn7"
+    },
+    {
+      "sha256": "9a6b6e44eb4bfcd4eeb838ebd6787d29f5d32c7007cdce49c9431355d6a18875",
+      "size": 28143920,
+      "form": "delta",
+      "bases": [
+        "b0a3043c5439",
+        "116a02532db4"
+      ],
+      "depth": 2,
+      "cdc_unshared_bytes": 28132523,
+      "added_bytes": 23896334,
+      "saving": 0.15057977558571622,
+      "read_amp_4k": 3759625,
+      "cdc_amp_4k": 89897.88769553069,
+      "reason": "zn7"
+    },
+    {
+      "sha256": "80cafd66efcd3c44d192677725b8b0eadd33403a3b3799acc152a43bcdf3e91b",
+      "size": 28143920,
+      "form": "delta",
+      "bases": [
+        "b0a3043c5439",
+        "116a02532db4"
+      ],
+      "depth": 2,
+      "cdc_unshared_bytes": 28135423,
+      "added_bytes": 23873034,
+      "saving": 0.15149546534274605,
+      "read_amp_4k": 3762313,
+      "cdc_amp_4k": 96309.20780751224,
+      "reason": "zn7"
+    },
+    {
+      "sha256": "acc2b8045b54b406bcec99962f91e60202d448a00231669ee3674cab234eb244",
+      "size": 28143920,
+      "form": "delta",
+      "bases": [
+        "b0a3043c5439",
+        "116a02532db4"
+      ],
+      "depth": 2,
+      "cdc_unshared_bytes": 28133622,
+      "added_bytes": 23832180,
+      "saving": 0.15289328903331395,
+      "read_amp_4k": 3754227,
+      "cdc_amp_4k": 89869.2600351337,
+      "reason": "zn7"
+    }
+  ],
+  "Seconds": 42.695632467,
+  "PlanReuse": 0,
+  "RepNotBuilt": 0,
+  "CacheHits": 0,
+  "CacheMisses": 1,
+  "DecodedBytes": 28143920
+}

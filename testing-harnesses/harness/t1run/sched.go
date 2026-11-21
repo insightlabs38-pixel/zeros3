@@ -134,7 +134,7 @@ func (s *scheduler) plan(todo []string) []unit {
 }
 
 func (s *scheduler) fits(u unit) bool {
-	idle := s.cpuUsed == 0
+	idle := s.memUsed == 0
 	return s.cpuUsed+u.cpu <= float64(*jobs)+0.01+0.75 && (idle || s.memUsed+u.mem <= s.memBudget && s.diskUsed+u.disk <= s.diskBudget)
 }
 
