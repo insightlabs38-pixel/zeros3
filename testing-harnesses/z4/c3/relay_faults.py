@@ -106,6 +106,9 @@ def main():
     p.add_argument("--before", required=True, type=Path)
     p.add_argument("--after", required=True, type=Path)
     p.add_argument("--output", required=True, type=Path)
+    p.add_argument("--bucket", default="retained-pilot")
+    p.add_argument("--source-key", default="coreutils-gzip/revision-2")
+    p.add_argument("--destination-key", default="coreutils-gzip/revision-1")
     p.add_argument("--bytes-per-second", type=int, default=2 << 20)
     p.add_argument("--reliable-only", action="store_true", help="compare complete transfers from an alternate seed")
     a = p.parse_args()
@@ -117,9 +120,10 @@ def main():
     source_store = output / "source"
     shutil.copytree(a.source_store.resolve(), source_store)
     binary = a.binary.resolve(strict=True)
-    key, source_key = "coreutils-gzip/revision-1", "coreutils-gzip/revision-2"
-    target_uri = f"s3://{pilot.BUCKET}/{key}"
-    source_uri = f"s3://{pilot.BUCKET}/{source_key}"
+    key = a.destination_key
+    pilot.BUCKET = a.bucket
+    target_uri = f"s3://{a.bucket}/{key}"
+    source_uri = f"s3://{a.bucket}/{a.source_key}"
     before, after = pilot.digest(a.before), pilot.digest(a.after)
     rows = []
 
