@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52350    Windowed and estimated similarity deltas (extracted dcore)
-//    53879    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61571    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67843    CLI dispatch, HTTP server/startup, and main
+//    52394    Windowed and estimated similarity deltas (extracted dcore)
+//    53923    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61615    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67887    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -48517,6 +48517,7 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 		})
 	}
 	outSeen := map[[32]byte]bool{}
+	authoritySeen := map[[32]byte]bool{}
 	var scanErr error
 	s.eachLiveManifest(nil, func(lm liveMan) {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
@@ -48524,21 +48525,21 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 			return
 		}
 		matched, inScope := scoped[sha]
-		if scopedRun && !inScope { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
+		if scopedRun && !inScope {
 			if outSeen[sha] {
 				return
 			}
 			outSeen[sha] = true
-			if rec, err := s.authLoad(sha); err != nil || rec != nil {
+			rec, err := s.authLoad(sha)
+			if err != nil {
+				scanErr = err
 				return
 			}
-			seen := map[[32]byte]bool{}
-			for _, c := range lm.man.Chunks {
-				if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
-					seen[sum] = true
-					m.refs[sum]++
-				}
+			if rec != nil {
+				scanErr = m.countAuthorityClosure(sha, authoritySeen)
+				return
 			}
+			m.countChunks(lm.man.Chunks)
 			return
 		}
 		if inScope {
@@ -48572,14 +48573,11 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 	})
 	for _, o := range m.order {
 		if o.hasRec {
-			continue
-		}
-		seen := map[[32]byte]bool{}
-		for _, c := range o.man.Chunks {
-			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
-				seen[sum] = true
-				m.refs[sum]++
+			if err := m.countAuthorityClosure(o.sha, authoritySeen); err != nil {
+				return m.rep, err
 			}
+		} else {
+			m.countChunks(o.man.Chunks)
 		}
 	}
 	// Hold the sources of a few in-memory objects at once (a history re-reads its recent revisions in every pass).
@@ -48955,6 +48953,52 @@ func (m *authMigrator) indexedCandidates(i int, sk []uint64, windowed bool) (map
 		}
 	}
 	return score, nil
+}
+
+func (m *authMigrator) countChunks(chunks []chunkRef) {
+	seen := make(map[[32]byte]bool)
+	for _, c := range chunks {
+		if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+			seen[sum] = true
+			m.refs[sum]++
+		}
+	}
+}
+
+func (m *authMigrator) countAuthorityClosure(sha [32]byte, seen map[[32]byte]bool) error {
+	if seen[sha] {
+		return nil
+	}
+	recs, err := m.s.authClosureOrder(sha, func(sum [32]byte) bool { return seen[sum] })
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if err := m.countAuthorityComponents(rec); err != nil {
+			return err
+		}
+		seen[rec.SHA] = true
+	}
+	return nil
+}
+
+func (m *authMigrator) countAuthorityComponents(rec *authRecord) error {
+	if rec.Form == authFormRep {
+		cl, err := m.s.repClosureOf(rec.Root)
+		if err != nil {
+			return err
+		}
+		m.countChunks(cl.chunks)
+		return nil
+	}
+	seen := make(map[[32]byte]bool)
+	for _, p := range rec.Pieces {
+		if !seen[p.SHA] {
+			seen[p.SHA] = true
+			m.refs[p.SHA]++
+		}
+	}
+	return nil
 }
 
 func (m *authMigrator) unsharedBytes(o *authObj) int64 {

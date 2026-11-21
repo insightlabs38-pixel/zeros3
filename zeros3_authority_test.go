@@ -2924,6 +2924,38 @@ func TestAuthorityRevertAllLowersFloorAndOldBinaryReopens(t *testing.T) {
 	l.close()
 }
 
+func TestAuthorityMigrationChargesChunksRetainedByPins(t *testing.T) {
+	l := newAuthLab(t)
+	base := genRandomBytes(914, 1_400_000)
+	target := bytes.Clone(base)
+	target[len(target)-1] ^= 1
+	l.put("base", base)
+	l.put("target", target)
+	targetSHA := sha256.Sum256(target)
+	plan := func(prefix string) int64 {
+		t.Helper()
+		report, err := l.s.AuthorityMigrate(AuthPolicy{Prefix: prefix, AllowDelta: true, NoZN7: true})
+		mustOK(t, err)
+		for _, p := range report.Plans {
+			if p.SHA == hex.EncodeToString(targetSHA[:]) {
+				return p.CDCBytes
+			}
+		}
+		t.Fatal("target is missing from migration plan")
+		return 0
+	}
+	before := plan("target")
+	if before <= 0 || before >= int64(len(target))/2 {
+		t.Fatalf("fixture requires both uniquely owned and shared chunks, got %d", before)
+	}
+	mustOK(t, l.s.AuthorityRepairObject(sha256.Sum256(base), base))
+	for _, prefix := range []string{"target", ""} {
+		if got := plan(prefix); got != before {
+			t.Fatalf("scope %q credited bytes still retained by authority: got %d, want %d", prefix, got, before)
+		}
+	}
+}
+
 func TestAuthorityTierDepthFiltersBeforeEncoding(t *testing.T) {
 	const feature = 100
 	m := &authMigrator{
