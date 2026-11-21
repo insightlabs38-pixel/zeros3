@@ -1,0 +1,8 @@
+=== RUN   TestAuthoritySimilaritySampledExactOracle
+=== RUN   TestAuthoritySimilaritySampledExactOracle/coreutils-9.5.tar
+=== RUN   TestAuthoritySimilaritySampledExactOracle/coreutils-9.6.tar
+--- PASS: TestAuthoritySimilaritySampledExactOracle (818.55s)
+    --- PASS: TestAuthoritySimilaritySampledExactOracle/coreutils-9.5.tar (167.42s)
+    --- PASS: TestAuthoritySimilaritySampledExactOracle/coreutils-9.6.tar (644.54s)
+PASS
+ok  	zeros3	818.710s

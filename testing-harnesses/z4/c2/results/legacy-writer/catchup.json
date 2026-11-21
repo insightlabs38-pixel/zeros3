@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "profile": 1,
+  "store_id": "01a1f64e-0f6b-7dec-8772-f8273b771e81",
+  "generation": 1795139251437827191,
+  "journal_end": 1563,
+  "journal_sequence": 6,
+  "journal_sha256": "941a43fc62d143c1aecd6d63bdf8fa18dd8806ff93068f061cd086637027e74d",
+  "snapshots_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "catalog_sha256": "9ccecc2e12d7fa0aa9dd4dbcba79a661285aaac4e6e8b77fc49b780d69c91e40",
+  "live_objects": 4,
+  "tombstones": 0,
+  "objects": 4,
+  "runs": [
+    {
+      "name": "run-1076893280.zsr",
+      "postings": 48,
+      "sha256": "70a5480fccbe295bfdec37e92ca79f45bcca16af58358d2ba166f646e33a17ec"
+    },
+    {
+      "name": "run-2768743057.zsr",
+      "postings": 16,
+      "sha256": "841420c93ce2e78d795bb732e9502264d07f7b014b9e0605ac9f2508e4ac741c"
+    }
+  ],
+  "directory": "/workspace/work/zeros3/c2-compat-v2.P80v7K/store/similarity-index/generation-1553849316"
+}

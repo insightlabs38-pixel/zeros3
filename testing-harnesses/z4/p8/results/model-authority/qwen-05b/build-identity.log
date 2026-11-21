@@ -1,0 +1,30 @@
+/workspace/work/zeros3/p8r-pythia-compare.n2I5Pw/zeros3: go1.27.0
+	path	zeros3
+	mod	zeros3	v0.1.2-0.20261120043148-dd640a8fdde8
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=dd640a8fdde8bff4fc3496e84cacae9caa3303c7
+	build	vcs.time=2026-11-20T04:31:48Z
+	build	vcs.modified=false
+/workspace/work/zeros3/qwen-fixture.test: go1.27.0
+	path	zeros3.test
+	mod	zeros3	(devel)
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1

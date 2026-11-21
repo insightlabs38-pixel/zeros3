@@ -1,0 +1,18 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkAuthoritySimilarityLookup-2   	   25000	    151983 ns/op	        64.00 candidates/op	    8592 B/op	       6 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkAuthoritySimilarityLookup-2   	   25000	    137777 ns/op	        64.00 candidates/op	    8592 B/op	       6 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkAuthoritySimilarityLookup-2   	   25000	     82020 ns/op	        64.00 candidates/op	    8592 B/op	       6 allocs/op
+PASS

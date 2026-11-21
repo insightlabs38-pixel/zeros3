@@ -1,0 +1,260 @@
+=== RUN   TestPredictorWorkBudget
+--- PASS: TestPredictorWorkBudget (0.13s)
+=== RUN   TestStreamMatchesOracle
+=== RUN   TestStreamMatchesOracle/go-L0/p0
+=== RUN   TestStreamMatchesOracle/go-L0/p1
+=== RUN   TestStreamMatchesOracle/go-L0/p2
+=== RUN   TestStreamMatchesOracle/go-L0/p3
+=== RUN   TestStreamMatchesOracle/go-L0/p4
+=== RUN   TestStreamMatchesOracle/go-L0/p255
+=== RUN   TestStreamMatchesOracle/go-L1/p0
+=== RUN   TestStreamMatchesOracle/go-L1/p1
+=== RUN   TestStreamMatchesOracle/go-L1/p2
+=== RUN   TestStreamMatchesOracle/go-L1/p3
+=== RUN   TestStreamMatchesOracle/go-L1/p4
+=== RUN   TestStreamMatchesOracle/go-L1/p255
+=== RUN   TestStreamMatchesOracle/go-L2/p0
+=== RUN   TestStreamMatchesOracle/go-L2/p1
+=== RUN   TestStreamMatchesOracle/go-L2/p2
+=== RUN   TestStreamMatchesOracle/go-L2/p3
+=== RUN   TestStreamMatchesOracle/go-L2/p4
+=== RUN   TestStreamMatchesOracle/go-L2/p255
+=== RUN   TestStreamMatchesOracle/go-L4/p0
+=== RUN   TestStreamMatchesOracle/go-L4/p1
+=== RUN   TestStreamMatchesOracle/go-L4/p2
+=== RUN   TestStreamMatchesOracle/go-L4/p3
+=== RUN   TestStreamMatchesOracle/go-L4/p4
+=== RUN   TestStreamMatchesOracle/go-L4/p255
+=== RUN   TestStreamMatchesOracle/go-L6/p0
+=== RUN   TestStreamMatchesOracle/go-L6/p1
+=== RUN   TestStreamMatchesOracle/go-L6/p2
+=== RUN   TestStreamMatchesOracle/go-L6/p3
+=== RUN   TestStreamMatchesOracle/go-L6/p4
+=== RUN   TestStreamMatchesOracle/go-L6/p255
+=== RUN   TestStreamMatchesOracle/go-L9/p0
+=== RUN   TestStreamMatchesOracle/go-L9/p1
+=== RUN   TestStreamMatchesOracle/go-L9/p2
+=== RUN   TestStreamMatchesOracle/go-L9/p3
+=== RUN   TestStreamMatchesOracle/go-L9/p4
+=== RUN   TestStreamMatchesOracle/go-L9/p255
+=== RUN   TestStreamMatchesOracle/go-L-2/p0
+=== RUN   TestStreamMatchesOracle/go-L-2/p1
+=== RUN   TestStreamMatchesOracle/go-L-2/p2
+=== RUN   TestStreamMatchesOracle/go-L-2/p3
+=== RUN   TestStreamMatchesOracle/go-L-2/p4
+=== RUN   TestStreamMatchesOracle/go-L-2/p255
+=== RUN   TestStreamMatchesOracle/go-L6-mixed/p0
+=== RUN   TestStreamMatchesOracle/go-L6-mixed/p1
+=== RUN   TestStreamMatchesOracle/go-L6-mixed/p2
+=== RUN   TestStreamMatchesOracle/go-L6-mixed/p3
+=== RUN   TestStreamMatchesOracle/go-L6-mixed/p4
+=== RUN   TestStreamMatchesOracle/go-L6-mixed/p255
+=== RUN   TestStreamMatchesOracle/go-L1-noise/p0
+=== RUN   TestStreamMatchesOracle/go-L1-noise/p1
+=== RUN   TestStreamMatchesOracle/go-L1-noise/p2
+=== RUN   TestStreamMatchesOracle/go-L1-noise/p3
+=== RUN   TestStreamMatchesOracle/go-L1-noise/p4
+=== RUN   TestStreamMatchesOracle/go-L1-noise/p255
+=== RUN   TestStreamMatchesOracle/fixed/p0
+=== RUN   TestStreamMatchesOracle/fixed/p1
+=== RUN   TestStreamMatchesOracle/fixed/p2
+=== RUN   TestStreamMatchesOracle/fixed/p3
+=== RUN   TestStreamMatchesOracle/fixed/p4
+=== RUN   TestStreamMatchesOracle/fixed/p255
+=== RUN   TestStreamMatchesOracle/empty/p0
+=== RUN   TestStreamMatchesOracle/empty/p1
+=== RUN   TestStreamMatchesOracle/empty/p2
+=== RUN   TestStreamMatchesOracle/empty/p3
+=== RUN   TestStreamMatchesOracle/empty/p4
+=== RUN   TestStreamMatchesOracle/empty/p255
+=== RUN   TestStreamMatchesOracle/tiny/p0
+=== RUN   TestStreamMatchesOracle/tiny/p1
+=== RUN   TestStreamMatchesOracle/tiny/p2
+=== RUN   TestStreamMatchesOracle/tiny/p3
+=== RUN   TestStreamMatchesOracle/tiny/p4
+=== RUN   TestStreamMatchesOracle/tiny/p255
+=== RUN   TestStreamMatchesOracle/repeat/p0
+=== RUN   TestStreamMatchesOracle/repeat/p1
+=== RUN   TestStreamMatchesOracle/repeat/p2
+=== RUN   TestStreamMatchesOracle/repeat/p3
+=== RUN   TestStreamMatchesOracle/repeat/p4
+=== RUN   TestStreamMatchesOracle/repeat/p255
+=== RUN   TestStreamMatchesOracle/mem1/p0
+=== RUN   TestStreamMatchesOracle/mem1/p1
+=== RUN   TestStreamMatchesOracle/mem1/p2
+=== RUN   TestStreamMatchesOracle/mem1/p3
+=== RUN   TestStreamMatchesOracle/mem1/p4
+=== RUN   TestStreamMatchesOracle/mem1/p255
+=== RUN   TestStreamMatchesOracle/gzip-rsync/p0
+=== RUN   TestStreamMatchesOracle/gzip-rsync/p1
+=== RUN   TestStreamMatchesOracle/gzip-rsync/p2
+=== RUN   TestStreamMatchesOracle/gzip-rsync/p3
+=== RUN   TestStreamMatchesOracle/gzip-rsync/p4
+=== RUN   TestStreamMatchesOracle/gzip-rsync/p255
+=== RUN   TestStreamMatchesOracle/L1/p0
+=== RUN   TestStreamMatchesOracle/L1/p1
+=== RUN   TestStreamMatchesOracle/L1/p2
+=== RUN   TestStreamMatchesOracle/L1/p3
+=== RUN   TestStreamMatchesOracle/L1/p4
+=== RUN   TestStreamMatchesOracle/L1/p255
+=== RUN   TestStreamMatchesOracle/L2/p0
+=== RUN   TestStreamMatchesOracle/L2/p1
+=== RUN   TestStreamMatchesOracle/L2/p2
+=== RUN   TestStreamMatchesOracle/L2/p3
+=== RUN   TestStreamMatchesOracle/L2/p4
+=== RUN   TestStreamMatchesOracle/L2/p255
+=== RUN   TestStreamMatchesOracle/L3/p0
+=== RUN   TestStreamMatchesOracle/L3/p1
+=== RUN   TestStreamMatchesOracle/L3/p2
+=== RUN   TestStreamMatchesOracle/L3/p3
+=== RUN   TestStreamMatchesOracle/L3/p4
+=== RUN   TestStreamMatchesOracle/L3/p255
+--- PASS: TestStreamMatchesOracle (54.59s)
+    --- PASS: TestStreamMatchesOracle/go-L0/p0 (0.17s)
+    --- PASS: TestStreamMatchesOracle/go-L0/p1 (0.19s)
+    --- PASS: TestStreamMatchesOracle/go-L0/p2 (0.13s)
+    --- PASS: TestStreamMatchesOracle/go-L0/p3 (0.16s)
+    --- PASS: TestStreamMatchesOracle/go-L0/p4 (0.16s)
+    --- PASS: TestStreamMatchesOracle/go-L0/p255 (0.15s)
+    --- PASS: TestStreamMatchesOracle/go-L1/p0 (1.63s)
+    --- PASS: TestStreamMatchesOracle/go-L1/p1 (0.98s)
+    --- PASS: TestStreamMatchesOracle/go-L1/p2 (4.89s)
+    --- PASS: TestStreamMatchesOracle/go-L1/p3 (3.55s)
+    --- PASS: TestStreamMatchesOracle/go-L1/p4 (3.09s)
+    --- PASS: TestStreamMatchesOracle/go-L1/p255 (1.25s)
+    --- PASS: TestStreamMatchesOracle/go-L2/p0 (0.62s)
+    --- PASS: TestStreamMatchesOracle/go-L2/p1 (0.65s)
+    --- PASS: TestStreamMatchesOracle/go-L2/p2 (1.92s)
+    --- PASS: TestStreamMatchesOracle/go-L2/p3 (2.62s)
+    --- PASS: TestStreamMatchesOracle/go-L2/p4 (1.89s)
+    --- PASS: TestStreamMatchesOracle/go-L2/p255 (0.47s)
+    --- PASS: TestStreamMatchesOracle/go-L4/p0 (0.54s)
+    --- PASS: TestStreamMatchesOracle/go-L4/p1 (0.41s)
+    --- PASS: TestStreamMatchesOracle/go-L4/p2 (0.45s)
+    --- PASS: TestStreamMatchesOracle/go-L4/p3 (0.44s)
+    --- PASS: TestStreamMatchesOracle/go-L4/p4 (0.38s)
+    --- PASS: TestStreamMatchesOracle/go-L4/p255 (0.53s)
+    --- PASS: TestStreamMatchesOracle/go-L6/p0 (0.69s)
+    --- PASS: TestStreamMatchesOracle/go-L6/p1 (0.49s)
+    --- PASS: TestStreamMatchesOracle/go-L6/p2 (0.50s)
+    --- PASS: TestStreamMatchesOracle/go-L6/p3 (0.61s)
+    --- PASS: TestStreamMatchesOracle/go-L6/p4 (0.36s)
+    --- PASS: TestStreamMatchesOracle/go-L6/p255 (0.24s)
+    --- PASS: TestStreamMatchesOracle/go-L9/p0 (0.35s)
+    --- PASS: TestStreamMatchesOracle/go-L9/p1 (0.39s)
+    --- PASS: TestStreamMatchesOracle/go-L9/p2 (0.36s)
+    --- PASS: TestStreamMatchesOracle/go-L9/p3 (0.65s)
+    --- PASS: TestStreamMatchesOracle/go-L9/p4 (0.64s)
+    --- PASS: TestStreamMatchesOracle/go-L9/p255 (0.35s)
+    --- PASS: TestStreamMatchesOracle/go-L-2/p0 (1.12s)
+    --- PASS: TestStreamMatchesOracle/go-L-2/p1 (1.21s)
+    --- PASS: TestStreamMatchesOracle/go-L-2/p2 (1.30s)
+    --- PASS: TestStreamMatchesOracle/go-L-2/p3 (0.82s)
+    --- PASS: TestStreamMatchesOracle/go-L-2/p4 (1.09s)
+    --- PASS: TestStreamMatchesOracle/go-L-2/p255 (1.21s)
+    --- PASS: TestStreamMatchesOracle/go-L6-mixed/p0 (0.61s)
+    --- PASS: TestStreamMatchesOracle/go-L6-mixed/p1 (0.73s)
+    --- PASS: TestStreamMatchesOracle/go-L6-mixed/p2 (0.57s)
+    --- PASS: TestStreamMatchesOracle/go-L6-mixed/p3 (0.83s)
+    --- PASS: TestStreamMatchesOracle/go-L6-mixed/p4 (0.73s)
+    --- PASS: TestStreamMatchesOracle/go-L6-mixed/p255 (0.44s)
+    --- PASS: TestStreamMatchesOracle/go-L1-noise/p0 (0.00s)
+    --- PASS: TestStreamMatchesOracle/go-L1-noise/p1 (0.00s)
+    --- PASS: TestStreamMatchesOracle/go-L1-noise/p2 (0.01s)
+    --- PASS: TestStreamMatchesOracle/go-L1-noise/p3 (0.00s)
+    --- PASS: TestStreamMatchesOracle/go-L1-noise/p4 (0.01s)
+    --- PASS: TestStreamMatchesOracle/go-L1-noise/p255 (0.00s)
+    --- PASS: TestStreamMatchesOracle/fixed/p0 (0.68s)
+    --- PASS: TestStreamMatchesOracle/fixed/p1 (0.62s)
+    --- PASS: TestStreamMatchesOracle/fixed/p2 (0.62s)
+    --- PASS: TestStreamMatchesOracle/fixed/p3 (0.56s)
+    --- PASS: TestStreamMatchesOracle/fixed/p4 (0.54s)
+    --- PASS: TestStreamMatchesOracle/fixed/p255 (0.66s)
+    --- PASS: TestStreamMatchesOracle/empty/p0 (0.00s)
+    --- PASS: TestStreamMatchesOracle/empty/p1 (0.01s)
+    --- PASS: TestStreamMatchesOracle/empty/p2 (0.00s)
+    --- PASS: TestStreamMatchesOracle/empty/p3 (0.00s)
+    --- PASS: TestStreamMatchesOracle/empty/p4 (0.00s)
+    --- PASS: TestStreamMatchesOracle/empty/p255 (0.01s)
+    --- PASS: TestStreamMatchesOracle/tiny/p0 (0.00s)
+    --- PASS: TestStreamMatchesOracle/tiny/p1 (0.01s)
+    --- PASS: TestStreamMatchesOracle/tiny/p2 (0.00s)
+    --- PASS: TestStreamMatchesOracle/tiny/p3 (0.00s)
+    --- PASS: TestStreamMatchesOracle/tiny/p4 (0.00s)
+    --- PASS: TestStreamMatchesOracle/tiny/p255 (0.08s)
+    --- PASS: TestStreamMatchesOracle/repeat/p0 (0.23s)
+    --- PASS: TestStreamMatchesOracle/repeat/p1 (0.39s)
+    --- PASS: TestStreamMatchesOracle/repeat/p2 (0.10s)
+    --- PASS: TestStreamMatchesOracle/repeat/p3 (0.02s)
+    --- PASS: TestStreamMatchesOracle/repeat/p4 (0.02s)
+    --- PASS: TestStreamMatchesOracle/repeat/p255 (0.20s)
+    --- PASS: TestStreamMatchesOracle/mem1/p0 (0.18s)
+    --- PASS: TestStreamMatchesOracle/mem1/p1 (0.11s)
+    --- PASS: TestStreamMatchesOracle/mem1/p2 (0.10s)
+    --- PASS: TestStreamMatchesOracle/mem1/p3 (0.09s)
+    --- PASS: TestStreamMatchesOracle/mem1/p4 (0.11s)
+    --- PASS: TestStreamMatchesOracle/mem1/p255 (0.27s)
+    --- PASS: TestStreamMatchesOracle/gzip-rsync/p0 (0.09s)
+    --- PASS: TestStreamMatchesOracle/gzip-rsync/p1 (0.10s)
+    --- PASS: TestStreamMatchesOracle/gzip-rsync/p2 (0.05s)
+    --- PASS: TestStreamMatchesOracle/gzip-rsync/p3 (0.14s)
+    --- PASS: TestStreamMatchesOracle/gzip-rsync/p4 (0.06s)
+    --- PASS: TestStreamMatchesOracle/gzip-rsync/p255 (0.08s)
+    --- PASS: TestStreamMatchesOracle/L1/p0 (0.18s)
+    --- PASS: TestStreamMatchesOracle/L1/p1 (0.19s)
+    --- PASS: TestStreamMatchesOracle/L1/p2 (0.12s)
+    --- PASS: TestStreamMatchesOracle/L1/p3 (0.13s)
+    --- PASS: TestStreamMatchesOracle/L1/p4 (0.09s)
+    --- PASS: TestStreamMatchesOracle/L1/p255 (0.16s)
+    --- PASS: TestStreamMatchesOracle/L2/p0 (0.15s)
+    --- PASS: TestStreamMatchesOracle/L2/p1 (0.18s)
+    --- PASS: TestStreamMatchesOracle/L2/p2 (0.20s)
+    --- PASS: TestStreamMatchesOracle/L2/p3 (0.26s)
+    --- PASS: TestStreamMatchesOracle/L2/p4 (0.33s)
+    --- PASS: TestStreamMatchesOracle/L2/p255 (0.31s)
+    --- PASS: TestStreamMatchesOracle/L3/p0 (0.28s)
+    --- PASS: TestStreamMatchesOracle/L3/p1 (0.21s)
+    --- PASS: TestStreamMatchesOracle/L3/p2 (0.12s)
+    --- PASS: TestStreamMatchesOracle/L3/p3 (0.10s)
+    --- PASS: TestStreamMatchesOracle/L3/p4 (0.19s)
+    --- PASS: TestStreamMatchesOracle/L3/p255 (0.31s)
+=== RUN   TestUnitWorkersAreByteIdentical
+=== RUN   TestUnitWorkersAreByteIdentical/go-L0
+=== RUN   TestUnitWorkersAreByteIdentical/go-L1
+=== RUN   TestUnitWorkersAreByteIdentical/go-L2
+=== RUN   TestUnitWorkersAreByteIdentical/go-L4
+=== RUN   TestUnitWorkersAreByteIdentical/go-L6
+=== RUN   TestUnitWorkersAreByteIdentical/go-L9
+=== RUN   TestUnitWorkersAreByteIdentical/go-L-2
+=== RUN   TestUnitWorkersAreByteIdentical/go-L6-mixed
+=== RUN   TestUnitWorkersAreByteIdentical/go-L1-noise
+=== RUN   TestUnitWorkersAreByteIdentical/fixed
+=== RUN   TestUnitWorkersAreByteIdentical/empty
+=== RUN   TestUnitWorkersAreByteIdentical/tiny
+=== RUN   TestUnitWorkersAreByteIdentical/repeat
+--- PASS: TestUnitWorkersAreByteIdentical (17.86s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L0 (0.12s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L1 (1.43s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L2 (1.28s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L4 (1.24s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L6 (2.23s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L9 (2.38s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L-2 (3.31s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L6-mixed (2.23s)
+    --- PASS: TestUnitWorkersAreByteIdentical/go-L1-noise (0.04s)
+    --- PASS: TestUnitWorkersAreByteIdentical/fixed (2.33s)
+    --- PASS: TestUnitWorkersAreByteIdentical/empty (0.00s)
+    --- PASS: TestUnitWorkersAreByteIdentical/tiny (0.00s)
+    --- PASS: TestUnitWorkersAreByteIdentical/repeat (0.68s)
+=== RUN   TestZlibFastEmulation
+    zfast_test.go:34: level 1 stream: emulated 102 B (0 escapes), P3 1619 B, other profile 11904 B, stream 56820 B
+    zfast_test.go:34: level 1 tok4K: emulated 2475 B (403 escapes), P3 10718 B, other profile 17407 B, stream 56820 B
+    zfast_test.go:34: level 2 stream: emulated 101 B (0 escapes), P3 7937 B, other profile 11531 B, stream 54119 B
+    zfast_test.go:34: level 2 tok4K: emulated 2414 B (408 escapes), P3 14992 B, other profile 16522 B, stream 54119 B
+    zfast_test.go:34: level 3 stream: emulated 100 B (0 escapes), P3 15125 B, other profile 20783 B, stream 51844 B
+    zfast_test.go:34: level 3 tok4K: emulated 2159 B (334 escapes), P3 20625 B, other profile 24938 B, stream 51844 B
+--- PASS: TestZlibFastEmulation (1.70s)
+=== RUN   TestZlibFastWarmupVariants
+--- PASS: TestZlibFastWarmupVariants (0.34s)
+PASS
+ok  	zeros3-z3/ir	74.682s

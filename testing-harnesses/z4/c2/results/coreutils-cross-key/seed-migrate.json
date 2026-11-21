@@ -1,0 +1,40 @@
+{
+  "Objects": 2,
+  "Admitted": 1,
+  "Pinned": 0,
+  "KeptCDC": 1,
+  "CDCBytes": 34681817,
+  "AddedBytes": 4337833,
+  "Plans": [
+    {
+      "sha256": "d71f1075012c8fd1fb30be24dac9b91b973dfff6bb6574d0a3b4f3f8de960355",
+      "size": 61214720,
+      "form": "cdc",
+      "depth": 0,
+      "cdc_unshared_bytes": 17262493,
+      "added_bytes": 0,
+      "saving": 0,
+      "reason": "no similar base"
+    },
+    {
+      "sha256": "c4b9b4ca3fdc0e3baa7905ec41f6a465ab3f4188b47f195264eb48dde283bc21",
+      "size": 62730240,
+      "form": "delta",
+      "bases": [
+        "d71f1075012c"
+      ],
+      "depth": 1,
+      "cdc_unshared_bytes": 17419324,
+      "added_bytes": 4337833,
+      "saving": 0.7509758128386612,
+      "read_amp_4k": 12724457.5,
+      "cdc_amp_4k": 144489.9787557006
+    }
+  ],
+  "Seconds": 27.794640939,
+  "PlanReuse": 0,
+  "RepNotBuilt": 0,
+  "CacheHits": 0,
+  "CacheMisses": 0,
+  "DecodedBytes": 0
+}

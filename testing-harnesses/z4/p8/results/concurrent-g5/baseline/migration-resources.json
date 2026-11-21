@@ -1,0 +1,17 @@
+{
+  "processes": {
+    "b": {
+      "rc": 0,
+      "peak_rss_kib": 217364,
+      "cpu_s": 299.903953,
+      "wall_s": 2124.802255864
+    },
+    "a": {
+      "rc": 0,
+      "peak_rss_kib": 210812,
+      "cpu_s": 299.515146,
+      "wall_s": 2171.641915672
+    }
+  },
+  "concurrent_sampled_peak_rss_kib": 416500
+}

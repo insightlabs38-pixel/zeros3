@@ -1,0 +1,30 @@
+/workspace/work/zeros3/c2b-production-skew.dWsGlZ/zeros3: go1.27.4
+	path	zeros3
+	mod	zeros3	v0.1.2-0.20261120044705-87e4de534f5d
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=87e4de534f5df2238677ebff80cd28fb15efb579
+	build	vcs.time=2026-11-20T04:47:05Z
+	build	vcs.modified=false
+/workspace/work/zeros3/c2b-production-skew.dWsGlZ/zeros3.test: go1.27.4
+	path	zeros3.test
+	mod	zeros3	(devel)
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1

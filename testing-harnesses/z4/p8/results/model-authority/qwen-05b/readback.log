@@ -1,0 +1,9 @@
+=== RUN   TestP8QwenControl
+=== RUN   TestP8QwenControl/base.safetensors
+    zeros3_p8_qwen_experiment_test.go:98: verified base.safetensors bytes=988097824 sha256=88c142557820ccad55bb59756bfcfcf891de9cc6202816bd346445188a0ed342 rss_kib=82252
+=== RUN   TestP8QwenControl/instruct.safetensors
+    zeros3_p8_qwen_experiment_test.go:98: verified instruct.safetensors bytes=988097824 sha256=fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe rss_kib=82252
+--- PASS: TestP8QwenControl (129.98s)
+    --- PASS: TestP8QwenControl/base.safetensors (106.54s)
+    --- PASS: TestP8QwenControl/instruct.safetensors (23.29s)
+PASS

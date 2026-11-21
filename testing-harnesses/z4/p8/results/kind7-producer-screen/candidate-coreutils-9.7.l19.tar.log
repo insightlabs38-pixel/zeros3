@@ -1,0 +1,5 @@
+=== RUN   TestP8Rep
+    zeros3_p8_test.go:251: {"alloc_mib":373.9206314086914,"build_s":11.203863441,"bytes":6732207,"cpu_s":5.970789000000001,"err":"representation: unsupported version or kind: codec description costs 7451045 bytes","file":"coreutils-9.7.l19.tar.zst","mibps":0.5730463373139191,"p8":"rep","rep":0,"rep_phys":0,"rss_mib":218.05859375}
+    zeros3_p8_test.go:254: could not build and replay /workspace/work/zeros3/corpus/zstd/coreutils-9.7.l19.tar.zst exactly: representation: unsupported version or kind: codec description costs 7451045 bytes
+--- FAIL: TestP8Rep (11.50s)
+FAIL

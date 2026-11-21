@@ -5,12 +5,14 @@ dependencies indicate implementation or verification prerequisites. Each milesto
 still uses its own qualification criteria.
 
 - Item 1 merged in PR #117. The driver rejects failed children and partial results.
-- Item 2 reproduced the 256 MiB migration RSS regression and isolated decoded windows
-  and packed reads in the peak heap. Candidate comparisons are underway.
-- Item 8 delivered the append-only private archive and verified its remote checksum
-  and member hashes. The patched-toolchain controls passed, and the root cause remains open.
-- Item 3 has a pinned Git-pack smoke result. The paired benchmark and remaining
-  corpus families are pending.
+- Item 2 has exact 2 GiB single-store and concurrent memory evidence. Frozen
+  PR #120 remains subject to its release qualification.
+- Items 3–7 have measured results in the consolidated P8R milestone PR #127.
+  Remaining corpus checks, regressions and qualification are tracked per item.
+- Item 8 delivered and verified the append-only private archive. The runtime
+  root cause remains open and the investigation is paused.
+- Item 42 gained the merged PR #123 provenance and runner liveness fixes.
+  The final integrated CI and conventional runner audit remains open.
 
 At each milestone, record the tested source fingerprint and remote merge commit.
 Record only the private incident archive's append path and commit in this repository.

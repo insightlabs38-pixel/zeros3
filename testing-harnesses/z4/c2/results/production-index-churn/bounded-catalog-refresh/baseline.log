@@ -1,0 +1,10 @@
+1f65b62bbca3ef7683860104792dcf50dc3ac475
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkSimilarityCatalogSmallRefresh-2   	     100	  43260889 ns/op	     26624 identities/op	 3252577 B/op	     153 allocs/op
+BenchmarkSimilarityCatalogSmallRefresh-2   	      14	  79317808 ns/op	     26624 identities/op	 3250489 B/op	     153 allocs/op
+BenchmarkSimilarityCatalogSmallRefresh-2   	      33	  37402385 ns/op	     26624 identities/op	 3235079 B/op	     152 allocs/op
+PASS
+ok  	zeros3	47.449s

@@ -1,0 +1,14 @@
+ZeroS3 stats
+scope            (whole store)
+buckets          1
+objects          12288 current | 12288 versions (0 historical)
+logical          2612427776 bytes current | 2612427776 bytes versions (0 historical)
+multipart        0 active uploads | 0 bytes
+chunk refs       48821 refs (2612427776 bytes) | 14398 unique (382854077 bytes)
+sharing          382854077 bytes exclusive | 0 bytes shared outside scope
+dedup            2229573699 bytes avoided | 85.3% reduction | 0.147 unique/logical
+unique reachable 382854077 bytes (store-global)
+chunk storage    0 loose (0 bytes) | 1598 packs (14398 chunks, 395528753 bytes)
+pack compression 14398 raw + 0 deflate records | 382854077 logical -> 382854077 stored bytes (0.0% saved, 1.00x)
+store files      385003101 bytes chunks | 10525652 bytes manifests | 4233540 bytes journal | 0 bytes temp
+actual/reclaim   399762436 bytes actual | 0 bytes reclaimable
