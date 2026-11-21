@@ -1,0 +1,96 @@
+=== RUN   TestAuthorityONNXCrossFormatEconomics
+    zeros3_onnx_test.go:155: {
+          "cdc": {
+            "forms": null,
+            "migration_s": 8.44e-7,
+            "physical_bytes": 755953832,
+            "sample_range_s": 0.003204856,
+            "whole_mib_s": 243.17278317242167
+          },
+          "generic": {
+            "forms": [
+              {
+                "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+                "size": 269060552,
+                "form": "cdc",
+                "depth": 0,
+                "cdc_unshared_bytes": 268907020,
+                "added_bytes": 0,
+                "saving": 0,
+                "reason": "no similar base"
+              },
+              {
+                "sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+                "size": 270885952,
+                "form": "cdc",
+                "depth": 0,
+                "cdc_unshared_bytes": 212988189,
+                "added_bytes": 0,
+                "saving": 0,
+                "reason": "no similar base"
+              },
+              {
+                "sha256": "e85e706ce14a3499e1f698c0d638b430df75b5f67131d1516bd0d46b844dfb2e",
+                "size": 270267067,
+                "form": "delta",
+                "bases": [
+                  "f535f83ec568"
+                ],
+                "depth": 1,
+                "cdc_unshared_bytes": 213240323,
+                "added_bytes": 206627392,
+                "saving": 0.031011634699127707,
+                "read_amp_4k": 1213497.5,
+                "cdc_amp_4k": 82526.24463926638
+              }
+            ],
+            "migration_s": 25.197636741,
+            "physical_bytes": 745235150,
+            "sample_range_s": 0.012569161,
+            "whole_mib_s": 49.558238904407354
+          },
+          "logical_bytes": 810213571,
+          "structured": {
+            "forms": [
+              {
+                "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+                "size": 269060552,
+                "form": "rep",
+                "depth": 0,
+                "cdc_unshared_bytes": 268907020,
+                "added_bytes": 202379281,
+                "saving": 0.24740052900069326,
+                "read_amp_4k": 269060552,
+                "cdc_amp_4k": 82375.63444293388
+              },
+              {
+                "sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+                "size": 270885952,
+                "form": "rep",
+                "depth": 0,
+                "cdc_unshared_bytes": 212988189,
+                "added_bytes": 268844300,
+                "saving": -0.2622498048471599,
+                "read_amp_4k": 270885952,
+                "cdc_amp_4k": 83130.46130918594
+              },
+              {
+                "sha256": "e85e706ce14a3499e1f698c0d638b430df75b5f67131d1516bd0d46b844dfb2e",
+                "size": 270267067,
+                "form": "rep",
+                "depth": 0,
+                "cdc_unshared_bytes": 269790078,
+                "added_bytes": 213047822,
+                "saving": 0.21032002518639695,
+                "read_amp_4k": 270267067,
+                "cdc_amp_4k": 82526.24463926638
+              }
+            ],
+            "migration_s": 82.665517684,
+            "physical_bytes": 755315167,
+            "sample_range_s": 11.515396889,
+            "whole_mib_s": 159.87343024999836
+          }
+        }
+--- PASS: TestAuthorityONNXCrossFormatEconomics (235.09s)
+PASS

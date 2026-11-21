@@ -1,0 +1,314 @@
+[
+  {
+    "tensor": "pair-0",
+    "orientation": "original",
+    "shared_tile_file_bytes": 12877824,
+    "digest_table_bytes": 201216,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 22
+      },
+      {
+        "offset": 2575565,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 13
+      },
+      {
+        "offset": 6438905,
+        "length": 4096,
+        "tiles_read": 5,
+        "bytes_read": 10240,
+        "us": 59
+      },
+      {
+        "offset": 12873728,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 11
+      }
+    ],
+    "whole_mib_s": 213.58562671905452,
+    "sliced_whole_mib_s": 375.33520012009507,
+    "whole_sha256": "0fe73ade28f29bf5c2f720570b8c811d07fe112a8b868e903140d12d04d94388"
+  },
+  {
+    "tensor": "pair-0",
+    "orientation": "transpose",
+    "shared_tile_file_bytes": 12877824,
+    "digest_table_bytes": 201216,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 64,
+        "bytes_read": 131072,
+        "us": 387
+      },
+      {
+        "offset": 2575565,
+        "length": 4096,
+        "tiles_read": 65,
+        "bytes_read": 133120,
+        "us": 254
+      },
+      {
+        "offset": 6438905,
+        "length": 4096,
+        "tiles_read": 65,
+        "bytes_read": 133120,
+        "us": 396
+      },
+      {
+        "offset": 12873728,
+        "length": 4096,
+        "tiles_read": 64,
+        "bytes_read": 131072,
+        "us": 342
+      }
+    ],
+    "whole_mib_s": 54.511391379446394,
+    "sliced_whole_mib_s": 4.095506614663447,
+    "whole_sha256": "c85606a31d399e911f393b5458693719d779e0143b04d05f283bcc69fec1358c"
+  },
+  {
+    "tensor": "pair-1",
+    "orientation": "original",
+    "shared_tile_file_bytes": 12877824,
+    "digest_table_bytes": 201216,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 16
+      },
+      {
+        "offset": 2575565,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 11
+      },
+      {
+        "offset": 6438905,
+        "length": 4096,
+        "tiles_read": 5,
+        "bytes_read": 10240,
+        "us": 14
+      },
+      {
+        "offset": 12873728,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 10
+      }
+    ],
+    "whole_mib_s": 209.21923393792957,
+    "sliced_whole_mib_s": 54.279462668036345,
+    "whole_sha256": "b18b234e60269a6cebe6d61100da8d056c0fec5058d923962a0dbb00df67c12b"
+  },
+  {
+    "tensor": "pair-1",
+    "orientation": "transpose",
+    "shared_tile_file_bytes": 12877824,
+    "digest_table_bytes": 201216,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 64,
+        "bytes_read": 131072,
+        "us": 215
+      },
+      {
+        "offset": 2575565,
+        "length": 4096,
+        "tiles_read": 65,
+        "bytes_read": 133120,
+        "us": 191
+      },
+      {
+        "offset": 6438905,
+        "length": 4096,
+        "tiles_read": 65,
+        "bytes_read": 133120,
+        "us": 172
+      },
+      {
+        "offset": 12873728,
+        "length": 4096,
+        "tiles_read": 64,
+        "bytes_read": 131072,
+        "us": 154
+      }
+    ],
+    "whole_mib_s": 64.94925319504317,
+    "sliced_whole_mib_s": 5.5873701962628814,
+    "whole_sha256": "f9e570f29017193b8d0a5d9bd61b38416b5d2a5a5d62b3ca0f3fa59a4a77fa0d"
+  },
+  {
+    "tensor": "pair-2",
+    "orientation": "original",
+    "shared_tile_file_bytes": 98304,
+    "digest_table_bytes": 1536,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 12
+      },
+      {
+        "offset": 19661,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 8
+      },
+      {
+        "offset": 49145,
+        "length": 4096,
+        "tiles_read": 5,
+        "bytes_read": 10240,
+        "us": 10
+      },
+      {
+        "offset": 94208,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 8
+      }
+    ],
+    "whole_mib_s": 669.5472075417797,
+    "sliced_whole_mib_s": 531.5951824718184,
+    "whole_sha256": "dff15bc10a6bac147349f6b608ef53905032c458e8bb85db336651b412fe2d23"
+  },
+  {
+    "tensor": "pair-2",
+    "orientation": "transpose",
+    "shared_tile_file_bytes": 98304,
+    "digest_table_bytes": 1536,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 12,
+        "bytes_read": 24576,
+        "us": 54
+      },
+      {
+        "offset": 19661,
+        "length": 4096,
+        "tiles_read": 12,
+        "bytes_read": 24576,
+        "us": 65
+      },
+      {
+        "offset": 49145,
+        "length": 4096,
+        "tiles_read": 13,
+        "bytes_read": 26624,
+        "us": 58
+      },
+      {
+        "offset": 94208,
+        "length": 4096,
+        "tiles_read": 12,
+        "bytes_read": 24576,
+        "us": 55
+      }
+    ],
+    "whole_mib_s": 332.5930551022435,
+    "sliced_whole_mib_s": 96.54487766348008,
+    "whole_sha256": "ea984046199772d1c5272666d7f39c52254daad28ec4a43541f1b4e0dae66e6b"
+  },
+  {
+    "tensor": "pair-3",
+    "orientation": "original",
+    "shared_tile_file_bytes": 131072,
+    "digest_table_bytes": 2048,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 16,
+        "bytes_read": 32768,
+        "us": 37
+      },
+      {
+        "offset": 26215,
+        "length": 4096,
+        "tiles_read": 16,
+        "bytes_read": 32768,
+        "us": 43
+      },
+      {
+        "offset": 65529,
+        "length": 4096,
+        "tiles_read": 17,
+        "bytes_read": 34816,
+        "us": 34
+      },
+      {
+        "offset": 126976,
+        "length": 4096,
+        "tiles_read": 16,
+        "bytes_read": 32768,
+        "us": 31
+      }
+    ],
+    "whole_mib_s": 659.1818761898232,
+    "sliced_whole_mib_s": 262.3393958218778,
+    "whole_sha256": "d473699fe45cec47ec164c9009c862c9d7f5f65fdd28a253d92290728ae65f5d"
+  },
+  {
+    "tensor": "pair-3",
+    "orientation": "transpose",
+    "shared_tile_file_bytes": 131072,
+    "digest_table_bytes": 2048,
+    "samples": [
+      {
+        "offset": 0,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 39
+      },
+      {
+        "offset": 26215,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 39
+      },
+      {
+        "offset": 65529,
+        "length": 4096,
+        "tiles_read": 5,
+        "bytes_read": 10240,
+        "us": 41
+      },
+      {
+        "offset": 126976,
+        "length": 4096,
+        "tiles_read": 4,
+        "bytes_read": 8192,
+        "us": 39
+      }
+    ],
+    "whole_mib_s": 45.90408836500287,
+    "sliced_whole_mib_s": 31.445710239100606,
+    "whole_sha256": "9d891d37250d09c8f64b33de7b93e57efd207af29fd1aa77c226326f70e660c4"
+  }
+]

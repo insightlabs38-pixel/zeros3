@@ -1,0 +1,42 @@
+[
+  {
+    "Name": "pair-0",
+    "BaseSHA256": "4d0a8d3aadfb7cc5b07d3057c0f12405d8e28cf46d42790133051f0428c5fee0",
+    "TransposeSHA256": "aaf3b0571a161662084248c66f571e63fe266cf4d18d5e65f9e5351ad7124d5e",
+    "Rows": 192,
+    "Cols": 576,
+    "Width": 2,
+    "SourceTensor": "blk.0.attn_v.weight",
+    "TargetTensor": "model.layers.0.attn.v_proj.MatMul.weight"
+  },
+  {
+    "Name": "pair-1",
+    "BaseSHA256": "9c062479d62227b4e9e56e8475d55d16c54332e4c981cbd94ef2276b1ee73605",
+    "TransposeSHA256": "976ec464b40f39f8d2299fe2455ea49a87fd776dec0befcfdd2383ba033b48e4",
+    "Rows": 576,
+    "Cols": 576,
+    "Width": 2,
+    "SourceTensor": "blk.0.attn_output.weight",
+    "TargetTensor": "model.layers.0.attn.o_proj.MatMul.weight"
+  },
+  {
+    "Name": "pair-2",
+    "BaseSHA256": "a85fbe8293dccede17a9ffe0ca0c1dd0a3c8374b6ca3491217fab88a12db2c09",
+    "TransposeSHA256": "77b140d84d280028e0d6f65f151c4ca3793a4e680257251a502cc2fa7823e591",
+    "Rows": 1536,
+    "Cols": 576,
+    "Width": 2,
+    "SourceTensor": "blk.0.ffn_gate.weight",
+    "TargetTensor": "model.layers.0.mlp.gate_proj.MatMul.weight"
+  },
+  {
+    "Name": "pair-3",
+    "BaseSHA256": "37261cde2154c082908c5fedddaea63e76b3061f5fa55e9630111a82348a9623",
+    "TransposeSHA256": "875b2b4c538b1cbee0ebf55fc855b32d4a6f5c7e3ff85f993fdc2b0f59afa217",
+    "Rows": 1536,
+    "Cols": 576,
+    "Width": 2,
+    "SourceTensor": "blk.0.ffn_up.weight",
+    "TargetTensor": "model.layers.0.mlp.up_proj.MatMul.weight"
+  }
+]

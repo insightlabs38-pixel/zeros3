@@ -1,0 +1,123 @@
+=== RUN   TestRepONNXInlineTensorLayout
+--- PASS: TestRepONNXInlineTensorLayout (0.00s)
+=== RUN   TestAuthorityONNXCrossFormatEconomics
+    zeros3_onnx_test.go:155: {
+          "cdc": {
+            "forms": null,
+            "migration_s": 4.7e-7,
+            "physical_bytes": 60202120,
+            "sample_range_s": 0.002884833,
+            "whole_mib_s": 288.6228659844111
+          },
+          "generic": {
+            "forms": [
+              {
+                "sha256": "ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2",
+                "size": 28143920,
+                "form": "cdc",
+                "depth": 0,
+                "cdc_unshared_bytes": 1787709,
+                "added_bytes": 0,
+                "saving": 0,
+                "reason": "no admissible exact representation"
+              },
+              {
+                "sha256": "976f80b182c036be8deba5485d3102e98420741c476b1629d2165035e5985d61",
+                "size": 28141344,
+                "form": "delta",
+                "bases": [
+                  "ffa0ce742b32"
+                ],
+                "depth": 1,
+                "cdc_unshared_bytes": 1875339,
+                "added_bytes": 16963,
+                "saving": 0.9909547020565348,
+                "read_amp_4k": 58117.5,
+                "cdc_amp_4k": 89877.53942242418
+              },
+              {
+                "sha256": "5dbe975da0264f3fba9cff0ad0e1f827d7e274adc5b144716cdac3b9f55f445b",
+                "size": 28139765,
+                "form": "delta",
+                "bases": [
+                  "ffa0ce742b32"
+                ],
+                "depth": 1,
+                "cdc_unshared_bytes": 1791790,
+                "added_bytes": 1705,
+                "saving": 0.9990484375959237,
+                "read_amp_4k": 63013,
+                "cdc_amp_4k": 90939.36173038403
+              },
+              {
+                "sha256": "07564c99b2e1607334535edb5d0411fb1642225da270726f768afcd5b916cb2c",
+                "size": 28139765,
+                "form": "cdc",
+                "depth": 0,
+                "cdc_unshared_bytes": 28139765,
+                "added_bytes": 0,
+                "saving": 0,
+                "reason": "no admissible exact representation"
+              }
+            ],
+            "migration_s": 3.084559273,
+            "physical_bytes": 56541939,
+            "sample_range_s": 0.037096037,
+            "whole_mib_s": 116.25611910325976
+          },
+          "logical_bytes": 112564794,
+          "structured": {
+            "forms": [
+              {
+                "sha256": "ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2",
+                "size": 28143920,
+                "form": "rep",
+                "depth": 0,
+                "cdc_unshared_bytes": 1787709,
+                "added_bytes": 28116842,
+                "saving": -14.72786286806186,
+                "read_amp_4k": 28143920,
+                "cdc_amp_4k": 90915.35726110649
+              },
+              {
+                "sha256": "976f80b182c036be8deba5485d3102e98420741c476b1629d2165035e5985d61",
+                "size": 28141344,
+                "form": "rep",
+                "depth": 0,
+                "cdc_unshared_bytes": 1875339,
+                "added_bytes": 12746,
+                "saving": 0.9932033621654538,
+                "read_amp_4k": 28141344,
+                "cdc_amp_4k": 89877.53942242418
+              },
+              {
+                "sha256": "5dbe975da0264f3fba9cff0ad0e1f827d7e274adc5b144716cdac3b9f55f445b",
+                "size": 28139765,
+                "form": "rep",
+                "depth": 0,
+                "cdc_unshared_bytes": 28139765,
+                "added_bytes": 20083,
+                "saving": 0.9992863124478829,
+                "read_amp_4k": 28139765,
+                "cdc_amp_4k": 90939.36173038403
+              },
+              {
+                "sha256": "07564c99b2e1607334535edb5d0411fb1642225da270726f768afcd5b916cb2c",
+                "size": 28139765,
+                "form": "rep",
+                "depth": 0,
+                "cdc_unshared_bytes": 28139765,
+                "added_bytes": 28049980,
+                "saving": 0.0031906805191869937,
+                "read_amp_4k": 28139765,
+                "cdc_amp_4k": 94845.50213162761
+              }
+            ],
+            "migration_s": 10.681014945,
+            "physical_bytes": 56648100,
+            "sample_range_s": 1.002994942,
+            "whole_mib_s": 93.55788330609765
+          }
+        }
+--- PASS: TestAuthorityONNXCrossFormatEconomics (26.33s)
+PASS

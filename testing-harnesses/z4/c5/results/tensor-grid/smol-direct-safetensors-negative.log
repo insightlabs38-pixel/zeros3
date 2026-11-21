@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "testing-harnesses/z4/c5/tensorgrid/extract_pairs.py", line 61, in <module>
+    main()
+  File "testing-harnesses/z4/c5/tensorgrid/extract_pairs.py", line 56, in main
+    raise RuntimeError("zero exact transpose pairs in the specified fixture band")
+RuntimeError: zero exact transpose pairs in the specified fixture band
