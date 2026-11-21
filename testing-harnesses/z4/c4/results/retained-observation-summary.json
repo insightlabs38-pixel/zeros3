@@ -1,0 +1,23 @@
+{
+  "identity": {
+    "binary": "/workspace/work/zeros3/p8r-consolidated-t1-scratch/scale/zeros3",
+    "binary_sha256": "24dd66711b85cb6f3614d6aab8db328068804af2c2acfd5c2d6c3717c89a939e",
+    "harness_sha256": "d744d84bb247e728e5984887e1b88e13d75f6405aebb90c78d3248c59d18f03f"
+  },
+  "samples_complete": 2,
+  "samples_failed_or_incomplete": [],
+  "observed_days": 0.002377622048611111,
+  "largest_sample_gap_s": 55.986297,
+  "exact_http_checks": 192,
+  "allocation_saving_range": [
+    -0.02540941297921262,
+    -0.02540941297921262
+  ],
+  "min_whole_ratio": {
+    "first-process-read": 0.8656444820014729,
+    "repeat-whole": 0.5308908501749455
+  },
+  "economic_gates": "FAIL",
+  "duration_gate": "PENDING 30-DAY RUN",
+  "overall": "INCOMPLETE"
+}

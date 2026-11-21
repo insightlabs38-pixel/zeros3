@@ -56,3 +56,5 @@ whole-read ratios were 0.81 and 0.77. The same 15% blended savings
 target remains unmet, and extended integrity remains **PENDING 30-DAY RUN**.
 
 [Compaction, repack and integrity results](results/compact-control.json)
+
+Run `python3 testing-harnesses/z4/c4/summarize.py PREPARED_RUN` to review the elapsed observation window, gaps, independent HTTP checks, verification failures and both performance gates without modifying the prepared store. It reports incomplete observations explicitly. Start a new run if the pilot binary or preparation harness changes.
