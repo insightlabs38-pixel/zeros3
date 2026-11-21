@@ -2391,6 +2391,70 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 	}
 }
 
+func TestAuthorityRecoverPeerWithExactCDCFallback(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			local := authMigratedLab(t)
+			local.reclaim()
+			const key = "k3"
+			exact := local.want[key]
+			sum := sha256.Sum256(exact)
+			if got := mustLoad(t, local.s, sum); got.Form != authFormDelta {
+				t.Fatalf("expected authoritative delta, got %+v", got)
+			}
+			path := local.s.authPath(sum)
+			local.offline(func() { mustOK(t, os.WriteFile(path, []byte("damaged record"), 0o600)) })
+			peer := newAuthLab(t)
+			peer.put(key, exact)
+			creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
+			handler := NewServer(peer.s, creds, "us-east-1")
+			var exports, chunks atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if legacy && r.URL.Path == zeros3SyncInfoPath {
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, r)
+					if rec.Code != http.StatusOK {
+						w.WriteHeader(rec.Code)
+						return
+					}
+					var info syncDiscoveryResponse
+					if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					info.AuthorityExport = nil
+					writeSyncJSON(w, http.StatusOK, info)
+					return
+				}
+				if r.URL.Path == zeros3AuthExportPath {
+					exports.Add(1)
+				}
+				if strings.HasPrefix(r.URL.Path, zeros3SyncChunksPrefix) {
+					chunks.Add(1)
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			cfg := mustPeerConfig(server, creds, "us-east-1")
+			cfg.Bucket, cfg.Key = "b", key
+			mustOK(t, local.s.recoverAuthorityFromPeer(cfg))
+			wantExports := int32(1)
+			if legacy {
+				wantExports = 0
+			}
+			if exports.Load() != wantExports || chunks.Load() == 0 {
+				t.Fatalf("unexpected fallback requests. exports=%d chunks=%d", exports.Load(), chunks.Load())
+			}
+			if got := mustLoad(t, local.s, sum); got.Form != authFormPin {
+				t.Fatalf("expected exact CDC pin, got %+v", got)
+			}
+			local.offline(func() {})
+			local.exact("reopened after exact CDC fallback")
+			local.verifyOK("reopened after exact CDC fallback")
+		})
+	}
+}
+
 func deleteChunkOnDiskDir(t *testing.T, dir, hexSum string) {
 	t.Helper()
 	s, err := OpenStore(dir)

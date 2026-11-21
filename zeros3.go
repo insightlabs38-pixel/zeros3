@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52310    Windowed and estimated similarity deltas (extracted dcore)
-//    53839    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61531    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67803    CLI dispatch, HTTP server/startup, and main
+//    52336    Windowed and estimated similarity deltas (extracted dcore)
+//    53865    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61557    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67829    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -50434,7 +50434,7 @@ func (c *countingByteReader) ReadByte() (byte, error) {
 	return b[0], err
 }
 
-// recoverAuthorityFromPeer restores the closure of an exact live manifest
+// recoverAuthorityFromPeer restores the authority of an exact live manifest
 // under the exclusive store lock used by the authority maintenance command.
 func (s *Store) recoverAuthorityFromPeer(cfg syncClientConfig) error {
 	_, local, err := s.headServed(cfg.Bucket, cfg.Key)
@@ -50448,9 +50448,6 @@ func (s *Store) recoverAuthorityFromPeer(cfg syncClientConfig) error {
 	discovery, err := discoverZeroS3Sync(cfg)
 	if err != nil {
 		return fmt.Errorf("recover peer discovery: %w", err)
-	}
-	if discovery.AuthorityExport == nil || discovery.AuthorityExport.Version != authXferVersion {
-		return errAuthTransferUnsupported
 	}
 	desc, err := fetchSourceDescriptor(cfg)
 	if err != nil {
@@ -50482,6 +50479,29 @@ func (s *Store) recoverAuthorityFromPeer(cfg syncClientConfig) error {
 			}
 		}
 	}
+	recoverExact := func() error {
+		if limit, exists := limits[sum]; exists && limit.size != local.man.TotalLength {
+			return fmt.Errorf("recover exact object: %w: peer size conflicts with a local dependent", errAuthCorrupt)
+		}
+		if rec, err := s.authLoad(sum); err == nil && rec != nil {
+			if _, _, err := s.authProve(rec, 0); err == nil {
+				return nil
+			}
+		}
+		err := s.AuthorityRepairObjectFrom(sum, func(digest [32]byte, _ int64) ([]byte, error) {
+			if data, err := s.casRead(digest); err == nil {
+				return data, nil
+			}
+			return fetchRepairChunk(context.Background(), cfg, hex.EncodeToString(digest[:]))
+		})
+		if err != nil {
+			return fmt.Errorf("recover exact object: %w", err)
+		}
+		return nil
+	}
+	if discovery.AuthorityExport == nil || discovery.AuthorityExport.Version != authXferVersion {
+		return recoverExact()
+	}
 	control, err := json.Marshal(authExportRequest{Bucket: cfg.Bucket, Key: cfg.Key, VersionID: desc.VersionID, Peer: s.AuthorityCaps()})
 	if err != nil {
 		return err
@@ -50495,6 +50515,12 @@ func (s *Store) recoverAuthorityFromPeer(cfg syncClientConfig) error {
 		body, err := readAllLimited(resp.Body, 64<<10)
 		if err != nil {
 			return err
+		}
+		var refusal syncErrorBody
+		if resp.StatusCode == http.StatusConflict && json.Unmarshal(body, &refusal) == nil &&
+			(refusal.Code == "UnavailableClosure" || refusal.Code == "Materialize") {
+			resp.Body.Close()
+			return recoverExact()
 		}
 		return fmt.Errorf("recover peer export status %d: %s", resp.StatusCode, body)
 	}

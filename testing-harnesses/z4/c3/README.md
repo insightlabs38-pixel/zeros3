@@ -49,3 +49,9 @@ restores unreadable copies even if their digests still have local locators.
 The durable pin atomically replaces the old authority record after all chunks
 are available. The regression injects a record-write failure, checks the old
 record remains, then retries and verifies exact readback after reopening.
+
+`authority recover` can use the peer's bounded CDC download when the peer
+does not advertise native export or explicitly requires materialization.
+It checks the peer's logical identity first, reuses verified local chunks,
+and checks the reconstructed content digest before publishing the pin.
+The focused test covers a CDC-only store and a peer with legacy capabilities.
