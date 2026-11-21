@@ -1,0 +1,54 @@
+=== RUN   TestAuthorityTierGateOnHardCodecs
+=== RUN   TestAuthorityTierGateOnHardCodecs/hot-lift-false
+=== RUN   TestAuthorityTierGateOnHardCodecs/warm-lift-false
+=== RUN   TestAuthorityTierGateOnHardCodecs/cold-lift-false
+=== RUN   TestAuthorityTierGateOnHardCodecs/archive-lift-false
+=== RUN   TestAuthorityTierGateOnHardCodecs/hot-lift-true
+--- PASS: TestAuthorityTierGateOnHardCodecs (2.81s)
+    --- PASS: TestAuthorityTierGateOnHardCodecs/hot-lift-false (0.60s)
+    --- PASS: TestAuthorityTierGateOnHardCodecs/warm-lift-false (0.62s)
+    --- PASS: TestAuthorityTierGateOnHardCodecs/cold-lift-false (0.82s)
+    --- PASS: TestAuthorityTierGateOnHardCodecs/archive-lift-false (0.37s)
+    --- PASS: TestAuthorityTierGateOnHardCodecs/hot-lift-true (0.39s)
+=== RUN   TestRepCodecNestedProduction
+=== RUN   TestRepCodecNestedProduction/gzip
+    zeros3_codec_test.go:213: gzip child=3 bytes=4096 cold logical amplification=2.40x
+    zeros3_codec_test.go:213: gzip child=3 bytes=65536 cold logical amplification=1.09x
+    zeros3_codec_test.go:213: gzip child=2 bytes=4096 cold logical amplification=2.39x
+    zeros3_codec_test.go:213: gzip child=2 bytes=65536 cold logical amplification=1.03x
+=== RUN   TestRepCodecNestedProduction/zstd
+    zeros3_codec_test.go:213: zstd child=3 bytes=4096 cold logical amplification=2.40x
+    zeros3_codec_test.go:213: zstd child=3 bytes=65536 cold logical amplification=1.09x
+    zeros3_codec_test.go:213: zstd child=2 bytes=4096 cold logical amplification=2.39x
+    zeros3_codec_test.go:213: zstd child=2 bytes=65536 cold logical amplification=1.03x
+--- PASS: TestRepCodecNestedProduction (0.23s)
+    --- PASS: TestRepCodecNestedProduction/gzip (0.09s)
+    --- PASS: TestRepCodecNestedProduction/zstd (0.13s)
+=== RUN   TestRepCodecUnsupportedFallsBack
+=== RUN   TestRepCodecUnsupportedFallsBack/multi-member_gzip
+=== RUN   TestRepCodecUnsupportedFallsBack/gzip_CRC
+=== RUN   TestRepCodecUnsupportedFallsBack/truncated_gzip
+=== RUN   TestRepCodecUnsupportedFallsBack/truncated_zstd
+=== RUN   TestRepCodecUnsupportedFallsBack/magicless
+=== RUN   TestRepCodecUnsupportedFallsBack/dictionary
+=== RUN   TestRepCodecUnsupportedFallsBack/window_above_16MiB
+--- PASS: TestRepCodecUnsupportedFallsBack (0.11s)
+    --- PASS: TestRepCodecUnsupportedFallsBack/multi-member_gzip (0.03s)
+    --- PASS: TestRepCodecUnsupportedFallsBack/gzip_CRC (0.02s)
+    --- PASS: TestRepCodecUnsupportedFallsBack/truncated_gzip (0.02s)
+    --- PASS: TestRepCodecUnsupportedFallsBack/truncated_zstd (0.02s)
+    --- PASS: TestRepCodecUnsupportedFallsBack/magicless (0.01s)
+    --- PASS: TestRepCodecUnsupportedFallsBack/dictionary (0.00s)
+    --- PASS: TestRepCodecUnsupportedFallsBack/window_above_16MiB (0.00s)
+=== RUN   TestAuthorityOptInCodecReplay
+=== RUN   TestAuthorityOptInCodecReplay/default
+=== RUN   TestAuthorityOptInCodecReplay/hot
+=== RUN   TestAuthorityOptInCodecReplay/archive
+--- PASS: TestAuthorityOptInCodecReplay (0.47s)
+    --- PASS: TestAuthorityOptInCodecReplay/default (0.02s)
+    --- PASS: TestAuthorityOptInCodecReplay/hot (0.02s)
+    --- PASS: TestAuthorityOptInCodecReplay/archive (0.43s)
+=== RUN   TestRepCodecTemporaryWritesRespectDiskReserve
+--- PASS: TestRepCodecTemporaryWritesRespectDiskReserve (0.00s)
+PASS
+ok  	zeros3	3.631s

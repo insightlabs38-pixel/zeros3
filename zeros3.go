@@ -120,11 +120,11 @@ import (
 //    27248    Portable snapshot bundles (`zeros3 bundle`)
 //    28445    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    29080    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    46253    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    53167    Windowed and estimated similarity deltas (extracted dcore)
-//    54696    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62388    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68660    CLI dispatch, HTTP server/startup, and main
+//    46267    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    53198    Windowed and estimated similarity deltas (extracted dcore)
+//    54727    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62487    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68759    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -34273,6 +34273,19 @@ type repCodecSink struct {
 	descriptionBytes int64
 }
 
+type repCodecTempWriter struct {
+	store   *Store
+	file    *os.File
+	reserve uint64
+}
+
+func (w repCodecTempWriter) Write(p []byte) (int, error) {
+	if err := w.store.checkAuthDiskReserve(w.reserve, uint64(len(p)), 0); err != nil {
+		return 0, err
+	}
+	return w.file.Write(p)
+}
+
 func (s *repCodecSink) Plain(p []byte) error {
 	if int64(len(p)) > s.max-s.n {
 		return fmt.Errorf("%w: codec plaintext exceeds %d bytes", errRepLimit, s.max)
@@ -34280,7 +34293,7 @@ func (s *repCodecSink) Plain(p []byte) error {
 	if err := s.b.budget.inspect(int64(len(p))); err != nil {
 		return err
 	}
-	n, err := s.plain.Write(p)
+	n, err := (repCodecTempWriter{s.b.s, s.plain, s.b.reserve}).Write(p)
 	if n != 0 {
 		s.digest.Write(p[:n])
 		s.crc = crc32.Update(s.crc, crc32.IEEETable, p[:n])
@@ -34392,7 +34405,7 @@ func (b *repBuilder) encodeGzip(src io.ReaderAt, size int64) (*repObject, error)
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: gzip analysis: %v", errRepUnsupported, err)
+		return nil, fmt.Errorf("%w: gzip analysis: %w", errRepUnsupported, err)
 	}
 	if int64(len(header))+stats.StreamLen+8 != size {
 		return nil, fmt.Errorf("%w: gzip multi-member or trailing bytes", errRepUnsupported)
@@ -34448,9 +34461,10 @@ func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error)
 	}
 	defer repRemoveTemp(units)
 	sink := &repCodecSink{b: b, plain: plain, max: min(int64(MaxZstdPlain), size*MaxZstdRatio+1<<20), digest: sha256.New()}
-	result, err := repZSParse(io.NewSectionReader(src, 0, size), sink, units, repZSOptions{repZSLimits: repZstdLimits()})
+	unitWriter := repCodecTempWriter{b.s, units, b.reserve}
+	result, err := repZSParse(io.NewSectionReader(src, 0, size), sink, unitWriter, repZSOptions{repZSLimits: repZstdLimits()})
 	if err != nil {
-		return nil, fmt.Errorf("%w: zstd analysis: %v", errRepUnsupported, err)
+		return nil, fmt.Errorf("%w: zstd analysis: %w", errRepUnsupported, err)
 	}
 	if _, err := units.Seek(0, io.SeekStart); err != nil {
 		return nil, err
@@ -47072,7 +47086,7 @@ func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 		}
 	}
 	if rec.Form == authFormRep && rec.Root != nil {
-		hard, stream, err := s.repRootHard(rec.Root)
+		hard, stream, _, err := s.repRootReplay(rec.Root)
 		if err != nil {
 			return err
 		}
@@ -48271,6 +48285,7 @@ type AuthPolicy struct {
 	Apply               bool   `json:"apply"`
 	ReserveFreeBytes    uint64 `json:"reserve_free_bytes,omitempty"`
 	PriceCurrentStorage bool   `json:"price_current_storage,omitempty"`
+	CodecReplay         bool   `json:"codec_replay,omitempty"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
 	// representation for a kind group whose delta plan already costs at most this
 	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
@@ -48367,7 +48382,7 @@ type AuthCost struct {
 	Amp4K      float64 `json:"amp_4k"`
 	Depth      int     `json:"depth"`
 	PeakMemMiB int     `json:"peak_mem_mib"` // modeled: workers x per-worker working set of the form
-	Replay     string  `json:"replay"`       // "plain" | "zn7" | "hard" (exact Brotli/LZ4 re-encoding) | "zn7+quant"
+	Replay     string  `json:"replay"`       // plain, zn7, hard (Brotli/LZ4), codec (gzip/zstd), or zn7+quant
 }
 
 // authTierLimits is what a read from each tier may cost. Replay is the floor on measured whole-object
@@ -48397,12 +48412,16 @@ func (s *Store) authCostOf(runCtx context.Context, rec *authRecord, pins map[[32
 	}
 	switch {
 	case rec.Form == authFormRep && rec.Root != nil:
-		hard, _, err := s.repRootHard(rec.Root)
+		hard, _, codec, err := s.repRootReplay(rec.Root)
 		if err != nil {
 			return nil, err
 		}
 		if hard {
 			c.Replay, c.PeakMemMiB = "hard", repPQreplayWorkers()*24
+		}
+		if codec {
+			c.Replay = "codec"
+			c.PeakMemMiB = max(c.PeakMemMiB, int(repZstdLimits().MaxWindow>>20))
 		}
 	case rec.Form == authFormDelta && len(rec.Pieces) > 0:
 		if first, err := s.casRead(rec.Pieces[0].SHA); err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
@@ -48438,6 +48457,8 @@ func authTierRefusal(tier string, c *AuthCost, ampRel float64) string {
 	switch {
 	case (c.Replay == "hard" || c.Replay == "zn7+quant") && !l.Hard:
 		return fmt.Sprintf("%s tier: the form re-runs a producer's encoder on every read (%s)", tier, c.Replay)
+	case c.Replay == "codec" && !l.Hard:
+		return fmt.Sprintf("%s tier: the form replays a gzip or zstd stream on every read", tier)
 	case c.ReplayMiBs < l.Replay:
 		return fmt.Sprintf("%s tier: replay %.1f MiB/s is below the %.0f MiB/s floor", tier, c.ReplayMiBs, l.Replay)
 	case ampRel > l.Amp:
@@ -49187,6 +49208,8 @@ func (m *authMigrator) planRepGroups() error {
 	// A lone first-sight object cannot amortize its components: kinds seen once are not even built.
 	kinds := map[int]repKind{}
 	count := map[repKind]int{}
+	limits, tiered := authTierLimits[m.pol.Tier]
+	codecs := m.pol.CodecReplay && (!tiered || limits.Hard || m.pol.NoReadCost)
 	for i, o := range m.order {
 		if err := m.ctx.Err(); err != nil {
 			return err
@@ -49197,8 +49220,15 @@ func (m *authMigrator) planRepGroups() error {
 		ra := m.s.newManifestReaderAt(o.man)
 		kind, ok := repCandidate(ra, o.man.TotalLength)
 		ra.close()
-		if !ok || kind == repKindGzip || kind == repKindZstd {
+		if !ok {
 			continue
+		}
+		if kind == repKindGzip || kind == repKindZstd {
+			if !codecs {
+				continue
+			}
+			// Both containers can share the same decoded components.
+			kind = repKindGzip
 		}
 		kinds[i] = kind
 		count[kind]++
@@ -50840,7 +50870,7 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 				return nil, errAuthTransferUnsupported
 			}
 		case authFormRep:
-			hard, stream, err := s.repRootHard(rec.Root)
+			hard, stream, _, err := s.repRootReplay(rec.Root)
 			if err != nil {
 				return nil, err
 			}
@@ -52936,6 +52966,7 @@ func runAuthority(args []string) {
 	noDelta := fs.Bool("no-delta", false, "do not consider generic deltas")
 	noZN7 := fs.Bool("no-zn7", false, "do not consider ZN7 containers for model files")
 	hard := fs.Bool("hard-codecs", false, "migrate: replay Brotli / LZ4_RAW Parquet pages and LZ4 SST blocks exactly (archive tier: every read re-runs the page encoder; raises the store feature \"hardcodec\")")
+	codecReplay := fs.Bool("codec-replay", false, "migrate: compare exact gzip and zstd representation groups in archive or cold policies")
 	workers := fs.Int("workers", 2, "migrate: parallel window workers for large objects and ZN7, and the process's CPU parallelism (resident memory grows by about 30 MiB per worker)")
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
@@ -53085,7 +53116,7 @@ func runAuthority(args []string) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, ReserveFreeBytes: *reserveMiB << 20, PriceCurrentStorage: *priceCurrent}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, ReserveFreeBytes: *reserveMiB << 20, PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}
 		var similarityOpenNanos int64
 		if *indexedDiscovery && pol.AllowDelta {
 			start := time.Now()
@@ -61190,8 +61221,9 @@ type ncNumcoreTensor struct {
 
 // Layout is the tensor table of a file; everything outside the spans is header/padding ("gaps").
 type ncNumcoreLayout struct {
-	Size int64
-	T    []ncNumcoreTensor // ascending Off, disjoint
+	Size       int64
+	T          []ncNumcoreTensor // ascending Off, disjoint
+	llamaNames bool              // GGUF names eligible for cross-format candidate lookup
 }
 
 // Validate checks spans, ordering and block geometry with overflow-safe arithmetic.
@@ -61901,6 +61933,8 @@ func authZN7Layout(r io.ReaderAt, size int64) (*ncNumcoreLayout, error) {
 		if err != nil {
 			return nil, err
 		}
+		arch, ok := g.Lookup("general.architecture")
+		lay.llamaNames = ok && arch.Type == repGGTString && arch.Str == "llama"
 		for i := range g.Tensors {
 			t := &g.Tensors[i]
 			nt := ncNumcoreTensor{Name: t.Name, DT: authZN7GGMLType(t.Type), Off: t.Begin, Len: t.Size()}
@@ -62140,8 +62174,65 @@ func (b *authZN7Body) ReadAt(p []byte, off int64) (int, error) {
 // ---- planning and encoding ------------------------------------------------------
 
 type authZN7Info struct {
-	lay  *ncNumcoreLayout
-	name map[string]int
+	lay     *ncNumcoreLayout
+	name    map[string]int
+	hfNames map[string]int
+}
+
+var zn7LlamaLayerNames = map[string]string{
+	"attn_norm":   "input_layernorm.weight",
+	"ffn_norm":    "post_attention_layernorm.weight",
+	"attn_q":      "self_attn.q_proj.weight",
+	"attn_k":      "self_attn.k_proj.weight",
+	"attn_v":      "self_attn.v_proj.weight",
+	"attn_output": "self_attn.o_proj.weight",
+	"ffn_gate":    "mlp.gate_proj.weight",
+	"ffn_up":      "mlp.up_proj.weight",
+	"ffn_down":    "mlp.down_proj.weight",
+}
+
+// zn7LlamaHFName maps known llama.cpp GGUF tensor names to their Hugging Face
+// counterparts. It only proposes candidates. The encoder and authority proof
+// still validate the actual bytes.
+func zn7LlamaHFName(name string) string {
+	switch name {
+	case "token_embd.weight":
+		return "model.embed_tokens.weight"
+	case "output.weight":
+		return "lm_head.weight"
+	case "output_norm.weight":
+		return "model.norm.weight"
+	}
+	prefix, ok := strings.CutPrefix(name, "blk.")
+	if !ok {
+		return ""
+	}
+	layer, tensor, ok := strings.Cut(prefix, ".")
+	index, err := strconv.ParseUint(layer, 10, 32)
+	if !ok || err != nil || strconv.FormatUint(index, 10) != layer {
+		return ""
+	}
+	tensor, ok = strings.CutSuffix(tensor, ".weight")
+	if hf, mapped := zn7LlamaLayerNames[tensor]; ok && mapped {
+		return "model.layers." + layer + "." + hf
+	}
+	return ""
+}
+
+func (target *authZN7Info) baseTensor(t ncNumcoreTensor, base *authZN7Info) (int, bool) {
+	if k, ok := base.name[t.Name]; ok {
+		return k, true
+	}
+	if target.lay.llamaNames {
+		alias := zn7LlamaHFName(t.Name)
+		if alias == "" {
+			return 0, false
+		}
+		k, ok := base.name[alias]
+		return k, ok
+	}
+	k, ok := base.hfNames[t.Name]
+	return k, ok
 }
 
 func (m *authMigrator) zn7Info(j int) *authZN7Info {
@@ -62156,8 +62247,16 @@ func (m *authMigrator) zn7Info(j int) *authZN7Info {
 		ra := m.s.newAuthObjAt(m.order[j].man)
 		if lay, err := authZN7Layout(ra, mt); err == nil && len(lay.T) > 0 {
 			info = &authZN7Info{lay: lay, name: map[string]int{}}
-			for k := range lay.T {
-				info.name[lay.T[k].Name] = k
+			if lay.llamaNames {
+				info.hfNames = map[string]int{}
+			}
+			for k, tensor := range lay.T {
+				info.name[tensor.Name] = k
+				if lay.llamaNames {
+					if alias := zn7LlamaHFName(tensor.Name); alias != "" {
+						info.hfNames[alias] = k
+					}
+				}
 			}
 		}
 		ra.close()
@@ -62194,7 +62293,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 		}
 		var shared int64
 		for _, t := range tinfo.lay.T {
-			if k, ok := binfo.name[t.Name]; ok && t.DT != ncNumcoreDRaw && binfo.lay.T[k].DT != ncNumcoreDRaw {
+			if k, ok := tinfo.baseTensor(t, binfo); ok && t.DT != ncNumcoreDRaw && binfo.lay.T[k].DT != ncNumcoreDRaw {
 				shared += min(t.Len, binfo.lay.T[k].Len)
 			}
 		}
@@ -62238,7 +62337,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 	cands := func(ti int) []ncNumcoreCand {
 		var out []ncNumcoreCand
 		for s, c := range cs {
-			if k, ok := m.zn7Info(c.j).name[tinfo.lay.T[ti].Name]; ok {
+			if k, ok := tinfo.baseTensor(tinfo.lay.T[ti], m.zn7Info(c.j)); ok {
 				out = append(out, ncNumcoreCand{Slot: s, TIdx: k})
 			}
 		}
@@ -70768,15 +70867,15 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 	return repFloorOf(env, reach)
 }
 
-// repRootHard reports whether a representation closure holds a Parquet or SST recipe that needs the
-// exact Brotli or LZ4 replay (the recipe's first byte is the hard version).
-func (s *Store) repRootHard(r *repRoot) (hard, stream bool, err error) {
+// repRootReplay reports the format requirements of structured recipes and
+// identifies a top-level exact compressed container for cost reporting.
+func (s *Store) repRootReplay(r *repRoot) (hard, stream, codec bool, err error) {
 	src := s.newRepSource(r.Descs, nil)
 	defer src.close()
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	reach, err := env.reachable(r.Rep)
 	if err != nil {
-		return false, false, err
+		return false, false, false, err
 	}
 	for id, role := range reach.Role {
 		if role != repDepRep {
@@ -70784,14 +70883,17 @@ func (s *Store) repRootHard(r *repRoot) (hard, stream bool, err error) {
 		}
 		obj, err := env.loadRep(id)
 		if err != nil {
-			return false, false, err
+			return false, false, false, err
 		}
 		if len(obj.Recipe) > 0 && (obj.Kind == repKindParquet && obj.Recipe[0] >= repPQrecipeVersionHard || obj.Kind == repKindSST && obj.Recipe[0] == repSSrecipeVersionHard) {
 			hard = true
 			stream = stream || obj.Kind == repKindParquet && obj.Recipe[0] == repPQrecipeVersionStream
 		}
+		if id == r.Rep {
+			codec = obj.Kind == repKindGzip || obj.Kind == repKindZstd
+		}
 	}
-	return hard, stream, nil
+	return hard, stream, codec, nil
 }
 
 // repFloorOf is the store-format level the representation closure reach describes

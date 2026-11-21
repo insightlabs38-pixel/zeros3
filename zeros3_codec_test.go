@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -955,4 +956,70 @@ func TestHardBrotliConcurrentEncodersAreIndependent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestAuthorityOptInCodecReplay(t *testing.T) {
+	plain, zstd := repCodecFixtureBytes(t)
+	gz := repCodecGzip(t, plain)
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		tier    string
+		admit   int
+	}{
+		{name: "default"},
+		{name: "hot", enabled: true, tier: "hot"},
+		{name: "archive", enabled: true, admit: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newAuthLab(t)
+			l.put("gzip", gz)
+			l.put("zstd", zstd)
+			report := l.migrate(AuthPolicy{
+				Strategy: "forced", MinSaving: -10, AllowRep: true, NoZN7: true,
+				Tier: tc.tier, CodecReplay: tc.enabled,
+			})
+			admitted := 0
+			for _, plan := range report.Plans {
+				if plan.Form == "rep" {
+					admitted++
+				}
+			}
+			if admitted != tc.admit {
+				t.Fatalf("admitted %d, want %d, plans %+v", admitted, tc.admit, report.Plans)
+			}
+			if admitted == 0 {
+				return
+			}
+			l.reclaim()
+			l.exact("codec group after reclaim")
+			for key, want := range l.want {
+				const off, n = 32768, 4096
+				if got := l.read(key, byteRange{off, off + n - 1}); !bytes.Equal(got, want[off:off+n]) {
+					t.Fatalf("%s range differs", key)
+				}
+			}
+			l.verifyOK("codec group after reclaim")
+		})
+	}
+}
+
+func TestRepCodecTemporaryWritesRespectDiskReserve(t *testing.T) {
+	l := newAuthLab(t)
+	f, err := os.CreateTemp(t.TempDir(), "codec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	w := repCodecTempWriter{store: l.s, file: f, reserve: math.MaxUint64}
+	if n, err := w.Write([]byte("temporary bytes")); n != 0 || !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("wrote %d bytes, err %v", n, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("temporary file grew to %d bytes", info.Size())
+	}
 }

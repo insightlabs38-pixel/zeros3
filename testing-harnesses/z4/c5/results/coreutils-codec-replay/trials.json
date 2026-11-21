@@ -1,0 +1,330 @@
+{
+  "build_source": [
+    "de4855219cad15fecb0d5c9e78e1dfd51d7bb2c8",
+    "bbb1ff70c3414da683a53bc2d38f004a5bca0ef2f3a429a975b74beef890bfef  zeros3.go"
+  ],
+  "fixtures": {
+    "coreutils-9.7.l6.tar.gz": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+    "coreutils-9.7.l9.tar.gz": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+    "coreutils-9.7.l3.tar.zst": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+    "coreutils-9.7.l19.tar.zst": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d"
+  },
+  "lanes": {
+    "cdc": {
+      "allocated_bytes": 47120384,
+      "signed_whole_seconds": [
+        0.163396,
+        0.058801,
+        0.020285,
+        0.013206
+      ],
+      "signed_midpoint_range_seconds": [
+        0.00822,
+        0.001744,
+        0.003581,
+        0.003059
+      ],
+      "readback": {
+        "coreutils-9.7.l6.tar.gz": {
+          "object_sha256": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+          "range_sha256": "163d17a7f3415d29e160c6437355cead176cbf8b91a5ce6c0924a7f94d5944bd"
+        },
+        "coreutils-9.7.l9.tar.gz": {
+          "object_sha256": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+          "range_sha256": "131cc59940b72335b5457ca07143977e19dcd285776f498d2e805dfcc56b79d0"
+        },
+        "coreutils-9.7.l3.tar.zst": {
+          "object_sha256": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+          "range_sha256": "3a84ec1a2d5100c24999806eeea75f99603a8ea5456b2bc99c8fb502e7cc73a1"
+        },
+        "coreutils-9.7.l19.tar.zst": {
+          "object_sha256": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d",
+          "range_sha256": "7c725faa55bf08f8d1b916c2ff42268ff56cfa61319dfbd97b2d7571e6c63627"
+        }
+      },
+      "deep_verify": "ZeroS3 verify (deep)\njournal          5 frames checked | ok=true\nroots            4 current | 0 historical | 0 multipart | 0 snapshot\nmanifests        4 checked\nchunks           678 checked\npacks            1 checked\nintegrity        0 missing | 0 corrupt | 0 invalid\nreclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes\nresult           OK\n"
+    },
+    "delta": {
+      "allocated_bytes": 47120384,
+      "signed_whole_seconds": [
+        0.034901,
+        0.038866,
+        0.013141,
+        0.01156
+      ],
+      "signed_midpoint_range_seconds": [
+        0.005454,
+        0.00148,
+        0.008868,
+        0.001222
+      ],
+      "readback": {
+        "coreutils-9.7.l6.tar.gz": {
+          "object_sha256": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+          "range_sha256": "163d17a7f3415d29e160c6437355cead176cbf8b91a5ce6c0924a7f94d5944bd"
+        },
+        "coreutils-9.7.l9.tar.gz": {
+          "object_sha256": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+          "range_sha256": "131cc59940b72335b5457ca07143977e19dcd285776f498d2e805dfcc56b79d0"
+        },
+        "coreutils-9.7.l3.tar.zst": {
+          "object_sha256": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+          "range_sha256": "3a84ec1a2d5100c24999806eeea75f99603a8ea5456b2bc99c8fb502e7cc73a1"
+        },
+        "coreutils-9.7.l19.tar.zst": {
+          "object_sha256": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d",
+          "range_sha256": "7c725faa55bf08f8d1b916c2ff42268ff56cfa61319dfbd97b2d7571e6c63627"
+        }
+      },
+      "deep_verify": "ZeroS3 verify (deep)\njournal          5 frames checked | ok=true\nroots            4 current | 0 historical | 0 multipart | 0 snapshot\nmanifests        4 checked\nchunks           678 checked\npacks            1 checked\nintegrity        0 missing | 0 corrupt | 0 invalid\nreclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes\nresult           OK\n",
+      "migrate": {
+        "storage_cost_model": "recompressed",
+        "Objects": 4,
+        "Admitted": 0,
+        "Pinned": 0,
+        "KeptCDC": 4,
+        "CDCBytes": 47013018,
+        "AddedBytes": 0,
+        "Plans": [
+          {
+            "sha256": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+            "size": 14864605,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 14885437,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no admissible exact representation"
+          },
+          {
+            "sha256": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+            "size": 14742918,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 14762598,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no admissible exact representation"
+          },
+          {
+            "sha256": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+            "size": 10608200,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 10623560,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no admissible exact representation"
+          },
+          {
+            "sha256": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d",
+            "size": 6732207,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 6741423,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no admissible exact representation"
+          }
+        ],
+        "Seconds": 0.426438967,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 0,
+        "CacheMisses": 4,
+        "DecodedBytes": 46947930
+      },
+      "migration_time": "wall_seconds 0.437 user_seconds 0.392 sys_seconds 0.107"
+    },
+    "replay": {
+      "allocated_bytes": 30748672,
+      "signed_whole_seconds": [
+        11.394766,
+        8.56139,
+        5.59687,
+        0.072479
+      ],
+      "signed_midpoint_range_seconds": [
+        9.549875,
+        9.983796,
+        6.513967,
+        0.002152
+      ],
+      "readback": {
+        "coreutils-9.7.l6.tar.gz": {
+          "object_sha256": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+          "range_sha256": "163d17a7f3415d29e160c6437355cead176cbf8b91a5ce6c0924a7f94d5944bd"
+        },
+        "coreutils-9.7.l9.tar.gz": {
+          "object_sha256": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+          "range_sha256": "131cc59940b72335b5457ca07143977e19dcd285776f498d2e805dfcc56b79d0"
+        },
+        "coreutils-9.7.l3.tar.zst": {
+          "object_sha256": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+          "range_sha256": "3a84ec1a2d5100c24999806eeea75f99603a8ea5456b2bc99c8fb502e7cc73a1"
+        },
+        "coreutils-9.7.l19.tar.zst": {
+          "object_sha256": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d",
+          "range_sha256": "7c725faa55bf08f8d1b916c2ff42268ff56cfa61319dfbd97b2d7571e6c63627"
+        }
+      },
+      "deep_verify": "ZeroS3 verify (deep)\njournal          5 frames checked | ok=true\nroots            4 current | 0 historical | 0 multipart | 0 snapshot\nmanifests        4 checked\nchunks           11512 checked\npacks            2 checked\nauthority        3 live bodies | 3 verified exact | 0 orphan bodies | 0 unavailable\nintegrity        0 missing | 0 corrupt | 0 invalid\nreclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes\nresult           OK\n",
+      "migrate": {
+        "storage_cost_model": "recompressed",
+        "Objects": 4,
+        "Admitted": 3,
+        "Pinned": 0,
+        "KeptCDC": 1,
+        "CDCBytes": 47013018,
+        "AddedBytes": 26190522,
+        "Plans": [
+          {
+            "sha256": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+            "size": 14864605,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 14885437,
+            "added_bytes": 20869565,
+            "saving": -0.40201224861587875,
+            "read_amp_4k": 14864605,
+            "cdc_amp_4k": 86014.1125876537
+          },
+          {
+            "sha256": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+            "size": 14742918,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 14762598,
+            "added_bytes": 792379,
+            "saving": 0.9463252335395166,
+            "read_amp_4k": 14742918,
+            "cdc_amp_4k": 97990.41183936586
+          },
+          {
+            "sha256": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+            "size": 10608200,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 10623560,
+            "added_bytes": 4528578,
+            "saving": 0.5737231210629958,
+            "read_amp_4k": 10608200,
+            "cdc_amp_4k": 98326.37382421146
+          },
+          {
+            "sha256": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d",
+            "size": 6732207,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 6741423,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no admissible exact representation"
+          }
+        ],
+        "Seconds": 105.480834666,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 4,
+        "CacheMisses": 4,
+        "DecodedBytes": 46947930
+      },
+      "migration_time": "wall_seconds 105.501 user_seconds 81.586 sys_seconds 3.082"
+    },
+    "mixed": {
+      "allocated_bytes": 30748672,
+      "signed_whole_seconds": [
+        5.927652,
+        5.907702,
+        2.943046,
+        0.029165
+      ],
+      "signed_midpoint_range_seconds": [
+        5.578811,
+        5.678946,
+        3.449637,
+        0.001437
+      ],
+      "readback": {
+        "coreutils-9.7.l6.tar.gz": {
+          "object_sha256": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+          "range_sha256": "163d17a7f3415d29e160c6437355cead176cbf8b91a5ce6c0924a7f94d5944bd"
+        },
+        "coreutils-9.7.l9.tar.gz": {
+          "object_sha256": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+          "range_sha256": "131cc59940b72335b5457ca07143977e19dcd285776f498d2e805dfcc56b79d0"
+        },
+        "coreutils-9.7.l3.tar.zst": {
+          "object_sha256": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+          "range_sha256": "3a84ec1a2d5100c24999806eeea75f99603a8ea5456b2bc99c8fb502e7cc73a1"
+        },
+        "coreutils-9.7.l19.tar.zst": {
+          "object_sha256": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d",
+          "range_sha256": "7c725faa55bf08f8d1b916c2ff42268ff56cfa61319dfbd97b2d7571e6c63627"
+        }
+      },
+      "deep_verify": "ZeroS3 verify (deep)\njournal          5 frames checked | ok=true\nroots            4 current | 0 historical | 0 multipart | 0 snapshot\nmanifests        4 checked\nchunks           11512 checked\npacks            2 checked\nauthority        3 live bodies | 3 verified exact | 0 orphan bodies | 0 unavailable\nintegrity        0 missing | 0 corrupt | 0 invalid\nreclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes\nresult           OK\n",
+      "migrate": {
+        "storage_cost_model": "recompressed",
+        "Objects": 4,
+        "Admitted": 3,
+        "Pinned": 0,
+        "KeptCDC": 1,
+        "CDCBytes": 47013018,
+        "AddedBytes": 26190522,
+        "Plans": [
+          {
+            "sha256": "4db96e268e26780fc0077792233ecb67d079d35fb0b141bd7b04211b2ac7dddf",
+            "size": 14864605,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 14885437,
+            "added_bytes": 20869565,
+            "saving": -0.40201224861587875,
+            "read_amp_4k": 14864605,
+            "cdc_amp_4k": 86014.1125876537
+          },
+          {
+            "sha256": "942d0630e1b281580f2909820802441b248007caa50c1cf09698cf0cd4efc463",
+            "size": 14742918,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 14762598,
+            "added_bytes": 792379,
+            "saving": 0.9463252335395166,
+            "read_amp_4k": 14742918,
+            "cdc_amp_4k": 97990.41183936586
+          },
+          {
+            "sha256": "6f6493deb66310e7a87f97f7a4b02c76d9ea02ef9d3b913819ec783b41edc588",
+            "size": 10608200,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 10623560,
+            "added_bytes": 4528578,
+            "saving": 0.5737231210629958,
+            "read_amp_4k": 10608200,
+            "cdc_amp_4k": 98326.37382421146
+          },
+          {
+            "sha256": "188efb600156a62c3480950415a1eee04c6de255fe1e1c461b42222378c6505d",
+            "size": 6732207,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 6741423,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no admissible exact representation"
+          }
+        ],
+        "Seconds": 69.592200715,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 13,
+        "CacheMisses": 4,
+        "DecodedBytes": 46947930
+      },
+      "migration_time": "wall_seconds 131.767 user_seconds 95.053 sys_seconds 5.260"
+    }
+  }
+}

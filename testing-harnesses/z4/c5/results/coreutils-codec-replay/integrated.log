@@ -1,0 +1,38 @@
+=== RUN   TestAuthorityZN7ModelHistory
+    zeros3_authority_test.go:5781: containers=3 cdc=8417881 final=3122780 (0.371x)
+2026/11/21 10:44:57 zeros3: authoritative body of manifest 01a1fec8-2e80-7488-adef-4f270470f902 unreadable, trying its CDC chunk list: authority: reconstruction does not equal the object: pack: chunk a55d093e4db2c2c813a8c08672059da92587e451daa6b924e6b3d5d8bf3699bc is corrupt (content hash mismatch)
+--- PASS: TestAuthorityZN7ModelHistory (2.84s)
+=== RUN   TestAuthorityZN7LlamaCrossFormatAliases
+=== RUN   TestAuthorityZN7LlamaCrossFormatAliases/llama
+=== RUN   TestAuthorityZN7LlamaCrossFormatAliases/gptneox
+--- PASS: TestAuthorityZN7LlamaCrossFormatAliases (0.15s)
+    --- PASS: TestAuthorityZN7LlamaCrossFormatAliases/llama (0.11s)
+    --- PASS: TestAuthorityZN7LlamaCrossFormatAliases/gptneox (0.04s)
+=== RUN   TestRepCodecLabWireFidelity
+=== RUN   TestRepCodecLabWireFidelity/gzip-0
+=== RUN   TestRepCodecLabWireFidelity/gzip-1
+=== RUN   TestRepCodecLabWireFidelity/gzip--1
+=== RUN   TestRepCodecLabWireFidelity/ref155_text.zst
+=== RUN   TestRepCodecLabWireFidelity/ref155_zeros.zst
+=== RUN   TestRepCodecLabWireFidelity/ref157_json.zst
+=== RUN   TestRepCodecLabWireFidelity/fx_rle_literals.zst
+--- PASS: TestRepCodecLabWireFidelity (0.09s)
+    --- PASS: TestRepCodecLabWireFidelity/gzip-0 (0.00s)
+    --- PASS: TestRepCodecLabWireFidelity/gzip-1 (0.00s)
+    --- PASS: TestRepCodecLabWireFidelity/gzip--1 (0.00s)
+    --- PASS: TestRepCodecLabWireFidelity/ref155_text.zst (0.01s)
+    --- PASS: TestRepCodecLabWireFidelity/ref155_zeros.zst (0.00s)
+    --- PASS: TestRepCodecLabWireFidelity/ref157_json.zst (0.04s)
+    --- PASS: TestRepCodecLabWireFidelity/fx_rle_literals.zst (0.01s)
+=== RUN   TestAuthorityOptInCodecReplay
+=== RUN   TestAuthorityOptInCodecReplay/default
+=== RUN   TestAuthorityOptInCodecReplay/hot
+=== RUN   TestAuthorityOptInCodecReplay/archive
+--- PASS: TestAuthorityOptInCodecReplay (0.54s)
+    --- PASS: TestAuthorityOptInCodecReplay/default (0.05s)
+    --- PASS: TestAuthorityOptInCodecReplay/hot (0.03s)
+    --- PASS: TestAuthorityOptInCodecReplay/archive (0.46s)
+=== RUN   TestRepCodecTemporaryWritesRespectDiskReserve
+--- PASS: TestRepCodecTemporaryWritesRespectDiskReserve (0.00s)
+PASS
+ok  	zeros3	3.637s

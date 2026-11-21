@@ -1,0 +1,159 @@
+{
+  "build_source": [
+    "de4855219cad15fecb0d5c9e78e1dfd51d7bb2c8",
+    "0cbc5d816056feb8c6cf204f6a22dcca4747bc2fa2639c9aca2ced5a627e48b0  zeros3.go"
+  ],
+  "fixtures": {
+    "model.safetensors": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+    "f16.gguf": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57"
+  },
+  "lanes": {
+    "cdc": {
+      "allocated_bytes": 528154624,
+      "signed_whole_seconds": [
+        1.911573,
+        1.707148
+      ],
+      "signed_midpoint_range_seconds": [
+        0.002147,
+        0.002678
+      ],
+      "readback": {
+        "model.safetensors": {
+          "object_sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+          "range_sha256": "cb731a29a8372f45f873155b0d0b10976767c8c95eb36824be359249f885b011"
+        },
+        "f16.gguf": {
+          "object_sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+          "range_sha256": "938c310761f94e3acef86056107061f250a3e6f6ca597f2761cb9fa26c24e776"
+        }
+      },
+      "deep_verify": "ZeroS3 verify (deep)\njournal          3 frames checked | ok=true\nroots            2 current | 0 historical | 0 multipart | 0 snapshot\nmanifests        2 checked\nchunks           8605 checked\npacks            8 checked\nintegrity        0 missing | 0 corrupt | 0 invalid\nreclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes\nresult           OK\n"
+    },
+    "exact-name": {
+      "allocated_bytes": 528154624,
+      "signed_whole_seconds": [
+        2.249109,
+        1.712225
+      ],
+      "signed_midpoint_range_seconds": [
+        0.003287,
+        0.005157
+      ],
+      "readback": {
+        "model.safetensors": {
+          "object_sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+          "range_sha256": "cb731a29a8372f45f873155b0d0b10976767c8c95eb36824be359249f885b011"
+        },
+        "f16.gguf": {
+          "object_sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+          "range_sha256": "938c310761f94e3acef86056107061f250a3e6f6ca597f2761cb9fa26c24e776"
+        }
+      },
+      "deep_verify": "ZeroS3 verify (deep)\njournal          3 frames checked | ok=true\nroots            2 current | 0 historical | 0 multipart | 0 snapshot\nmanifests        2 checked\nchunks           8605 checked\npacks            8 checked\nintegrity        0 missing | 0 corrupt | 0 invalid\nreclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes\nresult           OK\n",
+      "migrate": {
+        "storage_cost_model": "recompressed",
+        "Objects": 2,
+        "Admitted": 0,
+        "Pinned": 0,
+        "KeptCDC": 2,
+        "CDCBytes": 539270561,
+        "AddedBytes": 0,
+        "Plans": [
+          {
+            "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+            "size": 269060552,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 269318098,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no similar base"
+          },
+          {
+            "sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+            "size": 270885952,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 269952463,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no similar base"
+          }
+        ],
+        "Seconds": 10.213260254,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 0,
+        "CacheMisses": 0,
+        "DecodedBytes": 0
+      },
+      "migration_time": "wall_seconds 10.247 user_seconds 4.972 sys_seconds 1.129"
+    },
+    "aliases": {
+      "allocated_bytes": 288403456,
+      "signed_whole_seconds": [
+        2.783808,
+        7.40061
+      ],
+      "signed_midpoint_range_seconds": [
+        0.001912,
+        0.005282
+      ],
+      "readback": {
+        "model.safetensors": {
+          "object_sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+          "range_sha256": "cb731a29a8372f45f873155b0d0b10976767c8c95eb36824be359249f885b011"
+        },
+        "f16.gguf": {
+          "object_sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+          "range_sha256": "938c310761f94e3acef86056107061f250a3e6f6ca597f2761cb9fa26c24e776"
+        }
+      },
+      "deep_verify": "ZeroS3 verify (deep)\njournal          3 frames checked | ok=true\nroots            2 current | 0 historical | 0 multipart | 0 snapshot\nmanifests        2 checked\nchunks           4995 checked\npacks            5 checked\nauthority        2 live bodies | 2 verified exact | 0 orphan bodies | 0 unavailable\nintegrity        0 missing | 0 corrupt | 0 invalid\nreclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes\nresult           OK\n",
+      "migrate": {
+        "storage_cost_model": "recompressed",
+        "Objects": 2,
+        "Admitted": 1,
+        "Pinned": 0,
+        "KeptCDC": 1,
+        "CDCBytes": 539270561,
+        "AddedBytes": 23473992,
+        "Plans": [
+          {
+            "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+            "size": 269060552,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 269318098,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no similar base"
+          },
+          {
+            "sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+            "size": 270885952,
+            "form": "delta",
+            "bases": [
+              "5af571cbf074"
+            ],
+            "depth": 1,
+            "cdc_unshared_bytes": 269952463,
+            "added_bytes": 23473992,
+            "saving": 0.9130439791542113,
+            "read_amp_4k": 4526184,
+            "cdc_amp_4k": 83130.46130918594,
+            "reason": "zn7"
+          }
+        ],
+        "Seconds": 69.795850471,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 0,
+        "CacheMisses": 0,
+        "DecodedBytes": 0
+      },
+      "migration_time": "wall_seconds 70.313 user_seconds 41.559 sys_seconds 5.776"
+    }
+  }
+}

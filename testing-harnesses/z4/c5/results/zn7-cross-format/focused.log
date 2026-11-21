@@ -1,0 +1,15 @@
+=== RUN   TestAuthorityZN7ModelHistory
+    zeros3_authority_test.go:5781: containers=3 cdc=8417882 final=3122781 (0.371x)
+2026/11/21 10:39:29 zeros3: authoritative body of manifest 01a1fec3-28cb-7503-8ad0-551d890df980 unreadable, trying its CDC chunk list: authority: reconstruction does not equal the object: pack: chunk a55d093e4db2c2c813a8c08672059da92587e451daa6b924e6b3d5d8bf3699bc is corrupt (content hash mismatch)
+--- PASS: TestAuthorityZN7ModelHistory (4.64s)
+=== RUN   TestAuthorityZN7BaseRetentionRevertAndFeature
+    zeros3_g1_test.go:33: G1 covered: rep-model-base-survives-retirement
+--- PASS: TestAuthorityZN7BaseRetentionRevertAndFeature (2.69s)
+=== RUN   TestAuthorityZN7LlamaCrossFormatAliases
+=== RUN   TestAuthorityZN7LlamaCrossFormatAliases/llama
+=== RUN   TestAuthorityZN7LlamaCrossFormatAliases/gptneox
+--- PASS: TestAuthorityZN7LlamaCrossFormatAliases (0.30s)
+    --- PASS: TestAuthorityZN7LlamaCrossFormatAliases/llama (0.20s)
+    --- PASS: TestAuthorityZN7LlamaCrossFormatAliases/gptneox (0.08s)
+PASS
+ok  	zeros3	7.646s

@@ -5880,11 +5880,24 @@ type zn7GGUFTensor struct {
 }
 
 func zn7GGUF(ts []zn7GGUFTensor) []byte {
+	return zn7GGUFWithArchitecture(ts, "")
+}
+
+func zn7GGUFWithArchitecture(ts []zn7GGUFTensor, architecture string) []byte {
 	le := binary.LittleEndian
 	out := []byte("GGUF")
 	out = le.AppendUint32(out, 3)
 	out = le.AppendUint64(out, uint64(len(ts)))
-	out = le.AppendUint64(out, 0)
+	if architecture == "" {
+		out = le.AppendUint64(out, 0)
+	} else {
+		out = le.AppendUint64(out, 1)
+		out = le.AppendUint64(out, uint64(len("general.architecture")))
+		out = append(out, "general.architecture"...)
+		out = le.AppendUint32(out, repGGTString)
+		out = le.AppendUint64(out, uint64(len(architecture)))
+		out = append(out, architecture...)
+	}
 	var off uint64
 	for _, t := range ts {
 		out = le.AppendUint64(out, uint64(len(t.name)))
@@ -5906,6 +5919,36 @@ func zn7GGUF(ts []zn7GGUFTensor) []byte {
 		}
 	}
 	return out
+}
+
+func TestAuthorityZN7LlamaCrossFormatAliases(t *testing.T) {
+	const rows, cols = 256, 512
+	rng := rand.New(rand.NewPCG(971, 15))
+	var f32, f16 []byte
+	for range rows * cols {
+		bits := math.Float32bits(float32(rng.NormFloat64() * 0.03))
+		f32 = binary.LittleEndian.AppendUint32(f32, bits)
+		f16 = binary.LittleEndian.AppendUint16(f16, uint16(ncNumcoreF32ToF16(bits)))
+	}
+	hdr := fmt.Sprintf(`{"model.layers.0.self_attn.v_proj.weight":{"dtype":"F32","shape":[%d,%d],"data_offsets":[0,%d]}}`, rows, cols, len(f32))
+	safe := binary.LittleEndian.AppendUint64(nil, uint64(len(hdr)))
+	safe = append(append(safe, hdr...), f32...)
+	for _, architecture := range []string{"llama", "gptneox"} {
+		t.Run(architecture, func(t *testing.T) {
+			l := newAuthLab(t)
+			l.put("original.safetensors", safe)
+			gguf := zn7GGUFWithArchitecture([]zn7GGUFTensor{{"blk.0.attn_v.weight", 1, rows, cols, f16}}, architecture)
+			l.put("export.gguf", gguf)
+			l.migrate(AuthPolicy{Order: "oldest", AllowDelta: true, MinSaving: 0.05, MaxReadAmp: -1})
+			got := zn7Containers(t, l.s)
+			if (got == 1) != (architecture == "llama") {
+				t.Fatalf("unexpected ZN7 container count %d", got)
+			}
+			l.reclaim()
+			l.exact("cross-format model after reclaim")
+			l.verifyOK("cross-format model after reclaim")
+		})
+	}
 }
 
 func zn7IMatrix(names []string, cols int, seed uint64) []byte {
