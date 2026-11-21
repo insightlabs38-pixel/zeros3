@@ -5393,6 +5393,18 @@ func TestAuthorityHardCodecsAdmissionAndExactness(t *testing.T) {
 	}
 	l.exact("hard-codecs")
 	l.reclaim()
+	for key, want := range l.want {
+		if filepath.Ext(key) != ".parquet" {
+			continue
+		}
+		before := l.s.rep.rangeReads.Load()
+		off := int64(len(want)) / 3
+		const n = 4096
+		got := l.read(key, byteRange{off, off + n - 1})
+		if !bytes.Equal(got, want[off:off+n]) || l.s.rep.rangeReads.Load() != before+1 {
+			t.Fatalf("%s did not use exact Parquet page-range replay", key)
+		}
+	}
 	l.exact("hard-codecs-reclaimed")
 	l.verifyOK("hard-codecs-reclaimed")
 	l.close()

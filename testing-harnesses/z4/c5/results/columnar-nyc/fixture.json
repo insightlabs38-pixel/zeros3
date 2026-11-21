@@ -1,0 +1,156 @@
+{
+  "source": [
+    {
+      "file": "yellow_tripdata_2024-01.parquet",
+      "bytes": 49961641,
+      "sha256": "c4d59da7bbc8abaeeeb1727947ee93d9891a71acb42854bd80db1571b2030510"
+    },
+    {
+      "file": "yellow_tripdata_2024-02.parquet",
+      "bytes": 50349284,
+      "sha256": "c76c43c18c6c6664080dd920baab4928988d5786a6b65980792ca7cd796f9f20"
+    }
+  ],
+  "pyarrow": "26.0.1",
+  "duckdb": "1.4.4",
+  "cohorts": [
+    {
+      "name": "pyarrow-snappy",
+      "files": [
+        {
+          "rows": 80000,
+          "file": "pyarrow-snappy-0.parquet",
+          "bytes": 1791125,
+          "sha256": "bdb0c954ea9ee0cf9c8a080cee0c1e98073f65bb701d7f7f4a6dc4edb87b62d6"
+        },
+        {
+          "rows": 100000,
+          "file": "pyarrow-snappy-1.parquet",
+          "bytes": 2232884,
+          "sha256": "dbc3838567b698490afb147ea8702d13c6bfb59e165ca72a0824ec5e37740223"
+        },
+        {
+          "rows": 120000,
+          "file": "pyarrow-snappy-2.parquet",
+          "bytes": 2623605,
+          "sha256": "d1e6be3d224e5223c6cf87f3015115b84e49047fcb79835c956359ab9f4c8139"
+        }
+      ]
+    },
+    {
+      "name": "pyarrow-zstd",
+      "files": [
+        {
+          "rows": 80000,
+          "file": "pyarrow-zstd-0.parquet",
+          "bytes": 1471677,
+          "sha256": "64e9afc3a7756ce0bfc707c9ea0448f97ceeea7b48ff04fb7bbddae6d4995752"
+        },
+        {
+          "rows": 100000,
+          "file": "pyarrow-zstd-1.parquet",
+          "bytes": 1840508,
+          "sha256": "6ad7096edeebf08e072d2adcb4b8e1804bd309ff48d0d26cfa16f4e68e271344"
+        },
+        {
+          "rows": 120000,
+          "file": "pyarrow-zstd-2.parquet",
+          "bytes": 2163072,
+          "sha256": "831f486e94aafd0536045934a5e32ead9bc0e7a5b9cdca93bc9d072661c7365d"
+        }
+      ]
+    },
+    {
+      "name": "pyarrow-lz4",
+      "files": [
+        {
+          "rows": 80000,
+          "file": "pyarrow-lz4-0.parquet",
+          "bytes": 1758742,
+          "sha256": "5d74f795d4c86673ed7970d68edec2a556e7e198e19d91213985a8b60c7ef3e5"
+        },
+        {
+          "rows": 100000,
+          "file": "pyarrow-lz4-1.parquet",
+          "bytes": 2192581,
+          "sha256": "331f81e805eb1b89e397d236f85e60ad956b4fb3076ca4dd0aa2d0cd5f41505d"
+        },
+        {
+          "rows": 120000,
+          "file": "pyarrow-lz4-2.parquet",
+          "bytes": 2577942,
+          "sha256": "a371a5884b67bf7482afe2e6c0cdd367ca3f8c6f3265a0645adf1a3344ec1825"
+        }
+      ]
+    },
+    {
+      "name": "pyarrow-brotli",
+      "files": [
+        {
+          "rows": 80000,
+          "file": "pyarrow-brotli-0.parquet",
+          "bytes": 1387118,
+          "sha256": "55e07b45a866368abb50e5088533bba1e3976c48d5f886f3a2eee909fe4bf3f4"
+        },
+        {
+          "rows": 100000,
+          "file": "pyarrow-brotli-1.parquet",
+          "bytes": 1729656,
+          "sha256": "aeb8dc01b4282a4e6fbfa6e41b9b4c01e8d72703edc11d0751153f944033fec1"
+        },
+        {
+          "rows": 120000,
+          "file": "pyarrow-brotli-2.parquet",
+          "bytes": 2041067,
+          "sha256": "f1a8909aeacc24c188032088de3114696f3122f150270042e60e4113462b0899"
+        }
+      ]
+    },
+    {
+      "name": "duckdb-snappy",
+      "files": [
+        {
+          "rows": 80000,
+          "file": "duckdb-snappy-0.parquet",
+          "bytes": 1752391,
+          "sha256": "ca12a9cd9af605cd8d3cca12aeb4015276c8f45942f11cca6c802aa0a7dbe97c"
+        },
+        {
+          "rows": 100000,
+          "file": "duckdb-snappy-1.parquet",
+          "bytes": 2185159,
+          "sha256": "24d4547b29266d843c8e9cc100ccb8c580a2aa45eb37e20a4dd6cb7fceba2a24"
+        },
+        {
+          "rows": 120000,
+          "file": "duckdb-snappy-2.parquet",
+          "bytes": 2580219,
+          "sha256": "5f0ea1ae7b1ce391256f25c1d406f3e65487c2cbef88e9331f5687ec4d1d9fa8"
+        }
+      ]
+    },
+    {
+      "name": "duckdb-zstd",
+      "files": [
+        {
+          "rows": 80000,
+          "file": "duckdb-zstd-0.parquet",
+          "bytes": 1313619,
+          "sha256": "e71c2ee2577ce9c37058e2a8021ac943cdbb8f9144750a09e0c93e7ec62e0b62"
+        },
+        {
+          "rows": 100000,
+          "file": "duckdb-zstd-1.parquet",
+          "bytes": 1641140,
+          "sha256": "3f0244e03743283efd074709c449a57facdef87809141b6f791577a5912b4d8f"
+        },
+        {
+          "rows": 120000,
+          "file": "duckdb-zstd-2.parquet",
+          "bytes": 1936844,
+          "sha256": "babea695bd719632b22ceaaa1a09b7a22345c30318281a89bcd9c40bb53125ff"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "expanded_page_cap": 0,
+  "forms": [
+    {
+      "sha256": "6756b02f57d607dd8aecd8bdcb0cf0745e61a31f723adbdfea7015e0d250142e",
+      "size": 26954255,
+      "form": "rep",
+      "depth": 0,
+      "cdc_unshared_bytes": 80173,
+      "added_bytes": 26782795,
+      "saving": -333.06252728474675,
+      "read_amp_4k": 26954255,
+      "cdc_amp_4k": 114268.96422345933
+    },
+    {
+      "sha256": "aa9018e8402e11f9d063b24cb62f63c140d9a8725f8de9c08fa4f221da05fcae",
+      "size": 27504303,
+      "form": "rep",
+      "depth": 0,
+      "cdc_unshared_bytes": 26702780,
+      "added_bytes": 579997,
+      "saving": 0.978279527449951,
+      "read_amp_4k": 27504303,
+      "cdc_amp_4k": 113941.07143384073
+    }
+  ],
+  "migration_s": 246.854112705,
+  "page_geometry": {
+    "1048576": 32,
+    "131072": 146,
+    "262144": 112,
+    "524288": 32
+  },
+  "physical_file_bytes": 42344520,
+  "range_ms": [
+    774.311,
+    701.512,
+    789.713,
+    704.103,
+    37.973,
+    69.824
+  ],
+  "whole_mib_s": 1.1089906284678226
+}

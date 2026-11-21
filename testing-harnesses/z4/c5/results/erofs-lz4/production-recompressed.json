@@ -1,0 +1,74 @@
+{
+  "b2-delta": {
+    "allocated_bytes": 54390784,
+    "file_bytes": 54367429,
+    "whole_replay_ms": 82941,
+    "plans": [
+      {
+        "sha256": "e51c79e12c28c32589e697a7683c7f2cc059cde58f169486c85671b9eb02da9b",
+        "size": 24911872,
+        "form": "cdc",
+        "depth": 0,
+        "cdc_unshared_bytes": 23497230,
+        "added_bytes": 0,
+        "saving": 0,
+        "reason": "no admissible exact representation"
+      },
+      {
+        "sha256": "334b0d0cd46293fe9851ef923a4db26aef2de9a8852df7be46fe441f717ec416",
+        "size": 25047040,
+        "form": "delta",
+        "bases": [
+          "e51c79e12c28"
+        ],
+        "depth": 1,
+        "cdc_unshared_bytes": 23792263,
+        "added_bytes": 10088542,
+        "saving": 0.5759738365366927,
+        "read_amp_4k": 897958,
+        "cdc_amp_4k": 97911.24971445728
+      },
+      {
+        "sha256": "09bbfac1eb96740df0c2b20f7cb842c75503eed122acda0bbb4ca9e9e5fc4b34",
+        "size": 24813568,
+        "form": "delta",
+        "bases": [
+          "e51c79e12c28"
+        ],
+        "depth": 1,
+        "cdc_unshared_bytes": 23593316,
+        "added_bytes": 14305311,
+        "saving": 0.3936710295407394,
+        "read_amp_4k": 495597.5,
+        "cdc_amp_4k": 98601.74608109564
+      },
+      {
+        "sha256": "e866e34e67c05491445689d7064ce16fa6cde37dcb4fab9ffa187f56d9a4639d",
+        "size": 24948736,
+        "form": "delta",
+        "bases": [
+          "09bbfac1eb96"
+        ],
+        "depth": 2,
+        "cdc_unshared_bytes": 23520760,
+        "added_bytes": 10122769,
+        "saving": 0.5696240682699029,
+        "read_amp_4k": 728063,
+        "cdc_amp_4k": 103533.96018179037
+      }
+    ],
+    "verified_images": 4
+  },
+  "cdc": {
+    "allocated_bytes": 79994880,
+    "file_bytes": 79976507,
+    "whole_replay_ms": 2664,
+    "verified_images": 4
+  },
+  "exact-recipe": {
+    "allocated_bytes": 30326784,
+    "file_bytes": 30309056,
+    "whole_replay_ms": 99409,
+    "verified_images": 4
+  }
+}
