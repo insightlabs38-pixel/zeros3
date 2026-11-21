@@ -28,3 +28,7 @@ bidirectional pre-authority peer run covered a historical source as well
 as a historical destination.
 
 [Per-trial payload, timing and verification](results/coreutils-native-relay.json)
+
+A destination-side loopback proxy limited uploads to 2 MiB/s. The matched CDC and native runs forwarded 14,913,828 and 11,565,721 HTTP body bytes respectively. Native took 6.26 s and CDC 5.30 s in these single runs. After a two-thirds native upload, the server refused the partial closure and a fresh process served the exact old release. With the successful native acknowledgement dropped, a fresh process served the exact new release. Retrying sent only 8,624 control bytes, preserved one current and one historical version and passed deep verification. This is a controlled loopback transfer with a modeled bandwidth limit.
+
+[Shaped transfer and fault observations](results/coreutils-shaped-relay.json)

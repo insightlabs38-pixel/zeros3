@@ -1,0 +1,361 @@
+{
+  "binary_sha256": "df2ad55f07c8f0a4f998fb9eb9e372f436d4a4367c69f5f7dc80499547592338",
+  "rate_bytes_per_second": 2097152,
+  "trials": [
+    {
+      "attempts": [
+        {
+          "client_cpu_seconds": 0.20507699999999998,
+          "exit": 0,
+          "fault": null,
+          "forwarded_payload_bytes": 14913828,
+          "label": "reliable",
+          "native_requested": false,
+          "reopened_sha256": "0898a90191c828e337d5e4e4feb71f8ebb75aacac32c434daf5424cda16acb42",
+          "request_metrics": [
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/info",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "HEAD",
+              "path": "/retained-pilot/coreutils-gzip/revision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8624,
+              "fault": null,
+              "forwarded_body_bytes": 8624,
+              "method": "POST",
+              "path": "/_zeros3/v2/negotiate",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 6543073,
+              "fault": null,
+              "forwarded_body_bytes": 6543073,
+              "method": "POST",
+              "path": "/_zeros3/v2/chunks/upload",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8339343,
+              "fault": null,
+              "forwarded_body_bytes": 8339343,
+              "method": "POST",
+              "path": "/_zeros3/v2/chunks/upload",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 22788,
+              "fault": null,
+              "forwarded_body_bytes": 22788,
+              "method": "POST",
+              "path": "/_zeros3/v1/commit",
+              "upstream_status": 200
+            }
+          ],
+          "wall_seconds": 5.303546971001197
+        }
+      ],
+      "trial": "cdc",
+      "verify": {
+        "authorities_verified": 1,
+        "authority_bodies": 1,
+        "authority_orphan_bodies": 0,
+        "chunks_checked": 460,
+        "corrupt": 0,
+        "current_root_count": 1,
+        "deep": true,
+        "historical_root_count": 1,
+        "invalid": 0,
+        "issues": null,
+        "journal_frames_checked": 3,
+        "journal_ok": true,
+        "manifests_checked": 2,
+        "missing": 0,
+        "multipart_root_count": 0,
+        "packs_checked": 2,
+        "reclaimable_bytes": 0,
+        "representation_orphan_roots": 0,
+        "representation_roots": 0,
+        "representations_verified": 0,
+        "snapshot_root_count": 0,
+        "unreachable_chunks": 0,
+        "unreachable_manifests": 0
+      },
+      "versions": 2
+    },
+    {
+      "attempts": [
+        {
+          "client_cpu_seconds": 0.08493499999999976,
+          "exit": 0,
+          "fault": null,
+          "forwarded_payload_bytes": 11565721,
+          "label": "reliable",
+          "native_requested": true,
+          "reopened_sha256": "0898a90191c828e337d5e4e4feb71f8ebb75aacac32c434daf5424cda16acb42",
+          "request_metrics": [
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/info",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "HEAD",
+              "path": "/retained-pilot/coreutils-gzip/revision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8624,
+              "fault": null,
+              "forwarded_body_bytes": 8624,
+              "method": "POST",
+              "path": "/_zeros3/v2/negotiate",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/object?bucket=retained-pilot&closure=1&key=coreutils-gzip%2Frevision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 11557097,
+              "fault": null,
+              "forwarded_body_bytes": 11557097,
+              "method": "POST",
+              "path": "/_zeros3/v1/authority/import",
+              "upstream_status": 200
+            }
+          ],
+          "wall_seconds": 6.258761528995819
+        }
+      ],
+      "trial": "native",
+      "verify": {
+        "authorities_verified": 2,
+        "authority_bodies": 2,
+        "authority_orphan_bodies": 0,
+        "chunks_checked": 576,
+        "corrupt": 0,
+        "current_root_count": 1,
+        "deep": true,
+        "historical_root_count": 1,
+        "invalid": 0,
+        "issues": null,
+        "journal_frames_checked": 3,
+        "journal_ok": true,
+        "manifests_checked": 2,
+        "missing": 0,
+        "multipart_root_count": 0,
+        "packs_checked": 2,
+        "reclaimable_bytes": 0,
+        "representation_orphan_roots": 0,
+        "representation_roots": 0,
+        "representations_verified": 0,
+        "snapshot_root_count": 0,
+        "unreachable_chunks": 0,
+        "unreachable_manifests": 0
+      },
+      "versions": 2
+    },
+    {
+      "attempts": [
+        {
+          "client_cpu_seconds": 0.051655999999999924,
+          "exit": 1,
+          "fault": "cut-body",
+          "forwarded_payload_bytes": 7713355,
+          "label": "interrupted",
+          "native_requested": true,
+          "reopened_sha256": "2bec616375002c92c1ed5ead32a092b174fe44c14bc736d32e5961053b821d84",
+          "request_metrics": [
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/info",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "HEAD",
+              "path": "/retained-pilot/coreutils-gzip/revision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8624,
+              "fault": null,
+              "forwarded_body_bytes": 8624,
+              "method": "POST",
+              "path": "/_zeros3/v2/negotiate",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/object?bucket=retained-pilot&closure=1&key=coreutils-gzip%2Frevision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 11557097,
+              "fault": "cut-body",
+              "forwarded_body_bytes": 7704731,
+              "method": "POST",
+              "path": "/_zeros3/v1/authority/import",
+              "upstream_status": 409,
+              "withheld_response_bytes": 53
+            }
+          ],
+          "wall_seconds": 3.830414618991199
+        },
+        {
+          "client_cpu_seconds": 0.12881600000000004,
+          "exit": 1,
+          "fault": "drop-ack",
+          "forwarded_payload_bytes": 11565721,
+          "label": "ack-lost",
+          "native_requested": true,
+          "reopened_sha256": "0898a90191c828e337d5e4e4feb71f8ebb75aacac32c434daf5424cda16acb42",
+          "request_metrics": [
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/info",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "HEAD",
+              "path": "/retained-pilot/coreutils-gzip/revision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8624,
+              "fault": null,
+              "forwarded_body_bytes": 8624,
+              "method": "POST",
+              "path": "/_zeros3/v2/negotiate",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/object?bucket=retained-pilot&closure=1&key=coreutils-gzip%2Frevision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 11557097,
+              "fault": "drop-ack",
+              "forwarded_body_bytes": 11557097,
+              "method": "POST",
+              "path": "/_zeros3/v1/authority/import",
+              "upstream_status": 200,
+              "withheld_response_bytes": 171
+            }
+          ],
+          "wall_seconds": 6.306238185003167
+        },
+        {
+          "client_cpu_seconds": 0.009311000000000291,
+          "exit": 0,
+          "fault": null,
+          "forwarded_payload_bytes": 8624,
+          "label": "retry",
+          "native_requested": true,
+          "reopened_sha256": "0898a90191c828e337d5e4e4feb71f8ebb75aacac32c434daf5424cda16acb42",
+          "request_metrics": [
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/info",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "HEAD",
+              "path": "/retained-pilot/coreutils-gzip/revision-1",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 8624,
+              "fault": null,
+              "forwarded_body_bytes": 8624,
+              "method": "POST",
+              "path": "/_zeros3/v2/negotiate",
+              "upstream_status": 200
+            },
+            {
+              "announced_bytes": 0,
+              "fault": null,
+              "forwarded_body_bytes": 0,
+              "method": "GET",
+              "path": "/_zeros3/v1/object?bucket=retained-pilot&closure=1&key=coreutils-gzip%2Frevision-1",
+              "upstream_status": 200
+            }
+          ],
+          "wall_seconds": 0.08548677399812732
+        }
+      ],
+      "trial": "recovery",
+      "verify": {
+        "authorities_verified": 2,
+        "authority_bodies": 2,
+        "authority_orphan_bodies": 0,
+        "chunks_checked": 576,
+        "corrupt": 0,
+        "current_root_count": 1,
+        "deep": true,
+        "historical_root_count": 1,
+        "invalid": 0,
+        "issues": null,
+        "journal_frames_checked": 3,
+        "journal_ok": true,
+        "manifests_checked": 2,
+        "missing": 0,
+        "multipart_root_count": 0,
+        "packs_checked": 2,
+        "reclaimable_bytes": 0,
+        "representation_orphan_roots": 0,
+        "representation_roots": 0,
+        "representations_verified": 0,
+        "snapshot_root_count": 0,
+        "unreachable_chunks": 0,
+        "unreachable_manifests": 0
+      },
+      "versions": 2
+    }
+  ]
+}
