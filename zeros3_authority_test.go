@@ -1621,6 +1621,49 @@ func TestAuthorityRepairPaths(t *testing.T) {
 	_ = vhex
 }
 
+func TestAuthorityObjectRepairPreservesRecordUntilExactReplacement(t *testing.T) {
+	setSmallObjectPolicyForTest(t, false)
+	l := newAuthLab(t)
+	exact := genRandomBytes(622, 196_608)
+	l.put("repair", exact)
+	sha := sha256.Sum256(exact)
+	mustOK(t, l.s.AuthorityRepairObject(sha, exact))
+	chunk := mustLoad(t, l.s, sha).Pieces[0].SHA
+	recordPath, chunkPath := l.s.authPath(sha), l.s.chunkPath(chunk)
+	l.close()
+	badRecord := []byte("damaged authority record")
+	mustOK(t, os.WriteFile(recordPath, badRecord, 0o600))
+	mustOK(t, os.WriteFile(chunkPath, []byte("damaged CDC chunk"), 0o600))
+	l.open()
+	if _, err := l.s.casRead(chunk); !errors.Is(err, errChunkCorrupt) {
+		t.Fatalf("expected unreadable CDC chunk, got %v", err)
+	}
+
+	writeFailed := errors.New("repair record write failed")
+	authFault = func(point string) error {
+		if point == "record-write" {
+			return writeFailed
+		}
+		return nil
+	}
+	defer func() { authFault = nil }()
+	err := l.s.AuthorityRepairObject(sha, exact)
+	authFault = nil
+	if !errors.Is(err, writeFailed) {
+		t.Fatalf("repair did not reach injected record failure: %v", err)
+	}
+	retained, err := os.ReadFile(recordPath)
+	mustOK(t, err)
+	if !bytes.Equal(retained, badRecord) {
+		t.Fatal("failed replacement changed existing record")
+	}
+	mustOK(t, l.s.AuthorityRepairObject(sha, exact))
+	l.close()
+	l.open()
+	l.exact("after retry")
+	l.verifyOK("after retry")
+}
+
 // ---- concurrency ------------------------------------------------------------------
 
 // Replacement, deletion, copy, snapshot and reads race a running migration. Every

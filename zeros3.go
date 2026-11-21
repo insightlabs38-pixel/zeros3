@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52293    Windowed and estimated similarity deltas (extracted dcore)
-//    53822    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61514    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67786    CLI dispatch, HTTP server/startup, and main
+//    52300    Windowed and estimated similarity deltas (extracted dcore)
+//    53829    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61521    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67793    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -50535,8 +50535,9 @@ func (s *Store) AuthorityRepairObject(sha [32]byte, exact []byte) error {
 // as part of a record; the pin that takes over supersedes the damaged body at the next generation.
 func (s *Store) AuthorityRepairObjectFrom(sha [32]byte, fetch func(sum [32]byte, length int64) ([]byte, error)) error {
 	cur, err := s.authLoad(sha)
-	if err != nil {
-		cur = nil
+	recoverCorrupt := errors.Is(err, errAuthCorrupt)
+	if err != nil && !recoverCorrupt {
+		return err
 	}
 	var man *manifestV1
 	for _, lm := range s.liveManifests() {
@@ -50565,8 +50566,18 @@ func (s *Store) AuthorityRepairObjectFrom(sha [32]byte, fetch func(sum [32]byte,
 			return fmt.Errorf("repair %x: chunk %x is not the content the manifest lists", sha[:6], p.SHA[:6])
 		}
 		whole.Write(data)
-		if _, err := b.Add(data); err != nil {
+		if _, err := s.casStat(p.SHA); errors.Is(err, os.ErrNotExist) {
+			if _, err := b.add(p.SHA, data); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
+		} else if _, err := s.casRead(p.SHA); err != nil {
+			// Deduplication checks presence only. Restore an unreadable copy
+			// with these verified bytes before publishing any new record.
+			if err := s.casRepairPublish(p.SHA, data); err != nil {
+				return err
+			}
 		}
 	}
 	if !bytes.Equal(whole.Sum(nil), sha[:]) {
@@ -50578,12 +50589,8 @@ func (s *Store) AuthorityRepairObjectFrom(sha [32]byte, fetch func(sum [32]byte,
 	rec := &authRecord{SHA: sha, Size: man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}
 	if cur != nil {
 		rec.Gen = cur.Gen + 1
-	} else if f, _ := os.Stat(s.authPath(sha)); f != nil { // unreadable record: supersede by file replacement
-		if err := os.Remove(s.authPath(sha)); err != nil {
-			return err
-		}
 	}
-	return s.authPublish(rec)
+	return s.authPublishChecked(rec, recoverCorrupt)
 }
 
 // repairObjectsFromPeer is the object-level fallback of peer repair: for every authoritative record that owns a

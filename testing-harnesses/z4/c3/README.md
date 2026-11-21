@@ -36,3 +36,16 @@ A destination-side loopback proxy limited uploads to 2 MiB/s. The matched CDC an
 The partial-overlap and unrelated destination seeds previously discarded a 14.33 MiB closure probe before uploading the ordinary CDC payload. The export request now carries the sender's exact envelope budget. The source prices framed records and unique component lengths before streaming and returns the existing materialization response if the closure cannot save bytes. Older sources may ignore the field, so the client retains its bounded streaming check. Both unfavorable seeds avoided the probe after the change and still served the exact release through CDC. The retained-base run still took native transfer and sent 11.02 MiB. Focused signed HTTP tests covered budgets below, equal to and above the actual frame length.
 
 [Measured closure budget and fallback](results/closure-budget)
+
+A separate 2 MiB/s shaped relay used successive Pythia safetensors revisions.
+The native and CDC trials forwarded 23,988,704 and 28,210,333 HTTP body bytes.
+Both fresh-process reads matched the same independent SHA-256 and both stores
+passed deep verification. These are single trials on the recorded fixture.
+
+[Pythia shaped relay](results/pythia-shaped-relay.json)
+
+Object-level repair verifies each CDC chunk from the exact peer copy and
+restores unreadable copies even if their digests still have local locators.
+The durable pin atomically replaces the old authority record after all chunks
+are available. The regression injects a record-write failure, checks the old
+record remains, then retries and verifies exact readback after reopening.
