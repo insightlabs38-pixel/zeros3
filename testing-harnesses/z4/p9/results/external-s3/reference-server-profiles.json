@@ -1,0 +1,150 @@
+{
+  "profile_sha256": "872d0f5dd6463d854049e18cff74e75871b5bd10bd9f7e3caee24c30b1c7de55",
+  "servers": {
+    "minio": {
+      "binary_sha256": "53e2a2cb16c5366ea6fbbc479c19ddb4c6a0948273e752f740fb1fbf27bb817c",
+      "exit": 1,
+      "profile": {
+        "profile": "zeros3-core-client-v1",
+        "passed": 224,
+        "failed": 4,
+        "skipped": 2,
+        "reports": [
+          {
+            "profile": "zeros3-core-client-v1",
+            "client": "aws-sdk-go-v2",
+            "endpoint": "http://127.0.0.1:50589",
+            "passed": 114,
+            "failed": 2,
+            "skipped": 0,
+            "failures": [
+              {
+                "scenario": "object",
+                "contract": "PutObject dou//ble/slash",
+                "detail": "S3 400 XMinioInvalidObjectName: operation error S3: PutObject, https response error StatusCode: 400, RequestID: 18E9EAE115F53B0F, HostID: 09d9f26c124f6526abe1ef92de5e238fee2af7b99b3ca9bc0eaf0c4191b150ec, api error XMinioInvalidObjectName: Object name contains unsupported characters."
+              },
+              {
+                "scenario": "list",
+                "contract": "PutObject e/nul\u0000b",
+                "detail": "S3 400 XMinioInvalidObjectName: operation error S3: PutObject, https response error StatusCode: 400, RequestID: 18E9EAE133DF3347, HostID: 09d9f26c124f6526abe1ef92de5e238fee2af7b99b3ca9bc0eaf0c4191b150ec, api error XMinioInvalidObjectName: Object name contains unsupported characters."
+              }
+            ]
+          },
+          {
+            "profile": "zeros3-core-client-v1",
+            "client": "minio-go",
+            "endpoint": "http://127.0.0.1:50589",
+            "passed": 110,
+            "failed": 2,
+            "skipped": 1,
+            "failures": [
+              {
+                "scenario": "object",
+                "contract": "PutObject dou//ble/slash",
+                "detail": "S3 400 XMinioInvalidObjectName: Object name contains unsupported characters."
+              },
+              {
+                "scenario": "list",
+                "contract": "PutObject e/nul\u0000b",
+                "detail": "S3 400 XMinioInvalidObjectName: Object name contains unsupported characters."
+              }
+            ]
+          },
+          {
+            "profile": "zeros3-core-client-v1",
+            "client": "aws-cli",
+            "endpoint": "http://127.0.0.1:50589",
+            "passed": 0,
+            "failed": 0,
+            "skipped": 1
+          }
+        ]
+      }
+    },
+    "versity": {
+      "binary_sha256": "3d407e939e568e076bd2d0fa7a4f5c34a8cda50b514da9d881e2e3affa69b794",
+      "exit": 1,
+      "profile": {
+        "profile": "zeros3-core-client-v1",
+        "passed": 227,
+        "failed": 9,
+        "skipped": 2,
+        "reports": [
+          {
+            "profile": "zeros3-core-client-v1",
+            "client": "aws-sdk-go-v2",
+            "endpoint": "http://127.0.0.1:42227",
+            "passed": 113,
+            "failed": 7,
+            "skipped": 0,
+            "failures": [
+              {
+                "scenario": "object",
+                "contract": "PutObject trailing/",
+                "detail": "S3 400 DirectoryObjectContainsData: operation error S3: PutObject, https response error StatusCode: 400, RequestID: 9AXR0TXX3ATQA1LI, HostID: AwWhFMKYKWJQzTVDEGWkxFnz3wbSQ9wvmfQm5ZcOPFBBzgZPQsV3wxNCMM4AoktSryKY+RbOpLwUJmgQxdV4O5M=, api error DirectoryObjectContainsData: Directory object contains data payload."
+              },
+              {
+                "scenario": "copy",
+                "contract": "CopyObject ETag",
+                "detail": "\"\" S3 404 NoSuchKey: operation error S3: CopyObject, https response error StatusCode: 404, RequestID: A3RZVFW6CCOO5JVK, HostID: 6hRydbemt0RgySTRRDXxt4Ht53Cy6pDh6CNU5a7ROWTBZddcojlNF4wVcrEIOzUVLprLjhBk46CSM3Sdaj3rn3c=, api error NoSuchKey: The specified key does not exist."
+              },
+              {
+                "scenario": "copy",
+                "contract": "CopyObject body",
+                "detail": "S3 404 NoSuchKey: operation error S3: GetObject, https response error StatusCode: 404, RequestID: T8NLH2HZOKRSI3RI, HostID: 2NnUiv/lGhTeNDG/MJvPYe+ktkr9lHRs1Th5JY0Vu4sYMfFmAsKf/vENmvGP4kE5qYCIb8q+pmoo5tI7GhyzaU8=, NoSuchKey: The specified key does not exist."
+              },
+              {
+                "scenario": "copy",
+                "contract": "CopyObject COPY directive keeps metadata",
+                "detail": "map[] \"\""
+              },
+              {
+                "scenario": "copy",
+                "contract": "CopyObject across buckets with REPLACE",
+                "detail": "S3 404 NoSuchKey: operation error S3: CopyObject, https response error StatusCode: 404, RequestID: LHT0UX35I7Q22CKR, HostID: S54xbItmcw8FrSUWAQcICzYtCqCOwmrF62XpYddVMeGeUobkwstGzVN6s44fjTkm9tKh054HzpVS2zH00IwRNvc=, api error NoSuchKey: The specified key does not exist."
+              },
+              {
+                "scenario": "copy",
+                "contract": "CopyObject REPLACE metadata",
+                "detail": "map[] \"\""
+              },
+              {
+                "scenario": "list",
+                "contract": "PutObject e/nul\u0000b",
+                "detail": "S3 500 InternalError: operation error S3: PutObject, exceeded maximum number of attempts, 3, https response error StatusCode: 500, RequestID: XZ6VAUKDLJS5WP9E, HostID: 7PpNorXQFVnByK0V56TWDZsen9m6z/tqldkLbQ/wrk9kn3iXyMfrZOF3fIJbb+xmNdj1LR5yx3oeP9uTwJ4VFFY=, api error InternalError: We encountered an internal error, please try again."
+              }
+            ]
+          },
+          {
+            "profile": "zeros3-core-client-v1",
+            "client": "minio-go",
+            "endpoint": "http://127.0.0.1:42227",
+            "passed": 114,
+            "failed": 2,
+            "skipped": 1,
+            "failures": [
+              {
+                "scenario": "object",
+                "contract": "PutObject trailing/",
+                "detail": "S3 400 DirectoryObjectContainsData: Directory object contains data payload."
+              },
+              {
+                "scenario": "list",
+                "contract": "PutObject e/nul\u0000b",
+                "detail": "S3 500 InternalError: We encountered an internal error, please try again."
+              }
+            ]
+          },
+          {
+            "profile": "zeros3-core-client-v1",
+            "client": "aws-cli",
+            "endpoint": "http://127.0.0.1:42227",
+            "passed": 0,
+            "failed": 0,
+            "skipped": 1
+          }
+        ]
+      }
+    }
+  }
+}
