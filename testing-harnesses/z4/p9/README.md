@@ -107,5 +107,11 @@ pack and sidecar.
 `zeros3 pack-parity restore -pack DAMAGED -sidecar SIDECAR -out OUTPUT`
 recovers one unavailable block per group. It checks every block, the
 complete reconstructed pack digest and the existing pack format before
-publishing a new output file. The output path must be unused. This is an
-offline file operation. The serving store and its pack format are unchanged.
+publishing a new output file. The output path must be unused.
+
+`zeros3 pack-parity install -store DIR -pack-id ID -sidecar SIDECAR`
+verifies and installs a repaired pack under the exclusive store lock.
+Use `-tier warm` or `-tier cold` for those pack locations. It syncs a
+hard-linked backup of the damaged pack before atomically replacing the
+named file. The JSON report names the backup. A healthy retry leaves the
+installed pack in place.

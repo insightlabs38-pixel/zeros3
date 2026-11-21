@@ -95,18 +95,18 @@ import (
 //    28382    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
 //    29319    Streaming reads and aws-chunked SigV4
 //    30176    Packed CAS: pack format, mixed reads, compaction, crash points
-//    31245    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32447    Adaptive pack compression (codec 1, DEFLATE)
-//    33499    Scalable packed-chunk locator (sorted immutable levels)
-//    33985    Z2-07: bulk logical-chunk transport (v2)
-//    35427    Hot/warm/cold physical pack tiers
-//    36213    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    36968    Z2-10: content-aware tier policy and rebalance
-//    38014    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38701    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40150    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41504    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42927    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//    31298    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    32500    Adaptive pack compression (codec 1, DEFLATE)
+//    33552    Scalable packed-chunk locator (sorted immutable levels)
+//    34038    Z2-07: bulk logical-chunk transport (v2)
+//    35480    Hot/warm/cold physical pack tiers
+//    36266    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    37021    Z2-10: content-aware tier policy and rebalance
+//    38067    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38754    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40203    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41557    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42980    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -30854,6 +30854,17 @@ func TestPack_DuplicateCopiesCorruptionPreference(t *testing.T) {
 }
 
 func TestPack_ParityRestoresExactPackAndRefusesMultipleLoss(t *testing.T) {
+	if root := os.Getenv("ZEROS3_PARITY_TEST_CUT_ROOT"); root != "" {
+		id, err := decodeHexSHA256(os.Getenv("ZEROS3_PARITY_TEST_CUT_ID"))
+		mustOK(t, err)
+		withTestHook(t, func(point string) {
+			if point == "parity-install-after-backup" {
+				mustOK(t, syscall.Kill(os.Getpid(), syscall.SIGKILL))
+			}
+		})
+		_, err = installPackParity(root, tierHot, id, os.Getenv("ZEROS3_PARITY_TEST_CUT_SIDECAR"))
+		t.Fatalf("install did not stop at backup: %v", err)
+	}
 	l := newAuthLab(t)
 	const records = 9 * packParityBlock / maxPackedChunkBytes
 	b, err := l.s.newPackBuilder(tierHot, nil, records)
@@ -30912,6 +30923,48 @@ func TestPack_ParityRestoresExactPackAndRefusesMultipleLoss(t *testing.T) {
 	}
 	if _, err := os.Stat(refused); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("corrupt sidecar exposed output: %v", err)
+	}
+
+	// Install in the real pack directory under the offline lock. A process cut
+	// after backup leaves the old bytes in place and allows a fresh retry.
+	l.close()
+	data = bytes.Clone(original)
+	data[19] ^= 1
+	mustOK(t, os.WriteFile(info.path, data, 0o600))
+	id, err := decodeHexSHA256(info.id)
+	mustOK(t, err)
+	reader, err := acquireStoreLock(l.dir, false)
+	mustOK(t, err)
+	_, lockedErr := installPackParity(l.dir, tierHot, id, sidecar)
+	reader.release()
+	if !errors.Is(lockedErr, errGCStoreInUse) {
+		t.Fatalf("install did not observe the reader lock: %v", lockedErr)
+	}
+	child := exec.Command(os.Args[0], "-test.run", "^TestPack_ParityRestoresExactPackAndRefusesMultipleLoss$")
+	child.Env = append(os.Environ(), "ZEROS3_PARITY_TEST_CUT_ROOT="+l.dir,
+		"ZEROS3_PARITY_TEST_CUT_ID="+info.id, "ZEROS3_PARITY_TEST_CUT_SIDECAR="+sidecar)
+	output, err := child.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+		t.Fatalf("install survived simulated interruption: %v %s", err, output)
+	}
+	stillDamaged, err := os.ReadFile(info.path)
+	mustOK(t, err)
+	if !bytes.Equal(stillDamaged, data) {
+		t.Fatal("interrupted install changed the original pack")
+	}
+	installed, err := installPackParity(l.dir, tierHot, id, sidecar)
+	mustOK(t, err)
+	final, err := os.ReadFile(info.path)
+	mustOK(t, err)
+	backup, err := os.ReadFile(installed.BackupPath)
+	mustOK(t, err)
+	if installed.RestoredBlocks != 1 || !bytes.Equal(final, original) || !bytes.Equal(backup, data) {
+		t.Fatalf("install did not retain both identities: %+v", installed)
+	}
+	repeat, err := installPackParity(l.dir, tierHot, id, sidecar)
+	mustOK(t, err)
+	if repeat.RestoredBlocks != 0 || repeat.BackupPath != "" {
+		t.Fatalf("healthy retry should keep the installed file: %+v", repeat)
 	}
 }
 

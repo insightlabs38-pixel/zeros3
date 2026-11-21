@@ -89,42 +89,42 @@ import (
 //      539    Content-defined chunking (CDC)
 //      726    Content-addressed chunk storage (CAS)
 //     2469    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4557    Small-object segments (inline manifests, store level 11)
-//     5797    Manifests (immutable, JSON)
-//     6593    Visibility journal (append-only, checksummed)
-//     7115    Store: format, namespace, and object CRUD
-//     8983    Version history/restore, history pruning, ListObjectsV2
-//     9464    SigV4 authentication (header and presigned-URL)
-//    10441    Request payload checksums and S3-shaped XML error/response types
-//    10658    HTTP routing and S3 operation handlers
-//    11084    Conditional operations (PUT/GET/HEAD preconditions)
-//    11779    CopyObject
-//    12084    Multipart upload
-//    13024    Stats and reachability scanning
-//    14528    Verify
-//    14743    Store locking and safe offline GC
-//    15046    Offline compaction (`zeros3 compact`)
-//    16112    Pack reclamation and repacking (`zeros3 repack`)
-//    16615    Physical tiers: status and pack movement (`zeros3 tier`)
-//    17128    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    18193    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18997    Delta sync client, credentials, and parallel transfer
-//    21269    Bulk logical-chunk transport (v2)
-//    22180    Recursive directory sync
-//    22485    Remote replication (`zeros3 replicate`)
-//    23388    Peer-assisted corruption repair (`zeros3 repair`)
-//    23956    Namespace (prefix/bucket) replication
-//    24272    Copy-on-write namespace fork (`zeros3 fork`)
-//    24480    Snapshots and restore
-//    25641    Structural diff and inspect (introspection)
-//    27010    Portable snapshot bundles (`zeros3 bundle`)
-//    28207    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28842    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45948    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52850    Windowed and estimated similarity deltas (extracted dcore)
-//    54379    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62071    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68343    CLI dispatch, HTTP server/startup, and main
+//     4631    Small-object segments (inline manifests, store level 11)
+//     5871    Manifests (immutable, JSON)
+//     6667    Visibility journal (append-only, checksummed)
+//     7189    Store: format, namespace, and object CRUD
+//     9057    Version history/restore, history pruning, ListObjectsV2
+//     9538    SigV4 authentication (header and presigned-URL)
+//    10515    Request payload checksums and S3-shaped XML error/response types
+//    10732    HTTP routing and S3 operation handlers
+//    11158    Conditional operations (PUT/GET/HEAD preconditions)
+//    11853    CopyObject
+//    12158    Multipart upload
+//    13098    Stats and reachability scanning
+//    14602    Verify
+//    14817    Store locking and safe offline GC
+//    15120    Offline compaction (`zeros3 compact`)
+//    16186    Pack reclamation and repacking (`zeros3 repack`)
+//    16689    Physical tiers: status and pack movement (`zeros3 tier`)
+//    17202    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    18267    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    19071    Delta sync client, credentials, and parallel transfer
+//    21343    Bulk logical-chunk transport (v2)
+//    22254    Recursive directory sync
+//    22559    Remote replication (`zeros3 replicate`)
+//    23462    Peer-assisted corruption repair (`zeros3 repair`)
+//    24030    Namespace (prefix/bucket) replication
+//    24346    Copy-on-write namespace fork (`zeros3 fork`)
+//    24554    Snapshots and restore
+//    25715    Structural diff and inspect (introspection)
+//    27084    Portable snapshot bundles (`zeros3 bundle`)
+//    28281    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28916    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    46022    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    52924    Windowed and estimated similarity deltas (extracted dcore)
+//    54453    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62145    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68417    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -3236,7 +3236,9 @@ type packParityReport struct {
 	PackBytes      int64  `json:"pack_bytes"`
 	SidecarBytes   int64  `json:"sidecar_bytes"`
 	PackSHA256     string `json:"pack_sha256"`
+	PackID         string `json:"pack_id"`
 	RestoredBlocks int    `json:"restored_blocks"`
+	BackupPath     string `json:"backup_path,omitempty"`
 }
 
 func packParitySize(size int64) int64 {
@@ -3291,7 +3293,7 @@ func encodePackParity(src io.Reader, size int64, bodySHA string, dst io.Writer) 
 	if _, err := dst.Write(sideHash.Sum(nil)); err != nil {
 		return report, err
 	}
-	return packParityReport{PackBytes: size, SidecarBytes: packParitySize(size), PackSHA256: hex.EncodeToString(digest)}, nil
+	return packParityReport{PackBytes: size, SidecarBytes: packParitySize(size), PackSHA256: hex.EncodeToString(digest), PackID: bodySHA}, nil
 }
 
 func recoverPackParity(pack io.ReaderAt, packSize int64, sidecar io.Reader, sideSize int64, dst io.Writer) (packParityReport, error) {
@@ -3381,9 +3383,11 @@ func stagePackParityOutput(path string, produce func(*os.File) (packParityReport
 		return report, err
 	}
 	if verify {
-		if _, _, err := verifyPackFile(tmp.Name()); err != nil {
+		info, _, err := verifyPackFile(tmp.Name())
+		if err != nil {
 			return report, err
 		}
+		report.PackID = info.id
 	}
 	if err := os.Link(tmp.Name(), path); err != nil {
 		return report, err
@@ -3428,6 +3432,76 @@ func restorePackParity(pack, sidecar, output string) (packParityReport, error) {
 	return stagePackParityOutput(output, func(dst *os.File) (packParityReport, error) {
 		return recoverPackParity(f, fi.Size(), p, pi.Size(), dst)
 	}, true)
+}
+
+// installPackParity replaces a named pack while no server or maintenance
+// process has the store open. Preserve the damaged file for inspection.
+func installPackParity(root string, t tier, id [32]byte, sidecar string) (packParityReport, error) {
+	var report packParityReport
+	formatPath := filepath.Join(root, "FORMAT.json")
+	if _, err := os.Stat(formatPath); err != nil {
+		return report, err
+	}
+	lock, err := acquireStoreLock(root, true)
+	if err != nil {
+		return report, err
+	}
+	defer lock.release()
+	format, err := loadOrInitFormat(root, formatPath)
+	if err != nil {
+		return report, err
+	}
+	if t != tierHot {
+		if err := checkTierRoot(root, format.StoreID, t); err != nil {
+			return report, err
+		}
+	}
+	parent := tierPackDir(root, t)
+	packID := hex.EncodeToString(id[:])
+	pack := filepath.Join(parent, packID+packFileSuffix)
+	info, err := os.Lstat(pack)
+	if err != nil {
+		return report, err
+	}
+	if !info.Mode().IsRegular() {
+		return report, errors.New("pack to restore must be a regular file")
+	}
+	stage, err := os.MkdirTemp(parent, ".parity-stage-")
+	if err != nil {
+		return report, err
+	}
+	defer os.RemoveAll(stage)
+	recovered := filepath.Join(stage, filepath.Base(pack))
+	report, err = restorePackParity(pack, sidecar, recovered)
+	if err != nil {
+		return report, err
+	}
+	if report.PackID != packID {
+		return report, errors.New("parity output belongs to a different pack")
+	}
+	if report.RestoredBlocks == 0 {
+		return report, nil
+	}
+	backup, err := os.MkdirTemp(parent, ".parity-backup-")
+	if err != nil {
+		return report, err
+	}
+	report.BackupPath = filepath.Join(backup, filepath.Base(pack))
+	if err := os.Link(pack, report.BackupPath); err != nil {
+		os.Remove(backup)
+		return report, err
+	}
+	if err := syncDir(backup); err != nil {
+		return report, err
+	}
+	if err := syncDir(parent); err != nil {
+		return report, err
+	}
+	fireTestHook("parity-install-after-backup")
+	if err := os.Rename(recovered, pack); err != nil {
+		return report, err
+	}
+	return report, syncDir(parent)
 }
 
 // locRec is one locator record. The 52-byte layout has no padding: the
@@ -68344,22 +68418,37 @@ func hcLz4z3XXH32(b []byte, seed uint32) uint32 {
 // =============================================================================
 
 func runPackParity(args []string) {
-	if len(args) == 0 || args[0] != "create" && args[0] != "restore" {
-		log.Fatal("zeros3: pack-parity requires create or restore")
+	if len(args) == 0 || args[0] != "create" && args[0] != "restore" && args[0] != "install" {
+		log.Fatal("zeros3: pack-parity requires create, restore or install")
 	}
 	fs := flag.NewFlagSet("pack-parity "+args[0], flag.ExitOnError)
 	pack := fs.String("pack", "", "path of the input pack")
 	sidecar := fs.String("sidecar", "", "path of the parity sidecar")
 	output := fs.String("out", "", "restore: write recovered pack to a new path")
+	root := fs.String("store", "", "install: store directory")
+	id := fs.String("pack-id", "", "install: SHA-256 pack ID without its suffix")
+	tierName := fs.String("tier", "hot", "install: tier holding the damaged pack")
 	fs.Parse(args[1:])
-	if *pack == "" || *sidecar == "" || fs.NArg() != 0 || (args[0] == "restore") != (*output != "") {
-		log.Fatal("zeros3: pack-parity requires -pack and -sidecar, with -out for restore")
-	}
 	var report packParityReport
 	var err error
-	if args[0] == "create" {
+	switch {
+	case *sidecar == "" || fs.NArg() != 0:
+		log.Fatal("zeros3: pack-parity requires -sidecar")
+	case args[0] == "install":
+		if *root == "" || *id == "" || *pack != "" || *output != "" {
+			log.Fatal("zeros3: pack-parity install requires -store, -pack-id and -sidecar")
+		}
+		t, tierErr := parseTier(*tierName)
+		packID, idErr := decodeHexSHA256(*id)
+		if err := errors.Join(tierErr, idErr); err != nil {
+			log.Fatal(err)
+		}
+		report, err = installPackParity(*root, t, packID, *sidecar)
+	case *pack == "" || (args[0] == "restore") != (*output != "") || *root != "" || *id != "":
+		log.Fatal("zeros3: pack-parity requires -pack and -sidecar, with -out for restore")
+	case args[0] == "create":
 		report, err = makePackParity(*pack, *sidecar)
-	} else {
+	default:
 		report, err = restorePackParity(*pack, *sidecar, *output)
 	}
 	if err != nil {
