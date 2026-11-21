@@ -120,11 +120,11 @@ import (
 //    27084    Portable snapshot bundles (`zeros3 bundle`)
 //    28281    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28916    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    46022    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52924    Windowed and estimated similarity deltas (extracted dcore)
-//    54453    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62145    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68417    CLI dispatch, HTTP server/startup, and main
+//    46089    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    52991    Windowed and estimated similarity deltas (extracted dcore)
+//    54520    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62212    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68484    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -28994,6 +28994,7 @@ const (
 	repKindParquet repKind = 10
 	repKindDEX     repKind = 11
 	repKindCLR     repKind = 12
+	repAnalyzeELF  repKind = 13 // encoder selector, stored as concat
 )
 
 // supported reports whether this build can decode the kind.
@@ -33667,7 +33668,7 @@ func (bd *repBudget) attempt() error {
 
 func (bd *repBudget) entries(n int) error {
 	if bd.entriesAll += n; bd.entriesAll > repMaxTarEntries {
-		return fmt.Errorf("%w: more than %d tar entries", errRepLimit, repMaxTarEntries)
+		return fmt.Errorf("%w: more than %d container entries", errRepLimit, repMaxTarEntries)
 	}
 	return nil
 }
@@ -34476,6 +34477,68 @@ func (b *repBuilder) encodeGitIdx(src io.ReaderAt, size int64) (*repObject, erro
 	return out, nil
 }
 
+// elfSectionBoundaries reads the little-endian ELF64 section table. Using
+// boundaries instead of decoded sections preserves all file bytes, including
+// overlaps, alignment gaps and trailing data.
+func elfSectionBoundaries(src io.ReaderAt, size int64) ([]int64, error) {
+	const headerSize = 64
+	var header [headerSize]byte
+	if size < headerSize || repReadFullAt(src, header[:], 0) != nil ||
+		!bytes.Equal(header[:7], []byte{'\x7f', 'E', 'L', 'F', 2, 1, 1}) {
+		return nil, errRepUnsupported
+	}
+	order := binary.LittleEndian
+	table := order.Uint64(header[40:48])
+	entrySize, count := order.Uint16(header[58:60]), order.Uint16(header[60:62])
+	if entrySize != headerSize || count < 2 || table < headerSize || table > uint64(size) || uint64(count)*headerSize > uint64(size)-table {
+		return nil, errRepUnsupported
+	}
+	edges := make([]int64, 0, 2+2*int(count))
+	edges = append(edges, 0, size)
+	for i := range int64(count) {
+		var entry [headerSize]byte
+		if err := repReadFullAt(src, entry[:], int64(table)+i*headerSize); err != nil {
+			return nil, err
+		}
+		kind := order.Uint32(entry[4:8])
+		if kind == 0 || kind == 8 { // SHT_NULL and SHT_NOBITS occupy no file bytes.
+			continue
+		}
+		start, length := order.Uint64(entry[24:32]), order.Uint64(entry[32:40])
+		if start > uint64(size) || length > uint64(size)-start {
+			return nil, errRepUnsupported
+		}
+		if length > 0 {
+			edges = append(edges, int64(start), int64(start+length))
+		}
+	}
+	slices.Sort(edges)
+	return slices.Compact(edges), nil
+}
+
+func (b *repBuilder) encodeELFSections(src io.ReaderAt, size int64) (*repObject, error) {
+	edges, err := elfSectionBoundaries(src, size)
+	if err != nil {
+		return nil, err
+	}
+	if len(edges) <= 2 {
+		return nil, errRepUnsupported
+	}
+	if err := b.budget.entries(len(edges) - 1); err != nil {
+		return nil, err
+	}
+	out := &repObject{Kind: repKindConcat, Size: size}
+	for i := range len(edges) - 1 {
+		stream := io.NewSectionReader(src, edges[i], edges[i+1]-edges[i])
+		if err := b.putCDC(stream, func(sum [32]byte, n int64) {
+			out.Members = append(out.Members, repMember{Role: repStored, SHA: sum, Size: n})
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObject, error) {
 	if b.depth >= 3 || ((k == repKindGzip || k == repKindZstd) && b.depth >= 2) {
 		return nil, fmt.Errorf("%w: analysis nesting", errRepDepth)
@@ -34484,6 +34547,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 	defer func() { b.depth-- }()
 
 	switch k {
+	case repAnalyzeELF:
+		return b.encodeELFSections(src, size)
 	case repKindDEX, repKindCLR:
 		return b.encodeManaged(src, size, k)
 	case repKindSST, repKindParquet:
@@ -34516,6 +34581,8 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 	n, _ := src.ReadAt(head[:], 0)
 	hd := head[:min(int64(n), size)]
 	switch {
+	case bytes.HasPrefix(hd, []byte("\x7fELF")) && os.Getenv("ZEROS3_EXPERIMENTAL_ELF") == "1":
+		return repAnalyzeELF, true
 	case bytes.HasPrefix(hd, []byte("dex\n")):
 		return repKindDEX, true
 	case bytes.HasPrefix(hd, []byte("MZ")):

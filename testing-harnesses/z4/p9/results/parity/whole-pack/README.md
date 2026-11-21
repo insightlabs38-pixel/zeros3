@@ -12,3 +12,8 @@ was the read-only input.
 This trial restored three damaged blocks, one per stripe. The focused
 test also checks multiple damaged blocks in a stripe and rejects a
 corrupt sidecar without exposing a recovered file.
+
+A separate run used the locked in-store installer on a new clone. The
+backup matched the damaged input, the installed pack matched the original
+and a fresh process passed deep verification. The process-cut test stops
+after the durable backup and before rename, then reruns installation.

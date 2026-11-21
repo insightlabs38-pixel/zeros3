@@ -1282,6 +1282,53 @@ func repSmallCompact() compactOptions {
 	return o
 }
 
+func TestRepELFSectionsPreserveGapsAndOverlaps(t *testing.T) {
+	body := genRandomBytes(946, 320_000)
+	copy(body[:7], "\x7fELF\x02\x01\x01")
+	order := binary.LittleEndian
+	order.PutUint64(body[40:48], 64)
+	order.PutUint16(body[58:60], 64)
+	order.PutUint16(body[60:62], 4)
+	clear(body[64:320])
+	writeSection := func(i int, kind uint32, start, length uint64) {
+		entry := body[64+i*64:][:64]
+		order.PutUint32(entry[4:8], kind)
+		order.PutUint64(entry[24:32], start)
+		order.PutUint64(entry[32:40], length)
+	}
+	writeSection(1, 1, 4096, 115_904)
+	writeSection(2, 1, 100_000, 160_000)
+	writeSection(3, 8, 300_000, 100_000) // BSS is not in the file.
+	edges, err := elfSectionBoundaries(bytes.NewReader(body), int64(len(body)))
+	mustOK(t, err)
+	if !slices.Equal(edges, []int64{0, 4096, 100_000, 120_000, 260_000, 320_000}) {
+		t.Fatalf("unexpected ELF file partition: %v", edges)
+	}
+	t.Setenv("ZEROS3_EXPERIMENTAL_ELF", "")
+	if kind, _ := repCandidate(bytes.NewReader(body), int64(len(body))); kind == repAnalyzeELF {
+		t.Fatal("ELF analyzer activated without opt-in")
+	}
+	t.Setenv("ZEROS3_EXPERIMENTAL_ELF", "1")
+	l := newRepLab(t, repModePrefer)
+	l.put("elf", body)
+	_, man := l.manifest("elf")
+	root := repMustRoot(t, l.s, man.ManifestUUID)
+	src := l.s.newRepSource(root.Descs, nil)
+	call, err := (&repEnv{Src: src, Limits: repProdLimits}).open(root.Rep)
+	src.close()
+	mustOK(t, err)
+	if call.Rep.Kind != repKindConcat {
+		t.Fatalf("expected the existing concat wire kind, got %d", call.Rep.Kind)
+	}
+	l.exact("ELF including unclaimed bytes")
+	writeSection(2, 1, 100_000, 300_000)
+	l.put("bad-elf", body)
+	_, bad := l.manifest("bad-elf")
+	if repHasRoot(l.s, bad.ManifestUUID) {
+		t.Fatal("out-of-bounds ELF section produced a representation")
+	}
+}
+
 func TestRepLifecycleChain(t *testing.T) {
 	g1CDCSpecific(t, "cdcref")
 	l := newRepLab(t, repModePrefer)
