@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52340    Windowed and estimated similarity deltas (extracted dcore)
-//    53869    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61561    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67833    CLI dispatch, HTTP server/startup, and main
+//    52350    Windowed and estimated similarity deltas (extracted dcore)
+//    53879    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61571    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67843    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47032,6 +47032,8 @@ func (d *authDeltaBody) ReadAt(p []byte, off int64) (int, error) {
 const (
 	wMagicZW1        = "ZW1\x00"
 	authWinMaxWindow = 64 << 20 // largest frame a record may declare
+	authMinWindowKiB = 64
+	authMaxWindowKiB = 1024
 )
 
 // Variables so tests shrink them.
@@ -47716,6 +47718,7 @@ type AuthPolicy struct {
 	HardCodecs       bool   `json:"hard_codecs"`
 	MinRepGroup      int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
 	FrameSpan        int64  `json:"frame_span"`
+	WindowKiB        int64  `json:"window_kib,omitempty"` // ZW1 frame size, zero uses the default
 	Apply            bool   `json:"apply"`
 	ReserveFreeBytes uint64 `json:"reserve_free_bytes,omitempty"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
@@ -48423,6 +48426,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (AuthReport, error) {
 	if err := ctx.Err(); err != nil {
 		return AuthReport{}, err
+	}
+	if pol.WindowKiB != 0 && (pol.WindowKiB < authMinWindowKiB || pol.WindowKiB > authMaxWindowKiB) {
+		return AuthReport{}, fmt.Errorf("authority: window size must be between %d and %d KiB", authMinWindowKiB, authMaxWindowKiB)
 	}
 	pol = pol.norm()
 	if err := s.checkAuthDiskReserve(pol.ReserveFreeBytes, 0, 0); err != nil {
@@ -49503,6 +49509,9 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	base.ctx = m.ctx
 	defer base.close()
 	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
+	if pol.WindowKiB != 0 {
+		wp.Window = pol.WindowKiB << 10
+	}
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
 	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers, &bo.sha)
 	if err != nil {
@@ -52137,6 +52146,7 @@ func runAuthority(args []string) {
 	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
 	indexGeneration := fs.String("generation", "", "index-publish: activate a verified staged generation by directory name")
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
+	windowKiB := fs.Int64("window-kib", 0, "migrate: ZW1 frame size in KiB (64–1024, 0 uses the default)")
 	reserveMiB := fs.Uint64("reserve-free-mib", 0, "migrate: require this much free space after estimated staging (0 disables the reserve)")
 	fs.Parse(args[1:])
 	if sub == "recover" {
@@ -52258,7 +52268,7 @@ func runAuthority(args []string) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, ReserveFreeBytes: *reserveMiB << 20}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, ReserveFreeBytes: *reserveMiB << 20}
 		var similarityOpenNanos int64
 		if *indexedDiscovery && pol.AllowDelta {
 			start := time.Now()

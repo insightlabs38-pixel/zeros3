@@ -21,6 +21,11 @@ cannot compare independent window settings. Read amplification, fanout
 and old/new writer qualification are pending. The production default is
 still 1 MiB.
 
+The research branch exposes `authority migrate -window-kib` for new ZW1
+records. It accepts 64 through 1024 KiB. A zero value uses the 1 MiB
+default. Readers use the recorded frame boundaries, so a new candidate
+can depend on earlier forms with different frame sizes.
+
 Reproduce with the referenced corpus and an unused output path:
 
 ```sh

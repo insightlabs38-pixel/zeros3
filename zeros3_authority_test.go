@@ -3094,11 +3094,22 @@ func TestAuthorityWindowedDelta(t *testing.T) {
 	l.put("other", genRandomBytes(5, 400_000))
 	l.reclaim()
 	cdc := dirBytes(t, l.dir)
-	rep := l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1})
+	const selectedWindowKiB = 128
+	if _, err := l.s.AuthorityMigrate(AuthPolicy{WindowKiB: 1}); err == nil {
+		t.Fatal("migration accepted a window below the supported size")
+	}
+	rep := l.migrate(AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1, WindowKiB: selectedWindowKiB})
 	windowed := 0
 	for _, p := range rep.Plans {
 		if p.Form == "delta" && p.Size > authWindowMin {
 			windowed++
+			sha, err := decodeHexSHA256(p.SHA)
+			mustOK(t, err)
+			body, _, err := l.s.newAuthScanCtx().body(sha, p.Size, 1)
+			mustOK(t, err)
+			if w, ok := body.(*authWinBody); !ok || w.wr.maxWindow != selectedWindowKiB<<10 {
+				t.Fatalf("written record did not use the selected window: %T", body)
+			}
 		}
 	}
 	if windowed == 0 {
@@ -3119,7 +3130,7 @@ func TestAuthorityWindowedDelta(t *testing.T) {
 		if len(want) < 2_000_000 {
 			continue
 		}
-		for _, r := range [][2]int64{{0, 4095}, {65535, 65540}, {1 << 20, 1<<20 + 100_000}, {int64(len(want)) - 5000, int64(len(want)) - 1}} {
+		for _, r := range [][2]int64{{0, 4095}, {(selectedWindowKiB << 10) - 2, (selectedWindowKiB << 10) + 2}, {1 << 20, 1<<20 + 100_000}, {int64(len(want)) - 5000, int64(len(want)) - 1}} {
 			_, _, got, err := l.s.GetObjectRange("b", k, byteRange{r[0], r[1]})
 			if err != nil || !bytes.Equal(got, want[r[0]:r[1]+1]) {
 				t.Fatalf("%s range %v: err=%v", k, r, err)
