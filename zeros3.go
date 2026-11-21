@@ -121,10 +121,10 @@ import (
 //    28198    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28833    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45939    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52832    Windowed and estimated similarity deltas (extracted dcore)
-//    54361    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62053    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68325    CLI dispatch, HTTP server/startup, and main
+//    52839    Windowed and estimated similarity deltas (extracted dcore)
+//    54368    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62060    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68332    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47939,12 +47939,13 @@ type AuthPolicy struct {
 	// HardCodecs lets structured analysis replay Brotli and LZ4_RAW Parquet pages and LZ4 SST blocks
 	// exactly (archive use: reading them re-runs the page encoder). Records that use them carry the
 	// "hardcodec" feature, which builds without the replay refuse.
-	HardCodecs       bool   `json:"hard_codecs"`
-	MinRepGroup      int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
-	FrameSpan        int64  `json:"frame_span"`
-	WindowKiB        int64  `json:"window_kib,omitempty"` // ZW1 frame size, zero uses the default
-	Apply            bool   `json:"apply"`
-	ReserveFreeBytes uint64 `json:"reserve_free_bytes,omitempty"`
+	HardCodecs          bool   `json:"hard_codecs"`
+	MinRepGroup         int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan           int64  `json:"frame_span"`
+	WindowKiB           int64  `json:"window_kib,omitempty"` // ZW1 frame size, zero uses the default
+	Apply               bool   `json:"apply"`
+	ReserveFreeBytes    uint64 `json:"reserve_free_bytes,omitempty"`
+	PriceCurrentStorage bool   `json:"price_current_storage,omitempty"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
 	// representation for a kind group whose delta plan already costs at most this
 	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
@@ -48125,6 +48126,7 @@ func authTierRefusal(tier string, c *AuthCost, ampRel float64) string {
 }
 
 type AuthReport struct {
+	StorageCostModel                   string `json:"storage_cost_model"`
 	Objects, Admitted, Pinned, KeptCDC int
 	CDCBytes, AddedBytes               int64
 	Plans                              []AuthPlan
@@ -48196,31 +48198,31 @@ func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liv
 	}
 }
 
-// physChunk estimates a chunk's size after recompression, including its
+// physChunk prices a chunk under the selected pack policy, including its
 // record header and index entry.
-func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64) int64 {
+func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64, current bool) int64 {
 	if v, ok := memo[sum]; ok {
 		return v
 	}
-	var n int64
+	n := logical
 	if loc, ok := s.packLookup(sum); ok {
 		n = int64(loc.stored)
 		// Physical END-state bytes: a raw record is priced as the cold-tier repack would store it, so a
 		// compressed CDC chunk and a freshly staged raw component are compared on the same footing.
-		if loc.codec == packCodecRaw && n >= 512 {
+		if !current && loc.codec == packCodecRaw && n >= 512 {
 			if data, err := s.casRead(sum); err == nil {
 				if d := int64(xdDeflateLen(data, 1)); d < n-n/16 {
 					n = d
 				}
 			}
 		}
-	} else if data, err := s.casRead(sum); err == nil {
-		n = int64(len(data))
-		if d := int64(xdDeflateLen(data, 1)); d < n-n/16 {
-			n = d
+	} else if !current {
+		if data, err := s.casRead(sum); err == nil {
+			n = int64(len(data))
+			if d := int64(xdDeflateLen(data, 1)); d < n-n/16 {
+				n = d
+			}
 		}
-	} else {
-		n = logical
 	}
 	memo[sum] = n + packRecordBytes
 	return memo[sum]
@@ -48674,7 +48676,7 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 				for _, c := range bySHA[p.SHA].Chunks {
 					if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
 						seen[sum] = true
-						n += s.physChunk(sum, c.Length, phys)
+						n += s.physChunk(sum, c.Length, phys, pol.PriceCurrentStorage)
 					}
 				}
 			}
@@ -48705,6 +48707,10 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 	t0 := time.Now()
 	m := &authMigrator{ctx: ctx, s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
+	m.rep.StorageCostModel = "recompressed"
+	if pol.PriceCurrentStorage {
+		m.rep.StorageCostModel = "current-packs"
+	}
 	if pol.AllowDelta && pol.similarity != nil {
 		m.indexedBases = make(map[[32]byte]int)
 	}
@@ -48901,7 +48907,7 @@ func (m *authMigrator) groupReclaimable(idxs []int, inG map[[32]byte]int) int64 
 			}
 			done[sum] = true
 			if m.refs[sum] == inG[sum] {
-				n += m.s.physChunk(sum, c.Length, m.phys)
+				n += m.s.physChunk(sum, c.Length, m.phys, m.pol.PriceCurrentStorage)
 			}
 		}
 	}
@@ -48927,7 +48933,7 @@ func (m *authMigrator) priceRepGroup(idxs []int, inG map[[32]byte]int) (int64, e
 				return 0, err
 			}
 			if !seen[sum] && m.refs[sum] <= inG[sum] {
-				candidate.marginal += m.s.physChunk(sum, c.Length, m.phys)
+				candidate.marginal += m.s.physChunk(sum, c.Length, m.phys, m.pol.PriceCurrentStorage)
 			}
 			seen[sum] = true
 		}
@@ -48944,7 +48950,7 @@ func (m *authMigrator) groupChunkBytes(idxs []int) int64 {
 		for _, c := range m.order[i].man.Chunks {
 			if sum, err := decodeHexSHA256(c.SHA256); err == nil && !done[sum] {
 				done[sum] = true
-				n += m.s.physChunk(sum, c.Length, m.phys)
+				n += m.s.physChunk(sum, c.Length, m.phys, m.pol.PriceCurrentStorage)
 			}
 		}
 	}
@@ -49050,7 +49056,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 				}
 				seen[sum] = true
 				if m.refs[sum] <= allCDCRefs[sum] {
-					rc.marginal += m.s.physChunk(sum, c.Length, m.phys)
+					rc.marginal += m.s.physChunk(sum, c.Length, m.phys, m.pol.PriceCurrentStorage)
 				}
 			}
 			union += rc.marginal
@@ -49276,7 +49282,7 @@ func (m *authMigrator) unsharedBytes(o *authObj) int64 {
 		}
 		seen[sum] = true
 		if m.refs[sum] == 1 {
-			n += m.s.physChunk(sum, c.Length, m.phys)
+			n += m.s.physChunk(sum, c.Length, m.phys, m.pol.PriceCurrentStorage)
 		}
 	}
 	return n
@@ -49438,7 +49444,7 @@ func (m *authMigrator) bestDelta(o *authObj, target []byte, sk []uint64, srcs []
 			order = append(order, k)
 		}
 	}
-	comp := newPackCompressor()
+	comp := newCompressor(!pol.PriceCurrentStorage)
 	var best *authCand
 	for _, k := range order {
 		if m.ctx.Err() != nil {
@@ -49581,7 +49587,7 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		}
 		if cached != nil {
 			// Reprice the plan's encoding against the state reached in this pass.
-			added, err := m.deltaAddedBytes(o, cached.rec, cached.blob, cached.pins, newPackCompressor())
+			added, err := m.deltaAddedBytes(o, cached.rec, cached.blob, cached.pins, newCompressor(!pol.PriceCurrentStorage))
 			if err != nil {
 				return err
 			}
@@ -52621,6 +52627,7 @@ func runAuthority(args []string) {
 	indexGeneration := fs.String("generation", "", "index-publish: activate a verified staged generation by directory name")
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
 	windowKiB := fs.Int64("window-kib", 0, "migrate: ZW1 frame size in KiB (64–1024, 0 uses the default)")
+	priceCurrent := fs.Bool("price-current-storage", false, "migrate: price existing pack sizes and raw new components instead of assuming recompression")
 	reserveMiB := fs.Uint64("reserve-free-mib", 0, "migrate: require this much free space after estimated staging (0 disables the reserve)")
 	fs.Parse(args[1:])
 	if sub == "recover" {
@@ -52750,7 +52757,7 @@ func runAuthority(args []string) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, ReserveFreeBytes: *reserveMiB << 20}
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, ReserveFreeBytes: *reserveMiB << 20, PriceCurrentStorage: *priceCurrent}
 		var similarityOpenNanos int64
 		if *indexedDiscovery && pol.AllowDelta {
 			start := time.Now()

@@ -39,4 +39,11 @@ an independent live owner adds no duplicate charge. The planner evaluates
 that ownership against the members that actually built, including their
 record metadata.
 
+Migration reports name the storage cost model. Use
+`authority migrate -price-current-storage` to charge existing pack
+payload sizes and raw new components when planning ordinary maintenance.
+The default recompressed model estimates the state after explicit
+recompression. Both modes include pack framing and estimate payload and
+record sizes independently of filesystem rounding.
+
 [Trial reports and hashes](trials.json)

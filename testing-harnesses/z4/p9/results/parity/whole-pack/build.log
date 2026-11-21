@@ -1,0 +1,17 @@
+/workspace/work/zeros3/r4-pack-parity.VHtLWZ/zeros3: go1.27.4
+	path	zeros3
+	mod	zeros3	v0.1.2-0.20261121063303-a0bba91718c3
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=a0bba91718c3c8d66685d86053b6f527f7da0c23
+	build	vcs.time=2026-11-21T06:33:03Z
+	build	vcs.modified=false

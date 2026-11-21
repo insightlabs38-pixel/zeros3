@@ -3004,6 +3004,28 @@ func TestAuthorityMigrationChargesChunksRetainedByPins(t *testing.T) {
 	}
 }
 
+func TestAuthorityStorageCostModelsAccountForRawChunks(t *testing.T) {
+	useLooseLayout(t, "raw input for competing storage prices")
+	l := newAuthLab(t)
+	data := bytes.Repeat([]byte("recompressible payload\n"), 16_900)
+	l.put("data", data)
+	for _, current := range []bool{false, true} {
+		report, err := l.s.AuthorityMigrate(AuthPolicy{AllowDelta: true, NoZN7: true, PriceCurrentStorage: current})
+		mustOK(t, err)
+		if len(report.Plans) != 1 {
+			t.Fatalf("unexpected plans: %+v", report)
+		}
+		cost := report.Plans[0].CDCBytes
+		if current {
+			if report.StorageCostModel != "current-packs" || cost < int64(len(data))/2 {
+				t.Fatalf("current storage did not price the raw chunks: %+v", report)
+			}
+		} else if report.StorageCostModel != "recompressed" || cost >= int64(len(data))/4 {
+			t.Fatalf("recompressed storage did not price the compressible chunks: %+v", report)
+		}
+	}
+}
+
 func TestAuthorityRepresentationChargesComponentsRetainedFromCDC(t *testing.T) {
 	l := newAuthLab(t)
 	data := genRandomBytes(400, 440_000)
