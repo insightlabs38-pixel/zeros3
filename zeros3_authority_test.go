@@ -3004,6 +3004,39 @@ func TestAuthorityMigrationChargesChunksRetainedByPins(t *testing.T) {
 	}
 }
 
+func TestAuthorityRepresentationChargesComponentsRetainedFromCDC(t *testing.T) {
+	l := newAuthLab(t)
+	data := genRandomBytes(400, 440_000)
+	l.put("candidate", data)
+	man := l.man("candidate")
+	sha := sha256.Sum256(data)
+	m := &authMigrator{
+		s:     l.s,
+		order: []*authObj{{sha: sha, man: man}},
+		refs:  make(map[[32]byte]int),
+		phys:  make(map[[32]byte]int64),
+		repC: map[int]*authRepCand{0: {
+			root:   &repRoot{ManifestUUID: man.ManifestUUID, ObjSHA: sha, ObjSize: man.TotalLength},
+			chunks: man.Chunks,
+		}},
+	}
+	m.countChunks(man.Chunks)
+	members := []int{0}
+	owners := m.groupCDCRefs(members)
+	freed := m.groupReclaimable(members, owners)
+	cost, err := m.priceRepGroup(members, owners)
+	mustOK(t, err)
+	if freed <= 0 || cost <= freed {
+		t.Fatalf("all retained CDC chunks plus record must cost more than the reclaimed bytes: %d <= %d", cost, freed)
+	}
+	m.countChunks(man.Chunks) // Another live authority keeps the same components.
+	shared, err := m.priceRepGroup(members, owners)
+	mustOK(t, err)
+	if shared != cost-freed || m.groupReclaimable(members, owners) != 0 {
+		t.Fatalf("independently retained chunks were not charged consistently: cost=%d shared=%d cdc=%d", cost, shared, freed)
+	}
+}
+
 func TestAuthorityTierDepthFiltersBeforeEncoding(t *testing.T) {
 	const feature = 100
 	m := &authMigrator{

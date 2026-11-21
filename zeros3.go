@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52556    Windowed and estimated similarity deltas (extracted dcore)
-//    54085    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61777    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68049    CLI dispatch, HTTP server/startup, and main
+//    52608    Windowed and estimated similarity deltas (extracted dcore)
+//    54137    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61829    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68101    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -47972,8 +47972,8 @@ func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liv
 	}
 }
 
-// physChunk is the stored size of a chunk: its pack record when packed, else a
-// fast-deflate estimate of the loose bytes (loose files are not yet compacted).
+// physChunk estimates a chunk's size after recompression, including its
+// record header and index entry.
 func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64) int64 {
 	if v, ok := memo[sum]; ok {
 		return v
@@ -47991,12 +47991,15 @@ func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64) 
 			}
 		}
 	} else if data, err := s.casRead(sum); err == nil {
-		n = int64(xdDeflateLen(data, 1))
+		n = int64(len(data))
+		if d := int64(xdDeflateLen(data, 1)); d < n-n/16 {
+			n = d
+		}
 	} else {
 		n = logical
 	}
-	memo[sum] = n
-	return n
+	memo[sum] = n + packRecordBytes
+	return memo[sum]
 }
 
 // authSketch keeps the k smallest distinct window features of a byte stream.
@@ -48648,10 +48651,7 @@ func (m *authMigrator) planRepGroups() error {
 	return m.planRepGroupsUnion(kinds, count)
 }
 
-// groupReclaimable is the exact CDC volume a group frees: the physical bytes
-// of chunks whose every CDC reference lies inside the group (union rule).
-// m.refs counts distinct CDC-authoritative contents per chunk.
-func (m *authMigrator) groupReclaimable(idxs []int) int64 {
+func (m *authMigrator) groupCDCRefs(idxs []int) map[[32]byte]int {
 	inG := map[[32]byte]int{}
 	for _, i := range idxs {
 		seen := map[[32]byte]bool{}
@@ -48662,6 +48662,11 @@ func (m *authMigrator) groupReclaimable(idxs []int) int64 {
 			}
 		}
 	}
+	return inG
+}
+
+// groupReclaimable counts only chunks that have no owner outside the group.
+func (m *authMigrator) groupReclaimable(idxs []int, inG map[[32]byte]int) int64 {
 	var n int64
 	done := map[[32]byte]bool{}
 	for _, i := range idxs {
@@ -48677,6 +48682,34 @@ func (m *authMigrator) groupReclaimable(idxs []int) int64 {
 		}
 	}
 	return n
+}
+
+func (m *authMigrator) priceRepGroup(idxs []int, inG map[[32]byte]int) (int64, error) {
+	seen := make(map[[32]byte]bool)
+	var total int64
+	for _, i := range idxs {
+		candidate := m.repC[i]
+		object := m.order[i]
+		// Charge the largest sketch the admission path may attach to the record.
+		rec := authRecord{SHA: object.sha, Size: object.man.TotalLength, Gen: 1, Form: authFormRep, Root: candidate.root, Sketch: make([]uint64, 16)}
+		record, err := rec.marshal()
+		if err != nil {
+			return 0, err
+		}
+		candidate.marginal = int64(len(record))
+		for _, c := range candidate.chunks {
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil {
+				return 0, err
+			}
+			if !seen[sum] && m.refs[sum] <= inG[sum] {
+				candidate.marginal += m.s.physChunk(sum, c.Length, m.phys)
+			}
+			seen[sum] = true
+		}
+		total += candidate.marginal
+	}
+	return total, nil
 }
 
 // groupChunkBytes is the physical volume of the distinct CDC chunks the members list.
@@ -48709,7 +48742,8 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 		if cache != nil && cache.repAbort[kind] {
 			continue
 		}
-		cdc := m.groupReclaimable(members)
+		allCDCRefs := m.groupCDCRefs(members)
+		cdc := m.groupReclaimable(members, allCDCRefs)
 		// reference to beat: CDC reclaimable, or the delta plan's cost when known
 		bound := cdc
 		// The delta plan's cost for this group: each member with a delta pays its
@@ -48741,7 +48775,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 		bound = int64(float64(bound) * (1 - m.pol.MinSaving))
 		seen := map[[32]byte]bool{}
 		var union int64
-		built := 0
+		var built []int
 		abandoned := false
 		for k, i := range members {
 			if err := m.ctx.Err(); err != nil {
@@ -48791,30 +48825,41 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 					continue
 				}
 				seen[sum] = true
-				if m.refs[sum] == 0 {
+				if m.refs[sum] <= allCDCRefs[sum] {
 					rc.marginal += m.s.physChunk(sum, c.Length, m.phys)
 				}
 			}
 			union += rc.marginal
 			m.repC[i] = rc
-			built++
+			built = append(built, i)
 			// Progressive abandonment only for large groups: in a history each later revision usually
 			// adds far less than the first ones (F-Droid classes2.dex: 5.7, 4.7, 0.3, 5.4, 4.4, 1.0 MB),
 			// so projecting the current marginal onto the rest rejected a group whose union wins.
-			if len(members) > authRepAbandonMin && built >= m.pol.MinRepGroup && k+1 < len(members) {
+			if len(members) > authRepAbandonMin && len(built) >= m.pol.MinRepGroup && k+1 < len(members) {
 				rest := int64(len(members) - k - 1)
 				proj := union + rest*rc.marginal/2 + 160*int64(len(members))
 				if proj > bound {
 					abandoned = true
 					if cache != nil {
 						cache.repAbort[kind] = true
-						cache.rejected += len(members) - built
+						cache.rejected += len(members) - len(built)
 					}
 					break
 				}
 			}
 		}
-		if abandoned || union+160*int64(len(members)) > bound {
+		abandoned = abandoned || len(built) < m.pol.MinRepGroup
+		if !abandoned {
+			builtCDCRefs := m.groupCDCRefs(built)
+			builtBound := int64(float64(m.groupReclaimable(built, builtCDCRefs)) * (1 - m.pol.MinSaving))
+			bound = min(bound, builtBound)
+			var err error
+			union, err = m.priceRepGroup(built, builtCDCRefs)
+			if err != nil {
+				return err
+			}
+		}
+		if abandoned || union > bound {
 			for _, i := range members {
 				delete(m.repC, i)
 			}
@@ -49316,17 +49361,18 @@ func (m *authMigrator) process(i int, o *authObj) error {
 			if err != nil {
 				return err
 			}
-			rec, plan := *cached.rec, *cached
-			plan.rec, plan.added = &rec, added
-			best = &plan
-			pol.cache.reuseHits++
+			if added == cached.added {
+				rec, candidate := *cached.rec, *cached
+				candidate.rec = &rec
+				best = &candidate
+				pol.cache.reuseHits++
+			}
 		}
-		if len(srcs) > 0 && cached == nil {
+		if len(srcs) > 0 && best == nil {
 			best = m.bestDelta(o, target, sk, srcs, idxs)
 		}
-		if pol.cache != nil && best != nil && cached == nil && !pol.Apply {
+		if pol.cache != nil && best != nil && !pol.Apply {
 			pol.cache.delta[o.sha] = best
-			pol.cache.deltaAdd[o.sha] = best.added
 		}
 	}
 	// --- structural representation candidate (group-amortized, see planRepGroups)
@@ -49334,7 +49380,7 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	var repAdded int64
 	repGroup := false
 	if rc := m.repC[i]; rc != nil && rc.accepted {
-		repRootCand, repAdded, repGroup = rc.root, rc.marginal+160, true
+		repRootCand, repAdded, repGroup = rc.root, rc.marginal, true
 	}
 	// --- choose
 	choice := ""
@@ -49366,6 +49412,9 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		plan.Form, plan.Reason = choice+"?", "plan only"
 		if best != nil && choice == "delta" {
 			plan.Depth, plan.Bases = best.plan.Depth, best.plan.Bases
+			if pol.cache != nil {
+				pol.cache.deltaAdd[o.sha] = best.added
+			}
 		}
 		m.depth[i] = plan.Depth
 		m.release(o)
@@ -49569,7 +49618,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	var repRoot *repRoot // an accepted group-priced representation competes with the windowed delta
 	var repAdded int64
 	if rc := m.repC[i]; rc != nil && rc.accepted {
-		repRoot, repAdded = rc.root, rc.marginal+160
+		repRoot, repAdded = rc.root, rc.marginal
 	}
 	if !pol.AllowDelta {
 		if repRoot == nil {
@@ -49686,6 +49735,9 @@ func (m *authMigrator) commitRep(i int, o *authObj, root *repRoot, added int64, 
 	if !pol.Apply {
 		plan.Form, plan.Reason = "rep?", "plan only"
 		m.depth[i] = 0
+		m.release(o)
+		m.countChunks(m.repC[i].chunks)
+		o.hasRec = true
 		finish(plan)
 		m.addBase(i)
 		return nil
@@ -52018,7 +52070,7 @@ func (s *Store) authSimilarityCurrentName() (string, error) {
 
 func validAuthSimilarityGenerationName(name string) bool {
 	return strings.HasPrefix(name, "generation-") && filepath.Base(name) == name &&
-		len(name) <= 255 && !strings.ContainsAny(name, "\r\n")
+		len(name) <= 255 && !strings.ContainsAny(name, "\x00\r\n")
 }
 
 func authSimilarityPrunableName(name string) bool {

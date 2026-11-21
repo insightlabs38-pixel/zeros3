@@ -32,4 +32,11 @@ host timing samples are recorded with the earlier heuristic planner for
 comparison. Fresh signed GETs and 4 KiB range digests matched the inputs
 in every maintained lane. Both maintenance states passed deep verification.
 
+The subsequent structural accounting regression covers a component
+owned only by CDC roots in the candidate group. Retaining that component
+charges its payload and pack framing to the replacement. A component with
+an independent live owner adds no duplicate charge. The planner evaluates
+that ownership against the members that actually built, including their
+record metadata.
+
 [Trial reports and hashes](trials.json)
