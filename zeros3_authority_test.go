@@ -1309,6 +1309,17 @@ func TestAuthorityClosureSyncReplication(t *testing.T) {
 	dst.want["k"] = want
 	dst.exact("reopened native replica")
 	dst.verifyOK("reopened native replica")
+
+	if _, err := dst.s.AuthorityRevertAll(); err != nil {
+		t.Fatalf("revert native replica to CDC: %v", err)
+	}
+	assertVersion()
+	dst.exact("reverted native replica")
+	dst.close()
+	legacy := buildOldBinary(t)
+	if out, errOut, code := runZeros3CLI(t, legacy, "verify", "-store", dst.dir, "-deep"); code != 0 {
+		t.Fatalf("legacy verifier could not reopen reverted native replica: %s %s", out, errOut)
+	}
 }
 
 func TestAuthorityClosureSyncImportRejectsBadPayload(t *testing.T) {
