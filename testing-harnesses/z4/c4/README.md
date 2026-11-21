@@ -45,3 +45,14 @@ Extended integrity remains **PENDING 30-DAY RUN**.
 The corpus digests, admission reasons, maintenance metrics, per-request
 times, retained-version timestamps and deep verification outcomes are in
 [initial-pilot.json](results/initial-pilot.json).
+
+## Matched compaction control
+
+Clones of the original prepared stores both ran compact, GC and a
+100%-live-threshold recompressing repack. Both passed all 96 independent
+read checks and both deep verifies. Cold allocated 177,594,368 bytes,
+1.73% more than CDC at 174,579,712 bytes. First-process and repeat
+whole-read ratios were 0.81 and 0.77. The same 15% blended savings
+target remains unmet, and extended integrity remains **PENDING 30-DAY RUN**.
+
+[Compaction, repack and integrity results](results/compact-control.json)
