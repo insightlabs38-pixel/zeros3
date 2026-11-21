@@ -102,8 +102,9 @@ understand a required format must refuse the store instead of guessing.
 | Store format | 1..12 | feature floor recorded in `FORMAT.json`; 10 authority, 11 segments, 12 both; see below |
 | Authority body record | 1 | optional content-keyed body (`bodies/<hh>/<sha256>.body`, magic `ZS3B`): pin, representation or delta |
 | Authority delta envelope | 1 | `ZS3D` (in-memory, up to 256 MiB), `ZW1` (windowed single base, any size) and `ZN7\x01` (windowed model container: float histories, quantized derivations) |
-| Store features | 1 | `FORMAT.json` `features`: `zn7` is recorded before the first ZN7 container record and `hardcodec` before the first Parquet or SST recipe that needs the exact Brotli / LZ4 replay; a build that does not know a recorded feature refuses the store; `authority revert -all` clears them with the last record |
-| Parquet recipe / SST recipe | 1, 2 | version 2 is written only for a table with Brotli or LZ4_RAW pages (Parquet) or LZ4 / LZ4HC blocks (SST); version 1 recipes are unchanged and a build that stops at 1 refuses version 2 |
+| Store features | 1 | `FORMAT.json` records `zn7` for model containers, `zn7iq3s` for derived IQ3_S blocks, `hardcodec` for exact Brotli or LZ4 replay, and `hardstream` for streaming Brotli recipes. Unknown required features cause an open to fail. `authority revert -all` clears the authority features once their records are retired. |
+| Parquet recipe | 1..3 | Version 2 adds hard-codec pages. Version 3 adds exact streaming Brotli replay. Readers refuse unknown recipe versions. |
+| SST recipe | 1, 2 | Version 2 adds exact LZ4 and LZ4HC blocks. |
 | Representation object | 1 | optional immutable structured-representation description, magic `ZS3R` |
 | Representation root | 1 | optional per-manifest sidecar naming a representation, magic `ZS3T` |
 | Pack | 1 | immutable packed CAS records and index |
@@ -174,8 +175,8 @@ also GOMAXPROCS): about 30 MiB of resident memory per worker on a 1 GiB base; th
 of a windowed delta is capped at 16 MiB, so resident memory stays flat above 1 GiB (98 MiB at
 a 2 GiB base, three versions). `-hard-codecs` (archive use) lets the structured analysis replay
 Brotli (qualities 5-9) and LZ4_RAW Parquet pages and LZ4 / LZ4HC SST blocks exactly; reading
-such a file re-runs the page encoder, so it is never enabled by default and records using it
-need the `hardcodec` feature. ZN7 containers decode their windows concurrently
+such a file re-runs the page encoder. Hard replay requires explicit opt-in.
+ZN7 containers decode their windows concurrently
 (`ZEROS3_ZN7_WORKERS`, default min(4, GOMAXPROCS)). Physical
 reclamation of the retired CDC copies is `gc -apply`, `repack -apply -recompress`, `compact`.
 

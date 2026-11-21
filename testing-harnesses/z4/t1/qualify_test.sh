@@ -2,6 +2,8 @@
 # Negative controls for qualify.sh: stub steps drive every verdict the gate must reach. usage: qualify_test.sh (from anywhere in the repo)
 set -u
 cd "$(git rev-parse --show-toplevel)"
+# The fixture controls choose their own selection and retain earlier attempts.
+unset QUALIFY_ONLY QUALIFY_FRESH
 Q=$(pwd)/testing-harnesses/z4/t1; W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; fails=0
 cat > "$W/steps.sh" <<'S'
 MANDATORY=(a b c)
@@ -37,12 +39,32 @@ grep -q 'earlier_attempts' "$W/out/qualification.json" && python3 -I -c "import 
 fresh; q > /dev/null; expect "an earlier pass is masked by a later failure" 1 "$(A_RC=1 QUALIFY_ONLY='^a$' q)"
 fresh; expect "a mandatory step that is only skipped" 1 "$(C_CMD=true SKIP_C=1 QUALIFY_ONLY='^c$' q)"
 fresh; expect "a mandatory step that never ran" 1 "$(QUALIFY_ONLY='^(a|b)$' q)"
-# interruption: signal the running qualification while a step sleeps
-interrupt() { fresh; C_CMD='sleep 60' QUALIFY_STEPS="$W/steps.sh" python3 -I -c '
-import subprocess, signal, sys, time
-p = subprocess.Popen(["bash", sys.argv[1], sys.argv[2], sys.argv[3]], stdout=open(sys.argv[4], "w"), stderr=subprocess.STDOUT,
-                     preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
-time.sleep(4); p.send_signal(getattr(signal, "SIG" + sys.argv[5])); print(p.wait())' "$Q/qualify.sh" "$W/out" "$W/s" "$W/log" "$1"; }
+# Wait for the child stage to start so compiler and filesystem load cannot
+# move the signal into the qualification setup phase.
+interrupt() {
+  fresh
+  rm -f "$W/ready"
+  T1_INTERRUPT_READY="$W/ready" C_CMD=': > "$T1_INTERRUPT_READY"; exec sleep 60' QUALIFY_STEPS="$W/steps.sh" python3 -I -c '
+import os, signal, subprocess, sys, time
+
+with open(sys.argv[4], "w") as log:
+    p = subprocess.Popen(["bash", sys.argv[1], sys.argv[2], sys.argv[3]], stdout=log, stderr=subprocess.STDOUT,
+                         preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    deadline = time.monotonic() + 45
+    while p.poll() is None and not os.path.exists(os.environ["T1_INTERRUPT_READY"]):
+        if time.monotonic() >= deadline:
+            p.terminate()
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+            sys.exit("interruption fixture never reached the child stage")
+        time.sleep(0.02)
+    if p.poll() is None:
+        p.send_signal(getattr(signal, "SIG" + sys.argv[5]))
+    print(p.wait())' "$Q/qualify.sh" "$W/out" "$W/s" "$W/log" "$1"
+}
 expect "SIGTERM during a step" 130 "$(interrupt TERM)"
 grep -q INTERRUPTED "$W/out/summary.tsv" && echo "ok   the interruption is recorded" || { echo "FAIL interruption not recorded"; fails=$((fails+1)); }
 expect "SIGINT during a step" 130 "$(interrupt INT)"
