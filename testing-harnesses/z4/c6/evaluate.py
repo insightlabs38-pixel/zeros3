@@ -56,7 +56,7 @@ def verified(row):
     return row["journal_ok"] and not any(row[field] for field in ("missing", "corrupt", "invalid"))
 
 
-def cold_pair(path, parquet_cdc, parquet_candidate, wire_path):
+def cold_pair(path, parquet_cdc, parquet_candidate, wire_path, columnar_path):
     observed = json.loads(path.read_text())
     read_ratio = min(r for run in observed["samples"] for r in run["whole_ratio"].values())
     migrated = observed["migration"]
@@ -98,6 +98,33 @@ def cold_pair(path, parquet_cdc, parquet_candidate, wire_path):
             "dependent_fold": "mixed_retained_histories",
         }
     ]
+    if columnar_path is not None:
+        columnar = json.loads(columnar_path.read_text())
+        for cohort, styles in sorted(columnar.items()):
+            base = styles["cdc"]
+            best = min(styles, key=lambda name: styles[name]["allocated_bytes"])
+            for name in ("b2-delta", "structured"):
+                candidate = styles[name]
+                alternatives = [style for style in styles if style != name]
+                strongest = min(alternatives, key=lambda style: styles[style]["allocated_bytes"])
+                cases.append({
+                    "fold": f"{cohort}/{name}", "scope": "NYC TLC derived append history",
+                    "dependent_fold": "nyc_tlc_yellow_tripdata_2024_01_and_02",
+                    "candidate_form": name,
+                    "cdc_bytes": base["allocated_bytes"], "candidate_bytes": candidate["allocated_bytes"],
+                    "best_observed_form": best,
+                    "strongest_alternative": strongest,
+                    "saving_vs_strongest_alternative":
+                        1 - candidate["allocated_bytes"] / styles[strongest]["allocated_bytes"],
+                    "min_whole_ratio": candidate["whole_mib_s"] / base["whole_mib_s"],
+                    "range_median_ms": statistics.median(candidate["purged_range_us"]) / 1000,
+                    "cdc_range_median_ms": statistics.median(base["purged_range_us"]) / 1000,
+                    "sampled_read_requests": len(candidate["purged_range_us"]) + len(candidate["warm_range_us"]),
+                    "migration_wall_s": candidate["migration_ms"] / 1000,
+                    "depth": max((plan.get("depth", 0) for plan in candidate.get("plans", [])), default=0),
+                    "exact": all(verified(style["verification"]) for style in styles.values()),
+                    "unmeasured": ["field access rates", "peer repair latency", "replicated whole-read throughput"],
+                })
     for row in cases:
         saving = 1 - row["candidate_bytes"] / row["cdc_bytes"]
         row["physical_saving"] = saving
@@ -105,8 +132,8 @@ def cold_pair(path, parquet_cdc, parquet_candidate, wire_path):
         if not row["exact"]:
             raise ValueError(f"inexact measurement in {row['fold']}")
         reasons = []
-        if saving < .10:
-            reasons.append("retained-byte gain below 10%")
+        if row.get("saving_vs_strongest_alternative", saving) < .10:
+            reasons.append("retained-byte gain below 10% versus the strongest measured alternative")
         if row["min_whole_ratio"] is None:
             reasons.append("whole-read throughput ratio unmeasured")
         elif row["min_whole_ratio"] < .5:
@@ -124,9 +151,10 @@ def main():
     p.add_argument("--parquet-cdc", required=True, type=Path)
     p.add_argument("--parquet-range", required=True, type=Path)
     p.add_argument("--coreutils-relay", required=True, type=Path)
+    p.add_argument("--columnar", type=Path)
     p.add_argument("--out", required=True, type=Path)
     args = p.parse_args()
-    inputs = {key: value for key, value in vars(args).items() if key != "out"}
+    inputs = {key: value for key, value in vars(args).items() if key != "out" and value is not None}
     sources = {}
     for key, path in inputs.items():
         with path.open("rb") as stream:
@@ -134,7 +162,7 @@ def main():
     result = {
         "sources": sources,
         "historical_replay": archived_folds(args.archived),
-        "measured_fixtures": cold_pair(args.retained_pilot, args.parquet_cdc, args.parquet_range, args.coreutils_relay),
+        "measured_fixtures": cold_pair(args.retained_pilot, args.parquet_cdc, args.parquet_range, args.coreutils_relay, args.columnar),
         "policy": {"minimum_saving": .10, "minimum_hybrid_whole_ratio": .50, "operator_opt_in": True},
     }
     with args.out.open("x") as stream:
