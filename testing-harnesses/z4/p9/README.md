@@ -83,3 +83,15 @@ rig. Durable locator publication, inter-process leases, repeated power-cut
 recovery and tail latency at production scale remain open.
 
 [Checkpoint comparisons and epoch race results](results/100k-checkpoint-and-online-pack.json)
+
+## Bounded offline repack
+
+`zeros3 repack -store DIR -max-source-packs N` limits a pass to up to
+`N` source packs. Dry-run lists the selected packs and reports how many
+were deferred. Apply retains the existing verification and publication
+order and prioritizes reclaimable bytes. The test runs one source pack
+per pass, reopens the store between passes and checks every live digest.
+
+The limit bounds rewrite scope. Each pass still takes the exclusive store
+lock and validates the live set. A fully live, incompressible pack can
+remain eligible when explicit recompression is requested.

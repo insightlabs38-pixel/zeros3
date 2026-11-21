@@ -105,26 +105,26 @@ import (
 //    14528    Store locking and safe offline GC
 //    14831    Offline compaction (`zeros3 compact`)
 //    15897    Pack reclamation and repacking (`zeros3 repack`)
-//    16382    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16895    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17960    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18764    Delta sync client, credentials, and parallel transfer
-//    21036    Bulk logical-chunk transport (v2)
-//    21947    Recursive directory sync
-//    22252    Remote replication (`zeros3 replicate`)
-//    23155    Peer-assisted corruption repair (`zeros3 repair`)
-//    23723    Namespace (prefix/bucket) replication
-//    24039    Copy-on-write namespace fork (`zeros3 fork`)
-//    24247    Snapshots and restore
-//    25408    Structural diff and inspect (introspection)
-//    26777    Portable snapshot bundles (`zeros3 bundle`)
-//    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52608    Windowed and estimated similarity deltas (extracted dcore)
-//    54137    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61829    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68101    CLI dispatch, HTTP server/startup, and main
+//    16400    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16913    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17978    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18782    Delta sync client, credentials, and parallel transfer
+//    21054    Bulk logical-chunk transport (v2)
+//    21965    Recursive directory sync
+//    22270    Remote replication (`zeros3 replicate`)
+//    23173    Peer-assisted corruption repair (`zeros3 repair`)
+//    23741    Namespace (prefix/bucket) replication
+//    24057    Copy-on-write namespace fork (`zeros3 fork`)
+//    24265    Snapshots and restore
+//    25426    Structural diff and inspect (introspection)
+//    26795    Portable snapshot bundles (`zeros3 bundle`)
+//    27992    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28627    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45733    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    52626    Windowed and estimated similarity deltas (extracted dcore)
+//    54155    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61847    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68119    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -15931,6 +15931,7 @@ type repackOptions struct {
 	Tier           string // "" or "all": every tier; otherwise only packs in that tier
 	TargetBytes    int64
 	MaxLivePercent int
+	MaxSourcePacks int // zero leaves the selection unbounded
 	DryRun         bool
 	Compress       bool
 	// Recompress also selects fully live packs that still hold raw records, so
@@ -15953,6 +15954,7 @@ type RepackResult struct {
 	PackFileBytes    int64 `json:"pack_file_bytes"`
 
 	PacksSelected  int         `json:"packs_selected"`
+	PacksDeferred  int         `json:"packs_deferred,omitempty"`
 	PacksFullyDead int         `json:"packs_fully_dead"`
 	PacksRewritten int         `json:"packs_rewritten"`
 	Selected       []packUsage `json:"selected,omitempty"`
@@ -16254,6 +16256,9 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	if opt.TargetBytes <= 0 || opt.MaxLivePercent < 0 || opt.MaxLivePercent > 100 {
 		return res, errors.New("repack: pack size must be positive and the live threshold between 0 and 100")
 	}
+	if opt.MaxSourcePacks < 0 {
+		return res, errors.New("repack: source pack limit must be nonnegative")
+	}
 	live := rr.liveSet()
 	us := s.packUsagesLive(live)
 	sum := summarizePacks(us)
@@ -16261,6 +16266,15 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	sel := selectRepackPacks(us, opt.MaxLivePercent, opt.Compress && opt.Recompress)
 	if opt.Tier != "" && opt.Tier != "all" {
 		sel = slices.DeleteFunc(sel, func(u packUsage) bool { return u.Tier != opt.Tier })
+	}
+	if opt.MaxSourcePacks > 0 && len(sel) > opt.MaxSourcePacks {
+		// A fully live, incompressible pack can be selected repeatedly by
+		// recompression. Prefer actual reclamation when bounding a pass.
+		slices.SortStableFunc(sel, func(a, b packUsage) int {
+			return cmp.Compare(b.Reclaimable, a.Reclaimable)
+		})
+		res.PacksDeferred = len(sel) - opt.MaxSourcePacks
+		sel = sel[:opt.MaxSourcePacks]
 	}
 	res.Selected = sel
 	res.PacksSelected = len(sel)
@@ -16317,6 +16331,9 @@ func printRepackHuman(w io.Writer, r RepackResult) {
 	fmt.Fprintf(w, "live set         ok=%v\n", r.LiveSetOK)
 	fmt.Fprintf(w, "packs            %d | %d chunks | %d bytes\n", r.PackCount, r.PackedChunkCount, r.PackFileBytes)
 	fmt.Fprintf(w, "selected         %d packs | %d with no live chunk | %d partly dead\n", r.PacksSelected, r.PacksFullyDead, r.PacksRewritten)
+	if r.PacksDeferred > 0 {
+		fmt.Fprintf(w, "deferred         %d packs under the source limit\n", r.PacksDeferred)
+	}
 	for _, u := range r.Selected {
 		fmt.Fprintf(w, "  %s %.12s  %d bytes | %d/%d chunks live | %.0f%% live | %d reclaimable\n", u.Tier, u.ID, u.Size, u.LiveRecords, u.Records, u.Utilization*100, u.Reclaimable)
 	}
@@ -16340,6 +16357,7 @@ func runRepack(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	apply := fs.Bool("apply", false, "rewrite and remove packs (default: dry-run only, changes nothing)")
 	maxLive := fs.Int("max-live-percent", defaultRepackMaxLivePercent, "rewrite partly dead packs whose live share is below this percentage")
+	maxSourcePacks := fs.Int("max-source-packs", 0, "limit source packs in this pass, prioritizing reclaimable bytes (0 is unlimited)")
 	sizeMiB := fs.Int64("pack-size-mib", defaultPackTargetBytes>>20, "target pack size in MiB of chunk data before compression")
 	compression := fs.String("compression", "auto", "record compression for rewritten packs: auto (DEFLATE when it saves space) or off (raw records)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
@@ -16355,7 +16373,7 @@ func runRepack(args []string) {
 		fmt.Fprintf(os.Stderr, "zeros3: repack: %v\n", err)
 		os.Exit(2)
 	}
-	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, DryRun: !*apply, Compress: compress, Recompress: *recompress})
+	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress})
 	if err != nil {
 		switch {
 		case errors.Is(err, errGCStoreInUse):

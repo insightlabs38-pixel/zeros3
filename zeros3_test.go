@@ -96,17 +96,17 @@ import (
 //    29319    Streaming reads and aws-chunked SigV4
 //    30176    Packed CAS: pack format, mixed reads, compaction, crash points
 //    31183    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32343    Adaptive pack compression (codec 1, DEFLATE)
-//    33395    Scalable packed-chunk locator (sorted immutable levels)
-//    33881    Z2-07: bulk logical-chunk transport (v2)
-//    35323    Hot/warm/cold physical pack tiers
-//    36109    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    36864    Z2-10: content-aware tier policy and rebalance
-//    37910    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38597    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40046    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41400    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42823    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//    32385    Adaptive pack compression (codec 1, DEFLATE)
+//    33437    Scalable packed-chunk locator (sorted immutable levels)
+//    33923    Z2-07: bulk logical-chunk transport (v2)
+//    35365    Hot/warm/cold physical pack tiers
+//    36151    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    36906    Z2-10: content-aware tier policy and rebalance
+//    37952    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38639    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40088    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41442    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42865    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -31581,6 +31581,48 @@ func TestRepack_ControlledUtilizationMatrix(t *testing.T) {
 				t.Fatalf("not converged: %+v %v", again, err)
 			}
 		})
+	}
+}
+
+func TestRepack_SourcePackLimitAcrossReopen(t *testing.T) {
+	s, ref, data := controlledPacks(t, []int{30, 10, 20, 100})
+	dir := s.root
+	rr := reachabilityResult{ReferencedChunks: ref, JournalOK: true}
+	opt := repackOptions{TargetBytes: 1 << 20, MaxLivePercent: 50, MaxSourcePacks: 1, DryRun: true}
+	before := hashDirs(t, dir, "packs")
+	dry, err := s.repack(rr, opt)
+	mustOK(t, err)
+	if dry.PacksSelected != 1 || dry.PacksDeferred != 2 || len(dry.Selected) != 1 || dry.Selected[0].Utilization > 0.2 {
+		t.Fatalf("dry run did not prioritize the most reclaimable pack: %+v", dry)
+	}
+	if before != hashDirs(t, dir, "packs") {
+		t.Fatal("bounded dry run modified the packs")
+	}
+	opt.DryRun = false
+	for remaining := 3; remaining > 0; remaining-- {
+		got, err := s.repack(rr, opt)
+		mustOK(t, err)
+		if got.PacksSelected != 1 || got.PacksDeleted != 1 || got.PacksDeferred != remaining-1 {
+			t.Fatalf("bounded pass with %d remaining: %+v", remaining, got)
+		}
+		mustOK(t, s.Close())
+		reopened, err := OpenStore(dir)
+		mustOK(t, err)
+		t.Cleanup(func() { reopened.Close() })
+		s = reopened
+		for id := range ref {
+			sum, err := decodeHexSHA256(id)
+			mustOK(t, err)
+			body, err := s.casRead(sum)
+			if err != nil || !bytes.Equal(body, data[sum]) {
+				t.Fatalf("reopen after bounded repack lost %s: %v", id, err)
+			}
+		}
+	}
+	done, err := s.repack(rr, opt)
+	mustOK(t, err)
+	if done.PacksSelected != 0 || done.PacksDeferred != 0 {
+		t.Fatalf("bounded passes did not converge: %+v", done)
 	}
 }
 
