@@ -93,38 +93,38 @@ import (
 //     5797    Manifests (immutable, JSON)
 //     6593    Visibility journal (append-only, checksummed)
 //     7115    Store: format, namespace, and object CRUD
-//     8974    Version history/restore, history pruning, ListObjectsV2
-//     9455    SigV4 authentication (header and presigned-URL)
-//    10432    Request payload checksums and S3-shaped XML error/response types
-//    10649    HTTP routing and S3 operation handlers
-//    11075    Conditional operations (PUT/GET/HEAD preconditions)
-//    11770    CopyObject
-//    12075    Multipart upload
-//    13015    Stats and reachability scanning
-//    14519    Verify
-//    14734    Store locking and safe offline GC
-//    15037    Offline compaction (`zeros3 compact`)
-//    16103    Pack reclamation and repacking (`zeros3 repack`)
-//    16606    Physical tiers: status and pack movement (`zeros3 tier`)
-//    17119    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    18184    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18988    Delta sync client, credentials, and parallel transfer
-//    21260    Bulk logical-chunk transport (v2)
-//    22171    Recursive directory sync
-//    22476    Remote replication (`zeros3 replicate`)
-//    23379    Peer-assisted corruption repair (`zeros3 repair`)
-//    23947    Namespace (prefix/bucket) replication
-//    24263    Copy-on-write namespace fork (`zeros3 fork`)
-//    24471    Snapshots and restore
-//    25632    Structural diff and inspect (introspection)
-//    27001    Portable snapshot bundles (`zeros3 bundle`)
-//    28198    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28833    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45939    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52841    Windowed and estimated similarity deltas (extracted dcore)
-//    54370    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62062    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68334    CLI dispatch, HTTP server/startup, and main
+//     8983    Version history/restore, history pruning, ListObjectsV2
+//     9464    SigV4 authentication (header and presigned-URL)
+//    10441    Request payload checksums and S3-shaped XML error/response types
+//    10658    HTTP routing and S3 operation handlers
+//    11084    Conditional operations (PUT/GET/HEAD preconditions)
+//    11779    CopyObject
+//    12084    Multipart upload
+//    13024    Stats and reachability scanning
+//    14528    Verify
+//    14743    Store locking and safe offline GC
+//    15046    Offline compaction (`zeros3 compact`)
+//    16112    Pack reclamation and repacking (`zeros3 repack`)
+//    16615    Physical tiers: status and pack movement (`zeros3 tier`)
+//    17128    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    18193    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18997    Delta sync client, credentials, and parallel transfer
+//    21269    Bulk logical-chunk transport (v2)
+//    22180    Recursive directory sync
+//    22485    Remote replication (`zeros3 replicate`)
+//    23388    Peer-assisted corruption repair (`zeros3 repair`)
+//    23956    Namespace (prefix/bucket) replication
+//    24272    Copy-on-write namespace fork (`zeros3 fork`)
+//    24480    Snapshots and restore
+//    25641    Structural diff and inspect (introspection)
+//    27010    Portable snapshot bundles (`zeros3 bundle`)
+//    28207    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28842    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45948    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    52850    Windowed and estimated similarity deltas (extracted dcore)
+//    54379    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62071    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68343    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -7610,22 +7610,31 @@ func readCheckpointObject(row []byte, intern *strIntern) (string, objectEntry, e
 		return "", objectEntry{}, errNamespaceCheckpointObject
 	}
 	values = values[n:]
-	var strings [4][]byte
-	for i := range strings {
+	var fields [4][]byte
+	for i := range fields {
 		length, n := binary.Uvarint(values)
 		if n < 1 || length > uint64(len(values)-n) {
 			return "", objectEntry{}, errNamespaceCheckpointObject
 		}
-		strings[i] = values[n : n+int(length)]
+		fields[i] = values[n : n+int(length)]
 		values = values[n+int(length):]
 	}
 	if len(values) != 0 {
 		return "", objectEntry{}, errNamespaceCheckpointObject
 	}
-	root.manifestUUID = string(strings[1])
-	root.etag = string(strings[2])
-	root.contentType = intern.get(strings[3])
-	return string(strings[0]), root, nil
+	// The key and root identity share one immutable allocation per row.
+	keyEnd := len(fields[0])
+	manifestEnd := keyEnd + len(fields[1])
+	var identity strings.Builder
+	identity.Grow(manifestEnd + len(fields[2]))
+	for _, field := range fields[:3] {
+		identity.Write(field)
+	}
+	rowIdentity := identity.String()
+	root.manifestUUID = rowIdentity[keyEnd:manifestEnd]
+	root.etag = rowIdentity[manifestEnd:]
+	root.contentType = intern.get(fields[3])
+	return rowIdentity[:keyEnd], root, nil
 }
 
 func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error) {
