@@ -1166,6 +1166,42 @@ func TestAuthorityClosureSyncExport(t *testing.T) {
 	if _, _, err := dst.s.authProve(mustLoad(t, dst.s, sha), 0); err != nil {
 		t.Fatalf("remote closure produced different bytes: %v", err)
 	}
+	clientCfg := syncClientConfig{Endpoint: server.URL, Bucket: "b", Key: "k3", Creds: creds, Region: defaultRegion}
+	advertised, err := fetchSyncDescriptor(clientCfg, true)
+	if err != nil || len(advertised.AuthorityComponents) == 0 {
+		t.Fatalf("missing component inventory for the scoped object: %v", err)
+	}
+	component, err := decodeHexSHA256(advertised.AuthorityComponents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := src.s.casRead(component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thin := req
+	thin.KnownComponents = advertised.AuthorityComponents[:1]
+	status, trimmed := export(thin)
+	if status != http.StatusOK || len(wire)-len(trimmed) < len(stored) {
+		t.Fatalf("known CAS digest was transmitted again: %d, full %d, trimmed %d", status, len(wire), len(trimmed))
+	}
+	thinDst := newAuthLab(t)
+	if err := thinDst.s.ImportAuthorityClosure(bytes.NewReader(trimmed)); err == nil {
+		t.Fatal("receiver certified an absent component")
+	}
+	if _, err := thinDst.s.casWrite(stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := thinDst.s.ImportAuthorityClosure(bytes.NewReader(trimmed)); err != nil {
+		t.Fatalf("component reuse failed with the independently verified bytes: %v", err)
+	}
+	if _, _, err := thinDst.s.authProve(mustLoad(t, thinDst.s, sha), 0); err != nil {
+		t.Fatal(err)
+	}
+	thin.KnownComponents = []string{"not a valid digest"}
+	if status, body := export(thin); status != http.StatusBadRequest || !bytes.Contains(body, []byte("InvalidArgument")) {
+		t.Fatalf("invalid component advertisement: %d %s", status, body)
+	}
 	old := req
 	old.Peer = AuthCaps{}
 	if status, body := export(old); status != http.StatusConflict || !bytes.Contains(body, []byte(`"Materialize"`)) {

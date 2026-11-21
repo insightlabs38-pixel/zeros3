@@ -105,22 +105,22 @@ import (
 //    16460    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
 //    17525    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
 //    18329    Delta sync client, credentials, and parallel transfer
-//    20552    Bulk logical-chunk transport (v2)
-//    21463    Recursive directory sync
-//    21768    Remote replication (`zeros3 replicate`)
-//    22662    Peer-assisted corruption repair (`zeros3 repair`)
-//    23230    Namespace (prefix/bucket) replication
-//    23546    Copy-on-write namespace fork (`zeros3 fork`)
-//    23754    Snapshots and restore
-//    24915    Structural diff and inspect (introspection)
-//    26261    Portable snapshot bundles (`zeros3 bundle`)
-//    27458    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28093    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45171    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    50082    Windowed and estimated similarity deltas (extracted dcore)
-//    51604    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    59244    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65516    CLI dispatch, HTTP server/startup, and main
+//    20586    Bulk logical-chunk transport (v2)
+//    21497    Recursive directory sync
+//    21802    Remote replication (`zeros3 replicate`)
+//    22704    Peer-assisted corruption repair (`zeros3 repair`)
+//    23272    Namespace (prefix/bucket) replication
+//    23588    Copy-on-write namespace fork (`zeros3 fork`)
+//    23796    Snapshots and restore
+//    24957    Structural diff and inspect (introspection)
+//    26303    Portable snapshot bundles (`zeros3 bundle`)
+//    27500    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28135    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45213    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    50124    Windowed and estimated similarity deltas (extracted dcore)
+//    51646    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    59286    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65558    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -18502,19 +18502,20 @@ type syncChunkUploadResponse struct {
 // replicateObject's doc comment for the consistency semantics this
 // enables).
 type syncObjectDescriptor struct {
-	Protocol      int                   `json:"protocol"`
-	CDC           string                `json:"cdc"`
-	Hash          string                `json:"hash"`
-	Bucket        string                `json:"bucket"`
-	Key           string                `json:"key"`
-	VersionID     string                `json:"version_id"`
-	ObjectSHA256  string                `json:"object_sha256,omitempty"`
-	Authoritative bool                  `json:"authoritative,omitempty"`
-	Size          int64                 `json:"size"`
-	ETag          string                `json:"etag"`
-	ContentType   string                `json:"content_type"`
-	Metadata      map[string]string     `json:"metadata"`
-	Chunks        []syncChunkDescriptor `json:"chunks"`
+	Protocol            int                   `json:"protocol"`
+	CDC                 string                `json:"cdc"`
+	Hash                string                `json:"hash"`
+	Bucket              string                `json:"bucket"`
+	Key                 string                `json:"key"`
+	VersionID           string                `json:"version_id"`
+	ObjectSHA256        string                `json:"object_sha256,omitempty"`
+	AuthorityComponents []string              `json:"authority_components,omitempty"`
+	Authoritative       bool                  `json:"authoritative,omitempty"`
+	Size                int64                 `json:"size"`
+	ETag                string                `json:"etag"`
+	ContentType         string                `json:"content_type"`
+	Metadata            map[string]string     `json:"metadata"`
+	Chunks              []syncChunkDescriptor `json:"chunks"`
 }
 
 // syncCommitRequest carries the complete ordered chunk list (occurrences,
@@ -18685,18 +18686,35 @@ func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Reque
 		metadata[kv.Key] = kv.Value
 	}
 	var authoritative bool
+	components := man.Chunks
+	wantComponents := r.URL.Query().Get("closure") == "1"
 	if srv.store.auth.mayHave.Load() {
 		if digest, err := decodeHexSHA256(man.ObjectSHA256); err == nil {
 			rec, err := srv.store.authLoad(digest)
 			authoritative = err == nil && rec != nil && rec.Size == man.TotalLength
+			if authoritative && wantComponents {
+				components, _ = srv.store.authRecordChunks(rec)
+			}
+		}
+	}
+	var held []string
+	if wantComponents {
+		for _, chunk := range components[:min(len(components), maxAuthAdvertisedComponents)] {
+			sum, err := decodeHexSHA256(chunk.SHA256)
+			if err != nil {
+				continue
+			}
+			if n, err := srv.store.casStat(sum); err == nil && n == chunk.Length {
+				held = append(held, chunk.SHA256)
+			}
 		}
 	}
 	writeSyncJSON(w, http.StatusOK, syncObjectDescriptor{
 		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
 		Bucket: bucket, Key: key, VersionID: entry.manifestUUID,
 		ObjectSHA256:  man.ObjectSHA256,
-		Authoritative: authoritative,
-		Size:          entry.size, ETag: entry.etag, ContentType: entry.contentType,
+		Authoritative: authoritative, AuthorityComponents: held,
+		Size: entry.size, ETag: entry.etag, ContentType: entry.contentType,
 		Metadata: metadata, Chunks: chunks,
 	})
 }
@@ -18929,12 +18947,15 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 	writeSyncJSON(w, http.StatusOK, d)
 }
 
+const maxAuthAdvertisedComponents = 96
+
 type authExportRequest struct {
-	Bucket    string   `json:"bucket"`
-	Key       string   `json:"key"`
-	VersionID string   `json:"version_id"`
-	Peer      AuthCaps `json:"peer"`
-	KnownBase string   `json:"known_base,omitempty"`
+	Bucket          string   `json:"bucket"`
+	Key             string   `json:"key"`
+	VersionID       string   `json:"version_id"`
+	Peer            AuthCaps `json:"peer"`
+	KnownBase       string   `json:"known_base,omitempty"`
+	KnownComponents []string `json:"known_components,omitempty"`
 }
 
 type authImportRequest struct {
@@ -19005,7 +19026,7 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		var authErr *authError
 		if errors.As(err, &authErr) {
 			writeRequestError(w, err, zeros3AuthImportPath)
-		} else if errors.Is(err, errAuthMissing) {
+		} else if errors.Is(err, errAuthMissing) || errors.Is(err, os.ErrNotExist) {
 			writeSyncError(w, http.StatusConflict, "MissingAuthorityDependency", err.Error())
 		} else {
 			writeSyncError(w, http.StatusConflict, "ClosureRejected", err.Error())
@@ -19091,6 +19112,19 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		}
 		held = func(digest [32]byte) bool { return known == digest }
 	}
+	if len(req.KnownComponents) > maxAuthAdvertisedComponents {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "too many known component digests")
+		return
+	}
+	components := make(map[[32]byte]bool, len(req.KnownComponents))
+	for _, digest := range req.KnownComponents {
+		sum, err := decodeHexSHA256(digest)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "invalid known component SHA-256")
+			return
+		}
+		components[sum] = true
+	}
 	recs, err := srv.store.authorityClosureFor(sha, req.Peer, held)
 	if errors.Is(err, errAuthMissing) {
 		writeSyncError(w, http.StatusConflict, "UnavailableClosure", "the source does not hold the requested closure")
@@ -19105,7 +19139,7 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if err := srv.store.writeAuthorityClosure(recs, w); err != nil {
+	if err := srv.store.writeAuthorityClosure(recs, w, components); err != nil {
 		// Failed streams must surface as an incomplete HTTP response.
 		panic(http.ErrAbortHandler)
 	}
@@ -21846,7 +21880,14 @@ func runSync(args []string) {
 // sidesteps the M7 raw-path-concatenation bug class entirely rather than
 // re-solving it.
 func fetchSourceDescriptor(cfg syncClientConfig) (syncObjectDescriptor, error) {
+	return fetchSyncDescriptor(cfg, false)
+}
+
+func fetchSyncDescriptor(cfg syncClientConfig, components bool) (syncObjectDescriptor, error) {
 	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
+	if components {
+		q.Set("closure", "1")
+	}
 	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncObjectPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor request failed: %w", err)
@@ -22144,10 +22185,11 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	}
 	export := authExportRequest{Bucket: p.cfg.Source.Bucket, Key: p.cfg.Source.Key, VersionID: p.desc.VersionID, Peer: *dstCaps}
 	if p.destExists {
-		dst, err := fetchSourceDescriptor(p.cfg.Dest)
+		dst, err := fetchSyncDescriptor(p.cfg.Dest, true)
 		if err != nil {
 			return stats, false, err
 		}
+		export.KnownComponents = dst.AuthorityComponents[:min(len(dst.AuthorityComponents), maxAuthAdvertisedComponents)]
 		if dst.Authoritative {
 			if dst.ObjectSHA256 == p.desc.ObjectSHA256 && dst.ContentType == p.desc.ContentType &&
 				slices.Equal(sortedMetadataKV(dst.Metadata), sortedMetadataKV(p.desc.Metadata)) {
@@ -49262,7 +49304,7 @@ func (s *Store) ExportAuthorityClosureThin(sha [32]byte, destHas func([32]byte) 
 	if err != nil {
 		return err
 	}
-	return s.writeAuthorityClosure(recs, w)
+	return s.writeAuthorityClosure(recs, w, nil)
 }
 
 // ExportAuthorityClosureFor checks the actual records being sent before
@@ -49272,7 +49314,7 @@ func (s *Store) ExportAuthorityClosureFor(sha [32]byte, dst AuthCaps, destHas fu
 	if err != nil {
 		return err
 	}
-	return s.writeAuthorityClosure(recs, w)
+	return s.writeAuthorityClosure(recs, w, nil)
 }
 
 func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32]byte) bool) ([]*authRecord, error) {
@@ -49336,7 +49378,7 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 	return recs, nil
 }
 
-func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer) error {
+func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer, held map[[32]byte]bool) error {
 	h := sha256.New()
 	mw := io.MultiWriter(w, h)
 	put := func(b []byte) error { _, err := mw.Write(b); return err }
@@ -49366,7 +49408,7 @@ func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer) error {
 			return err
 		}
 		for _, c := range cs {
-			if sum, _ := decodeHexSHA256(c.SHA256); !seen[sum] {
+			if sum, _ := decodeHexSHA256(c.SHA256); !seen[sum] && !held[sum] {
 				seen[sum] = true
 				chunks = append(chunks, c)
 			}

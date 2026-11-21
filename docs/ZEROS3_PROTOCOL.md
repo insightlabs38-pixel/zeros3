@@ -383,7 +383,9 @@ can reuse components that were already durable.
 peers advertise it and the frame plus import header cost less than the missing
 CDC payload. The SigV4-signed export request binds the source manifest version
 and advertises the destination's decoder capabilities. The client can offer the
-current authoritative content at the destination key as a base. Outdated
+current authoritative content at the destination key as a base. It can also
+offer up to 96 exact component digests physically present at that key. The
+receiver independently proves reconstruction using the components it holds. Outdated
 source identity fails the transfer. Older peers, unsupported forms, uneconomical
 frames and missing destination dependencies use the existing CDC replication path.
 
