@@ -1,0 +1,1 @@
+    zeros3_p3_test.go:1177: manifest publish failed: segments: write: write /tmp/TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrame1457681487/001/segments/0000000000000022.seg: no space left on device

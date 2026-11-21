@@ -89,42 +89,42 @@ import (
 //      539    Content-defined chunking (CDC)
 //      726    Content-addressed chunk storage (CAS)
 //     2469    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4631    Small-object segments (inline manifests, store level 11)
-//     5871    Manifests (immutable, JSON)
-//     6667    Visibility journal (append-only, checksummed)
-//     7189    Store: format, namespace, and object CRUD
-//     9173    Version history/restore, history pruning, ListObjectsV2
-//     9672    SigV4 authentication (header and presigned-URL)
-//    10649    Request payload checksums and S3-shaped XML error/response types
-//    10866    HTTP routing and S3 operation handlers
-//    11292    Conditional operations (PUT/GET/HEAD preconditions)
-//    11987    CopyObject
-//    12292    Multipart upload
-//    13232    Stats and reachability scanning
-//    14736    Verify
-//    14951    Store locking and safe offline GC
-//    15254    Offline compaction (`zeros3 compact`)
-//    16320    Pack reclamation and repacking (`zeros3 repack`)
-//    16823    Physical tiers: status and pack movement (`zeros3 tier`)
-//    17336    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    18401    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    19205    Delta sync client, credentials, and parallel transfer
-//    21483    Bulk logical-chunk transport (v2)
-//    22394    Recursive directory sync
-//    22699    Remote replication (`zeros3 replicate`)
-//    23612    Peer-assisted corruption repair (`zeros3 repair`)
-//    24180    Namespace (prefix/bucket) replication
-//    24496    Copy-on-write namespace fork (`zeros3 fork`)
-//    24704    Snapshots and restore
-//    25865    Structural diff and inspect (introspection)
-//    27235    Portable snapshot bundles (`zeros3 bundle`)
-//    28432    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    29067    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    46240    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    53154    Windowed and estimated similarity deltas (extracted dcore)
-//    54683    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62375    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68647    CLI dispatch, HTTP server/startup, and main
+//     4634    Small-object segments (inline manifests, store level 11)
+//     5883    Manifests (immutable, JSON)
+//     6679    Visibility journal (append-only, checksummed)
+//     7201    Store: format, namespace, and object CRUD
+//     9186    Version history/restore, history pruning, ListObjectsV2
+//     9685    SigV4 authentication (header and presigned-URL)
+//    10662    Request payload checksums and S3-shaped XML error/response types
+//    10879    HTTP routing and S3 operation handlers
+//    11305    Conditional operations (PUT/GET/HEAD preconditions)
+//    12000    CopyObject
+//    12305    Multipart upload
+//    13245    Stats and reachability scanning
+//    14749    Verify
+//    14964    Store locking and safe offline GC
+//    15267    Offline compaction (`zeros3 compact`)
+//    16333    Pack reclamation and repacking (`zeros3 repack`)
+//    16836    Physical tiers: status and pack movement (`zeros3 tier`)
+//    17349    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    18414    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    19218    Delta sync client, credentials, and parallel transfer
+//    21496    Bulk logical-chunk transport (v2)
+//    22407    Recursive directory sync
+//    22712    Remote replication (`zeros3 replicate`)
+//    23625    Peer-assisted corruption repair (`zeros3 repair`)
+//    24193    Namespace (prefix/bucket) replication
+//    24509    Copy-on-write namespace fork (`zeros3 fork`)
+//    24717    Snapshots and restore
+//    25878    Structural diff and inspect (introspection)
+//    27248    Portable snapshot bundles (`zeros3 bundle`)
+//    28445    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    29080    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    46253    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    53167    Windowed and estimated similarity deltas (extracted dcore)
+//    54696    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62388    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68660    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -3992,6 +3992,9 @@ func (s *Store) addPack(info packInfo, entries []packEntry) error {
 // swaps it in whole; a failed rebuild leaves the previous state serving.
 func (s *Store) reloadPacks() error {
 	if m := s.segs; m != nil {
+		if m.readOnly {
+			return s.loadSegmentsReadOnly()
+		}
 		// A rebuild from disk only sees sealed packs: quiesce the segment
 		// writers and seal first, or open segments would drop out of the locator.
 		defer m.pause()()
@@ -4708,19 +4711,20 @@ func init() {
 func segHardMax() int64 { return 2 * segTargetBytes }
 
 const (
-	hookSegCreated      = "seg-created"
-	hookSegDirSynced    = "seg-dir-synced"
-	hookSegBeforeWrite  = "seg-before-write"
-	hookSegAfterWrite   = "seg-after-write"
-	hookSegBeforeSync   = "seg-before-sync"
-	hookSegAfterSync    = "seg-after-sync"
-	hookSegPublished    = "seg-published"
-	hookSegSealWritten  = "seg-seal-written"
-	hookSegSealSynced   = "seg-seal-synced"
-	hookSegBeforeRename = "seg-before-rename"
-	hookSegAfterRename  = "seg-after-rename"
-	hookSegSealed       = "seg-sealed"
-	hookSegRecovered    = "seg-recovered"
+	hookSegCreated         = "seg-created"
+	hookSegDirSynced       = "seg-dir-synced"
+	hookSegBeforeWrite     = "seg-before-write"
+	hookSegAfterWrite      = "seg-after-write"
+	hookSegBeforeSync      = "seg-before-sync"
+	hookSegAfterSync       = "seg-after-sync"
+	hookSegPublished       = "seg-published"
+	hookSegSealWritten     = "seg-seal-written"
+	hookSegSealSynced      = "seg-seal-synced"
+	hookSegBeforeRename    = "seg-before-rename"
+	hookSegAfterRename     = "seg-after-rename"
+	hookSegSealed          = "seg-sealed"
+	hookSegRecovered       = "seg-recovered"
+	hookSegReadOnlyScanned = "seg-read-only-scanned"
 )
 
 var errSegClosed = errors.New("segments: store is closed")
@@ -5360,9 +5364,7 @@ func (m *segMgr) refreshReadOnly() {
 		return
 	}
 	m.lastRefresh = time.Now()
-	if err := m.s.reloadPacks(); err == nil {
-		m.s.loadSegmentsReadOnly()
-	}
+	m.s.loadSegmentsReadOnly()
 }
 
 // ensurePackDir returns the hot pack directory, creating it durably if needed.
@@ -5488,6 +5490,7 @@ type segScan struct {
 	entries []packEntry
 	h       hash.Hash // SHA-256 over the valid prefix
 	sealed  bool      // the file is a complete, verified pack-v1
+	packID  string
 	badHdr  bool
 }
 
@@ -5506,8 +5509,8 @@ func scanSegmentFile(path string) (segScan, error) {
 		return sc, err
 	}
 	sc.size = st.Size()
-	if _, _, perr := verifyPackFile(path); perr == nil {
-		sc.sealed = true
+	if info, entries, perr := verifyPackFile(path); perr == nil {
+		sc.sealed, sc.packID, sc.entries = true, info.id, entries
 		return sc, nil
 	}
 	var hdr [packHeaderSize]byte
@@ -5713,57 +5716,66 @@ func (s *Store) openSegments() error {
 	return s.loadSegmentsReadOnly()
 }
 
-// loadSegmentsReadOnly indexes every segment's valid prefix without modifying
-// anything. A segment that vanishes meanwhile was sealed by its owner: the sealed
-// packs are reloaded and the scan repeated.
+// loadSegmentsReadOnly captures open prefixes before listing sealed packs. A
+// segment already referenced by journal replay must appear in one of the two
+// inventories because sealing publishes the pack before removing the segment.
+// A segment with a completed footer may still be waiting for publication.
 func (s *Store) loadSegmentsReadOnly() error {
-	for attempt := 0; ; attempt++ {
-		dir := filepath.Join(s.root, segDirName)
-		ents, err := os.ReadDir(dir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		vanished := false
-		var segs []*segment
-		for _, de := range ents {
-			name, ok := strings.CutSuffix(de.Name(), segFileSuffix)
-			if !ok || de.IsDir() || len(name) != 16 {
-				continue
-			}
-			seq, perr := strconv.ParseUint(name, 16, 64)
-			if perr != nil {
-				continue
-			}
-			path := filepath.Join(dir, de.Name())
-			sc, serr := scanSegmentFile(path)
-			if serr != nil {
-				if os.IsNotExist(serr) {
-					vanished = true
-					continue
-				}
-				return serr
-			}
-			if sc.sealed || sc.badHdr || len(sc.entries) == 0 {
-				continue // awaiting its owner's rename, or unusable: nothing durable to index
-			}
-			segs = append(segs, &segment{seq: seq, id: segID(seq), path: path, entries: sc.entries})
-		}
-		if vanished && attempt < 3 {
-			if err := s.reloadPacks(); err != nil {
-				return err
-			}
+	s.packMu.Lock()
+	defer s.packMu.Unlock()
+	dir := filepath.Join(s.root, segDirName)
+	ents, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	type openPack struct {
+		info    packInfo
+		packID  string
+		entries []packEntry
+	}
+	var segments []openPack
+	for _, de := range ents {
+		name, ok := strings.CutSuffix(de.Name(), segFileSuffix)
+		if !ok || de.IsDir() || len(name) != 16 {
 			continue
 		}
-		for _, seg := range segs {
-			if err := s.segPublish(seg, seg.entries); err != nil {
-				return err
-			}
+		seq, err := strconv.ParseUint(name, 16, 64)
+		if err != nil {
+			continue
 		}
-		return nil
+		path := filepath.Join(dir, de.Name())
+		sc, err := scanSegmentFile(path)
+		if os.IsNotExist(err) {
+			continue // the sealed inventory will include it
+		}
+		if err != nil {
+			return err
+		}
+		if len(sc.entries) != 0 {
+			segments = append(segments, openPack{
+				info:   packInfo{id: segID(seq), tier: tierHot, path: path, open: true},
+				packID: sc.packID, entries: sc.entries,
+			})
+		}
 	}
+	fireTestHook(hookSegReadOnlyScanned)
+	next, err := loadPackState(s.root, s.formatSnapshot().StoreFormatVersion)
+	if err != nil {
+		return err
+	}
+	for _, seg := range segments {
+		if seg.packID != "" && slices.ContainsFunc(next.packs, func(p packInfo) bool {
+			return p.tier == tierHot && p.id == seg.packID
+		}) {
+			continue // both names were visible during the seal
+		}
+		next, err = next.withPack(seg.info, seg.entries)
+		if err != nil {
+			return err
+		}
+	}
+	s.packSt.Store(next)
+	return nil
 }
 
 // trimQuarantine keeps the newest keep-1 quarantine files so repeated crashes cannot
@@ -7425,12 +7437,8 @@ func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 		j.f.Close()
 		return nil, err
 	}
-	if err := s.reloadPacks(); err != nil {
-		j.f.Close()
-		return nil, fmt.Errorf("store: loading packs: %w", err)
-	}
-	s.segs = newSegMgr(s)
 	if !ownSegments {
+		s.segs = newSegMgr(s)
 		s.segs.readOnly = true
 		if err := s.loadSegmentsReadOnly(); err != nil {
 			j.f.Close()
@@ -7438,6 +7446,11 @@ func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 		}
 		return s.finishOpen()
 	}
+	if err := s.reloadPacks(); err != nil {
+		j.f.Close()
+		return nil, fmt.Errorf("store: loading packs: %w", err)
+	}
+	s.segs = newSegMgr(s)
 	if err := s.openSegments(); err != nil {
 		j.f.Close()
 		return nil, fmt.Errorf("store: recovering segments: %w", err)

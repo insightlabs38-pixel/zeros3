@@ -1,0 +1,35 @@
+=== RUN   TestP1C_SharedReaderSurvivesSealByOwner
+--- PASS: TestP1C_SharedReaderSurvivesSealByOwner (0.02s)
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal/seg-read-only-scanned
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal/seg-before-rename
+--- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal (0.02s)
+    --- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal/seg-read-only-scanned (0.01s)
+    --- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal/seg-before-rename (0.01s)
+=== RUN   TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames
+    zeros3_p3_test.go:1220: 3000 acknowledged objects intact after 25 concurrent read-only opens
+--- PASS: TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames (6.76s)
+=== RUN   TestP1C_SharedReaderSurvivesSealByOwner
+--- PASS: TestP1C_SharedReaderSurvivesSealByOwner (0.02s)
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal/seg-read-only-scanned
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal/seg-before-rename
+--- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal (0.01s)
+    --- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal/seg-read-only-scanned (0.00s)
+    --- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal/seg-before-rename (0.01s)
+=== RUN   TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames
+    zeros3_p3_test.go:1220: 3000 acknowledged objects intact after 25 concurrent read-only opens
+--- PASS: TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames (6.57s)
+=== RUN   TestP1C_SharedReaderSurvivesSealByOwner
+--- PASS: TestP1C_SharedReaderSurvivesSealByOwner (0.02s)
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal/seg-read-only-scanned
+=== RUN   TestP3_SharedOpenerFindsSegmentDuringSeal/seg-before-rename
+--- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal (0.02s)
+    --- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal/seg-read-only-scanned (0.01s)
+    --- PASS: TestP3_SharedOpenerFindsSegmentDuringSeal/seg-before-rename (0.01s)
+=== RUN   TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames
+    zeros3_p3_test.go:1220: 3000 acknowledged objects intact after 25 concurrent read-only opens
+--- PASS: TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames (6.87s)
+PASS
+ok  	zeros3	21.357s

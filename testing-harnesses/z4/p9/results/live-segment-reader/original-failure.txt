@@ -1,0 +1,1 @@
+    zeros3_p3_test.go:1138: stats: stats: reading manifest for b/live271234: manifest unavailable or corrupt: manifest file 01a1feb4-a50c-71a5-9424-d002d34918b1.json does not exist

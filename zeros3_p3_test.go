@@ -1099,51 +1099,114 @@ func TestP3_RealKillDuringMaintenance(t *testing.T) {
 	}
 }
 
+func TestP3_SharedOpenerFindsSegmentDuringSeal(t *testing.T) {
+	useProductionLayout(t)
+	for _, phase := range []string{hookSegReadOnlyScanned, hookSegBeforeRename} {
+		t.Run(phase, func(t *testing.T) {
+			writer, root := p1cOpen(t)
+			body := p1cBody(0, 3000)
+			if _, err := writer.PutObject("b", "key", body, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			if writer.segs.active == nil {
+				t.Fatal("the acknowledged object was not written to a segment")
+			}
+			openAndCheck := func() {
+				reader, err := OpenStoreShared(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reader.Close()
+				_, got, err := reader.GetObject("b", "key")
+				if err != nil || !bytes.Equal(got, body) {
+					t.Fatalf("read during seal: got %d bytes, err %v", len(got), err)
+				}
+				if _, err := reader.computeStats(statsScope{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fired := false
+			testHook = func(point string) {
+				if point != phase || fired {
+					return
+				}
+				fired = true
+				if phase == hookSegReadOnlyScanned {
+					writer.segs.pause()()
+				} else {
+					openAndCheck()
+				}
+			}
+			defer func() { testHook = nil }()
+			if phase == hookSegReadOnlyScanned {
+				openAndCheck()
+			} else {
+				writer.segs.pause()()
+			}
+			if !fired || len(packFiles(t, root)) != 1 {
+				t.Fatal("the test did not seal its segment")
+			}
+		})
+	}
+}
+
 // Read-only tools running in a loop against a live writer never cost it a frame:
 // after the writer stops, every acknowledged object is there and the store
 // reopens (the deterministic version of this race is the test at the top).
 func TestP3_ReadOnlyToolsAgainstALiveWriterNeverLoseAcknowledgedFrames(t *testing.T) {
 	useProductionLayout(t)
+	// Keep the workload bounded while rotating segments throughout the test.
+	setSegTarget(t, 384<<10, 1)
 	s, dir := p1cOpen(t)
-	stop := make(chan struct{})
+	const opens, writesPerOpen = 25, 120
+	batches := make(chan int)
+	written := make(chan error, 1)
 	done := make(chan struct{})
 	var keys []string
 	stopWriter := sync.OnceFunc(func() {
-		close(stop)
+		close(batches)
 		<-done
 	})
 	defer stopWriter()
 	go func() {
 		defer close(done)
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
+		for batch := range batches {
+			var err error
+			for j := range writesPerOpen {
+				i := batch*writesPerOpen + j
+				k := fmt.Sprintf("live%05d", i)
+				if _, err = s.PutObject("b", k, p1cBody(i, 3000), "", nil); err != nil {
+					break
+				}
+				keys = append(keys, k)
 			}
-			k := fmt.Sprintf("live%05d", i)
-			if _, err := s.PutObject("b", k, p1cBody(i, 3000), "", nil); err != nil {
-				t.Error(err)
-				return
-			}
-			keys = append(keys, k)
+			written <- err
 		}
 	}()
-	for i := 0; i < 25; i++ {
-		ro, err := OpenStoreShared(dir)
-		if err != nil {
-			t.Fatalf("shared open: %v", err)
+	for batch := range opens {
+		batches <- batch
+		func() {
+			ro, err := OpenStoreShared(dir)
+			if err != nil {
+				t.Fatalf("shared open: %v", err)
+			}
+			defer ro.Close()
+			if _, err := ro.computeStats(statsScope{}); err != nil {
+				t.Fatalf("stats: %v", err)
+			}
+			if v, err := ro.Verify(false); err != nil || !v.OK() {
+				t.Fatalf("verify: %v %+v", err, v.Issues)
+			}
+		}()
+		if err := <-written; err != nil {
+			t.Fatalf("batch %d: %v", batch, err)
 		}
-		if _, err := ro.computeStats(statsScope{}); err != nil {
-			t.Fatalf("stats: %v", err)
-		}
-		if v, err := ro.Verify(false); err != nil || !v.JournalOK {
-			t.Fatalf("verify: %v %+v", err, v.Issues)
-		}
-		ro.Close()
 	}
 	stopWriter()
 	s.Close()
+	if len(keys) != opens*writesPerOpen || len(packFiles(t, dir)) < 2 {
+		t.Fatalf("insufficient coverage: %d acknowledged writes, %d sealed packs", len(keys), len(packFiles(t, dir)))
+	}
 	s2, err := OpenStore(dir)
 	if err != nil {
 		t.Fatalf("reopen after read-only tools ran against a writer: %v", err)
