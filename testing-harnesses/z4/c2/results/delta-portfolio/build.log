@@ -1,0 +1,17 @@
+/workspace/work/zeros3/r1-portfolio.fEzbO9/zeros3: go1.27.4
+	path	zeros3
+	mod	zeros3	v0.1.2-0.20261121061423-b5b1cfa6734f
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=b5b1cfa6734f377e3d1884bd8b401db896944d1f
+	build	vcs.time=2026-11-21T06:14:23Z
+	build	vcs.modified=false

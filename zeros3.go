@@ -121,10 +121,10 @@ import (
 //    27974    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28609    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45715    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52453    Windowed and estimated similarity deltas (extracted dcore)
-//    53982    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61674    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67946    CLI dispatch, HTTP server/startup, and main
+//    52556    Windowed and estimated similarity deltas (extracted dcore)
+//    54085    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61777    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68049    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -51843,8 +51843,7 @@ func (s *Store) checkAuthSimilarityFence(report authSimilarityStageReport) error
 
 func (s *Store) readAuthSimilarityManifest(name string) (authSimilarityStageReport, error) {
 	var report authSimilarityStageReport
-	if !strings.HasPrefix(name, "generation-") || filepath.Base(name) != name ||
-		len(name) > 255 || strings.ContainsAny(name, "\r\n") {
+	if !validAuthSimilarityGenerationName(name) {
 		return report, errors.New("invalid similarity generation name")
 	}
 	dir := filepath.Join(s.root, "similarity-index", name)
@@ -52010,7 +52009,103 @@ func (s *Store) authSimilarityCurrentName() (string, error) {
 	if len(name) > 256 || !bytes.HasSuffix(name, []byte("\n")) || bytes.Count(name, []byte("\n")) != 1 {
 		return "", errors.New("invalid similarity current pointer")
 	}
-	return string(name[:len(name)-1]), nil
+	generation := string(name[:len(name)-1])
+	if !validAuthSimilarityGenerationName(generation) {
+		return "", errors.New("invalid similarity current generation")
+	}
+	return generation, nil
+}
+
+func validAuthSimilarityGenerationName(name string) bool {
+	return strings.HasPrefix(name, "generation-") && filepath.Base(name) == name &&
+		len(name) <= 255 && !strings.ContainsAny(name, "\r\n")
+}
+
+func authSimilarityPrunableName(name string) bool {
+	for _, prefix := range []string{"generation-", ".building-"} {
+		if suffix, ok := strings.CutPrefix(name, prefix); ok {
+			_, err := strconv.ParseUint(suffix, 10, 32)
+			return err == nil
+		}
+	}
+	return false
+}
+
+type authSimilarityPruneReport struct {
+	Current    string   `json:"current,omitempty"`
+	Candidates []string `json:"candidates"`
+	Removed    []string `json:"removed"`
+}
+
+// pruneAuthSimilarity requires the exclusive lock held by index maintenance.
+func (s *Store) pruneAuthSimilarity(names []string, apply bool) (authSimilarityPruneReport, error) {
+	report := authSimilarityPruneReport{Candidates: []string{}, Removed: []string{}}
+	if apply && len(names) == 0 {
+		return report, errors.New("index-prune -apply requires named directories")
+	}
+	parent := filepath.Join(s.root, "similarity-index")
+	info, err := os.Lstat(parent)
+	if errors.Is(err, os.ErrNotExist) && len(names) == 0 {
+		return report, nil
+	}
+	if err == nil && !info.IsDir() {
+		return report, errors.New("similarity index path must be a directory")
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return report, err
+	}
+	report.Current, err = s.authSimilarityCurrentName()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return report, err
+	}
+	if len(names) == 0 {
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			return report, err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if name != report.Current && entry.IsDir() && authSimilarityPrunableName(name) {
+				report.Candidates = append(report.Candidates, name)
+			}
+		}
+		return report, nil
+	}
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if !authSimilarityPrunableName(name) || name == report.Current {
+			return report, fmt.Errorf("cannot prune similarity directory %q", name)
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		info, err := os.Lstat(filepath.Join(parent, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return report, err
+		}
+		if !info.IsDir() {
+			return report, fmt.Errorf("similarity path %q must be a directory", name)
+		}
+		report.Candidates = append(report.Candidates, name)
+	}
+	if !apply {
+		return report, nil
+	}
+	for _, name := range report.Candidates {
+		if err := os.RemoveAll(filepath.Join(parent, name)); err != nil {
+			return report, err
+		}
+		if err := syncDir(parent); err != nil {
+			return report, err
+		}
+		report.Removed = append(report.Removed, name)
+		fireTestHook("similarity-after-prune-sync")
+	}
+	return report, nil
 }
 
 type authSimilarityInventory struct {
@@ -52204,7 +52299,7 @@ func (q *authSimilarityQuery) postingWindow(feature uint64, limit int) ([]uint32
 // runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect or index-run-verify")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -52280,9 +52375,9 @@ func runAuthority(args []string) {
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(25)
 	}
-	indexOp := sub == "index-build" || sub == "index-refresh" || sub == "index-publish" || sub == "index-status" || sub == "index-inspect"
+	indexOp := sub == "index-build" || sub == "index-refresh" || sub == "index-publish" || sub == "index-status" || sub == "index-inspect" || sub == "index-prune"
 	if indexOp {
-		if fs.NArg() != 0 {
+		if fs.NArg() != 0 && sub != "index-prune" {
 			log.Fatalf("zeros3: authority %s: unexpected arguments", sub)
 		}
 		if sub == "index-publish" && *indexGeneration == "" {
@@ -52341,6 +52436,14 @@ func runAuthority(args []string) {
 		}
 		if err := enc.Encode(info); err != nil {
 			log.Fatalf("zeros3: authority index-inspect: %v", err)
+		}
+	case "index-prune":
+		report, err := store.pruneAuthSimilarity(fs.Args(), *apply)
+		if err != nil {
+			log.Fatalf("zeros3: authority index-prune: %v", err)
+		}
+		if err := enc.Encode(report); err != nil {
+			log.Fatalf("zeros3: authority index-prune: %v", err)
 		}
 	case "index-status":
 		var report authSimilarityStageReport

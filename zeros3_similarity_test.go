@@ -609,6 +609,10 @@ func TestAuthoritySimilarityPublicationRecovery(t *testing.T) {
 			}
 		})
 		switch point {
+		case "similarity-after-prune-sync":
+			if _, err := s.pruneAuthSimilarity(strings.Split(name, ","), true); err != nil {
+				t.Fatal(err)
+			}
 		case "similarity-before-generation-sync", "similarity-before-generation-rename",
 			"similarity-after-generation-rename", "similarity-after-generation-sync":
 			if _, err := s.refreshAuthSimilarityStage(); err != nil {
@@ -850,6 +854,70 @@ func TestAuthoritySimilarityPhysicalMaintenance(t *testing.T) {
 	current, err = lab.s.readAuthSimilarityCurrent()
 	if err != nil || current.Generation != generation.Generation {
 		t.Fatalf("reversion invalidated unchanged logical roots: %+v %v", current, err)
+	}
+}
+
+func TestAuthoritySimilarityPrunePreservesCurrentAcrossInterruption(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	mustOK(t, err)
+	mustOK(t, s.CreateBucket("similar"))
+	want := genRandomBytes(910, 135_000)
+	mustPutObject(t, s, "similar", "a", want, "", nil)
+	old, err := s.buildAuthSimilarityStage()
+	mustOK(t, err)
+	priorName := filepath.Base(old.Directory)
+	mustOK(t, s.publishAuthSimilarityStage(priorName))
+	mustPutObject(t, s, "similar", "b", genRandomBytes(911, 135_000), "", nil)
+	current, err := s.refreshAuthSimilarityStage()
+	mustOK(t, err)
+	currentName := filepath.Base(current.Directory)
+	mustOK(t, s.publishAuthSimilarityStage(currentName))
+	const building = ".building-123"
+	parent := filepath.Dir(old.Directory)
+	mustOK(t, os.Mkdir(filepath.Join(parent, building), 0o700))
+	report, err := s.pruneAuthSimilarity(nil, false)
+	mustOK(t, err)
+	if report.Current != currentName || !slices.Equal(report.Candidates, []string{building, priorName}) {
+		t.Fatalf("unexpected dry run: %+v", report)
+	}
+	for _, refused := range [][]string{{priorName, currentName}, {priorName, "../generation-123"}} {
+		if _, err := s.pruneAuthSimilarity(refused, true); err == nil {
+			t.Fatalf("unsafe prune accepted: %v", refused)
+		}
+		_, err := os.Stat(old.Directory)
+		mustOK(t, err)
+	}
+	s.Close()
+
+	names := []string{priorName, building}
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestAuthoritySimilarityPublicationRecovery$")
+	cmd.Env = append(os.Environ(), "ZEROS3_SIMILARITY_KILL_POINT=similarity-after-prune-sync",
+		"ZEROS3_SIMILARITY_STORE="+dir, "ZEROS3_SIMILARITY_GENERATION="+strings.Join(names, ","))
+	output, err := cmd.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+		t.Fatalf("prune child did not stop at the durable boundary: %v %s", err, output)
+	}
+	s, err = OpenStoreShared(dir)
+	mustOK(t, err)
+	defer s.Close()
+	if _, err := os.Stat(old.Directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("obsolete generation remained after unlink and sync: %v", err)
+	}
+	report, err = s.pruneAuthSimilarity(names, true)
+	mustOK(t, err)
+	if !slices.Equal(report.Removed, []string{building}) {
+		t.Fatalf("retry did not finish the interrupted prune: %+v", report)
+	}
+	verified, err := s.readAuthSimilarityCurrent()
+	mustOK(t, err)
+	if verified.Directory != current.Directory || verified.Objects != 2 {
+		t.Fatalf("active index changed across prune: %+v", verified)
+	}
+	_, got, err := s.GetObject("similar", "a")
+	mustOK(t, err)
+	if !bytes.Equal(got, want) {
+		t.Fatal("authoritative bytes changed across prune")
 	}
 }
 

@@ -159,6 +159,14 @@ generation and staging directories. It checks the selected generation under the
 offline store lock. Inactive directories include both earlier sealed generations
 and unattached builds. The command leaves derived files and object authority intact.
 
+`zeros3 authority index-prune -store DIR` lists inactive generations and
+abandoned builds by directory name. Pass explicitly named directories
+after `-apply` to remove them under the exclusive store lock. CURRENT is
+protected even when its generation is stale. Each removal syncs the parent
+directory, and a retry can include directories already removed. A process-cut
+test checks that the active index and authoritative bytes survive an
+interruption between removals.
+
 The migration command can reserve filesystem headroom with
 `-reserve-free-mib`. It checks the current free blocks before staging encoded
 delta or model output and again before publishing new pins and records.
