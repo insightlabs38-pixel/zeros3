@@ -2365,7 +2365,7 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 		return nil
 	}
 	defer func() { authFault = nil }()
-	err = local.s.recoverAuthorityFromPeer(cfg)
+	err = local.s.recoverAuthorityFromPeer("b", "k3", cfg)
 	authFault = nil
 	if !errors.Is(err, fail) {
 		t.Fatalf("recovery did not expose the injected failure after restoring the base: %v", err)
@@ -2373,7 +2373,7 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 	if got, err := os.ReadFile(rootPath); err != nil || !bytes.Equal(got, corrupt) {
 		t.Fatalf("failed recovery changed the previous root record: %v", err)
 	}
-	if err := local.s.recoverAuthorityFromPeer(cfg); err != nil {
+	if err := local.s.recoverAuthorityFromPeer("b", "k3", cfg); err != nil {
 		t.Fatal(err)
 	}
 	local.close()
@@ -2382,11 +2382,11 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 	local.verifyOK("peer closure recovery reopened")
 
 	peer.put("k3", []byte("different source revision"))
-	if err := local.s.recoverAuthorityFromPeer(cfg); !errors.Is(err, errAuthMismatch) {
+	if err := local.s.recoverAuthorityFromPeer("b", "k3", cfg); !errors.Is(err, errAuthMismatch) {
 		t.Fatalf("recovery accepted a different current source revision: %v", err)
 	}
 	server.Close()
-	if err := local.s.recoverAuthorityFromPeer(cfg); err == nil || !strings.Contains(err.Error(), "recover peer discovery") {
+	if err := local.s.recoverAuthorityFromPeer("b", "k3", cfg); err == nil || !strings.Contains(err.Error(), "recover peer discovery") {
 		t.Fatalf("offline peer was not diagnosed: %v", err)
 	}
 }
@@ -2405,7 +2405,10 @@ func TestAuthorityRecoverPeerWithExactCDCFallback(t *testing.T) {
 			path := local.s.authPath(sum)
 			local.offline(func() { mustOK(t, os.WriteFile(path, []byte("damaged record"), 0o600)) })
 			peer := newAuthLab(t)
-			peer.put(key, exact)
+			const remoteBucket, remoteKey = "backup", "data/%# version"
+			mustOK(t, peer.s.CreateBucket(remoteBucket))
+			mustPutObject(t, peer.s, remoteBucket, remoteKey, exact, "", nil)
+			mustPutObject(t, peer.s, remoteBucket, "different", []byte("other revision"), "", nil)
 			creds := Credentials{AccessKeyID: "AKIASYNCTESTACCESSKEY1", SecretAccessKey: "SyncTestSecretKeyForZeroS3M6Tests0123456"}
 			handler := NewServer(peer.s, creds, "us-east-1")
 			var exports, chunks atomic.Int32
@@ -2436,8 +2439,12 @@ func TestAuthorityRecoverPeerWithExactCDCFallback(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := mustPeerConfig(server, creds, "us-east-1")
-			cfg.Bucket, cfg.Key = "b", key
-			mustOK(t, local.s.recoverAuthorityFromPeer(cfg))
+			cfg.Bucket, cfg.Key = remoteBucket, "different"
+			if err := local.s.recoverAuthorityFromPeer("b", key, cfg); !errors.Is(err, errAuthMismatch) {
+				t.Fatalf("recover accepted a wrong peer object: %v", err)
+			}
+			cfg.Key = remoteKey
+			mustOK(t, local.s.recoverAuthorityFromPeer("b", key, cfg))
 			wantExports := int32(1)
 			if legacy {
 				wantExports = 0

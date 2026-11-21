@@ -121,10 +121,10 @@ import (
 //    28198    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28833    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    45939    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    52839    Windowed and estimated similarity deltas (extracted dcore)
-//    54368    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62060    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68332    CLI dispatch, HTTP server/startup, and main
+//    52841    Windowed and estimated similarity deltas (extracted dcore)
+//    54370    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62062    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68334    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -50834,8 +50834,8 @@ func (c *countingByteReader) ReadByte() (byte, error) {
 
 // recoverAuthorityFromPeer restores the authority of an exact live manifest
 // under the exclusive store lock used by the authority maintenance command.
-func (s *Store) recoverAuthorityFromPeer(cfg syncClientConfig) error {
-	_, local, err := s.headServed(cfg.Bucket, cfg.Key)
+func (s *Store) recoverAuthorityFromPeer(bucket, key string, cfg syncClientConfig) error {
+	_, local, err := s.headServed(bucket, key)
 	if err != nil {
 		return fmt.Errorf("recover local manifest: %w", err)
 	}
@@ -52616,7 +52616,9 @@ func runAuthority(args []string) {
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
 	peer := fs.String("from", "", "recover: compatible ZeroS3 peer endpoint")
-	key := fs.String("key", "", "recover: exact key at both stores; status: key to probe")
+	key := fs.String("key", "", "recover: local object key; status: key to probe")
+	peerBucket := fs.String("peer-bucket", "", "recover: bucket holding the exact peer copy (default: local bucket)")
+	peerKey := fs.String("peer-key", "", "recover: key holding the exact peer copy (default: local key)")
 	probeOffset := fs.Int64("probe-offset", -1, "status: measure a 4 KiB authority read at this object offset")
 	accessKey := fs.String("access-key", defaultAccessKeyID, "recover: peer access key (default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "recover: peer secret key (default: AWS_SECRET_ACCESS_KEY)")
@@ -52807,9 +52809,9 @@ func runAuthority(args []string) {
 		}
 		enc.Encode(st)
 	case "recover":
-		cfg := syncClientConfig{Endpoint: *peer, Bucket: *bucket, Key: *key, Region: *region,
+		cfg := syncClientConfig{Endpoint: *peer, Bucket: cmp.Or(*peerBucket, *bucket), Key: cmp.Or(*peerKey, *key), Region: *region,
 			Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}}
-		if err := store.recoverAuthorityFromPeer(cfg); err != nil {
+		if err := store.recoverAuthorityFromPeer(*bucket, *key, cfg); err != nil {
 			log.Fatalf("zeros3: authority recover: %v", err)
 		}
 		enc.Encode(map[string]string{"bucket": *bucket, "key": *key, "status": "verified"})

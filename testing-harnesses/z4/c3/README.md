@@ -55,3 +55,6 @@ does not advertise native export or explicitly requires materialization.
 It checks the peer's logical identity first, reuses verified local chunks,
 and checks the reconstructed content digest before publishing the pin.
 The focused test covers a CDC-only store and a peer with legacy capabilities.
+Use `-peer-bucket` and `-peer-key` when the exact peer copy lives under
+another name. The focused test also covers a renamed source and rejects a
+source whose logical digest or length differs.

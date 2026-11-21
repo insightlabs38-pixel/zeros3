@@ -1,0 +1,205 @@
+{
+  "source": "efdfe774e2d4fd4edb13f31c0eda7d48a801cff3",
+  "build": "/workspace/work/zeros3/r3-parquet-pricing.oxuyeX/zeros3: go1.27.4\n\tpath\tzeros3\n\tmod\tzeros3\tv0.1.2-0.20261121063552-efdfe774e2d4\t\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=efdfe774e2d4fd4edb13f31c0eda7d48a801cff3\n\tbuild\tvcs.time=2026-11-21T06:35:52Z\n\tbuild\tvcs.modified=false",
+  "binary_sha256": "d1e8dcb413d263c88f99856998640f8431b363a990306ad6e46fe8a1ec9fafdd",
+  "maintained": {
+    "cdc": {
+      "allocated_bytes": 7372800,
+      "deep_verified": true
+    },
+    "mixed": {
+      "allocated_bytes": 17752064,
+      "deep_verified": true,
+      "plan": {
+        "storage_cost_model": "recompressed",
+        "Objects": 6,
+        "Admitted": 6,
+        "Pinned": 0,
+        "KeptCDC": 0,
+        "CDCBytes": 6913786,
+        "AddedBytes": 3975554,
+        "Plans": [
+          {
+            "sha256": "bdb0c954ea9ee0cf9c8a080cee0c1e98073f65bb701d7f7f4a6dc4edb87b62d6",
+            "size": 1791125,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 67449,
+            "added_bytes": 2504207,
+            "saving": -36.12741478746905,
+            "read_amp_4k": 1791125,
+            "cdc_amp_4k": 80002.30292302324
+          },
+          {
+            "sha256": "dbc3838567b698490afb147ea8702d13c6bfb59e165ca72a0824ec5e37740223",
+            "size": 2232884,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 505624,
+            "added_bytes": 656828,
+            "saving": -0.2990443491606411,
+            "read_amp_4k": 2232884,
+            "cdc_amp_4k": 78169.61689725037
+          },
+          {
+            "sha256": "d1e6be3d224e5223c6cf87f3015115b84e49047fcb79835c956359ab9f4c8139",
+            "size": 2623605,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 2587130,
+            "added_bytes": 654458,
+            "saving": 0.747033198950188,
+            "read_amp_4k": 2623605,
+            "cdc_amp_4k": 81224.1229213239
+          },
+          {
+            "sha256": "ca12a9cd9af605cd8d3cca12aeb4015276c8f45942f11cca6c802aa0a7dbe97c",
+            "size": 1752391,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 743071,
+            "added_bytes": 43953,
+            "saving": 0.9408495285107346,
+            "read_amp_4k": 1752391,
+            "cdc_amp_4k": 102359.23769352844
+          },
+          {
+            "sha256": "24d4547b29266d843c8e9cc100ccb8c580a2aa45eb37e20a4dd6cb7fceba2a24",
+            "size": 2185159,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 427125,
+            "added_bytes": 56282,
+            "saving": 0.8682306116476441,
+            "read_amp_4k": 2185159,
+            "cdc_amp_4k": 105961.75641177599
+          },
+          {
+            "sha256": "5f0ea1ae7b1ce391256f25c1d406f3e65487c2cbef88e9331f5687ec4d1d9fa8",
+            "size": 2580219,
+            "form": "rep",
+            "depth": 0,
+            "cdc_unshared_bytes": 2583387,
+            "added_bytes": 59826,
+            "saving": 0.9768420294752587,
+            "read_amp_4k": 2580219,
+            "cdc_amp_4k": 114915.43705437407
+          }
+        ],
+        "Seconds": 3.568961366,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 28,
+        "CacheMisses": 6,
+        "DecodedBytes": 13165383,
+        "similarity_open_ns": 1558079
+      },
+      "migration_time": "wall_seconds 8.547 user_seconds 8.517 sys_seconds 1.816"
+    },
+    "current": {
+      "allocated_bytes": 6631424,
+      "deep_verified": true,
+      "plan": {
+        "storage_cost_model": "current-packs",
+        "Objects": 6,
+        "Admitted": 3,
+        "Pinned": 0,
+        "KeptCDC": 3,
+        "CDCBytes": 3496091,
+        "AddedBytes": 1164724,
+        "Plans": [
+          {
+            "sha256": "bdb0c954ea9ee0cf9c8a080cee0c1e98073f65bb701d7f7f4a6dc4edb87b62d6",
+            "size": 1791125,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 67449,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no admissible exact representation"
+          },
+          {
+            "sha256": "dbc3838567b698490afb147ea8702d13c6bfb59e165ca72a0824ec5e37740223",
+            "size": 2232884,
+            "form": "delta",
+            "bases": [
+              "bdb0c954ea9e"
+            ],
+            "depth": 1,
+            "cdc_unshared_bytes": 509976,
+            "added_bytes": 404186,
+            "saving": 0.20744113448476006,
+            "read_amp_4k": 161527,
+            "cdc_amp_4k": 78169.61689725037
+          },
+          {
+            "sha256": "d1e6be3d224e5223c6cf87f3015115b84e49047fcb79835c956359ab9f4c8139",
+            "size": 2623605,
+            "form": "delta",
+            "bases": [
+              "dbc3838567b6"
+            ],
+            "depth": 2,
+            "cdc_unshared_bytes": 901177,
+            "added_bytes": 357442,
+            "saving": 0.6033609379733393,
+            "read_amp_4k": 200639,
+            "cdc_amp_4k": 81224.1229213239
+          },
+          {
+            "sha256": "ca12a9cd9af605cd8d3cca12aeb4015276c8f45942f11cca6c802aa0a7dbe97c",
+            "size": 1752391,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 743071,
+            "added_bytes": 1333037,
+            "saving": -0.7939564321578961,
+            "reason": "saving -0.794 below policy 0.100 (delta)"
+          },
+          {
+            "sha256": "24d4547b29266d843c8e9cc100ccb8c580a2aa45eb37e20a4dd6cb7fceba2a24",
+            "size": 2185159,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 439535,
+            "added_bytes": 404502,
+            "saving": 0.07970468790881272,
+            "reason": "saving 0.080 below policy 0.100 (delta)"
+          },
+          {
+            "sha256": "5f0ea1ae7b1ce391256f25c1d406f3e65487c2cbef88e9331f5687ec4d1d9fa8",
+            "size": 2580219,
+            "form": "delta",
+            "bases": [
+              "24d4547b2926"
+            ],
+            "depth": 1,
+            "cdc_unshared_bytes": 834883,
+            "added_bytes": 403096,
+            "saving": 0.517182647149361,
+            "read_amp_4k": 96214.5,
+            "cdc_amp_4k": 114915.43705437407
+          }
+        ],
+        "Seconds": 0.162307288,
+        "PlanReuse": 5,
+        "RepNotBuilt": 0,
+        "CacheHits": 38,
+        "CacheMisses": 6,
+        "DecodedBytes": 13165383,
+        "similarity_queries": 6,
+        "similarity_lookup_ns": 960523,
+        "similarity_open_ns": 2110517
+      },
+      "migration_time": "wall_seconds 4.855 user_seconds 4.752 sys_seconds 1.132"
+    }
+  },
+  "verified_signed_whole_and_ranges": [
+    "bdb0c954ea9ee0cf9c8a080cee0c1e98073f65bb701d7f7f4a6dc4edb87b62d6  b91ec680b98840547abcacfdd4888812303d7b79108b0d5f459f11da8c6cc1e0  pyarrow-snappy-0.parquet",
+    "dbc3838567b698490afb147ea8702d13c6bfb59e165ca72a0824ec5e37740223  b91ec680b98840547abcacfdd4888812303d7b79108b0d5f459f11da8c6cc1e0  pyarrow-snappy-1.parquet",
+    "d1e6be3d224e5223c6cf87f3015115b84e49047fcb79835c956359ab9f4c8139  b91ec680b98840547abcacfdd4888812303d7b79108b0d5f459f11da8c6cc1e0  pyarrow-snappy-2.parquet",
+    "ca12a9cd9af605cd8d3cca12aeb4015276c8f45942f11cca6c802aa0a7dbe97c  67a2146ef59e7714df24a3dddace2e5cfb876ccbfb1c20e5be75d160b62f824b  duckdb-snappy-0.parquet",
+    "24d4547b29266d843c8e9cc100ccb8c580a2aa45eb37e20a4dd6cb7fceba2a24  67a2146ef59e7714df24a3dddace2e5cfb876ccbfb1c20e5be75d160b62f824b  duckdb-snappy-1.parquet",
+    "5f0ea1ae7b1ce391256f25c1d406f3e65487c2cbef88e9331f5687ec4d1d9fa8  67a2146ef59e7714df24a3dddace2e5cfb876ccbfb1c20e5be75d160b62f824b  duckdb-snappy-2.parquet"
+  ]
+}
