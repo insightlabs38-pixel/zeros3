@@ -4,6 +4,7 @@
 //	z3compose sqlite   B: OCI-like layers carrying SQLite revisions (inner sqlitez3)
 //	z3compose git      C: Git packs holding versions of an executable (positive) and a SQLite database (negative)
 //	z3compose car      D: tar.gz archives of CAR exports (inner carz3)
+//	z3compose exec-history  exact standalone ELF and PE release histories
 //
 // Corpora live outside Git (see the Z3-18/17 caches and $Z3_COMPOSE_CACHE); nothing is committed or fetched by tests.
 package main
@@ -15,7 +16,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: z3compose <oci|sqlite|git|car> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: z3compose <oci|sqlite|git|car|exec-history> [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -29,6 +30,8 @@ func main() {
 		err = cmdGit(args)
 	case "car":
 		err = cmdCAR(args)
+	case "exec-history":
+		err = cmdExecHistory(args)
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}

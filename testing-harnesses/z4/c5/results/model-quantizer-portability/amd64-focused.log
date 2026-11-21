@@ -1,0 +1,12 @@
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/ordinary
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_values
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_imatrix
+=== RUN   TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_derived_scale
+--- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes (0.07s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/ordinary (0.05s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_values (0.00s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_imatrix (0.01s)
+    --- PASS: TestZN7EncoderStoresNonportableWindowsAsBytes/nonfinite_derived_scale (0.01s)
+PASS
+ok  	zeros3	0.097s

@@ -1,0 +1,1313 @@
+{
+  "fixtures": {
+    "07564c99b2e1607334535edb5d0411fb1642225da270726f768afcd5b916cb2c": "transpose.onnx",
+    "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c": "model.safetensors",
+    "5dbe975da0264f3fba9cff0ad0e1f827d7e274adc5b144716cdac3b9f55f445b": "forward.onnx",
+    "976f80b182c036be8deba5485d3102e98420741c476b1629d2165035e5985d61": "reverse.gguf",
+    "e85e706ce14a3499e1f698c0d638b430df75b5f67131d1516bd0d46b844dfb2e": "model_fp16.onnx",
+    "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57": "f16.gguf",
+    "ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2": "step101000.safetensors"
+  },
+  "generated_checkpoint_exports": {
+    "exports": [
+      {
+        "file": "reverse.gguf",
+        "sha256": "976f80b182c036be8deba5485d3102e98420741c476b1629d2165035e5985d61",
+        "size": 28141344
+      },
+      {
+        "file": "forward.onnx",
+        "sha256": "5dbe975da0264f3fba9cff0ad0e1f827d7e274adc5b144716cdac3b9f55f445b",
+        "size": 28139765
+      },
+      {
+        "file": "transpose.onnx",
+        "sha256": "07564c99b2e1607334535edb5d0411fb1642225da270726f768afcd5b916cb2c",
+        "size": 28139765
+      }
+    ],
+    "producer_versions": {
+      "gguf": "0.18.0",
+      "numpy": "2.3.5",
+      "onnx": "1.20.0",
+      "safetensors": "0.7.0"
+    },
+    "source": "step101000.safetensors",
+    "source_sha256": "ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2",
+    "tensors": 76
+  },
+  "pythia": {
+    "allocated": {
+      "pythia-forward-full": 28770304,
+      "pythia-forward-identity": 56885248,
+      "pythia-forward-semantic": 28770304,
+      "pythia-reverse-full": 28770304
+    },
+    "cdc": [
+      {
+        "file": "step101000.safetensors",
+        "fine_cum": 28558311,
+        "fine_inc": 28558311,
+        "prod_cum": 28191058,
+        "prod_inc": 28191058,
+        "size": 28143920
+      },
+      {
+        "file": "reverse.gguf",
+        "fine_cum": 29012030,
+        "fine_inc": 453719,
+        "prod_cum": 30082430,
+        "prod_inc": 1891372,
+        "size": 28141344
+      },
+      {
+        "file": "forward.onnx",
+        "fine_cum": 29415060,
+        "fine_inc": 403030,
+        "prod_cum": 31891584,
+        "prod_inc": 1809154,
+        "size": 28139765
+      },
+      {
+        "file": "transpose.onnx",
+        "fine_cum": 57963658,
+        "fine_inc": 28548598,
+        "prod_cum": 60081733,
+        "prod_inc": 28190149,
+        "size": 28139765
+      },
+      {
+        "measure": {
+          "max_rss_mib": 117.6,
+          "rc": 0,
+          "sys_s": 0.18,
+          "user_s": 0.75,
+          "wall_s": 3.273
+        }
+      }
+    ],
+    "full": [
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 11048,
+          "Recipes": 1
+        },
+        "Format": "safetensors",
+        "How": {
+          "identity": 5,
+          "new": 71
+        },
+        "HowBytes": {
+          "identity": 1280,
+          "new": 28134144
+        },
+        "LitBytes": 8496,
+        "LitNew": 0,
+        "Name": "step101000.safetensors",
+        "NewBlobBytes": 28134144,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 3490,
+        "RecipeBytes": 11048,
+        "Search": 2385789062,
+        "Size": 28143920,
+        "SourceBytes": 28143920,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28162415
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 19520,
+          "Recipes": 2
+        },
+        "Format": "gguf",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 5920,
+        "LitNew": 0,
+        "Name": "reverse.gguf",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 0,
+        "RecipeBytes": 8472,
+        "Search": 0,
+        "Size": 28141344,
+        "SourceBytes": 28141344,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28171019
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 26565,
+          "Recipes": 3
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "forward.onnx",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 0,
+        "RecipeBytes": 7045,
+        "Search": 0,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28178196
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 5914,
+          "Comps": 97,
+          "DerivedComps": 26,
+          "Index": 4268,
+          "RawComps": 71,
+          "RecipeBytes": 33610,
+          "Recipes": 4
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 50,
+          "layout": 26
+        },
+        "HowBytes": {
+          "identity": 20480,
+          "layout": 28114944
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "transpose.onnx",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 2424,
+        "RecipeBytes": 7045,
+        "Search": 1930707361,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28190293
+      },
+      {
+        "measure": {
+          "max_rss_mib": 138.6,
+          "rc": 0,
+          "sys_s": 0.43,
+          "user_s": 1.4,
+          "wall_s": 6.683
+        }
+      }
+    ],
+    "identity": [
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 11048,
+          "Recipes": 1
+        },
+        "Format": "safetensors",
+        "How": {
+          "identity": 5,
+          "new": 71
+        },
+        "HowBytes": {
+          "identity": 1280,
+          "new": 28134144
+        },
+        "LitBytes": 8496,
+        "LitNew": 0,
+        "Name": "step101000.safetensors",
+        "NewBlobBytes": 28134144,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 3490,
+        "RecipeBytes": 11048,
+        "Search": 1115145869,
+        "Size": 28143920,
+        "SourceBytes": 28143920,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28162415
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 19520,
+          "Recipes": 2
+        },
+        "Format": "gguf",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 5920,
+        "LitNew": 0,
+        "Name": "reverse.gguf",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 0,
+        "RecipeBytes": 8472,
+        "Search": 0,
+        "Size": 28141344,
+        "SourceBytes": 28141344,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28171019
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 26565,
+          "Recipes": 3
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "forward.onnx",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 0,
+        "RecipeBytes": 7045,
+        "Search": 0,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28178196
+      },
+      {
+        "Cum": {
+          "BlobPacked": 56249057,
+          "BlobRaw": 56249088,
+          "Blobs": 97,
+          "CompBytes": 4820,
+          "Comps": 97,
+          "DerivedComps": 0,
+          "Index": 4268,
+          "RawComps": 97,
+          "RecipeBytes": 33610,
+          "Recipes": 4
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 50,
+          "new": 26
+        },
+        "HowBytes": {
+          "identity": 20480,
+          "new": 28114944
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "transpose.onnx",
+        "NewBlobBytes": 28114944,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 1330,
+        "RecipeBytes": 7045,
+        "Search": 698653659,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 56306639
+      },
+      {
+        "measure": {
+          "max_rss_mib": 74.5,
+          "rc": 0,
+          "sys_s": 0.23,
+          "user_s": 0.67,
+          "wall_s": 3.912
+        }
+      }
+    ],
+    "readback": [
+      {
+        "diff": 0,
+        "exact": 4,
+        "missing": 0,
+        "originals": 4
+      }
+    ],
+    "reverse": [
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 7045,
+          "Recipes": 1
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 5,
+          "new": 71
+        },
+        "HowBytes": {
+          "identity": 1280,
+          "new": 28134144
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "transpose.onnx",
+        "NewBlobBytes": 28134144,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 3490,
+        "RecipeBytes": 7045,
+        "Search": 1947453191,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28158412
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 5914,
+          "Comps": 97,
+          "DerivedComps": 26,
+          "Index": 4268,
+          "RawComps": 71,
+          "RecipeBytes": 14090,
+          "Recipes": 2
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 50,
+          "layout": 26
+        },
+        "HowBytes": {
+          "identity": 20480,
+          "layout": 28114944
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "forward.onnx",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 2424,
+        "RecipeBytes": 7045,
+        "Search": 2093997326,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28170509
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 5914,
+          "Comps": 97,
+          "DerivedComps": 26,
+          "Index": 4268,
+          "RawComps": 71,
+          "RecipeBytes": 22562,
+          "Recipes": 3
+        },
+        "Format": "gguf",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 5920,
+        "LitNew": 0,
+        "Name": "reverse.gguf",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 0,
+        "RecipeBytes": 8472,
+        "Search": 0,
+        "Size": 28141344,
+        "SourceBytes": 28141344,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28179113
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 5914,
+          "Comps": 97,
+          "DerivedComps": 26,
+          "Index": 4268,
+          "RawComps": 71,
+          "RecipeBytes": 33610,
+          "Recipes": 4
+        },
+        "Format": "safetensors",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 8496,
+        "LitNew": 0,
+        "Name": "step101000.safetensors",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 0,
+        "RecipeBytes": 11048,
+        "Search": 0,
+        "Size": 28143920,
+        "SourceBytes": 28143920,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28190293
+      },
+      {
+        "measure": {
+          "max_rss_mib": 130.9,
+          "rc": 0,
+          "sys_s": 0.4,
+          "user_s": 1.19,
+          "wall_s": 6.068
+        }
+      }
+    ],
+    "reverse-readback": [
+      {
+        "diff": 0,
+        "exact": 4,
+        "missing": 0,
+        "originals": 4
+      }
+    ],
+    "semantic": [
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 11048,
+          "Recipes": 1
+        },
+        "Format": "safetensors",
+        "How": {
+          "identity": 5,
+          "new": 71
+        },
+        "HowBytes": {
+          "identity": 1280,
+          "new": 28134144
+        },
+        "LitBytes": 8496,
+        "LitNew": 0,
+        "Name": "step101000.safetensors",
+        "NewBlobBytes": 28134144,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 3490,
+        "RecipeBytes": 11048,
+        "Search": 2299029727,
+        "Size": 28143920,
+        "SourceBytes": 28143920,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28162415
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 19520,
+          "Recipes": 2
+        },
+        "Format": "gguf",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 5920,
+        "LitNew": 0,
+        "Name": "reverse.gguf",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28135425,
+        "RecBytes": 0,
+        "RecipeBytes": 8472,
+        "Search": 0,
+        "Size": 28141344,
+        "SourceBytes": 28141344,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28171019
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 3490,
+          "Comps": 71,
+          "DerivedComps": 0,
+          "Index": 3124,
+          "RawComps": 71,
+          "RecipeBytes": 26565,
+          "Recipes": 3
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 76
+        },
+        "HowBytes": {
+          "identity": 28135424
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "forward.onnx",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 0,
+        "RecipeBytes": 7045,
+        "Search": 0,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28178196
+      },
+      {
+        "Cum": {
+          "BlobPacked": 28134113,
+          "BlobRaw": 28134144,
+          "Blobs": 71,
+          "CompBytes": 5914,
+          "Comps": 97,
+          "DerivedComps": 26,
+          "Index": 4268,
+          "RawComps": 71,
+          "RecipeBytes": 33610,
+          "Recipes": 4
+        },
+        "Format": "onnx",
+        "How": {
+          "identity": 50,
+          "layout": 26
+        },
+        "HowBytes": {
+          "identity": 20480,
+          "layout": 28114944
+        },
+        "LitBytes": 4341,
+        "LitNew": 0,
+        "Name": "transpose.onnx",
+        "NewBlobBytes": 0,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 28139702,
+        "RecBytes": 2424,
+        "RecipeBytes": 7045,
+        "Search": 2650362221,
+        "Size": 28139765,
+        "SourceBytes": 28139765,
+        "TensorBytes": 28135424,
+        "Tensors": 76,
+        "Total": 28190293
+      },
+      {
+        "measure": {
+          "max_rss_mib": 138.1,
+          "rc": 0,
+          "sys_s": 0.31,
+          "user_s": 1.46,
+          "wall_s": 6.776
+        }
+      }
+    ]
+  },
+  "smol": {
+    "allocated": {
+      "smol-forward-full": 276840448,
+      "smol-forward-identity": 758190080,
+      "smol-forward-semantic": 572379136,
+      "smol-reverse-full": 276856832
+    },
+    "cdc": [
+      {
+        "file": "model.safetensors",
+        "fine_cum": 269841443,
+        "fine_inc": 269841443,
+        "prod_cum": 263722683,
+        "prod_inc": 263722683,
+        "size": 269060552
+      },
+      {
+        "file": "f16.gguf",
+        "fine_cum": 539605002,
+        "fine_inc": 269763559,
+        "prod_cum": 527007405,
+        "prod_inc": 263284722,
+        "size": 270885952
+      },
+      {
+        "file": "model_fp16.onnx",
+        "fine_cum": 753087810,
+        "fine_inc": 213482808,
+        "prod_cum": 735238441,
+        "prod_inc": 208231036,
+        "size": 270267067
+      },
+      {
+        "measure": {
+          "max_rss_mib": 797.6,
+          "rc": 0,
+          "sys_s": 2.34,
+          "user_s": 9.06,
+          "wall_s": 55.062
+        }
+      }
+    ],
+    "full": [
+      {
+        "Cum": {
+          "BlobPacked": 268309895,
+          "BlobRaw": 269060552,
+          "Blobs": 273,
+          "CompBytes": 13741,
+          "Comps": 273,
+          "DerivedComps": 0,
+          "Index": 12012,
+          "RawComps": 273,
+          "RecipeBytes": 9052,
+          "Recipes": 1
+        },
+        "Format": "safetensors",
+        "How": {
+          "new": 272
+        },
+        "HowBytes": {
+          "new": 269030016
+        },
+        "LitBytes": 30536,
+        "LitNew": 30536,
+        "Name": "model.safetensors",
+        "NewBlobBytes": 269030016,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 269030017,
+        "RecBytes": 13691,
+        "RecipeBytes": 9052,
+        "Search": 58214172529,
+        "Size": 269060552,
+        "SourceBytes": 269060552,
+        "TensorBytes": 269030016,
+        "Tensors": 272,
+        "Total": 268385236
+      },
+      {
+        "Cum": {
+          "BlobPacked": 268936861,
+          "BlobRaw": 270855688,
+          "Blobs": 436,
+          "CompBytes": 40610,
+          "Comps": 647,
+          "DerivedComps": 211,
+          "Index": 28468,
+          "RawComps": 436,
+          "RecipeBytes": 21569,
+          "Recipes": 2
+        },
+        "Format": "gguf",
+        "How": {
+          "convert": 151,
+          "gather": 60,
+          "new": 61
+        },
+        "HowBytes": {
+          "convert": 242417664,
+          "gather": 26542080,
+          "new": 140544
+        },
+        "LitBytes": 1785664,
+        "LitNew": 1654592,
+        "Name": "f16.gguf",
+        "NewBlobBytes": 140544,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 269100289,
+        "RecBytes": 21887,
+        "RecipeBytes": 12517,
+        "Search": 130134043294,
+        "Size": 270885952,
+        "SourceBytes": 270885952,
+        "TensorBytes": 269100288,
+        "Tensors": 272,
+        "Total": 269103272
+      },
+      {
+        "Cum": {
+          "BlobPacked": 269737084,
+          "BlobRaw": 272146503,
+          "Blobs": 509,
+          "CompBytes": 63879,
+          "Comps": 931,
+          "DerivedComps": 421,
+          "Index": 40964,
+          "RawComps": 510,
+          "RecipeBytes": 48067,
+          "Recipes": 3
+        },
+        "Format": "onnx",
+        "How": {
+          "bytes-shared": 1,
+          "identity": 1,
+          "layout": 150,
+          "new": 64,
+          "transpose": 60
+        },
+        "HowBytes": {
+          "bytes-shared": 8,
+          "identity": 56623104,
+          "layout": 185794560,
+          "new": 1118856,
+          "transpose": 26542080
+        },
+        "LitBytes": 188459,
+        "LitNew": 171959,
+        "Name": "model_fp16.onnx",
+        "NewBlobBytes": 1118856,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 270153733,
+        "RecBytes": 22829,
+        "RecipeBytes": 26498,
+        "Search": 43369087915,
+        "Size": 270267067,
+        "SourceBytes": 270267067,
+        "TensorBytes": 270078608,
+        "Tensors": 276,
+        "Total": 269987666
+      },
+      {
+        "measure": {
+          "max_rss_mib": 1145.0,
+          "rc": 0,
+          "sys_s": 7.71,
+          "user_s": 37.27,
+          "wall_s": 281.905
+        }
+      }
+    ],
+    "identity": [
+      {
+        "Cum": {
+          "BlobPacked": 268309895,
+          "BlobRaw": 269060552,
+          "Blobs": 273,
+          "CompBytes": 13741,
+          "Comps": 273,
+          "DerivedComps": 0,
+          "Index": 12012,
+          "RawComps": 273,
+          "RecipeBytes": 9052,
+          "Recipes": 1
+        },
+        "Format": "safetensors",
+        "How": {
+          "new": 272
+        },
+        "HowBytes": {
+          "new": 269030016
+        },
+        "LitBytes": 30536,
+        "LitNew": 30536,
+        "Name": "model.safetensors",
+        "NewBlobBytes": 269030016,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 269030017,
+        "RecBytes": 13691,
+        "RecipeBytes": 9052,
+        "Search": 11927539712,
+        "Size": 269060552,
+        "SourceBytes": 269060552,
+        "TensorBytes": 269030016,
+        "Tensors": 272,
+        "Total": 268385236
+      },
+      {
+        "Cum": {
+          "BlobPacked": 536913804,
+          "BlobRaw": 539815432,
+          "Blobs": 647,
+          "CompBytes": 32414,
+          "Comps": 647,
+          "DerivedComps": 0,
+          "Index": 28468,
+          "RawComps": 647,
+          "RecipeBytes": 21569,
+          "Recipes": 2
+        },
+        "Format": "gguf",
+        "How": {
+          "new": 272
+        },
+        "HowBytes": {
+          "new": 269100288
+        },
+        "LitBytes": 1785664,
+        "LitNew": 1654592,
+        "Name": "f16.gguf",
+        "NewBlobBytes": 269100288,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 269100289,
+        "RecBytes": 13691,
+        "RecipeBytes": 12517,
+        "Search": 13197517350,
+        "Size": 270885952,
+        "SourceBytes": 270885952,
+        "TensorBytes": 269100288,
+        "Tensors": 272,
+        "Total": 537092275
+      },
+      {
+        "Cum": {
+          "BlobPacked": 748903110,
+          "BlobRaw": 753442887,
+          "Blobs": 930,
+          "CompBytes": 46683,
+          "Comps": 931,
+          "DerivedComps": 0,
+          "Index": 40964,
+          "RawComps": 931,
+          "RecipeBytes": 48067,
+          "Recipes": 3
+        },
+        "Format": "onnx",
+        "How": {
+          "bytes-shared": 1,
+          "identity": 1,
+          "new": 274
+        },
+        "HowBytes": {
+          "bytes-shared": 8,
+          "identity": 56623104,
+          "new": 213455496
+        },
+        "LitBytes": 188459,
+        "LitNew": 171959,
+        "Name": "model_fp16.onnx",
+        "NewBlobBytes": 213455496,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 270153733,
+        "RecBytes": 13829,
+        "RecipeBytes": 26498,
+        "Search": 12800170832,
+        "Size": 270267067,
+        "SourceBytes": 270267067,
+        "TensorBytes": 270078608,
+        "Tensors": 276,
+        "Total": 749176912
+      },
+      {
+        "measure": {
+          "max_rss_mib": 524.7,
+          "rc": 0,
+          "sys_s": 7.73,
+          "user_s": 8.55,
+          "wall_s": 75.018
+        }
+      }
+    ],
+    "readback": [
+      {
+        "diff": 0,
+        "exact": 3,
+        "missing": 0,
+        "originals": 3
+      }
+    ],
+    "reverse": [
+      {
+        "Cum": {
+          "BlobPacked": 268612410,
+          "BlobRaw": 270250559,
+          "Blobs": 284,
+          "CompBytes": 14322,
+          "Comps": 285,
+          "DerivedComps": 0,
+          "Index": 12540,
+          "RawComps": 285,
+          "RecipeBytes": 26498,
+          "Recipes": 1
+        },
+        "Format": "onnx",
+        "How": {
+          "bytes-shared": 1,
+          "new": 275
+        },
+        "HowBytes": {
+          "bytes-shared": 8,
+          "new": 270078600
+        },
+        "LitBytes": 188459,
+        "LitNew": 171959,
+        "Name": "model_fp16.onnx",
+        "NewBlobBytes": 270078600,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 270153733,
+        "RecBytes": 13882,
+        "RecipeBytes": 26498,
+        "Search": 52385875285,
+        "Size": 270267067,
+        "SourceBytes": 270267067,
+        "TensorBytes": 270078608,
+        "Tensors": 276,
+        "Total": 268707986
+      },
+      {
+        "Cum": {
+          "BlobPacked": 269239376,
+          "BlobRaw": 272045695,
+          "Blobs": 447,
+          "CompBytes": 42362,
+          "Comps": 658,
+          "DerivedComps": 210,
+          "Index": 28952,
+          "RawComps": 448,
+          "RecipeBytes": 39015,
+          "Recipes": 2
+        },
+        "Format": "gguf",
+        "How": {
+          "identity": 1,
+          "layout": 150,
+          "new": 61,
+          "transpose+gather": 60
+        },
+        "HowBytes": {
+          "identity": 56623104,
+          "layout": 185794560,
+          "new": 140544,
+          "transpose+gather": 26542080
+        },
+        "LitBytes": 1785664,
+        "LitNew": 1654592,
+        "Name": "f16.gguf",
+        "NewBlobBytes": 140544,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 269100289,
+        "RecBytes": 23058,
+        "RecipeBytes": 12517,
+        "Search": 13284193542,
+        "Size": 270885952,
+        "SourceBytes": 270885952,
+        "TensorBytes": 269100288,
+        "Tensors": 272,
+        "Total": 269427097
+      },
+      {
+        "Cum": {
+          "BlobPacked": 269291006,
+          "BlobRaw": 272146503,
+          "Blobs": 509,
+          "CompBytes": 82910,
+          "Comps": 931,
+          "DerivedComps": 421,
+          "Index": 40964,
+          "RawComps": 510,
+          "RecipeBytes": 48067,
+          "Recipes": 3
+        },
+        "Format": "safetensors",
+        "How": {
+          "convert+residual": 1,
+          "new": 61,
+          "transpose": 4,
+          "transpose+residual": 206
+        },
+        "HowBytes": {
+          "convert+residual": 56623104,
+          "new": 70272,
+          "transpose": 884736,
+          "transpose+residual": 211451904
+        },
+        "LitBytes": 30536,
+        "LitNew": 30536,
+        "Name": "model.safetensors",
+        "NewBlobBytes": 70272,
+        "Oversize": 0,
+        "PatchBytes": 18102,
+        "PeakBuf": 269030017,
+        "RecBytes": 40498,
+        "RecipeBytes": 9052,
+        "Search": 67817469901,
+        "Size": 269060552,
+        "SourceBytes": 269060552,
+        "TensorBytes": 269030016,
+        "Tensors": 272,
+        "Total": 269560619
+      },
+      {
+        "measure": {
+          "max_rss_mib": 1333.0,
+          "rc": 0,
+          "sys_s": 7.26,
+          "user_s": 28.72,
+          "wall_s": 157.968
+        }
+      }
+    ],
+    "reverse-readback": [
+      {
+        "diff": 0,
+        "exact": 3,
+        "missing": 0,
+        "originals": 3
+      }
+    ],
+    "semantic": [
+      {
+        "Cum": {
+          "BlobPacked": 268309895,
+          "BlobRaw": 269060552,
+          "Blobs": 273,
+          "CompBytes": 13741,
+          "Comps": 273,
+          "DerivedComps": 0,
+          "Index": 12012,
+          "RawComps": 273,
+          "RecipeBytes": 9052,
+          "Recipes": 1
+        },
+        "Format": "safetensors",
+        "How": {
+          "new": 272
+        },
+        "HowBytes": {
+          "new": 269030016
+        },
+        "LitBytes": 30536,
+        "LitNew": 30536,
+        "Name": "model.safetensors",
+        "NewBlobBytes": 269030016,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 269030017,
+        "RecBytes": 13691,
+        "RecipeBytes": 9052,
+        "Search": 45519682685,
+        "Size": 269060552,
+        "SourceBytes": 269060552,
+        "TensorBytes": 269030016,
+        "Tensors": 272,
+        "Total": 268385236
+      },
+      {
+        "Cum": {
+          "BlobPacked": 536913804,
+          "BlobRaw": 539815432,
+          "Blobs": 647,
+          "CompBytes": 32414,
+          "Comps": 647,
+          "DerivedComps": 0,
+          "Index": 28468,
+          "RawComps": 647,
+          "RecipeBytes": 21569,
+          "Recipes": 2
+        },
+        "Format": "gguf",
+        "How": {
+          "new": 272
+        },
+        "HowBytes": {
+          "new": 269100288
+        },
+        "LitBytes": 1785664,
+        "LitNew": 1654592,
+        "Name": "f16.gguf",
+        "NewBlobBytes": 269100288,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 269100289,
+        "RecBytes": 13691,
+        "RecipeBytes": 12517,
+        "Search": 43754960910,
+        "Size": 270885952,
+        "SourceBytes": 270885952,
+        "TensorBytes": 269100288,
+        "Tensors": 272,
+        "Total": 537092275
+      },
+      {
+        "Cum": {
+          "BlobPacked": 563952705,
+          "BlobRaw": 567648327,
+          "Blobs": 780,
+          "CompBytes": 52983,
+          "Comps": 931,
+          "DerivedComps": 150,
+          "Index": 40964,
+          "RawComps": 781,
+          "RecipeBytes": 48067,
+          "Recipes": 3
+        },
+        "Format": "onnx",
+        "How": {
+          "bytes-shared": 1,
+          "identity": 1,
+          "layout": 150,
+          "new": 124
+        },
+        "HowBytes": {
+          "bytes-shared": 8,
+          "identity": 56623104,
+          "layout": 185794560,
+          "new": 27660936
+        },
+        "LitBytes": 188459,
+        "LitNew": 171959,
+        "Name": "model_fp16.onnx",
+        "NewBlobBytes": 27660936,
+        "Oversize": 0,
+        "PatchBytes": 0,
+        "PeakBuf": 270153733,
+        "RecBytes": 20129,
+        "RecipeBytes": 26498,
+        "Search": 21973886343,
+        "Size": 270267067,
+        "SourceBytes": 270267067,
+        "TensorBytes": 270078608,
+        "Tensors": 276,
+        "Total": 564218407
+      },
+      {
+        "measure": {
+          "max_rss_mib": 1109.5,
+          "rc": 0,
+          "sys_s": 8.63,
+          "user_s": 21.67,
+          "wall_s": 158.605
+        }
+      }
+    ]
+  }
+}

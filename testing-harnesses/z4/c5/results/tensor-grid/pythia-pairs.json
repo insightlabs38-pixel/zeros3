@@ -1,0 +1,42 @@
+[
+  {
+    "Name": "pair-0",
+    "BaseSHA256": "0fe73ade28f29bf5c2f720570b8c811d07fe112a8b868e903140d12d04d94388",
+    "TransposeSHA256": "c85606a31d399e911f393b5458693719d779e0143b04d05f283bcc69fec1358c",
+    "Rows": 50304,
+    "Cols": 128,
+    "Width": 2,
+    "SourceTensor": "embed_out.weight",
+    "TargetTensor": "embed_out_weight"
+  },
+  {
+    "Name": "pair-1",
+    "BaseSHA256": "b18b234e60269a6cebe6d61100da8d056c0fec5058d923962a0dbb00df67c12b",
+    "TransposeSHA256": "f9e570f29017193b8d0a5d9bd61b38416b5d2a5a5d62b3ca0f3fa59a4a77fa0d",
+    "Rows": 50304,
+    "Cols": 128,
+    "Width": 2,
+    "SourceTensor": "gpt_neox.embed_in.weight",
+    "TargetTensor": "gpt_neox_embed_in_weight"
+  },
+  {
+    "Name": "pair-2",
+    "BaseSHA256": "dff15bc10a6bac147349f6b608ef53905032c458e8bb85db336651b412fe2d23",
+    "TransposeSHA256": "ea984046199772d1c5272666d7f39c52254daad28ec4a43541f1b4e0dae66e6b",
+    "Rows": 384,
+    "Cols": 128,
+    "Width": 2,
+    "SourceTensor": "gpt_neox.layers.0.attention.query_key_value.weight",
+    "TargetTensor": "gpt_neox_layers_0_attention_query_key_value_weight"
+  },
+  {
+    "Name": "pair-3",
+    "BaseSHA256": "d473699fe45cec47ec164c9009c862c9d7f5f65fdd28a253d92290728ae65f5d",
+    "TransposeSHA256": "9d891d37250d09c8f64b33de7b93e57efd207af29fd1aa77c226326f70e660c4",
+    "Rows": 128,
+    "Cols": 512,
+    "Width": 2,
+    "SourceTensor": "gpt_neox.layers.0.mlp.dense_4h_to_h.weight",
+    "TargetTensor": "gpt_neox_layers_0_mlp_dense_4h_to_h_weight"
+  }
+]

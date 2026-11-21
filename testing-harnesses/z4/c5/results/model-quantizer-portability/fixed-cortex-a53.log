@@ -1,0 +1,17 @@
+=== RUN   TestFixedArchitectureInputs
+    architecture_test.go:109: arm64 identical-input fixture SHA-256 bb33cba346f1ae26ffe0952f9229ea6d1b31f4bac10197e80177527f1c8c9fa0 with 181 vectors
+    architecture_test.go:122: Q2_K/nonfinite/imatrix strict exact output changed: 383daf488967ea72d179060b7347193f59af5181e37295492dfd198dc4643c9d versus e372fe1441b7e1b983239877d950f814f90217ed0a8841a875cd50878d89a724 (<nil>)
+    architecture_test.go:122: Q2_K/nonfinite/imatrix gcc-fma exact output changed: 383daf488967ea72d179060b7347193f59af5181e37295492dfd198dc4643c9d versus d35f7471a759ca2a864be816c31f474d3d1dcb8628571b0e35a69693e018b7c4 (<nil>)
+    architecture_test.go:122: Q4_K/nonfinite/imatrix strict exact output changed: 372078bf4c425c32b53b6d1b12e68bfe2fb2a2ef637b078365ffa1d61802055d versus 3aa21e0e87590b8dedf1179c37395421ebdc61d9276137c59947cea13920f8f6 (<nil>)
+    architecture_test.go:122: Q4_K/nonfinite/imatrix gcc-fma exact output changed: 372078bf4c425c32b53b6d1b12e68bfe2fb2a2ef637b078365ffa1d61802055d versus 3aa21e0e87590b8dedf1179c37395421ebdc61d9276137c59947cea13920f8f6 (<nil>)
+    architecture_test.go:122: Q5_K/nonfinite/imatrix strict exact output changed: b15f3b90b9e5f68c557c929030a2ef067642631430bb7d4efd081146fcb00bab versus e003289d6d16d1174d7131e25ab90e5dd11683af0d49676c4b74b023dc0b1216 (<nil>)
+    architecture_test.go:122: Q5_K/nonfinite/imatrix gcc-fma exact output changed: b15f3b90b9e5f68c557c929030a2ef067642631430bb7d4efd081146fcb00bab versus bfcaa2cc2409e71a0c1331ab1616fde7610db2c5fcfeee5501edcbfe1985bb35 (<nil>)
+    architecture_test.go:122: IQ4_NL/extreme strict exact output changed: dc0eafea5c13143893d84ccacbd61673e9a37fd526d28f0f9cb138d9254d063d versus 3d3ead65575c5130135e49f9242caa6f6ed6936f8056269a939d7172c3c9fb60 (<nil>)
+    architecture_test.go:122: IQ4_NL/extreme gcc-fma exact output changed: dc0eafea5c13143893d84ccacbd61673e9a37fd526d28f0f9cb138d9254d063d versus 3d3ead65575c5130135e49f9242caa6f6ed6936f8056269a939d7172c3c9fb60 (<nil>)
+    architecture_test.go:122: IQ4_NL/nonfinite strict exact output changed: 59e6fa8b9d950d30ca6b982660261d3b572d3b79d02ff9763ed7bfc943c86b1a versus 52e802adcaba775f595a971067a79ae5f862cb80344592294e75bdc8c1f14dcc (<nil>)
+    architecture_test.go:122: IQ4_NL/nonfinite gcc-fma exact output changed: 59e6fa8b9d950d30ca6b982660261d3b572d3b79d02ff9763ed7bfc943c86b1a versus 2d9122204f94d310a5585c7122f431c034df6cbb2f9049ef99b20b6e166ece41 (<nil>)
+    architecture_test.go:122: IQ4_NL/nonfinite/imatrix strict exact output changed: 67c5e9e43ba556d078d24dff76031056bf719d1cb07cc3212b973eeb28c4a8b9 versus 918356dcdd27070dc632e3f6b45a1f6e73a54ec4ec6b321325ac27de3b51879f (<nil>)
+    architecture_test.go:122: IQ4_NL/nonfinite/imatrix gcc-fma exact output changed: 67c5e9e43ba556d078d24dff76031056bf719d1cb07cc3212b973eeb28c4a8b9 versus 918356dcdd27070dc632e3f6b45a1f6e73a54ec4ec6b321325ac27de3b51879f (<nil>)
+    architecture_test.go:127: checked 296 profile and input pairs
+--- FAIL: TestFixedArchitectureInputs (61.21s)
+FAIL

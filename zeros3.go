@@ -116,11 +116,11 @@ import (
 //    26323    Portable snapshot bundles (`zeros3 bundle`)
 //    27520    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28155    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45249    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    51803    Windowed and estimated similarity deltas (extracted dcore)
-//    53332    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    60980    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67252    CLI dispatch, HTTP server/startup, and main
+//    45252    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    51811    Windowed and estimated similarity deltas (extracted dcore)
+//    53340    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61032    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67304    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -33787,6 +33787,9 @@ func repCandidate(src io.ReaderAt, size int64) (repKind, bool) {
 			}
 		}
 	}
+	if repLooksONNX(hd) {
+		return repKindModel, true
+	}
 	return 0, false
 }
 
@@ -46968,11 +46971,16 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 	ctx := s.newAuthCtx()
 	body, _, err := ctx.body(sha, 0, 1)
 	if err != nil {
+		ctx.close()
 		return nil, err
+	}
+	if zn, ok := body.(*authZN7Body); ok && !whole && rng.end-rng.start+1 <= authReadPiece {
+		zn.directRange = true
 	}
 	rd := &authObjReader{ctx: ctx, body: body, off: rng.start, end: rng.end, whole: whole, h: sha256.New(), want: sha}
 	first, err := rd.next()
 	if err != nil && err != io.EOF {
+		rd.close()
 		return nil, err
 	}
 	if whole {
@@ -57237,6 +57245,12 @@ func (e *ncNumcore_encoder) planOpaque(ti int, t *ncNumcoreTensor) (*ncNumcore_t
 func (e *ncNumcore_encoder) codeWindow(t *ncNumcoreTDir, pl *ncNumcore_tplan, k int64, tw []byte, dry bool) (ncNumcoreWDir, []byte, error) {
 	wd := ncNumcoreWDir{Sum: ncNumcore_sum16(tw)}
 	var payload []byte
+	storeRaw := func() {
+		wd.Mode, wd.Coder, payload = ncNumcoreMRaw, ncNumcoreCStore, tw
+		if z := ncNumcore_deflateBytes(tw); len(z) < len(tw) {
+			wd.Coder, payload = ncNumcoreCFlate, z
+		}
+	}
 	var baseData ncNumcoreBase
 	haveBase := false
 	base := func(ctx context.Context, lo int64, n int) (ncNumcoreBase, error) {
@@ -57252,7 +57266,11 @@ func (e *ncNumcore_encoder) codeWindow(t *ncNumcoreTDir, pl *ncNumcore_tplan, k 
 	switch {
 	case t.Q != nil:
 		_, by := ncNumcore_qBlock(ncNumcore_mustQ(t.DT))
-		got, err := ncNumcore_quantWindow(e.ctx, t, k, len(tw), base, pl.qw)
+		got, err := ncNumcore_quantWindow(e.ctx, t, k, len(tw), base, pl.qw, true)
+		if errors.Is(err, ncNumcoreErrNonportableQuant) {
+			storeRaw()
+			break
+		}
 		if err != nil {
 			return wd, nil, err
 		}
@@ -57276,10 +57294,7 @@ func (e *ncNumcore_encoder) codeWindow(t *ncNumcoreTDir, pl *ncNumcore_tplan, k 
 				break
 			}
 		}
-		wd.Mode, wd.Coder, payload = ncNumcoreMRaw, ncNumcoreCStore, tw
-		if z := ncNumcore_deflateBytes(tw); len(z) < len(tw) {
-			wd.Coder, payload = ncNumcoreCFlate, z
-		}
+		storeRaw()
 	default:
 		cd, data := t.DT, tw
 		if t.DT == ncNumcoreDF32 && !e.o.NoNarrow {
@@ -58962,7 +58977,10 @@ func ncNumcore_floatsOf(b ncNumcoreBase, viaF16 bool) []float32 {
 }
 
 // quantWindow quantizes the base rows of a window with the recorded producer profile.
-func ncNumcore_quantWindow(ctx context.Context, t *ncNumcoreTDir, k int64, nbytes int, base ncNumcore_baseFn, qw []float32) ([]byte, error) {
+// Retain exact raw bytes when authoring cannot count on the same floating-point replay across peers.
+var ncNumcoreErrNonportableQuant = errors.New("numcore: nonportable quantization input")
+
+func ncNumcore_quantWindow(ctx context.Context, t *ncNumcoreTDir, k int64, nbytes int, base ncNumcore_baseFn, qw []float32, requirePortable bool) ([]byte, error) {
 	q := ncNumcore_mustQ(t.DT)
 	el, by := ncNumcore_qBlock(q)
 	nb := nbytes / by
@@ -58973,9 +58991,28 @@ func ncNumcore_quantWindow(ctx context.Context, t *ncNumcoreTDir, k int64, nbyte
 	if !b.DT.IsFloat() || b.n() != nb*el {
 		return nil, ncNumcoreErrFormat7
 	}
+	floats := ncNumcore_floatsOf(b, t.Q.ViaF16)
+	if requirePortable {
+		for _, values := range [2][]float32{floats, qw} {
+			for _, value := range values {
+				if math.Float32bits(value)&0x7f800000 == 0x7f800000 {
+					return nil, ncNumcoreErrNonportableQuant
+				}
+			}
+		}
+	}
 	out := make([]byte, nbytes)
-	if err := ncQcoreQuantize(out, q, ncNumcore_floatsOf(b, t.Q.ViaF16), int(t.Cols), qw, ncQcoreArith(t.Q.Arith)); err != nil {
+	if err := ncQcoreQuantize(out, q, floats, int(t.Cols), qw, ncQcoreArith(t.Q.Arith)); err != nil {
 		return nil, ncNumcoreErrFormat7
+	}
+	// IQ4_NL's arithmetic can overflow on finite values. Nonfinite scales
+	// reproduced different bits under the same profile on amd64 and arm64.
+	if requirePortable && q == ncQcoreIQ4_NL {
+		for i := 0; i < len(out); i += by {
+			if out[i+1]&0x7c == 0x7c {
+				return nil, ncNumcoreErrNonportableQuant
+			}
+		}
 	}
 	return out, nil
 }
@@ -59054,7 +59091,7 @@ func ncNumcore_rebuildQuant(ctx context.Context, t *ncNumcoreTDir, wd *ncNumcore
 			return ncNumcoreErrMissing7
 		}
 	}
-	out, err := ncNumcore_quantWindow(ctx, t, k, len(dst), base, qw)
+	out, err := ncNumcore_quantWindow(ctx, t, k, len(dst), base, qw, false)
 	if err != nil {
 		return err
 	}
@@ -60645,14 +60682,15 @@ func authZN7IsContainer(c *authCtx, rec *authRecord) bool {
 
 // authZN7Body serves a ZN7 record: windows are decoded on demand from the container and the bases.
 type authZN7Body struct {
-	c    *authCtx
-	rec  *authRecord
-	obj  *ncNumcoreObject
-	res  *authZN7Res
-	opt  ncNumcoreDecOpts
-	mu   sync.Mutex
-	buf  []byte
-	boff int64
+	c           *authCtx
+	rec         *authRecord
+	obj         *ncNumcoreObject
+	res         *authZN7Res
+	opt         ncNumcoreDecOpts
+	mu          sync.Mutex
+	buf         []byte
+	boff        int64
+	directRange bool
 }
 
 func (c *authCtx) newZN7(rec *authRecord, blob *pieceSeq, depth int) (authBody, error) {
@@ -60708,6 +60746,20 @@ func (b *authZN7Body) Size() int64 { return b.rec.Size }
 func (b *authZN7Body) ReadAt(p []byte, off int64) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// Small requests use the container's authenticated window directory.
+	// Sequential reads retain the larger prefetch to amortize reconstruction.
+	if b.directRange && off >= 0 && off < b.rec.Size && len(p) > 0 {
+		n := min(int64(len(p)), b.rec.Size-off)
+		data, _, err := b.obj.ReadRange(context.Background(), off, n, b.res, b.opt)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %v", errAuthMismatch, err)
+		}
+		copied := copy(p, data)
+		if copied < len(p) {
+			return copied, io.EOF
+		}
+		return copied, nil
+	}
 	n := 0
 	for n < len(p) && off < b.rec.Size {
 		if b.boff < 0 || off < b.boff || off >= b.boff+int64(len(b.buf)) {
@@ -68749,6 +68801,209 @@ type repModelSpan struct {
 	width               int
 }
 
+// The bounded ReaderAt protobuf cursor is adapted from z3/semcore/onnx.go.
+// It visits inline tensor metadata while skipping opaque bytes and payloads.
+type repONNXField struct {
+	num, wire uint64
+	value     uint64
+	start     int64
+	end       int64
+}
+
+type repONNXReader struct {
+	src        io.ReaderAt
+	window     [4096]byte
+	base, size int64
+	budget     int
+}
+
+func (r *repONNXReader) varint(pos *int64, end int64) (uint64, error) {
+	var value uint64
+	for shift := uint(0); shift < 70 && *pos < end; shift += 7 {
+		if *pos < r.base || *pos >= r.base+r.size {
+			n := min(int64(len(r.window)), end-*pos)
+			if err := repReadFullAt(r.src, r.window[:n], *pos); err != nil {
+				return 0, err
+			}
+			r.base, r.size = *pos, n
+		}
+		b := r.window[*pos-r.base]
+		*pos++
+		if shift == 63 && b > 1 {
+			break
+		}
+		value |= uint64(b&127) << shift
+		if b < 128 {
+			return value, nil
+		}
+	}
+	return 0, repCorrupt("invalid ONNX varint")
+}
+
+func (r *repONNXReader) fields(pos, end int64, visit func(repONNXField) error) error {
+	for pos < end {
+		if r.budget == 0 {
+			return errRepLimit
+		}
+		r.budget--
+		tag, err := r.varint(&pos, end)
+		if err != nil {
+			return err
+		}
+		f := repONNXField{num: tag >> 3, wire: tag & 7}
+		if f.num == 0 || f.num >= 1<<29 {
+			return repCorrupt("invalid ONNX field")
+		}
+		var size uint64
+		switch f.wire {
+		case 0:
+			f.value, err = r.varint(&pos, end)
+		case 1:
+			size = 8
+		case 2:
+			size, err = r.varint(&pos, end)
+		case 5:
+			size = 4
+		default:
+			return errRepUnsupported
+		}
+		if err != nil {
+			return err
+		}
+		if size > uint64(end-pos) {
+			return repCorrupt("truncated ONNX field")
+		}
+		f.start, f.end = pos, pos+int64(size)
+		pos = f.end
+		if err := visit(f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func repLooksONNX(hd []byte) bool {
+	return len(hd) >= 2 && hd[0] == 0x08 && hd[1] > 0 && hd[1] < 32
+}
+
+func (r *repONNXReader) tensor(f repONNXField) (repModelSpan, error) {
+	span := repModelSpan{format: "onnx"}
+	var dtype uint64
+	var raw, opaque bool
+	addDim := func(n uint64) error {
+		if len(span.shape) == 32 {
+			return errRepLimit
+		}
+		span.shape = append(span.shape, n)
+		return nil
+	}
+	err := r.fields(f.start, f.end, func(t repONNXField) error {
+		switch {
+		case t.num == 1 && t.wire == 0:
+			return addDim(t.value)
+		case t.num == 1 && t.wire == 2:
+			for pos := t.start; pos < t.end; {
+				dim, err := r.varint(&pos, t.end)
+				if err != nil {
+					return err
+				}
+				if err := addDim(dim); err != nil {
+					return err
+				}
+			}
+		case t.num == 2 && t.wire == 0:
+			dtype = t.value
+		case t.num == 8 && t.wire == 2:
+			if t.end-t.start > 4096 {
+				return errRepLimit
+			}
+			name := make([]byte, t.end-t.start)
+			if err := repReadFullAt(r.src, name, t.start); err != nil {
+				return err
+			}
+			span.name = string(name)
+		case t.num == 9 && t.wire == 2:
+			opaque = opaque || raw
+			raw = true
+			span.begin, span.end = t.start, t.end
+		case t.num == 13 || t.num == 14 && (t.wire != 0 || t.value != 0):
+			opaque = true // No external data is loaded by this adapter.
+		case t.num >= 3 && t.num <= 7 || t.num == 10 || t.num == 11:
+			opaque = true // Typed repeated payloads keep their original wire bytes.
+		}
+		return nil
+	})
+	if err != nil {
+		return repModelSpan{}, err
+	}
+	switch dtype {
+	case 1:
+		span.dtype, span.width = "F32", 4
+	case 10:
+		span.dtype, span.width = "F16", 2
+	case 16:
+		span.dtype, span.width = "BF16", 2
+	default:
+		opaque = true
+	}
+	if opaque || !raw || span.name == "" || span.end <= span.begin {
+		return repModelSpan{}, nil
+	}
+	length := uint64(span.end - span.begin)
+	elements := uint64(span.width)
+	for _, dim := range span.shape {
+		if dim == 0 || dim > length/elements {
+			return repModelSpan{}, nil
+		}
+		elements *= dim
+	}
+	if elements != length {
+		return repModelSpan{}, nil
+	}
+	return span, nil
+}
+
+func repONNXLayout(src io.ReaderAt, size int64) ([]repModelSpan, error) {
+	r := &repONNXReader{src: src, budget: 1 << 18}
+	var spans []repModelSpan
+	var position int64
+	tensors, graphs := 0, 0
+	err := r.fields(0, size, func(f repONNXField) error {
+		if f.num != 7 || f.wire != 2 {
+			return nil
+		}
+		graphs++
+		if graphs > 1 {
+			return errRepUnsupported
+		}
+		return r.fields(f.start, f.end, func(g repONNXField) error {
+			if g.num != 5 || g.wire != 2 {
+				return nil
+			}
+			if tensors++; tensors > 4096 {
+				return errRepLimit
+			}
+			span, err := r.tensor(g)
+			if err != nil || span.name == "" {
+				return err
+			}
+			if span.begin < position {
+				return repCorrupt("overlapping ONNX tensor spans")
+			}
+			spans = append(spans, repModelSpan{begin: position, end: span.begin, width: 1}, span)
+			position = span.end
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(spans) == 0 {
+		return nil, errRepUnsupported
+	}
+	return append(spans, repModelSpan{begin: position, end: size, width: 1}), nil
+}
+
 func repModelLayout(src io.ReaderAt, size int64) ([]repModelSpan, error) {
 	var magic [4]byte
 	if err := repReadFullAt(src, magic[:], 0); err != nil {
@@ -68772,22 +69027,29 @@ func repModelLayout(src io.ReaderAt, size int64) ([]repModelSpan, error) {
 		}
 	} else {
 		f, e := repSTParse(src, size, repSTOptions{MaxHeader: 16 << 20, MaxTensors: 4096, MaxDims: 32})
-		if e != nil {
-			return nil, e
-		}
-		for _, seg := range f.Segments() {
-			s := repModelSpan{begin: seg.Off, end: seg.Off + seg.Len, width: 1}
-			if seg.Kind == "tensor" {
-				t, ok := f.Lookup(seg.Name)
-				if !ok {
-					return nil, errRepCorrupt
-				}
-				s.name, s.format, s.dtype, s.width = t.Name, "safetensors", t.DType, max(1, t.Bits/8)
-				for _, v := range t.Shape {
-					s.shape = append(s.shape, uint64(v))
-				}
+		switch {
+		case e != nil && repLooksONNX(magic[:]):
+			spans, e = repONNXLayout(src, size)
+			if e != nil {
+				return nil, e
 			}
-			spans = append(spans, s)
+		case e != nil:
+			return nil, e
+		default:
+			for _, seg := range f.Segments() {
+				s := repModelSpan{begin: seg.Off, end: seg.Off + seg.Len, width: 1}
+				if seg.Kind == "tensor" {
+					t, ok := f.Lookup(seg.Name)
+					if !ok {
+						return nil, errRepCorrupt
+					}
+					s.name, s.format, s.dtype, s.width = t.Name, "safetensors", t.DType, max(1, t.Bits/8)
+					for _, v := range t.Shape {
+						s.shape = append(s.shape, uint64(v))
+					}
+				}
+				spans = append(spans, s)
+			}
 		}
 	}
 	var pos int64
