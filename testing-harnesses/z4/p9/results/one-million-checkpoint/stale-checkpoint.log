@@ -1,0 +1,4 @@
+2026/11/20 19:44:45 zeros3: namespace checkpoint ignored: checkpoint: checksum mismatch
+2026/11/20 19:44:51 zeros3: listening on 127.0.0.1:35791 (store=/workspace/work/zeros3/p9-scale-recovery-shadow/store, tls=false)
+2026/11/20 19:44:51 zeros3: terminated received, draining active requests (grace=30s)
+2026/11/20 19:44:51 zeros3: shutdown complete

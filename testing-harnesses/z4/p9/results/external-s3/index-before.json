@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "profile": 1,
+  "store_id": "01a1fb5c-fdbe-7abe-9214-87fd831efda9",
+  "generation": 1795221768434122074,
+  "journal_end": 1226,
+  "journal_sequence": 3,
+  "journal_sha256": "283ebe0150a2c9836de46c140f7839079422c35e87a998e62f705a500d7c606d",
+  "snapshots_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "catalog_sha256": "e6abbfd1a79f10e3b7e26ac367735a6e1e42f8e2a00b7604f99564e069f1d7b6",
+  "live_objects": 2,
+  "tombstones": 0,
+  "objects": 2,
+  "runs": [
+    {
+      "name": "run-1398000565.zsr",
+      "postings": 32,
+      "sha256": "2e7d75f836f60e7f8c1b238c66d8b6bc2c54d8d48257d65daa161d6ae75ae579"
+    }
+  ],
+  "directory": "/workspace/work/zeros3/p9-native-sdk/store/similarity-index/generation-47077227"
+}

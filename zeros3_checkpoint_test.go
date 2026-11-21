@@ -1,13 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -234,6 +241,89 @@ func TestNamespaceCheckpointPublicationCuts(t *testing.T) {
 			assertCheckpointState(t, dir)
 		})
 	}
+}
+
+func TestNamespaceCheckpointScaleState(t *testing.T) {
+	dir, fixture := os.Getenv("ZEROS3_P3_STORE"), os.Getenv("ZEROS3_P9_OBJECT_MANIFEST")
+	if dir == "" || fixture == "" {
+		t.Skip("set ZEROS3_P3_STORE and ZEROS3_P9_OBJECT_MANIFEST for an offline scale fixture")
+	}
+	type result struct {
+		sha                 string
+		current, historical int
+	}
+	inspect := func(use bool) result {
+		t.Helper()
+		s, err := openStore(dir, false, use)
+		mustOK(t, err)
+		defer s.Close()
+		h := sha256.New()
+		var answer result
+		for _, bucket := range slices.Sorted(maps.Keys(s.buckets)) {
+			b := s.buckets[bucket]
+			fmt.Fprintf(h, "%q %q\n", b.name, b.createdAt.UTC())
+			for _, key := range slices.Sorted(maps.Keys(b.objects)) {
+				o := b.objects[key]
+				fmt.Fprintf(h, "%q %q %x %d %q %q %d\n", key, o.manifestUUID, o.manifestSHA256,
+					o.size, o.etag, o.contentType, o.seq)
+				answer.current++
+			}
+		}
+		for _, bucket := range slices.Sorted(maps.Keys(s.history)) {
+			fmt.Fprintf(h, "history %q\n", bucket)
+			for _, key := range slices.Sorted(maps.Keys(s.history[bucket])) {
+				for _, row := range s.history[bucket][key] {
+					fmt.Fprintf(h, "%q %q %q %x %d %q %q %q %q %d\n", key, row.versionID, row.manifestUUID,
+						row.manifestSHA256, row.size, row.etag, row.contentType, row.archivedAt.UTC(), row.reason, row.seq)
+					answer.historical++
+				}
+			}
+		}
+		answer.sha = hex.EncodeToString(h.Sum(nil))
+		if !use {
+			return answer
+		}
+		source, err := os.Open(fixture)
+		mustOK(t, err)
+		defer source.Close()
+		lines := bufio.NewScanner(source)
+		picked, objects := 0, 0
+		for lines.Scan() {
+			objects++
+			if objects%4999 != 0 {
+				continue
+			}
+			var expected struct {
+				Bucket, Key string
+				SHA         string
+				Deleted     bool
+			}
+			mustOK(t, json.Unmarshal(lines.Bytes(), &expected))
+			_, got, err := s.GetObject(expected.Bucket, expected.Key)
+			if expected.Deleted {
+				if !errors.Is(err, errNoSuchKey) {
+					t.Fatalf("deleted key %s became visible: %v", expected.Key, err)
+				}
+			} else if err != nil || fmt.Sprintf("%x", sha256.Sum256(got)) != expected.SHA {
+				t.Fatalf("object %s does not match its original digest: %v", expected.Key, err)
+			}
+			picked++
+		}
+		mustOK(t, lines.Err())
+		if picked == 0 || answer.current+answer.historical != objects {
+			t.Fatalf("fixture count mismatch: %+v, manifest %d, sampled %d", answer, objects, picked)
+		}
+		t.Logf("%d fresh reads and absence checks against original fixture stamps", picked)
+		return answer
+	}
+
+	normal := inspect(false)
+	runtime.GC()
+	withCheckpoint := inspect(true)
+	if withCheckpoint != normal {
+		t.Fatalf("journal and checkpoint state differ: %+v vs %+v", normal, withCheckpoint)
+	}
+	t.Logf("%d visible objects and %d retained roots, state SHA-256 %s", normal.current, normal.historical, normal.sha)
 }
 
 func BenchmarkNamespaceCheckpointOpen(b *testing.B) {

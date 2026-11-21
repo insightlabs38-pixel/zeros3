@@ -1,0 +1,35 @@
+{
+  "original_sha256": {
+    "visibility.log": "c3bf40de2b0bf8cb154bd1efed5a98ff0b8969060d16da12d7c11ea0e40bb842",
+    "namespace-v2.zck": "cb8a08e924b24d3803e04e3ded26a0c04632cb8dfb4b7a616bf1d55c5b8c48b5"
+  },
+  "trials": [
+    {
+      "trial": "kill-0",
+      "signal": 9,
+      "checked_next_open": 7
+    },
+    {
+      "trial": "kill-1",
+      "signal": 9,
+      "checked_next_open": 8
+    },
+    {
+      "trial": "kill-2",
+      "signal": 9,
+      "checked_next_open": 9
+    },
+    {
+      "trial": "damaged_checkpoint",
+      "exact_objects": 9
+    },
+    {
+      "trial": "corrupt_journal_prefix",
+      "refusal": 1
+    },
+    {
+      "trial": "torn_journal_tail",
+      "exact_objects": 9
+    }
+  ]
+}

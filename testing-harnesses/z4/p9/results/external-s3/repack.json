@@ -1,0 +1,40 @@
+{
+  "dry_run": false,
+  "live_set_ok": true,
+  "pack_count": 4,
+  "packed_chunk_count": 228,
+  "pack_file_bytes": 15466661,
+  "packs_selected": 1,
+  "packs_fully_dead": 0,
+  "packs_rewritten": 1,
+  "selected": [
+    {
+      "tier": "hot",
+      "id": "295383d630edadbbf9bed86634f902e995443bf8bce4638ac56c24737fbd23a0",
+      "size": 26808,
+      "records": 4,
+      "compressed_records": 0,
+      "logical_bytes": 26344,
+      "live_records": 2,
+      "live_bytes": 25786,
+      "live_logical_bytes": 25786,
+      "live_manifest_records": 2,
+      "live_manifest_logical_bytes": 25786,
+      "dead_records": 2,
+      "dead_bytes": 558,
+      "utilization": 0.9720232766338407,
+      "reclaimable_bytes": 750
+    }
+  ],
+  "records_copied": 2,
+  "bytes_read": 25786,
+  "packs_written": 1,
+  "bytes_written": 10788,
+  "raw_records": 0,
+  "compressed_records": 2,
+  "logical_bytes": 25786,
+  "stored_bytes": 10516,
+  "packs_deleted": 1,
+  "bytes_deleted": 26808,
+  "bytes_reclaimed": 16020
+}

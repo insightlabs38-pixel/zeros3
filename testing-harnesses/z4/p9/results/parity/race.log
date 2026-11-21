@@ -1,0 +1,7 @@
+=== RUN   TestSingleLossAndDamagedParity
+--- PASS: TestSingleLossAndDamagedParity (0.00s)
+=== RUN   TestActualArchiveSliceRepair
+    parity_test.go:130: one verified restoration for each of eight archive members, sidecar 1048906 bytes
+--- PASS: TestActualArchiveSliceRepair (2.21s)
+PASS
+ok  	zeros3-z4/p9/parity	3.548s
