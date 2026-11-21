@@ -92,6 +92,57 @@ func TestNamespaceCheckpointMatchesHistoryMultipartAndTail(t *testing.T) {
 	}
 }
 
+func TestNamespaceCheckpointCompactHistoryAndLegacyFallback(t *testing.T) {
+	dir, _ := checkpointTestSeed(t)
+	legacyPath := filepath.Join(dir, "journal", namespaceCheckpointName)
+	legacy, err := os.ReadFile(legacyPath)
+	mustOK(t, err)
+	s, err := openStore(dir, true, false)
+	mustOK(t, err)
+	mustOK(t, s.writeNamespaceCheckpointLayout(true))
+	unchanged, err := os.ReadFile(legacyPath)
+	mustOK(t, err)
+	if !bytes.Equal(legacy, unchanged) {
+		t.Fatal("compact writer changed the existing V2 checkpoint")
+	}
+	history := s.history["pilot"]["retained"]
+	if len(history) == 0 {
+		t.Fatal("fixture has no retained history")
+	}
+	prior := *history[0]
+	prior.versionID = "distinct-retained-version"
+	wire, err := appendCheckpointHistory(nil, &prior)
+	mustOK(t, err)
+	row, err := readCheckpointHistory(wire, &strIntern{m: map[string]string{}})
+	mustOK(t, err)
+	if !row.archivedAt.Equal(prior.archivedAt) {
+		t.Fatalf("archive time changed: %v wanted %v", row.archivedAt, prior.archivedAt)
+	}
+	prior.archivedAt = row.archivedAt
+	if *row != prior {
+		t.Fatalf("distinct retained version changed: %+v wanted %+v", row, prior)
+	}
+	_, err = s.PutObject("pilot", "retained", []byte("replay after version three"), "text/plain", nil)
+	mustOK(t, err)
+	mustOK(t, s.Close())
+	assertCheckpointState(t, dir)
+
+	compactPath := filepath.Join(dir, "journal", namespaceCompactCheckpointName)
+	compact, err := os.ReadFile(compactPath)
+	mustOK(t, err)
+	compact[len(compact)-1] ^= 1
+	mustOK(t, os.WriteFile(compactPath, compact, 0o600))
+	direct := checkpointTestOpen(t, dir, false)
+	direct.replayIn = &strIntern{m: map[string]string{}}
+	if _, _, err := direct.loadNamespaceCheckpointLayout(direct.journal.f, true); err == nil {
+		t.Fatal("tampered V3 checkpoint was accepted")
+	}
+	if _, _, err := direct.loadNamespaceCheckpoint(direct.journal.f); err != nil {
+		t.Fatalf("did not fall back to the retained V2 checkpoint: %v", err)
+	}
+	assertCheckpointState(t, dir)
+}
+
 func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	dir, _ := checkpointTestSeed(t)
 	ck := filepath.Join(dir, "journal", namespaceCheckpointName)

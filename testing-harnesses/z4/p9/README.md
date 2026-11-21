@@ -10,6 +10,12 @@ covers buckets, visible objects, retained history and incomplete multipart
 uploads, with no locator data. The store format and journal remain compatible
 with binaries that ignore the checkpoint.
 
+`namespace-checkpoint -compact-history` writes a separate V3 checkpoint
+with binary retained-history rows. The writer preserves the V2 file.
+Checkpoint opens prefer a valid V3 and fall back to V2 or journal replay.
+The sequence, prefix hash, final-frame CRC and file digest checks apply
+to both layouts.
+
 `zeros3 serve -namespace-checkpoint -store DIR` opts into loading this
 derived state. The reader verifies its SHA-256 trailer, store ID, journal
 prefix SHA-256, offset, sequence and last-frame CRC before replaying the
