@@ -116,11 +116,11 @@ import (
 //    26323    Portable snapshot bundles (`zeros3 bundle`)
 //    27520    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    28155    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45252    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    51811    Windowed and estimated similarity deltas (extracted dcore)
-//    53340    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61032    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67304    CLI dispatch, HTTP server/startup, and main
+//    45261    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    51820    Windowed and estimated similarity deltas (extracted dcore)
+//    53349    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61041    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67313    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -35130,6 +35130,15 @@ func (s *Store) repOpenRootReader(root *repRoot, rng byteRange) (objectReader, e
 				return nil, nil
 			}
 			produce = func(w io.Writer) error { return carReadRange(call, off, n, w) }
+		case repKindParquet:
+			if n > 64<<20 {
+				src.close()
+				return nil, nil
+			}
+			produce = func(w io.Writer) error {
+				_, err := repSCParquetRangeTo(call, w, off, n)
+				return err
+			}
 		case repKindConcat:
 			if !concatRangeSupported(call.Rep, off, off+n) {
 				src.close()
@@ -77284,16 +77293,20 @@ func repSCReadParquetRange(c *repCall, off, n int64) ([]byte, repPQRangeStats, e
 	if n < 0 || n > 64<<20 {
 		return nil, repPQRangeStats{}, errRepLimit
 	}
+	var out bytes.Buffer
+	st, err := repSCParquetRangeTo(c, &out, off, n)
+	return out.Bytes(), st, err
+}
+
+func repSCParquetRangeTo(c *repCall, w io.Writer, off, n int64) (repPQRangeStats, error) {
 	if c.Rep.Kind != repKindParquet {
-		return nil, repPQRangeStats{}, errors.New("kinds: not a Parquet representation")
+		return repPQRangeStats{}, errors.New("kinds: not a Parquet representation")
 	}
 	rec, err := repSCparquetRecipe(c)
 	if err != nil {
-		return nil, repPQRangeStats{}, err
+		return repPQRangeStats{}, err
 	}
-	var out bytes.Buffer
-	st, err := repPQDecodeRange(&out, rec, func(id repPQID) ([]byte, error) { return c.structuredGet(id) }, off, n, repStructuredParquetLimits())
-	return out.Bytes(), st, err
+	return repPQDecodeRange(w, rec, func(id repPQID) ([]byte, error) { return c.structuredGet(id) }, off, n, repStructuredParquetLimits())
 }
 
 // Port source: zeros3-z3/repz3/kinds/sst.go

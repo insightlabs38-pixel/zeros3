@@ -1,0 +1,1095 @@
+{
+  "image_sha256": "e866e34e67c05491445689d7064ce16fa6cde37dcb4fab9ffa187f56d9a4639d",
+  "source_sha256": "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924",
+  "eligible_clusters": 6081,
+  "samples": [
+    {
+      "extent": {
+        "logical": 401181,
+        "plain_bytes": 7086,
+        "physical": 196608,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2427,
+      "recipe_kind": 1,
+      "recipe_build_us": 10416,
+      "replay_us": 4667,
+      "cluster_sha256": "d5ea0fb926cce39abd3c09068ccdc521de375ddef5ca1416137ee538bb88d933",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 2689382,
+        "plain_bytes": 59187,
+        "physical": 585728,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 3771,
+      "recipe_kind": 1,
+      "recipe_build_us": 46226,
+      "replay_us": 18063,
+      "cluster_sha256": "71d7f6565d000296a56124598a0d03b539a17dab9e86a89b048ef66ce94e477c",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 3733779,
+        "plain_bytes": 10757,
+        "physical": 974848,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2244,
+      "recipe_kind": 1,
+      "recipe_build_us": 13360,
+      "replay_us": 622,
+      "cluster_sha256": "b4fc95472d4e02d49f8b432e6189a23020c3eda77902ba3c0ff98c656bdf1637",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 4580252,
+        "plain_bytes": 10296,
+        "physical": 1363968,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2416,
+      "recipe_kind": 1,
+      "recipe_build_us": 8700,
+      "replay_us": 397,
+      "cluster_sha256": "c895fb035b6aed8aab5a5b88e35e2b397ff1b861cd960b53710981daf5b855b7",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 6027242,
+        "plain_bytes": 15391,
+        "physical": 1753088,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2786,
+      "recipe_kind": 1,
+      "recipe_build_us": 1189,
+      "replay_us": 44638,
+      "cluster_sha256": "2827919e7232c4e66a6b1499420317819c634c42686d2d211d2dc57515a2d83c",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 7190898,
+        "plain_bytes": 7556,
+        "physical": 2142208,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 3011,
+      "recipe_kind": 1,
+      "recipe_build_us": 4054,
+      "replay_us": 533,
+      "cluster_sha256": "c8b66836385eb9f8ab102f4c410e2ed14c1de8a9bd4baece266157a8b9dc1bd0",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 8105505,
+        "plain_bytes": 7961,
+        "physical": 2531328,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2713,
+      "recipe_kind": 1,
+      "recipe_build_us": 816,
+      "replay_us": 376,
+      "cluster_sha256": "f15f119839f3c1a6e95bd1f9451435e5b29897a4d42931ce78fe0d1c7b756c85",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 9075958,
+        "plain_bytes": 14179,
+        "physical": 2920448,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 10,
+      "explicit_recipe_bytes": 3367,
+      "recipe_kind": 2,
+      "recipe_build_us": 1820,
+      "replay_us": 2433,
+      "cluster_sha256": "17b4762d7156a5ff4088c191d60643cddf5058e6da4b4e859efd3ad09b2832e4",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 10429042,
+        "plain_bytes": 13930,
+        "physical": 3309568,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 1937,
+      "recipe_kind": 1,
+      "recipe_build_us": 1328,
+      "replay_us": 1227,
+      "cluster_sha256": "d983f70b0dc53d8abecdbe07b315814175cd4dcba59b7f32daae47a4a2b5dcd8",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 12116550,
+        "plain_bytes": 19799,
+        "physical": 3698688,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2306,
+      "recipe_kind": 1,
+      "recipe_build_us": 1977,
+      "replay_us": 604,
+      "cluster_sha256": "06f19d6627c49358fbcdf41401e776a299382edd3e876f642006bc1479e89eeb",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 13636690,
+        "plain_bytes": 10000,
+        "physical": 4087808,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2373,
+      "recipe_kind": 1,
+      "recipe_build_us": 427,
+      "replay_us": 771,
+      "cluster_sha256": "b27995c49328dc686ee9f85d215b103dcafb3df773d0bec084f0f3abcf3752bf",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 14747752,
+        "plain_bytes": 11107,
+        "physical": 4476928,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 11,
+      "explicit_recipe_bytes": 2098,
+      "recipe_kind": 2,
+      "recipe_build_us": 830,
+      "replay_us": 371,
+      "cluster_sha256": "ba74ea0e5e700e0253eb0cfb7a83c0a5a3c4ef280c41933687a22fcb59f7353b",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 15941163,
+        "plain_bytes": 10882,
+        "physical": 4866048,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2937,
+      "recipe_kind": 1,
+      "recipe_build_us": 1271,
+      "replay_us": 1152,
+      "cluster_sha256": "972bc66e1b03b76c6d8e7a7765f52a7ab891a52ddff34e206a843e09ee301307",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 17087442,
+        "plain_bytes": 8583,
+        "physical": 5255168,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2809,
+      "recipe_kind": 1,
+      "recipe_build_us": 861,
+      "replay_us": 744,
+      "cluster_sha256": "fffc5d3ee40a927deea4f7571b74f310c94a8365cba878d847711e517fd245d2",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 18206014,
+        "plain_bytes": 12946,
+        "physical": 5644288,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2300,
+      "recipe_kind": 1,
+      "recipe_build_us": 2270,
+      "replay_us": 533,
+      "cluster_sha256": "11ae2829ce62c230c73ff612c632b5f22602ccb1e46ca8637f62d53d02997396",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 19684892,
+        "plain_bytes": 21867,
+        "physical": 6033408,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2463,
+      "recipe_kind": 1,
+      "recipe_build_us": 1244,
+      "replay_us": 2864,
+      "cluster_sha256": "b9be550363b47abce95761243b46bf9a2e4443628c26283247721bff2b036cc2",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 21129639,
+        "plain_bytes": 11230,
+        "physical": 6422528,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2286,
+      "recipe_kind": 1,
+      "recipe_build_us": 764,
+      "replay_us": 5427,
+      "cluster_sha256": "b0ac65ca9be68e0a689507b41b1d5bee93783bc7c0e5e784c177cabe6b91ddbb",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 22361025,
+        "plain_bytes": 11686,
+        "physical": 6811648,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2390,
+      "recipe_kind": 1,
+      "recipe_build_us": 1055,
+      "replay_us": 1218,
+      "cluster_sha256": "730f24d632f85393c217cd031dcdfb21b1f8e6646e97bb08d847a43cf5c9eb17",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 23603216,
+        "plain_bytes": 8442,
+        "physical": 7200768,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2517,
+      "recipe_kind": 1,
+      "recipe_build_us": 1333,
+      "replay_us": 447,
+      "cluster_sha256": "5a46de34515e67a8a5f17c38ee028a2994125fca6fc7fa1563df36fd84cb2482",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 24464717,
+        "plain_bytes": 8321,
+        "physical": 7589888,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2691,
+      "recipe_kind": 1,
+      "recipe_build_us": 799,
+      "replay_us": 598,
+      "cluster_sha256": "3d588b852d45bc3e9349248b5e8da3fd23818632866701c071b8c0d4d54d57c0",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 25406748,
+        "plain_bytes": 9569,
+        "physical": 7979008,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 11,
+      "explicit_recipe_bytes": 3096,
+      "recipe_kind": 2,
+      "recipe_build_us": 638,
+      "replay_us": 561,
+      "cluster_sha256": "f1493408e4d0dc6424ae2ba4e4a53c9b29bb4e89bbd016a4882ae5d78bcbd3e8",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 26224022,
+        "plain_bytes": 8335,
+        "physical": 8368128,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2695,
+      "recipe_kind": 1,
+      "recipe_build_us": 810,
+      "replay_us": 534,
+      "cluster_sha256": "a682e3a0b2b37639d8b059466912c9014372260b4e91ae3518e8cf3e2ab4c58d",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 27029995,
+        "plain_bytes": 7772,
+        "physical": 8757248,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2485,
+      "recipe_kind": 1,
+      "recipe_build_us": 530,
+      "replay_us": 305,
+      "cluster_sha256": "3d4ebb7f3591f3f545188b6a3fd332929d2862ddb8f5cdca46962f2fa8fba44f",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 27825741,
+        "plain_bytes": 7838,
+        "physical": 9146368,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2728,
+      "recipe_kind": 1,
+      "recipe_build_us": 1021,
+      "replay_us": 1166,
+      "cluster_sha256": "718d0a76ccc952c5e485f611d3c32b5078063a375e709d84d158e32ec4223560",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 28618774,
+        "plain_bytes": 7572,
+        "physical": 9535488,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2512,
+      "recipe_kind": 1,
+      "recipe_build_us": 512,
+      "replay_us": 294,
+      "cluster_sha256": "2a7a8805d0edb3a9eda49c0512e4680f8d805bbc87a28e7c7e8816d12798740f",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 29452915,
+        "plain_bytes": 9442,
+        "physical": 9924608,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2768,
+      "recipe_kind": 1,
+      "recipe_build_us": 1519,
+      "replay_us": 830,
+      "cluster_sha256": "d18ce5266b6da16ee2bee895beb8fee1ab08a395f06f0d4c75b770f6cb2f1a13",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 30342453,
+        "plain_bytes": 8227,
+        "physical": 10313728,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2665,
+      "recipe_kind": 1,
+      "recipe_build_us": 682,
+      "replay_us": 838,
+      "cluster_sha256": "b0422b3c5ab87f470847b6eb78c1dc109b0e7320014f2fa8d4e469657d6b6192",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 31158203,
+        "plain_bytes": 8850,
+        "physical": 10702848,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2572,
+      "recipe_kind": 1,
+      "recipe_build_us": 831,
+      "replay_us": 379,
+      "cluster_sha256": "2cfc1fb19dce20e8891824ff9159a3f48e817936a534776819a7eb4da29084fc",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 31943217,
+        "plain_bytes": 8805,
+        "physical": 11091968,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2640,
+      "recipe_kind": 1,
+      "recipe_build_us": 1254,
+      "replay_us": 34898,
+      "cluster_sha256": "291fca1bbb9d80684ce7dbed45752d9fcbf25e42271ad3f4a9f792886a2a5e92",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 32789882,
+        "plain_bytes": 8515,
+        "physical": 11481088,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2453,
+      "recipe_kind": 1,
+      "recipe_build_us": 419,
+      "replay_us": 369,
+      "cluster_sha256": "de8dcd315bdedbf38f0a2ef4aa229a8a0a4577e3b57570209cd464f31d4da158",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 33571861,
+        "plain_bytes": 9194,
+        "physical": 11870208,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2251,
+      "recipe_kind": 1,
+      "recipe_build_us": 1374,
+      "replay_us": 326,
+      "cluster_sha256": "7fe299e6ef9e4590b04c51873c9061c1151d0850741ef7c5dc045eb7fe2af0dc",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 34438584,
+        "plain_bytes": 9231,
+        "physical": 12259328,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 11,
+      "explicit_recipe_bytes": 2544,
+      "recipe_kind": 2,
+      "recipe_build_us": 691,
+      "replay_us": 496,
+      "cluster_sha256": "65b65102a6dd3d1653eb22bbb0dc5b2a0b5ea32de72745e2d8d7e968eb83ce34",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 35318967,
+        "plain_bytes": 5614,
+        "physical": 12652544,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2212,
+      "recipe_kind": 1,
+      "recipe_build_us": 527,
+      "replay_us": 229,
+      "cluster_sha256": "6461ef0989e67caf8fd847c16807071e761d60f2dab5d1da6937ed0568d878d9",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 36098268,
+        "plain_bytes": 9867,
+        "physical": 13041664,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 11,
+      "explicit_recipe_bytes": 2531,
+      "recipe_kind": 2,
+      "recipe_build_us": 619,
+      "replay_us": 511,
+      "cluster_sha256": "17c17b9f15364a611d5c4a0a3e233b234415d47ac4e7e1e2eb8d5a70bca08772",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 36901372,
+        "plain_bytes": 8100,
+        "physical": 13430784,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2544,
+      "recipe_kind": 1,
+      "recipe_build_us": 752,
+      "replay_us": 351,
+      "cluster_sha256": "4a1bb879c119f3db456e9bbbbcf245927ec6c166a7a14d9207d04ee000c957e8",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 37788120,
+        "plain_bytes": 8618,
+        "physical": 13819904,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2630,
+      "recipe_kind": 1,
+      "recipe_build_us": 650,
+      "replay_us": 494,
+      "cluster_sha256": "fa166a675ae2a84d03f8b4ea00ae660e307f6ef8264c337626736175b965cd56",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 38605903,
+        "plain_bytes": 8025,
+        "physical": 14209024,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 10,
+      "explicit_recipe_bytes": 2859,
+      "recipe_kind": 2,
+      "recipe_build_us": 805,
+      "replay_us": 546,
+      "cluster_sha256": "7c14428109325b25a02082849408383d899af5c6a7b028361149cff349a38eb4",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 39470798,
+        "plain_bytes": 22058,
+        "physical": 14598144,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 3834,
+      "recipe_kind": 1,
+      "recipe_build_us": 2358,
+      "replay_us": 12550,
+      "cluster_sha256": "1650cb93762658d4aa36da7a795c7081678a8e1ce7fd11234522c68b18e73333",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 40374822,
+        "plain_bytes": 8350,
+        "physical": 14987264,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2778,
+      "recipe_kind": 1,
+      "recipe_build_us": 674,
+      "replay_us": 442,
+      "cluster_sha256": "8ed71572db7b2f097a2777ab8d1817d629a016504b929aa60521afad7e199318",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 41216061,
+        "plain_bytes": 8854,
+        "physical": 15376384,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2234,
+      "recipe_kind": 1,
+      "recipe_build_us": 1166,
+      "replay_us": 316,
+      "cluster_sha256": "b4a06eaddbfdc2c0a5fff8f9ecfd5335796a402594134583e4bdc3dee3ca869d",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 42111380,
+        "plain_bytes": 9469,
+        "physical": 15765504,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2592,
+      "recipe_kind": 1,
+      "recipe_build_us": 517,
+      "replay_us": 1928,
+      "cluster_sha256": "8afcd2c809613e34f78e83c5e3e37db6bce86959eaca829488388d0ad84607e8",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 42928280,
+        "plain_bytes": 8343,
+        "physical": 16154624,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2461,
+      "recipe_kind": 1,
+      "recipe_build_us": 1381,
+      "replay_us": 1180,
+      "cluster_sha256": "ac2ec926eda633681f145ddc4d7571ab9a624889080c43d66a9c2cdec46f1222",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 43713944,
+        "plain_bytes": 11938,
+        "physical": 16543744,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2934,
+      "recipe_kind": 1,
+      "recipe_build_us": 3223,
+      "replay_us": 535,
+      "cluster_sha256": "c0cc5ad803525837e65bc963297f681315f1abcb41c06bd8366caf11711c4f16",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 44507700,
+        "plain_bytes": 6951,
+        "physical": 16932864,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2233,
+      "recipe_kind": 1,
+      "recipe_build_us": 8830,
+      "replay_us": 668,
+      "cluster_sha256": "95af9b51d4c1730f50290eda79711da5fc351b066ceb23783c2dca0e78e21cc8",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 45295111,
+        "plain_bytes": 8256,
+        "physical": 17321984,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2704,
+      "recipe_kind": 1,
+      "recipe_build_us": 528,
+      "replay_us": 374,
+      "cluster_sha256": "066e57788ffb3472aa91ffafddadb12aeee4537b716bd31a39a6b6d9bd541a8a",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 46112534,
+        "plain_bytes": 8129,
+        "physical": 17711104,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2596,
+      "recipe_kind": 1,
+      "recipe_build_us": 517,
+      "replay_us": 6746,
+      "cluster_sha256": "4784aef4ebb173fb07ae9c2f93f3f2046f8a0237077a90ad3cecf8a08b3cc40e",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 46934720,
+        "plain_bytes": 7953,
+        "physical": 18100224,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2817,
+      "recipe_kind": 1,
+      "recipe_build_us": 2621,
+      "replay_us": 342,
+      "cluster_sha256": "3b2b3c11f80adc06fda4768a11a7affb3ff4e2c16bad2a5656bbeed8802e1b79",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 47748484,
+        "plain_bytes": 7733,
+        "physical": 18489344,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2585,
+      "recipe_kind": 1,
+      "recipe_build_us": 1126,
+      "replay_us": 38309,
+      "cluster_sha256": "2e5be6d00fcaa8b221aa1380a1f2f7249f77d47a95724cc2a4417754ca84558d",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 48675018,
+        "plain_bytes": 9980,
+        "physical": 18878464,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2837,
+      "recipe_kind": 1,
+      "recipe_build_us": 552,
+      "replay_us": 479,
+      "cluster_sha256": "adedd6c4f5ea08cc1b45265f73602905da00735dd7a46212c4789593595ed13c",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 49501207,
+        "plain_bytes": 6608,
+        "physical": 19267584,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2151,
+      "recipe_kind": 1,
+      "recipe_build_us": 447,
+      "replay_us": 617,
+      "cluster_sha256": "37a85adbeb39c5ac1da538f833e7d78e2fd143eb39d8948f2ec374d1114f145c",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 50285598,
+        "plain_bytes": 7588,
+        "physical": 19656704,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2580,
+      "recipe_kind": 1,
+      "recipe_build_us": 1654,
+      "replay_us": 350,
+      "cluster_sha256": "d9ff7e7c0287890cb5a8bbd16b637a664e3d3b510d08e77496e2886060ede4f0",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 51199321,
+        "plain_bytes": 8800,
+        "physical": 20049920,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2829,
+      "recipe_kind": 1,
+      "recipe_build_us": 542,
+      "replay_us": 1000,
+      "cluster_sha256": "e67617f3a5fd5a43f007fead7641390cf59616cc04b23d63a2d4bfc2b833e4b2",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 51997313,
+        "plain_bytes": 8564,
+        "physical": 20439040,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 11,
+      "explicit_recipe_bytes": 2602,
+      "recipe_kind": 2,
+      "recipe_build_us": 3278,
+      "replay_us": 446,
+      "cluster_sha256": "eb2fbecf9f2d1b01e3934a3f09a7a779dc505492828986f352fbc00025bcfc0b",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 53049995,
+        "plain_bytes": 8143,
+        "physical": 20828160,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2686,
+      "recipe_kind": 1,
+      "recipe_build_us": 2138,
+      "replay_us": 551,
+      "cluster_sha256": "30f2223b785e312a5608d3fe6fb334bf7107c2861871b9eaee7b147471f9ce81",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 53840426,
+        "plain_bytes": 8172,
+        "physical": 21217280,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2797,
+      "recipe_kind": 1,
+      "recipe_build_us": 660,
+      "replay_us": 499,
+      "cluster_sha256": "3e4bdbedcdcc4df6628c92cf143ba9c2bbc5ed88ad82467e9ddb28645ad1fe90",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 54762851,
+        "plain_bytes": 9673,
+        "physical": 21606400,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 3157,
+      "recipe_kind": 1,
+      "recipe_build_us": 2278,
+      "replay_us": 1934,
+      "cluster_sha256": "124f0ce192d867e941c425fc4506259f4c04c32595005a66531a374889cf896c",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 55594344,
+        "plain_bytes": 8305,
+        "physical": 21995520,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2699,
+      "recipe_kind": 1,
+      "recipe_build_us": 4526,
+      "replay_us": 7250,
+      "cluster_sha256": "eefdc008d93054b7e8aecb996e916ff2cba1129158360fb9c9e9651f07622b03",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 56362178,
+        "plain_bytes": 8462,
+        "physical": 22384640,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2309,
+      "recipe_kind": 1,
+      "recipe_build_us": 10318,
+      "replay_us": 1117,
+      "cluster_sha256": "0139e92fa3e117e32a9255794a254ede16ad73c1c9fa00342efcd5bedd11e0d0",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 57133241,
+        "plain_bytes": 10127,
+        "physical": 22773760,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2765,
+      "recipe_kind": 1,
+      "recipe_build_us": 1406,
+      "replay_us": 601,
+      "cluster_sha256": "bf55a650d0db4456c200943d7d606324054f9cb7b186eccf00aa3bad79cae959",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 58051304,
+        "plain_bytes": 10174,
+        "physical": 23162880,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2530,
+      "recipe_kind": 1,
+      "recipe_build_us": 2060,
+      "replay_us": 1008,
+      "cluster_sha256": "32fdc22da1a38880d9b7f5615782543364e913cc76c9e19f61a02ad35a9a257e",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 58980413,
+        "plain_bytes": 9942,
+        "physical": 23552000,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2155,
+      "recipe_kind": 1,
+      "recipe_build_us": 901,
+      "replay_us": 1063,
+      "cluster_sha256": "b3e426c22329022193179df0c7869b1de1eeec22af9be856b8a832e58a707346",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 59922893,
+        "plain_bytes": 7133,
+        "physical": 23941120,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2387,
+      "recipe_kind": 1,
+      "recipe_build_us": 433,
+      "replay_us": 257,
+      "cluster_sha256": "6b24fdc52631b663ff5688b83a84f1fd229950781f8fbeb7cdfdf0de70e77da3",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 60830905,
+        "plain_bytes": 16579,
+        "physical": 24330240,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 11,
+      "explicit_recipe_bytes": 2254,
+      "recipe_kind": 2,
+      "recipe_build_us": 1791,
+      "replay_us": 462,
+      "cluster_sha256": "44139a26a8f8f64008c09f015c1a072602a276c48b7df52a687a0832f232bcf2",
+      "exact": true
+    },
+    {
+      "extent": {
+        "logical": 62347397,
+        "plain_bytes": 45130,
+        "physical": 24719360,
+        "cluster_bytes": 4096
+      },
+      "source_bytes": 4096,
+      "zero_padding": 0,
+      "recipe_bytes": 3,
+      "explicit_recipe_bytes": 2564,
+      "recipe_kind": 1,
+      "recipe_build_us": 7102,
+      "replay_us": 3197,
+      "cluster_sha256": "82dfa75120a166ad141b579b4afd53853c7967606f247eca106e5e5ec170817b",
+      "exact": true
+    }
+  ]
+}

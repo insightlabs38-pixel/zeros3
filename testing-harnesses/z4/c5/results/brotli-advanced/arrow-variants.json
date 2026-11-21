@@ -1,0 +1,20 @@
+{
+  "pyarrow": "26.0.1",
+  "source_sha256": "6756b02f57d607dd8aecd8bdcb0cf0745e61a31f723adbdfea7015e0d250142e",
+  "variants": [
+    {
+      "level": 10,
+      "row_groups_checked": 8,
+      "file": "arrow-q10.parquet",
+      "bytes": 25615004,
+      "sha256": "76fcae65dacc6c1fcccf1565dc149db4cd1272cc58e1a88a78815c66fa99333e"
+    },
+    {
+      "level": 11,
+      "row_groups_checked": 8,
+      "file": "arrow-q11.parquet",
+      "bytes": 24813688,
+      "sha256": "97a05cc31a961a3bc5a84fcef499bc8e493cdcfeed7532d5cec367f12ac1f95c"
+    }
+  ]
+}

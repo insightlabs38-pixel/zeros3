@@ -1,0 +1,51 @@
+=== RUN   TestAuthorityColumnarHistory
+=== RUN   TestAuthorityColumnarHistory/pyarrow-snappy
+=== RUN   TestAuthorityColumnarHistory/pyarrow-snappy/cdc
+=== RUN   TestAuthorityColumnarHistory/pyarrow-snappy/b2-delta
+=== RUN   TestAuthorityColumnarHistory/pyarrow-snappy/structured
+=== RUN   TestAuthorityColumnarHistory/pyarrow-zstd
+=== RUN   TestAuthorityColumnarHistory/pyarrow-zstd/cdc
+=== RUN   TestAuthorityColumnarHistory/pyarrow-zstd/b2-delta
+=== RUN   TestAuthorityColumnarHistory/pyarrow-zstd/structured
+=== RUN   TestAuthorityColumnarHistory/pyarrow-lz4
+=== RUN   TestAuthorityColumnarHistory/pyarrow-lz4/cdc
+=== RUN   TestAuthorityColumnarHistory/pyarrow-lz4/b2-delta
+=== RUN   TestAuthorityColumnarHistory/pyarrow-lz4/structured
+=== RUN   TestAuthorityColumnarHistory/pyarrow-brotli
+=== RUN   TestAuthorityColumnarHistory/pyarrow-brotli/cdc
+=== RUN   TestAuthorityColumnarHistory/pyarrow-brotli/b2-delta
+=== RUN   TestAuthorityColumnarHistory/pyarrow-brotli/structured
+=== RUN   TestAuthorityColumnarHistory/duckdb-snappy
+=== RUN   TestAuthorityColumnarHistory/duckdb-snappy/cdc
+=== RUN   TestAuthorityColumnarHistory/duckdb-snappy/b2-delta
+=== RUN   TestAuthorityColumnarHistory/duckdb-snappy/structured
+=== RUN   TestAuthorityColumnarHistory/duckdb-zstd
+=== RUN   TestAuthorityColumnarHistory/duckdb-zstd/cdc
+=== RUN   TestAuthorityColumnarHistory/duckdb-zstd/b2-delta
+=== RUN   TestAuthorityColumnarHistory/duckdb-zstd/structured
+--- PASS: TestAuthorityColumnarHistory (275.11s)
+    --- PASS: TestAuthorityColumnarHistory/pyarrow-snappy (25.11s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-snappy/cdc (0.59s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-snappy/b2-delta (2.05s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-snappy/structured (22.15s)
+    --- PASS: TestAuthorityColumnarHistory/pyarrow-zstd (27.89s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-zstd/cdc (0.18s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-zstd/b2-delta (1.49s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-zstd/structured (26.17s)
+    --- PASS: TestAuthorityColumnarHistory/pyarrow-lz4 (36.42s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-lz4/cdc (0.25s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-lz4/b2-delta (1.13s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-lz4/structured (34.99s)
+    --- PASS: TestAuthorityColumnarHistory/pyarrow-brotli (102.59s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-brotli/cdc (0.74s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-brotli/b2-delta (1.91s)
+        --- PASS: TestAuthorityColumnarHistory/pyarrow-brotli/structured (99.87s)
+    --- PASS: TestAuthorityColumnarHistory/duckdb-snappy (37.21s)
+        --- PASS: TestAuthorityColumnarHistory/duckdb-snappy/cdc (0.24s)
+        --- PASS: TestAuthorityColumnarHistory/duckdb-snappy/b2-delta (2.91s)
+        --- PASS: TestAuthorityColumnarHistory/duckdb-snappy/structured (33.98s)
+    --- PASS: TestAuthorityColumnarHistory/duckdb-zstd (45.88s)
+        --- PASS: TestAuthorityColumnarHistory/duckdb-zstd/cdc (0.16s)
+        --- PASS: TestAuthorityColumnarHistory/duckdb-zstd/b2-delta (1.79s)
+        --- PASS: TestAuthorityColumnarHistory/duckdb-zstd/structured (43.90s)
+PASS
