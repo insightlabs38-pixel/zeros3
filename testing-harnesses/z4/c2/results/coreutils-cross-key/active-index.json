@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "profile": 1,
+  "store_id": "01a1f734-edb9-7cb7-9ba3-68e3552086c7",
+  "generation": 1795148833934706472,
+  "journal_end": 1176,
+  "journal_sequence": 4,
+  "journal_sha256": "db4f9c37c60befa99638951ba3b51f9f230f6c5f3739410cf1ae14e2b5b184d2",
+  "snapshots_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "catalog_sha256": "7f2130f63eab6110f5e499d2db0bbecfb09147a474667c207d1bee1b0edf0db4",
+  "live_objects": 3,
+  "tombstones": 0,
+  "objects": 3,
+  "runs": [
+    {
+      "name": "run-2161052829.zsr",
+      "postings": 48,
+      "sha256": "fe0e362cc1052e51d14fe528daa1a5a6bd920c9cca30d58a1ed00d47f2a20d26"
+    }
+  ],
+  "directory": "/workspace/work/zeros3/c2b-real-tar.Kxwi2i/store/similarity-index/generation-1508648454"
+}

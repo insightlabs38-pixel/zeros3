@@ -88,39 +88,39 @@ import (
 //     4347    Small-object segments (inline manifests, store level 11)
 //     5587    Manifests (immutable, JSON)
 //     6383    Visibility journal (append-only, checksummed)
-//     6878    Store: format, namespace, and object CRUD
-//     8333    Version history/restore, history pruning, ListObjectsV2
-//     8814    SigV4 authentication (header and presigned-URL)
-//     9791    Request payload checksums and S3-shaped XML error/response types
-//    10008    HTTP routing and S3 operation handlers
-//    10424    Conditional operations (PUT/GET/HEAD preconditions)
-//    11119    CopyObject
-//    11424    Multipart upload
-//    12364    Stats and reachability scanning
-//    13839    Verify
-//    14052    Store locking and safe offline GC
-//    14355    Offline compaction (`zeros3 compact`)
-//    15421    Pack reclamation and repacking (`zeros3 repack`)
-//    15906    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16419    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17484    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18288    Delta sync client, credentials, and parallel transfer
-//    20282    Bulk logical-chunk transport (v2)
-//    21193    Recursive directory sync
-//    21498    Remote replication (`zeros3 replicate`)
-//    22257    Peer-assisted corruption repair (`zeros3 repair`)
-//    22825    Namespace (prefix/bucket) replication
-//    23132    Copy-on-write namespace fork (`zeros3 fork`)
-//    23340    Snapshots and restore
-//    24501    Structural diff and inspect (introspection)
-//    25840    Portable snapshot bundles (`zeros3 bundle`)
-//    27037    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    27672    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    44744    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49266    Windowed and estimated similarity deltas (extracted dcore)
-//    50795    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58435    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    64707    CLI dispatch, HTTP server/startup, and main
+//     6882    Store: format, namespace, and object CRUD
+//     8337    Version history/restore, history pruning, ListObjectsV2
+//     8818    SigV4 authentication (header and presigned-URL)
+//     9795    Request payload checksums and S3-shaped XML error/response types
+//    10012    HTTP routing and S3 operation handlers
+//    10438    Conditional operations (PUT/GET/HEAD preconditions)
+//    11133    CopyObject
+//    11438    Multipart upload
+//    12378    Stats and reachability scanning
+//    13882    Verify
+//    14097    Store locking and safe offline GC
+//    14400    Offline compaction (`zeros3 compact`)
+//    15466    Pack reclamation and repacking (`zeros3 repack`)
+//    15951    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16464    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17529    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18333    Delta sync client, credentials, and parallel transfer
+//    20605    Bulk logical-chunk transport (v2)
+//    21516    Recursive directory sync
+//    21821    Remote replication (`zeros3 replicate`)
+//    22724    Peer-assisted corruption repair (`zeros3 repair`)
+//    23292    Namespace (prefix/bucket) replication
+//    23608    Copy-on-write namespace fork (`zeros3 fork`)
+//    23816    Snapshots and restore
+//    24977    Structural diff and inspect (introspection)
+//    26323    Portable snapshot bundles (`zeros3 bundle`)
+//    27520    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28155    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45249    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    51803    Windowed and estimated similarity deltas (extracted dcore)
+//    53332    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    60980    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67252    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -6770,8 +6770,12 @@ func replayJournalFn(f *os.File, keep bool, apply func(journalRecord) error) (va
 	if serr != nil {
 		return 0, 0, 0, nil, fmt.Errorf("journal: stat failed: %w", serr)
 	}
-	r := bufio.NewReaderSize(io.NewSectionReader(f, 0, st.Size()), journalReadBuffer)
-	var offset int64
+	return replayJournalRange(f, 0, st.Size(), 0, keep, apply)
+}
+
+func replayJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep bool, apply func(journalRecord) error) (validEnd int64, lastSeq uint64, n int, applyErr, err error) {
+	r := bufio.NewReaderSize(io.NewSectionReader(f, start, end-start), journalReadBuffer)
+	offset, lastSeq := start, previous
 	var hdr [journalHeaderSize]byte
 	var scratch []byte
 	for {
@@ -10256,6 +10260,16 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		srv.handleBulk(w, r, rawPath, check)
 		return
 	}
+	if rawPath == zeros3AuthExportPath && r.Method == http.MethodPost {
+		if body, ok := readBufferedBodyLimit(w, r, rawPath, check, 16<<10); ok {
+			srv.handleAuthorityExport(w, body)
+		}
+		return
+	}
+	if rawPath == zeros3AuthImportPath && r.Method == http.MethodPost {
+		srv.handleAuthorityImport(w, r, check)
+		return
+	}
 	if strings.HasPrefix(rawPath, "/_zeros3/") {
 		body, ok := readBufferedBody(w, r, rawPath, check)
 		if !ok {
@@ -12667,6 +12681,7 @@ type reachabilityResult struct {
 	AuthDeltas       int
 	AuthLogicalBytes int64
 	AuthFiles        int
+	AuthFaults       int
 	AuthOrphans      []string // hex content hashes
 	AuthLive         []string
 }
@@ -13581,6 +13596,23 @@ func parallelFor(n, workers, block int, fn func(i int)) {
 	wg.Wait()
 }
 
+// AuthorityStorage describes store-wide authority data. Component bytes are
+// already counted in the chunk store, including any copies shared with CDC.
+type AuthorityStorage struct {
+	LiveByForm          map[string]int `json:"live_by_form"`
+	OrphanRecords       int            `json:"orphan_records"`
+	UnavailableRecords  int            `json:"unavailable_records"`
+	RecordFileBytes     int64          `json:"record_file_bytes"`
+	LiveRecordFileBytes int64          `json:"live_record_file_bytes"`
+	OrphanFileBytes     int64          `json:"orphan_record_file_bytes"`
+	ComponentCount      int            `json:"closure_component_count"`
+	ComponentLogical    int64          `json:"closure_component_logical_bytes"`
+	ComponentFiles      int64          `json:"closure_component_stored_bytes"`
+	MaxDepth            int            `json:"max_depth"`
+	MaxBases            int            `json:"max_bases_per_record"`
+	MaxDirectDependents int            `json:"max_direct_dependents"`
+}
+
 // StatsResult is the exact set of fields STATS_SPEC.md defines for one
 // scan, human-readable field names doubling as stable JSON field names.
 type StatsResult struct {
@@ -13645,6 +13677,8 @@ type StatsResult struct {
 	RepresentationReachableChunkCount   int   `json:"representation_reachable_chunk_count"`
 	RepresentationReachableChunkBytes   int64 `json:"representation_reachable_chunk_bytes"`
 	RepresentationOrphanRootCount       int   `json:"representation_orphan_root_count"`
+
+	Authority *AuthorityStorage `json:"authority,omitempty"`
 
 	DedupAvoidedBytes    int64   `json:"dedup_avoided_bytes"`
 	DedupReduction       float64 `json:"dedup_reduction"`
@@ -13832,6 +13866,15 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	res.ActualStoreFileBytes += rootBytes
 	res.ReclaimableBytes += s.repOrphanRootBytes(rr.RepOrphanRoots)
 
+	if rr.AuthFiles > 0 || rr.AuthFaults > 0 {
+		authority, err := s.authorityStorage(rr)
+		if err != nil {
+			return StatsResult{}, fmt.Errorf("stats: authority storage: %w", err)
+		}
+		res.Authority = &authority
+		res.ActualStoreFileBytes += authority.RecordFileBytes
+		res.ReclaimableBytes += authority.OrphanFileBytes
+	}
 	return res, nil
 }
 
@@ -13880,9 +13923,10 @@ type VerifyResult struct {
 
 	// Authoritative bodies (section 16e): live body records and those deep
 	// verification reconstructed exactly from the physical store.
-	AuthorityBodies     int `json:"authority_bodies"`
-	AuthoritiesVerified int `json:"authorities_verified"`
-	AuthorityOrphans    int `json:"authority_orphan_bodies"`
+	AuthorityBodies      int `json:"authority_bodies"`
+	AuthoritiesVerified  int `json:"authorities_verified"`
+	AuthorityOrphans     int `json:"authority_orphan_bodies"`
+	AuthorityUnavailable int `json:"authority_unavailable_bodies,omitempty"`
 
 	UnreachableManifests int   `json:"unreachable_manifests"`
 	UnreachableChunks    int   `json:"unreachable_chunks"`
@@ -13941,6 +13985,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.RepresentationOrphanRoots = len(rr.RepOrphanRoots)
 	res.AuthorityBodies = len(rr.AuthLive)
 	res.AuthorityOrphans = len(rr.AuthOrphans)
+	res.AuthorityUnavailable = rr.AuthFaults
 	s.verifyPacks(deep, &res)
 
 	// --- Deep only: whole-object digest ---
@@ -18367,6 +18412,9 @@ const (
 	zeros3SyncNegotiatePath = "/_zeros3/v1/negotiate"
 	zeros3SyncCommitPath    = "/_zeros3/v1/commit"
 	zeros3SyncChunksPrefix  = "/_zeros3/v1/chunks/"
+	zeros3AuthExportPath    = "/_zeros3/v1/authority/export"
+	zeros3AuthImportPath    = "/_zeros3/v1/authority/import"
+	maxAuthCommitHeader     = 32 << 20
 
 	// M8E (section 15h/15i) snapshot extension endpoints. Every one of
 	// these carries any identifier (snapshot ID, key) as a URL query
@@ -18408,9 +18456,11 @@ type syncDiscoveryResponse struct {
 
 	// Optional bulk transport (section 15b-ter); absent from servers that
 	// predate it, which clients must then treat as v1-only.
-	BulkProtocol  int   `json:"bulk_protocol_version,omitempty"`
-	MaxBulkChunks int   `json:"max_bulk_chunks,omitempty"`
-	MaxBulkBytes  int64 `json:"max_bulk_bytes,omitempty"`
+	BulkProtocol    int       `json:"bulk_protocol_version,omitempty"`
+	MaxBulkChunks   int       `json:"max_bulk_chunks,omitempty"`
+	MaxBulkBytes    int64     `json:"max_bulk_bytes,omitempty"`
+	AuthorityExport *AuthCaps `json:"authority_export,omitempty"`
+	AuthorityImport *AuthCaps `json:"authority_import,omitempty"`
 }
 
 // syncChunkDescriptor unambiguously identifies one expected chunk: its
@@ -18456,17 +18506,20 @@ type syncChunkUploadResponse struct {
 // replicateObject's doc comment for the consistency semantics this
 // enables).
 type syncObjectDescriptor struct {
-	Protocol    int                   `json:"protocol"`
-	CDC         string                `json:"cdc"`
-	Hash        string                `json:"hash"`
-	Bucket      string                `json:"bucket"`
-	Key         string                `json:"key"`
-	VersionID   string                `json:"version_id"`
-	Size        int64                 `json:"size"`
-	ETag        string                `json:"etag"`
-	ContentType string                `json:"content_type"`
-	Metadata    map[string]string     `json:"metadata"`
-	Chunks      []syncChunkDescriptor `json:"chunks"`
+	Protocol            int                   `json:"protocol"`
+	CDC                 string                `json:"cdc"`
+	Hash                string                `json:"hash"`
+	Bucket              string                `json:"bucket"`
+	Key                 string                `json:"key"`
+	VersionID           string                `json:"version_id"`
+	ObjectSHA256        string                `json:"object_sha256,omitempty"`
+	AuthorityComponents []string              `json:"authority_components,omitempty"`
+	Authoritative       bool                  `json:"authoritative,omitempty"`
+	Size                int64                 `json:"size"`
+	ETag                string                `json:"etag"`
+	ContentType         string                `json:"content_type"`
+	Metadata            map[string]string     `json:"metadata"`
+	Chunks              []syncChunkDescriptor `json:"chunks"`
 }
 
 // syncCommitRequest carries the complete ordered chunk list (occurrences,
@@ -18636,9 +18689,35 @@ func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Reque
 	for _, kv := range man.Metadata {
 		metadata[kv.Key] = kv.Value
 	}
+	var authoritative bool
+	components := man.Chunks
+	wantComponents := r.URL.Query().Get("closure") == "1"
+	if srv.store.auth.mayHave.Load() {
+		if digest, err := decodeHexSHA256(man.ObjectSHA256); err == nil {
+			rec, err := srv.store.authLoad(digest)
+			authoritative = err == nil && rec != nil && rec.Size == man.TotalLength
+			if authoritative && wantComponents {
+				components, _ = srv.store.authRecordChunks(rec)
+			}
+		}
+	}
+	var held []string
+	if wantComponents {
+		for _, chunk := range components[:min(len(components), maxAuthAdvertisedComponents)] {
+			sum, err := decodeHexSHA256(chunk.SHA256)
+			if err != nil {
+				continue
+			}
+			if n, err := srv.store.casStat(sum); err == nil && n == chunk.Length {
+				held = append(held, chunk.SHA256)
+			}
+		}
+	}
 	writeSyncJSON(w, http.StatusOK, syncObjectDescriptor{
 		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
 		Bucket: bucket, Key: key, VersionID: entry.manifestUUID,
+		ObjectSHA256:  man.ObjectSHA256,
+		Authoritative: authoritative, AuthorityComponents: held,
 		Size: entry.size, ETag: entry.etag, ContentType: entry.contentType,
 		Metadata: metadata, Chunks: chunks,
 	})
@@ -18854,6 +18933,7 @@ func (srv *Server) handleSyncChunkDownload(w http.ResponseWriter, hexDigest stri
 // every other request (ServeHTTP calls that before dispatch ever reaches
 // here), so an unauthorized caller never learns even this much.
 func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
+	authority := srv.store.AuthorityCaps()
 	d := syncDiscoveryResponse{
 		Protocol:          zeros3SyncProtocolVersion,
 		CDC:               zeros3SyncCDCFormat,
@@ -18864,9 +18944,224 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		MaxChunkBytes:     maxSyncChunkBytes,
 		Implementation:    "zeros3",
 		CoreS3Profile:     coreS3ProfileVersion,
+		AuthorityExport:   &authority,
+		AuthorityImport:   &authority,
 	}
 	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
 	writeSyncJSON(w, http.StatusOK, d)
+}
+
+const maxAuthAdvertisedComponents = 96
+
+type authExportRequest struct {
+	Bucket          string   `json:"bucket"`
+	Key             string   `json:"key"`
+	VersionID       string   `json:"version_id"`
+	Peer            AuthCaps `json:"peer"`
+	KnownBase       string   `json:"known_base,omitempty"`
+	KnownComponents []string `json:"known_components,omitempty"`
+	MaxBytes        int64    `json:"max_bytes,omitempty"`
+}
+
+type authImportRequest struct {
+	Version int    `json:"authority_version"`
+	SHA256  string `json:"object_sha256"`
+	syncCommitRequest
+}
+
+func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request, check payloadCheck) {
+	if check.sha256 == "" {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "an authority import requires a signed payload SHA-256")
+		return
+	}
+	payloadSHA := sha256.New()
+	payloadMD5, payloadCRC := md5.New(), crc32.NewIEEE()
+	digests := []io.Writer{payloadSHA}
+	if check.md5 != nil {
+		digests = append(digests, payloadMD5)
+	}
+	if check.hasCRC32 {
+		digests = append(digests, payloadCRC)
+	}
+	reader := io.TeeReader(http.MaxBytesReader(w, r.Body, maxStreamedBodySize+maxAuthCommitHeader+4), io.MultiWriter(digests...))
+	var prefix [4]byte
+	if _, err := io.ReadFull(reader, prefix[:]); err != nil {
+		writeSyncError(w, http.StatusBadRequest, "MalformedRequest", "missing authority commit header length")
+		return
+	}
+	length := binary.BigEndian.Uint32(prefix[:])
+	if length == 0 || length > maxAuthCommitHeader {
+		writeSyncError(w, http.StatusBadRequest, "MalformedRequest", "authority commit header is outside its size limit")
+		return
+	}
+	header := make([]byte, length)
+	var req authImportRequest
+	if _, err := io.ReadFull(reader, header); err != nil || json.Unmarshal(header, &req) != nil || req.Bucket == "" || req.Key == "" {
+		writeSyncError(w, http.StatusBadRequest, "MalformedRequest", "invalid authority commit header")
+		return
+	}
+	if req.Version != authXferVersion || validateSyncProtocolFields(req.Protocol, req.CDC, req.Hash) != nil {
+		writeSyncError(w, http.StatusNotImplemented, "UnsupportedProtocol", "unsupported authority transfer version")
+		return
+	}
+	sha, err := decodeHexSHA256(req.SHA256)
+	if err != nil || len(req.Chunks) == 0 {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "object digest and chunk references are required")
+		return
+	}
+	var total int64
+	refs := make([]chunkRef, len(req.Chunks))
+	for i, d := range req.Chunks {
+		_, norm, err := normalizedSyncDigest(d.SHA256, d.Length)
+		if err != nil || d.Length > maxStreamedBodySize-total {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "invalid authority chunk reference or object length")
+			return
+		}
+		refs[i] = chunkRef{SHA256: norm, Length: d.Length}
+		total += d.Length
+	}
+	verifyFrame := func() error {
+		var sum [32]byte
+		var stamp [md5.Size]byte
+		payloadSHA.Sum(sum[:0])
+		payloadMD5.Sum(stamp[:0])
+		return check.verify(sum, stamp, payloadCRC.Sum32())
+	}
+	if err := srv.store.importAuthorityClosure(reader, &xdBaseRef{SHA: sha, Size: total}, verifyFrame, nil); err != nil {
+		var authErr *authError
+		if errors.As(err, &authErr) {
+			writeRequestError(w, err, zeros3AuthImportPath)
+		} else if errors.Is(err, errAuthMissing) || errors.Is(err, os.ErrNotExist) {
+			writeSyncError(w, http.StatusConflict, "MissingAuthorityDependency", err.Error())
+		} else {
+			writeSyncError(w, http.StatusConflict, "ClosureRejected", err.Error())
+		}
+		return
+	}
+	man, err := srv.store.authoritySyncManifest(r.Context(), req.syncCommitRequest, refs, sha, total)
+	if err != nil {
+		writeSyncError(w, http.StatusConflict, "ClosureMismatch", err.Error())
+		return
+	}
+	srv.publishSyncManifest(w, req.syncCommitRequest, man, true)
+}
+
+// Verify the source's CDC layout against reconstructed bytes without storing a
+// materialized copy. The visible manifest remains usable by ordinary S3 reads.
+func (s *Store) authoritySyncManifest(ctx context.Context, req syncCommitRequest, refs []chunkRef, sha [32]byte, total int64) (manifestV1, error) {
+	read := s.newAuthCtx()
+	defer read.close()
+	body, _, err := read.body(sha, total, 1)
+	if err != nil {
+		return manifestV1{}, err
+	}
+	whole, etag := sha256.New(), md5.New()
+	buffer := make([]byte, maxSyncChunkBytes)
+	var offset int64
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return manifestV1{}, err
+		}
+		chunk := buffer[:ref.Length]
+		if n, err := body.ReadAt(chunk, offset); n != len(chunk) || err != nil && err != io.EOF {
+			return manifestV1{}, fmt.Errorf("authority object read at %d: %d of %d bytes: %v", offset, n, len(chunk), err)
+		}
+		digest := sha256.Sum256(chunk)
+		if hex.EncodeToString(digest[:]) != ref.SHA256 {
+			return manifestV1{}, fmt.Errorf("authority object chunk at %d differs from the manifest", offset)
+		}
+		whole.Write(chunk)
+		etag.Write(chunk)
+		offset += ref.Length
+	}
+	if !bytes.Equal(whole.Sum(nil), sha[:]) {
+		return manifestV1{}, errAuthMismatch
+	}
+	contentType := req.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return buildManifestV1FromRefs(refs, total, sha, hex.EncodeToString(etag.Sum(nil)), contentType, req.Metadata), nil
+}
+
+func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
+	var req authExportRequest
+	if err := json.Unmarshal(body, &req); err != nil || req.Bucket == "" || req.Key == "" || req.VersionID == "" {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "bucket, key, version and peer capabilities are required")
+		return
+	}
+	if req.MaxBytes < 0 {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "closure byte budget cannot be negative")
+		return
+	}
+	entry, man, err := srv.store.headServed(req.Bucket, req.Key)
+	if err != nil {
+		if errors.Is(err, errNoSuchBucket) || errors.Is(err, errNoSuchKey) {
+			writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the source object no longer exists")
+		} else {
+			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		}
+		return
+	}
+	if entry.manifestUUID != req.VersionID {
+		writeSyncError(w, http.StatusConflict, "SourceChanged", "the source object changed since discovery")
+		return
+	}
+	sha, err := decodeHexSHA256(man.man.ObjectSHA256)
+	if err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	var held func([32]byte) bool
+	if req.KnownBase != "" {
+		known, err := decodeHexSHA256(req.KnownBase)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "invalid known base SHA-256")
+			return
+		}
+		held = func(digest [32]byte) bool { return known == digest }
+	}
+	if len(req.KnownComponents) > maxAuthAdvertisedComponents {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "too many known component digests")
+		return
+	}
+	components := make(map[[32]byte]bool, len(req.KnownComponents))
+	for _, digest := range req.KnownComponents {
+		sum, err := decodeHexSHA256(digest)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "invalid known component SHA-256")
+			return
+		}
+		components[sum] = true
+	}
+	recs, err := srv.store.authorityClosureFor(sha, req.Peer, held)
+	if errors.Is(err, errAuthMissing) {
+		writeSyncError(w, http.StatusConflict, "UnavailableClosure", "the source does not hold the requested closure")
+		return
+	}
+	if errors.Is(err, errAuthTransferUnsupported) {
+		writeSyncError(w, http.StatusConflict, "Materialize", "the source closure requires unsupported receiver features")
+		return
+	}
+	if err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	wire, err := srv.store.planAuthorityClosure(recs, components)
+	if err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	if req.MaxBytes > 0 && wire.size >= req.MaxBytes {
+		writeSyncError(w, http.StatusConflict, "Materialize", "closure exceeds the receiver's transfer budget")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(wire.size, 10))
+	if err := wire.write(srv.store, w); err != nil {
+		// Failed streams must surface as an incomplete HTTP response.
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // handleSyncNegotiate answers which requested chunks are missing from
@@ -19015,7 +19310,10 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 		contentType = "application/octet-stream"
 	}
 	man := buildManifestV1FromRefs(refs, total, objSHA, etag, contentType, req.Metadata)
+	srv.publishSyncManifest(w, req, man, false)
+}
 
+func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequest, man manifestV1, idempotent bool) {
 	s3Bucket, s3Key := req.Bucket, req.Key
 	manUUID, manSHA, err := srv.store.publishManifest(man)
 	if err != nil {
@@ -19031,7 +19329,18 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 	// PUT/CopyObject/other sync racing in between negotiation and this
 	// commit can never slip past a now-stale precondition.
 	expectAbsent, expectedETag := req.ExpectAbsent, req.ExpectedETag
+	var equivalent *objectEntry
 	entry, err := srv.store.commitObjectRootChecked(s3Bucket, s3Key, manUUID, manSHA, man, func(cur *objectEntry, exists bool) error {
+		if idempotent && exists && cur.etag == man.ETag && cur.contentType == man.ContentType {
+			previous, err := srv.store.readVerifiedManifest(cur.manifestUUID, cur.manifestSHA256)
+			if err != nil {
+				return err
+			}
+			if previous.ObjectSHA256 == man.ObjectSHA256 && slices.Equal(previous.Metadata, man.Metadata) {
+				equivalent = cur
+				return errSyncEquivalent
+			}
+		}
 		if expectAbsent {
 			if exists {
 				return errSyncConflict
@@ -19043,6 +19352,9 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 		}
 		return nil
 	})
+	if errors.Is(err, errSyncEquivalent) {
+		entry, err = equivalent, nil
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, errNoSuchBucket):
@@ -19054,10 +19366,12 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 		}
 		return
 	}
-	if srv.store.rep.q.Load() != nil {
-		srv.store.repAfterCommit(s3Bucket, s3Key, man)
-	} else {
-		srv.store.tryBuildRep(man)
+	if !idempotent {
+		if srv.store.rep.q.Load() != nil {
+			srv.store.repAfterCommit(s3Bucket, s3Key, man)
+		} else {
+			srv.store.tryBuildRep(man)
+		}
 	}
 	fireTestHook(hookAfterAck)
 	writeSyncJSON(w, http.StatusOK, syncCommitResponse{
@@ -19068,6 +19382,7 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 // errSyncConflict is commitObjectRootChecked's check-function sentinel
 // for a failed safe-mode sync precondition (see handleSyncCommit above).
 var errSyncConflict = errors.New("sync: destination changed since sync began (safe-mode conflict)")
+var errSyncEquivalent = errors.New("sync: equivalent object already published")
 
 // snapshotCreateRequest is POST /_zeros3/v1/snapshot/create's JSON body
 // (A6): the source scope to capture. Prefix is trimmed of leading/
@@ -20094,6 +20409,8 @@ type syncStats struct {
 	UploadedBytes        int64
 	BytesAvoided         int64
 	FellBackToPlainPut   bool
+	AuthorityBytes       int64 // native commit header and closure upload
+	AuthorityProbeBytes  int64 // fetched native payload discarded in favor of CDC
 }
 
 func humanBytes(n int64) string {
@@ -20120,6 +20437,12 @@ func printSyncStats(w io.Writer, s syncStats) {
 	fmt.Fprintf(w, "Chunks:              %d\n", s.TotalChunks)
 	fmt.Fprintf(w, "Chunks reused:       %d\n", s.ChunksReused)
 	fmt.Fprintf(w, "Uploaded payload:    %s (%d unique chunks)\n", humanBytes(s.UploadedBytes), s.UniqueChunksUploaded)
+	if s.AuthorityBytes > 0 {
+		fmt.Fprintf(w, "Authority payload:   %s (included above)\n", humanBytes(s.AuthorityBytes))
+	}
+	if s.AuthorityProbeBytes > 0 {
+		fmt.Fprintf(w, "Discarded closure:   %s source download\n", humanBytes(s.AuthorityProbeBytes))
+	}
 	fmt.Fprintf(w, "Transfer avoided:    %s\n", humanBytes(s.BytesAvoided))
 	if s.LogicalBytes > 0 {
 		fmt.Fprintf(w, "Reuse:               %.1f%%\n", float64(s.BytesAvoided)/float64(s.LogicalBytes)*100)
@@ -21576,7 +21899,14 @@ func runSync(args []string) {
 // sidesteps the M7 raw-path-concatenation bug class entirely rather than
 // re-solving it.
 func fetchSourceDescriptor(cfg syncClientConfig) (syncObjectDescriptor, error) {
+	return fetchSyncDescriptor(cfg, false)
+}
+
+func fetchSyncDescriptor(cfg syncClientConfig, components bool) (syncObjectDescriptor, error) {
 	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
+	if components {
+		q.Set("closure", "1")
+	}
 	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncObjectPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor request failed: %w", err)
@@ -21634,9 +21964,10 @@ func fetchSourceChunk(ctx context.Context, cfg syncClientConfig, hexDigest strin
 // and replicateObject below never copies one side's Creds onto the
 // other's config.
 type replicateConfig struct {
-	Source syncClientConfig
-	Dest   syncClientConfig
-	Out    io.Writer
+	Source          syncClientConfig
+	Dest            syncClientConfig
+	Out             io.Writer
+	PreferAuthority bool
 
 	// DestMustBeAbsent, when set, switches the destination-conflict
 	// precondition from the ordinary "matches whatever I last observed
@@ -21862,11 +22193,142 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 // left exactly where they landed (B1.7's "successful chunk uploads may
 // remain in destination CAS ... do not roll them back") -- a rerun's own
 // negotiation sees them as no longer missing, same as before M8H-B.
+func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err error) {
+	srcCaps, dstCaps := p.srcDiscovery.AuthorityExport, p.destDiscovery.AuthorityImport
+	if !p.cfg.PreferAuthority || !p.desc.Authoritative || srcCaps == nil || dstCaps == nil ||
+		srcCaps.Version != authXferVersion || dstCaps.Version != authXferVersion || p.action == destActionConflict {
+		return stats, false, nil
+	}
+	if _, err := decodeHexSHA256(p.desc.ObjectSHA256); err != nil {
+		return stats, false, fmt.Errorf("replicate: invalid source authority digest: %w", err)
+	}
+	export := authExportRequest{Bucket: p.cfg.Source.Bucket, Key: p.cfg.Source.Key, VersionID: p.desc.VersionID, Peer: *dstCaps}
+	if p.destExists {
+		dst, err := fetchSyncDescriptor(p.cfg.Dest, true)
+		if err != nil {
+			return stats, false, err
+		}
+		export.KnownComponents = dst.AuthorityComponents[:min(len(dst.AuthorityComponents), maxAuthAdvertisedComponents)]
+		if dst.Authoritative {
+			if dst.ObjectSHA256 == p.desc.ObjectSHA256 && dst.ContentType == p.desc.ContentType &&
+				slices.Equal(sortedMetadataKV(dst.Metadata), sortedMetadataKV(p.desc.Metadata)) {
+				return syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.desc.Chunks), BytesAvoided: p.desc.Size}, true, nil
+			}
+			export.KnownBase = dst.ObjectSHA256
+		}
+	}
+	commit := authImportRequest{Version: authXferVersion, SHA256: p.desc.ObjectSHA256, syncCommitRequest: syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: p.cfg.Dest.Bucket, Key: p.cfg.Dest.Key, ContentType: p.desc.ContentType, Metadata: p.desc.Metadata,
+		Chunks: p.desc.Chunks, ExpectAbsent: p.pre.expectAbsent, ExpectedETag: p.pre.expectedETag,
+	}}
+	header, err := json.Marshal(commit)
+	if err != nil {
+		return stats, false, err
+	}
+	budget := min(p.wouldTransferBytes, int64(maxStreamedBodySize)) - int64(len(header)) - 4
+	if len(header) > maxAuthCommitHeader || budget <= 0 {
+		return stats, false, nil
+	}
+	export.MaxBytes = budget
+	control, err := json.Marshal(export)
+	if err != nil {
+		return stats, false, err
+	}
+	ctx := context.Background()
+	response, err := p.cfg.Source.signAndDoStream(ctx, http.MethodPost, zeros3AuthExportPath, control, map[string]string{"Content-Type": "application/json"})
+	if err != nil {
+		return stats, false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, err := readAllLimited(response.Body, 64<<10)
+		if err != nil {
+			return stats, false, err
+		}
+		var problem syncErrorBody
+		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusConflict && json.Unmarshal(body, &problem) == nil && (problem.Code == "Materialize" || problem.Code == "UnavailableClosure") {
+			return stats, false, nil
+		}
+		return stats, false, fmt.Errorf("replicate: authority export status %d: %s", response.StatusCode, body)
+	}
+	file, err := os.CreateTemp("", "zeros3-replicate-authority-*.tmp")
+	if err != nil {
+		return stats, false, err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	digest := sha256.New()
+	spool := io.MultiWriter(file, digest)
+	var prefix [4]byte
+	binary.BigEndian.PutUint32(prefix[:], uint32(len(header)))
+	if _, err := spool.Write(prefix[:]); err != nil {
+		return stats, false, err
+	}
+	if _, err := spool.Write(header); err != nil {
+		return stats, false, err
+	}
+	n, err := io.Copy(spool, io.LimitReader(response.Body, budget+1))
+	if err != nil {
+		return stats, false, err
+	}
+	if n >= budget {
+		stats.AuthorityProbeBytes = n
+		return stats, false, nil
+	}
+	total := n + int64(len(header)) + 4
+	dest := p.cfg.Dest
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(dest.Endpoint, "/")+zeros3AuthImportPath, io.NewSectionReader(file, 0, total))
+	if err != nil {
+		return stats, false, err
+	}
+	request.ContentLength = total
+	request.Header.Set("Content-Type", "application/octet-stream")
+	if err := signSigV4Request(request, dest.Creds, dest.Region, hex.EncodeToString(digest.Sum(nil)), time.Now()); err != nil {
+		return stats, false, err
+	}
+	result, err := dest.client().Do(request)
+	if err != nil {
+		return stats, false, err
+	}
+	defer result.Body.Close()
+	ack, err := readAllLimited(result.Body, 64<<10)
+	if err != nil {
+		return stats, false, err
+	}
+	if result.StatusCode == http.StatusPreconditionFailed {
+		return stats, false, errSyncRemoteConflict
+	}
+	if result.StatusCode != http.StatusOK {
+		var problem syncErrorBody
+		if result.StatusCode == http.StatusConflict && json.Unmarshal(ack, &problem) == nil && problem.Code == "MissingAuthorityDependency" {
+			return syncStats{UploadedBytes: total, AuthorityBytes: total, AuthorityProbeBytes: n}, false, nil
+		}
+		return stats, false, fmt.Errorf("replicate: authority import status %d: %s", result.StatusCode, ack)
+	}
+	var committed syncCommitResponse
+	if err := json.Unmarshal(ack, &committed); err != nil || committed.Bucket != dest.Bucket || committed.Key != dest.Key || committed.Size != p.desc.Size {
+		return stats, false, errors.New("replicate: invalid authority commit acknowledgement")
+	}
+	return syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.desc.Chunks), UploadedBytes: total,
+		BytesAvoided: p.desc.Size - total, AuthorityBytes: total}, true, nil
+}
+
 func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 	cfg := p.cfg
 	workers, err := resolveTransferWorkers(cfg.Workers)
 	if err != nil {
 		return syncStats{}, fmt.Errorf("replicate: %w", err)
+	}
+	native, used, err := tryReplicateAuthority(p)
+	if err != nil {
+		return syncStats{}, err
+	}
+	if used {
+		if cfg.Out != nil {
+			printSyncStats(cfg.Out, native)
+		}
+		return native, nil
 	}
 
 	var want []syncChunkDescriptor
@@ -21912,8 +22374,10 @@ func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 		MissingChunkOccur:    p.missingOccur,
 		ChunksReused:         len(p.plan.ordered) - p.missingOccur,
 		UniqueChunksUploaded: len(p.missing),
-		UploadedBytes:        relayedBytes,
-		BytesAvoided:         p.desc.Size - relayedBytes,
+		UploadedBytes:        relayedBytes + native.UploadedBytes,
+		BytesAvoided:         p.desc.Size - relayedBytes - native.UploadedBytes,
+		AuthorityBytes:       native.AuthorityBytes,
+		AuthorityProbeBytes:  native.AuthorityProbeBytes,
 	}
 	if cfg.Out != nil {
 		printSyncStats(cfg.Out, stats)
@@ -21958,6 +22422,7 @@ func runReplicate(args []string) {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket, instead of a single object")
 	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything")
+	authority := fs.Bool("authority-closure", false, "attempt negotiated native closures when they cost less than transferring missing CDC chunks")
 	from := fs.String("from", "http://127.0.0.1:9000", "source ZeroS3 endpoint base URL (scheme://host[:port])")
 	to := fs.String("to", "http://127.0.0.1:9001", "destination ZeroS3 endpoint base URL (scheme://host[:port])")
 	fromAccessKey := fs.String("from-access-key", defaultAccessKeyID, "source access key ID")
@@ -22005,9 +22470,10 @@ func runReplicate(args []string) {
 				Endpoint: *to, Bucket: dstBucket,
 				Creds: Credentials{AccessKeyID: *toAccessKey, SecretAccessKey: *toSecretKey}, Region: *region,
 			},
-			DestPrefix: dstPrefix,
-			Out:        os.Stdout,
-			Workers:    *workers,
+			DestPrefix:      dstPrefix,
+			Out:             os.Stdout,
+			Workers:         *workers,
+			PreferAuthority: *authority,
 		}
 		if *dryRun {
 			result, err := planReplicationNamespace(cfg)
@@ -22052,8 +22518,9 @@ func runReplicate(args []string) {
 			Endpoint: *to, Bucket: dstBucket, Key: dstKey,
 			Creds: Credentials{AccessKeyID: *toAccessKey, SecretAccessKey: *toSecretKey}, Region: *region,
 		},
-		Out:     os.Stdout,
-		Workers: *workers,
+		Out:             os.Stdout,
+		Workers:         *workers,
+		PreferAuthority: *authority,
 	}
 	if *dryRun {
 		p, err := planReplication(cfg)
@@ -23021,11 +23488,12 @@ func (r nsReplicateResult) OK() bool { return r.Failed == 0 }
 // DestPrefix are trimmed of leading/trailing '/', exactly the shape
 // parseS3DirURI already returns ("" for a whole bucket).
 type namespaceReplicateConfig struct {
-	Source       syncClientConfig
-	SourcePrefix string
-	Dest         syncClientConfig
-	DestPrefix   string
-	Out          io.Writer
+	PreferAuthority bool
+	Source          syncClientConfig
+	SourcePrefix    string
+	Dest            syncClientConfig
+	DestPrefix      string
+	Out             io.Writer
 
 	// DestMustBeAbsent is forwarded, per object, to replicateConfig's own
 	// field of the same name (see its doc comment) -- M8C's own
@@ -23071,7 +23539,7 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 			continue
 		}
 
-		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent, Workers: cfg.Workers}
+		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent, Workers: cfg.Workers, PreferAuthority: cfg.PreferAuthority}
 		objCfg.Source.Key = obj.Key
 		objCfg.Dest.Key = dstKey
 
@@ -23089,6 +23557,8 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 		result.Stats.UniqueChunksUploaded += stats.UniqueChunksUploaded
 		result.Stats.UploadedBytes += stats.UploadedBytes
 		result.Stats.BytesAvoided += stats.BytesAvoided
+		result.Stats.AuthorityBytes += stats.AuthorityBytes
+		result.Stats.AuthorityProbeBytes += stats.AuthorityProbeBytes
 	}
 
 	if cfg.Out != nil {
@@ -23113,6 +23583,12 @@ func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 	fmt.Fprintf(w, "Transferred chunks:      %d\n", r.Stats.MissingChunkOccur)
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "Payload transferred:     %s\n", humanBytes(r.Stats.UploadedBytes))
+	if r.Stats.AuthorityBytes > 0 {
+		fmt.Fprintf(w, "Authority payload:       %s (included above)\n", humanBytes(r.Stats.AuthorityBytes))
+	}
+	if r.Stats.AuthorityProbeBytes > 0 {
+		fmt.Fprintf(w, "Discarded closures:      %s source download\n", humanBytes(r.Stats.AuthorityProbeBytes))
+	}
 	fmt.Fprintf(w, "Transfer avoided:        %s\n", humanBytes(r.Stats.BytesAvoided))
 	if r.Stats.LogicalBytes > 0 {
 		fmt.Fprintf(w, "Reuse:                   %.1f%%\n", float64(r.Stats.BytesAvoided)/float64(r.Stats.LogicalBytes)*100)
@@ -25068,6 +25544,12 @@ func printStatsHuman(w io.Writer, r StatsResult) {
 			r.RepresentationRootCount, r.RepresentationObjectCount, r.RepresentationComponentCount, r.RepresentationComponentLogicalBytes,
 			r.RepresentationReachableChunkCount, r.RepresentationReachableChunkBytes, r.RepresentationMetadataFileBytes, r.RepresentationOrphanRootCount)
 	}
+	if a := r.Authority; a != nil {
+		fmt.Fprintf(w, "authority        %d pins | %d reps | %d deltas | %d unavailable | %d orphan records\n",
+			a.LiveByForm["pin"], a.LiveByForm["rep"], a.LiveByForm["delta"], a.UnavailableRecords, a.OrphanRecords)
+		fmt.Fprintf(w, "authority files  %d record bytes | %d components (%d stored bytes, included in chunk storage) | depth %d | max dependents %d\n",
+			a.RecordFileBytes, a.ComponentCount, a.ComponentFiles, a.MaxDepth, a.MaxDirectDependents)
+	}
 	fmt.Fprintf(w, "store files      %d bytes chunks | %d bytes manifests | %d bytes journal | %d bytes temp\n",
 		r.ChunkStoreFileBytes, r.ManifestFileBytes, r.JournalFileBytes, r.TemporaryFileBytes)
 	fmt.Fprintf(w, "actual/reclaim   %d bytes actual | %d bytes reclaimable\n", r.ActualStoreFileBytes, r.ReclaimableBytes)
@@ -25086,8 +25568,9 @@ func printVerifyHuman(w io.Writer, r VerifyResult) {
 	if r.PacksChecked > 0 {
 		fmt.Fprintf(w, "packs            %d checked\n", r.PacksChecked)
 	}
-	if r.AuthorityBodies > 0 || r.AuthorityOrphans > 0 {
-		fmt.Fprintf(w, "authority        %d live bodies | %d verified exact | %d orphan bodies\n", r.AuthorityBodies, r.AuthoritiesVerified, r.AuthorityOrphans)
+	if r.AuthorityBodies > 0 || r.AuthorityOrphans > 0 || r.AuthorityUnavailable > 0 {
+		fmt.Fprintf(w, "authority        %d live bodies | %d verified exact | %d orphan bodies | %d unavailable\n",
+			r.AuthorityBodies, r.AuthoritiesVerified, r.AuthorityOrphans, r.AuthorityUnavailable)
 	}
 	if r.RepresentationRoots > 0 || r.RepresentationOrphanRoots > 0 {
 		fmt.Fprintf(w, "representations  %d live roots | %d verified exact | %d orphan roots\n", r.RepresentationRoots, r.RepresentationsVerified, r.RepresentationOrphanRoots)
@@ -32433,6 +32916,7 @@ func (bd *repBudget) entries(n int) error {
 // descriptors of the virtual components it creates and proves children as it goes.
 type repBuilder struct {
 	s       *Store
+	reserve uint64
 	big     bool // large object: components stream into immutable packs, not loose files
 	size    int64
 	sink    chunkSink
@@ -32485,6 +32969,26 @@ func (b *repBuilder) flush() error {
 	return nil
 }
 
+func (b *repBuilder) putChunk(sum [32]byte, data []byte) error {
+	if b.reserve != 0 {
+		bytes, records := uint64(len(data)), uint64(1)
+		switch sink := b.sink.(type) {
+		case *packSink:
+			if sink.cur != nil {
+				bytes += uint64(sink.cur.LogicalBytes())
+				records += uint64(len(sink.pending))
+			}
+		case *segSink:
+			bytes += uint64(sink.bytes)
+			records += uint64(len(sink.recs))
+		}
+		if err := b.s.checkAuthDiskReserve(b.reserve, bytes, records); err != nil {
+			return err
+		}
+	}
+	return b.sink.Put(sum, data)
+}
+
 // putBlob stores one logical component: nothing for an empty one, one ordinary
 // chunk up to repDirectMax, otherwise production CDC chunks plus a descriptor.
 func (b *repBuilder) putBlob(data []byte) ([32]byte, error) {
@@ -32496,7 +33000,7 @@ func (b *repBuilder) putBlob(data []byte) ([32]byte, error) {
 		return sum, nil
 	}
 	if len(data) <= repDirectMax {
-		if err := b.sink.Put(sum, data); err != nil {
+		if err := b.putChunk(sum, data); err != nil {
 			return sum, err
 		}
 		b.written[sum] = struct{}{}
@@ -32540,7 +33044,7 @@ func (b *repBuilder) putStream(r io.Reader, size int64) ([32]byte, error) {
 			return [32]byte{}, err
 		}
 		cs := sha256.Sum256(chunk)
-		if err := b.sink.Put(cs, chunk); err != nil {
+		if err := b.putChunk(cs, chunk); err != nil {
 			return [32]byte{}, err
 		}
 		h.Write(chunk)
@@ -32570,7 +33074,7 @@ func (b *repBuilder) putCDC(r io.Reader, each func(sum [32]byte, n int64)) error
 		}
 		sum := sha256.Sum256(chunk)
 		if _, ok := b.written[sum]; !ok {
-			if err := b.sink.Put(sum, chunk); err != nil {
+			if err := b.putChunk(sum, chunk); err != nil {
 				return err
 			}
 			b.written[sum] = struct{}{}
@@ -33620,12 +34124,12 @@ func (s *Store) repConstruct(man manifestV1) (*repRoot, error) {
 // manifest's object without publishing a root for it; floor is the capability
 // level its closure needs.
 func (s *Store) repConstructFor(man manifestV1, live func() bool) (*repRoot, int, error) {
-	return s.repConstructAt(man, nil, live)
+	return s.repConstructAt(man, nil, live, 0)
 }
 
 // repConstructAt is repConstructFor over src, the object's logical bytes when the caller already holds them
 // (nil: read them through the manifest). The caller must have read src from this manifest's verified chunks.
-func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool) (*repRoot, int, error) {
+func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64) (*repRoot, int, error) {
 	if man.TotalLength < 1 {
 		return nil, 0, errRepUnsupported
 	}
@@ -33650,6 +34154,7 @@ func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool
 	fireTestHook(hookRepAnalysisStarted)
 	t0 := time.Now()
 	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
+	b.reserve = reserve
 	defer b.close()
 	var rep *repObject
 	if err := func() (err error) {
@@ -45533,6 +46038,12 @@ func (s *Store) ensureAuthFormat() error {
 // every referenced component durable and proven the reconstruction. A record
 // replaces an existing one only with the next generation.
 func (s *Store) authPublish(rec *authRecord) error {
+	return s.authPublishChecked(rec, false)
+}
+
+// A recovery caller holds the exclusive store lock. Keep the old record until
+// the fsynced replacement is ready to be renamed over it.
+func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 	data, err := rec.marshal()
 	if err != nil {
 		return err
@@ -45549,7 +46060,7 @@ func (s *Store) authPublish(rec *authRecord) error {
 			if err := s.ensureFeature(authZN7Feature); err != nil {
 				return err
 			}
-			if s.zn7DerivesIQ3(rec.Pieces) {
+			if iq3, _ := zn7DerivesIQ3(newPieceSeq(s.newAuthCtx(), rec.Pieces)); iq3 {
 				if err := s.ensureFeature(authIQ3Feature); err != nil {
 					return err
 				}
@@ -45576,7 +46087,7 @@ func (s *Store) authPublish(rec *authRecord) error {
 	s.auth.pubMu.Lock()
 	defer s.auth.pubMu.Unlock()
 	cur, err := s.authLoad(rec.SHA)
-	if err != nil {
+	if err != nil && !(recoverCorrupt && errors.Is(err, errAuthCorrupt)) {
 		return err
 	}
 	switch {
@@ -46270,6 +46781,7 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 // authObjAt is a concurrency-safe ReaderAt over one object's served bytes: every
 // concurrent caller works on its own manifestReaderAt (they hold stream state).
 type authObjAt struct {
+	ctx  context.Context
 	s    *Store
 	man  manifestV1
 	wc   *authWinCache
@@ -46286,6 +46798,11 @@ func (s *Store) newAuthObjAtC(man manifestV1, wc *authWinCache) *authObjAt {
 }
 
 func (a *authObjAt) ReadAt(p []byte, off int64) (int, error) {
+	if a.ctx != nil {
+		if err := a.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
 	a.mu.Lock()
 	var r *manifestReaderAt
 	if n := len(a.free); n > 0 {
@@ -46337,6 +46854,9 @@ func (w *authPieceWriter) Write(p []byte) (int, error) {
 
 func (w *authPieceWriter) flushPiece() {
 	if len(w.buf) == 0 || w.err != nil {
+		return
+	}
+	if w.err = authFaultAt("pieces-write"); w.err != nil {
 		return
 	}
 	sum, err := w.b.Add(w.buf)
@@ -46636,6 +47156,7 @@ func (a *authReachCtx) observe(man manifestV1, want func([]chunkRef)) (handled b
 func (a *authReachCtx) finish() {
 	files := slices.SortedFunc(maps.Keys(a.files), func(x, y [32]byte) int { return bytes.Compare(x[:], y[:]) })
 	a.res.AuthFiles = len(files)
+	a.res.AuthFaults = len(a.faulty)
 	for _, f := range files {
 		switch {
 		case a.live[f]:
@@ -46721,16 +47242,18 @@ type AuthPolicy struct {
 	// HardCodecs lets structured analysis replay Brotli and LZ4_RAW Parquet pages and LZ4 SST blocks
 	// exactly (archive use: reading them re-runs the page encoder). Records that use them carry the
 	// "hardcodec" feature, which builds without the replay refuse.
-	HardCodecs  bool  `json:"hard_codecs"`
-	MinRepGroup int   `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
-	FrameSpan   int64 `json:"frame_span"`
-	Apply       bool  `json:"apply"`
+	HardCodecs       bool   `json:"hard_codecs"`
+	MinRepGroup      int    `json:"min_rep_group"` // objects of one kind needed before structural components can amortize (default 2)
+	FrameSpan        int64  `json:"frame_span"`
+	Apply            bool   `json:"apply"`
+	ReserveFreeBytes uint64 `json:"reserve_free_bytes,omitempty"`
 	// RepSkipIfDeltaAtMost (0 = off): do not construct any
 	// representation for a kind group whose delta plan already costs at most this
 	// fraction of the group's reclaimable CDC bytes. A policy heuristic, not a
 	// bound: it can skip a representation that would have won.
 	RepSkipIfDeltaAtMost float64 `json:"rep_skip_if_delta_at_most"`
 	cache                *authPlanCache
+	similarity           *authSimilarityQuery
 }
 
 // authPlanCache carries the expensive results of a plan-only pass into the
@@ -46781,6 +47304,9 @@ func (p AuthPolicy) norm() AuthPolicy {
 		p.MaxDepth = 2
 	}
 	p.MaxDepth = min(p.MaxDepth, authHardDepth)
+	if limits, ok := authTierLimits[p.Tier]; ok && !p.NoReadCost {
+		p.MaxDepth = min(p.MaxDepth, limits.Depth)
+	}
 	if p.MaxBases <= 0 {
 		p.MaxBases = 2
 	}
@@ -46843,8 +47369,8 @@ var authTierLimits = map[string]struct {
 }
 
 // authCostOf measures the candidate's read and classifies its replay path.
-func (s *Store) authCostOf(rec *authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
-	dAuth, dCDC, err := s.authReadTiming(rec, man)
+func (s *Store) authCostOf(runCtx context.Context, rec *authRecord, man manifestV1, amp float64, depth int) (*AuthCost, error) {
+	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, man)
 	if err != nil {
 		return nil, err
 	}
@@ -46920,6 +47446,11 @@ type AuthReport struct {
 	// CacheHits/CacheMisses/DecodedBytes describe the shared decoded-source cache of the pass: a miss decodes
 	// DecodedBytes once, a hit avoids decoding that many bytes again.
 	CacheHits, CacheMisses, DecodedBytes int64
+	SimilarityQueries                    int   `json:"similarity_queries,omitempty"`
+	SimilarityMatches                    int   `json:"similarity_matches,omitempty"`
+	SimilarityFallback                   bool  `json:"similarity_fallback,omitempty"`
+	SimilarityLookupNanos                int64 `json:"similarity_lookup_ns,omitempty"`
+	SimilarityOpenNanos                  int64 `json:"similarity_open_ns,omitempty"`
 }
 
 type authObj struct {
@@ -47123,7 +47654,7 @@ func (s *Store) manifestBytes(man manifestV1) ([]byte, error) {
 }
 
 // authWritePieces durably stores a blob as fixed-size CAS chunks.
-func (s *Store) authWritePieces(blob []byte) ([]authPiece, error) {
+func (s *Store) authWritePieces(ctx context.Context, blob []byte) ([]authPiece, error) {
 	if err := authFaultAt("pieces-write"); err != nil {
 		return nil, err
 	}
@@ -47131,6 +47662,9 @@ func (s *Store) authWritePieces(blob []byte) ([]authPiece, error) {
 	defer b.Abort()
 	var ps []authPiece
 	for off := 0; off < len(blob); off += xdPieceSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		end := min(off+xdPieceSize, len(blob))
 		sum, err := b.Add(blob[off:end])
 		if err != nil {
@@ -47160,7 +47694,14 @@ func chunkPieces(man manifestV1) ([]authPiece, error) {
 // candidate record, resolves it (and its published bases) through the normal
 // read path from the durable CAS, and checks exact length and SHA-256. The
 // overlay lets an unpublished candidate be resolved; returns bytes fetched.
-func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetched float64, err error) {
+func (s *Store) authProve(rec *authRecord, probes int) (int64, float64, error) {
+	return s.authProveContext(context.Background(), rec, probes)
+}
+
+func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, probes int) (fetched int64, probeFetched float64, err error) {
+	if err := runCtx.Err(); err != nil {
+		return 0, 0, err
+	}
 	data, err := rec.marshal()
 	if err != nil {
 		return 0, 0, err
@@ -47188,6 +47729,9 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 	h := sha256.New()
 	buf := make([]byte, authReadPiece)
 	for off := int64(0); off < body.Size(); {
+		if err := runCtx.Err(); err != nil {
+			return 0, 0, err
+		}
 		k := int(min(int64(len(buf)), body.Size()-off))
 		if n, err := body.ReadAt(buf[:k], off); n != k {
 			if err == nil || err == io.EOF {
@@ -47209,6 +47753,9 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 		var tot int64
 		rng := rand.New(rand.NewPCG(binary.LittleEndian.Uint64(cand.SHA[:8]), 7))
 		for i := 0; i < probes; i++ {
+			if err := runCtx.Err(); err != nil {
+				return 0, 0, err
+			}
 			pc := s.newAuthScanCtx()
 			pc.overlay = ctx.overlay
 			pb, _, perr := pc.body(cand.SHA, 0, 1)
@@ -47229,8 +47776,8 @@ func (s *Store) authProve(rec *authRecord, probes int) (fetched int64, probeFetc
 
 // authReadRatio is the whole-object read throughput of a candidate body relative to
 // the CDC read of the same object (best of two warm passes each; above 1 is faster).
-func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) {
-	dAuth, dCDC, err := s.authReadTiming(rec, man)
+func (s *Store) authReadRatio(runCtx context.Context, rec *authRecord, man manifestV1) (float64, error) {
+	dAuth, dCDC, err := s.authReadTiming(runCtx, rec, man)
 	if err != nil || dAuth <= 0 {
 		return 0, err
 	}
@@ -47238,7 +47785,7 @@ func (s *Store) authReadRatio(rec *authRecord, man manifestV1) (float64, error) 
 }
 
 // authReadTiming is the best warm whole-object read of the candidate and of the CDC chunks of the same content.
-func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
+func (s *Store) authReadTiming(runCtx context.Context, rec *authRecord, man manifestV1) (dAuth, dCDC time.Duration, err error) {
 	timed := func(read func() error) (time.Duration, error) {
 		best := time.Duration(math.MaxInt64)
 		for i := 0; i < 2; i++ {
@@ -47267,6 +47814,9 @@ func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC tim
 		}
 		buf := make([]byte, authReadPiece)
 		for off := int64(0); off < body.Size(); {
+			if err := runCtx.Err(); err != nil {
+				return err
+			}
 			k := int(min(int64(len(buf)), body.Size()-off))
 			if n, err := body.ReadAt(buf[:k], off); n != k {
 				return fmt.Errorf("read ratio: %v", err)
@@ -47282,6 +47832,9 @@ func (s *Store) authReadTiming(rec *authRecord, man manifestV1) (dAuth, dCDC tim
 		rd := s.newManifestReader(man, byteRange{0, man.TotalLength - 1})
 		defer rd.close()
 		for {
+			if err := runCtx.Err(); err != nil {
+				return err
+			}
 			if _, err := rd.next(); err == io.EOF {
 				return nil
 			} else if err != nil {
@@ -47307,22 +47860,24 @@ func cdcAmp4K(man manifestV1) float64 {
 }
 
 type authMigrator struct {
-	s      *Store
-	pol    AuthPolicy
-	objs   map[[32]byte]*authObj
-	order  []*authObj
-	refs   map[[32]byte]int // chunk -> distinct CDC-authoritative objects/closures using it
-	phys   map[[32]byte]int64
-	index  map[uint64][]int // feature -> order indexes (newest 64)
-	sketch map[int][]uint64
-	done   []int // order indexes of objects eligible as bases (processed or bodied)
-	repC   map[int]*authRepCand
-	byKey  map[string][]int // bucket/key -> admitted-or-eligible base indexes
-	depth  map[int]int
-	zl     map[int]*authZN7Info // tensor layouts of model-shaped contents (nil entry: not a model)
-	wc     *authWinCache        // decoded sources and windows shared by this pass's planning readers
-	idx    *authIdxCache        // anchor indexes of bases, built once however many targets use them
-	rep    AuthReport
+	ctx          context.Context
+	s            *Store
+	pol          AuthPolicy
+	objs         map[[32]byte]*authObj
+	order        []*authObj
+	refs         map[[32]byte]int // chunk -> distinct CDC-authoritative objects/closures using it
+	phys         map[[32]byte]int64
+	index        map[uint64][]int // feature -> order indexes (newest 64)
+	sketch       map[int][]uint64
+	done         []int // order indexes of objects eligible as bases (processed or bodied)
+	indexedBases map[[32]byte]int
+	repC         map[int]*authRepCand
+	byKey        map[string][]int // bucket/key -> admitted-or-eligible base indexes
+	depth        map[int]int
+	zl           map[int]*authZN7Info // tensor layouts of model-shaped contents (nil entry: not a model)
+	wc           *authWinCache        // decoded sources and windows shared by this pass's planning readers
+	idx          *authIdxCache        // anchor indexes of bases, built once however many targets use them
+	rep          AuthReport
 }
 
 // authIdxCache keeps the single-base anchor indexes of the most recently used bases within a byte budget: a base
@@ -47383,7 +47938,18 @@ func (c *authIdxCache) get(sha [32]byte, b []byte, p dwDcoreParams) (*dwDcoreInd
 // authoritative physical body of live objects. With Apply false it only plans
 // (components for rep candidates may be staged and are collectible garbage).
 func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
+	return s.AuthorityMigrateContext(context.Background(), pol)
+}
+
+// AuthorityMigrateContext stops at bounded read and publication boundaries when canceled.
+func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (AuthReport, error) {
+	if err := ctx.Err(); err != nil {
+		return AuthReport{}, err
+	}
 	pol = pol.norm()
+	if err := s.checkAuthDiskReserve(pol.ReserveFreeBytes, 0, 0); err != nil {
+		return AuthReport{}, err
+	}
 	if pol.HardCodecs { // nested planning passes restore what the outer pass set
 		defer s.rep.hardCodecs.Store(s.rep.hardCodecs.Swap(true))
 	}
@@ -47416,11 +47982,11 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		rp.AllowDelta, rp.Apply, rp.Strategy = false, false, "forced"
 		pol.cache = newAuthPlanCache()
 		dp.cache, rp.cache = pol.cache, pol.cache
-		dr, err := s.AuthorityMigrate(dp)
+		dr, err := s.AuthorityMigrateContext(ctx, dp)
 		if err != nil {
 			return dr, err
 		}
-		rr, err := s.AuthorityMigrate(rp)
+		rr, err := s.AuthorityMigrateContext(ctx, rp)
 		if err != nil {
 			return rr, err
 		}
@@ -47434,8 +48000,11 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		}
 	}
 	t0 := time.Now()
-	m := &authMigrator{s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
+	m := &authMigrator{ctx: ctx, s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
+	if pol.AllowDelta && pol.similarity != nil {
+		m.indexedBases = make(map[[32]byte]int)
+	}
 	if pol.cache != nil {
 		if pol.cache.wc == nil {
 			pol.cache.wc = newAuthWinCache(authPlanWinCacheBytes)
@@ -47448,13 +48017,18 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	// Only the contents in scope are kept; the chunk sharing of everything else is counted as the manifests stream by
 	// (a store of a million objects must not be held in memory to migrate a prefix of it).
 	scopedRun := pol.Bucket != "" || pol.Prefix != ""
-	scoped := map[[32]byte]bool{}
+	scoped := map[[32]byte]liveMan{}
 	if scopedRun {
 		s.eachLiveManifest(func(bucket, key string) bool {
 			return (pol.Bucket == "" || bucket == pol.Bucket) && strings.HasPrefix(key, pol.Prefix)
 		}, func(lm liveMan) {
-			if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil {
-				scoped[sha] = true
+			sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+			if err != nil {
+				return
+			}
+			prior, exists := scoped[sha]
+			if !exists || lm.man.CreatedAt.Before(prior.man.CreatedAt) {
+				scoped[sha] = lm
 			}
 		})
 	}
@@ -47462,10 +48036,11 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	var scanErr error
 	s.eachLiveManifest(nil, func(lm liveMan) {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
-		if scanErr != nil || err != nil || lm.man.TotalLength < 1 {
+		if scanErr = cmp.Or(scanErr, ctx.Err()); scanErr != nil || err != nil || lm.man.TotalLength < 1 {
 			return
 		}
-		if scopedRun && !scoped[sha] { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
+		matched, inScope := scoped[sha]
+		if scopedRun && !inScope { // chunk sharing among CDC-authoritative contents (bodied contents hold their own closures)
 			if outSeen[sha] {
 				return
 			}
@@ -47481,6 +48056,9 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 				}
 			}
 			return
+		}
+		if inScope {
+			lm = matched
 		}
 		o := m.objs[sha]
 		if o == nil {
@@ -47531,9 +48109,14 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 		m.wc.setBudget(min(max(4*largest, authPlanSrcCacheMin), authPlanWinCacheMax))
 	}
 	if pol.AllowRep {
-		m.planRepGroups()
+		if err := m.planRepGroups(); err != nil {
+			return m.rep, err
+		}
 	}
 	for i, o := range m.order {
+		if err := ctx.Err(); err != nil {
+			return m.rep, err
+		}
 		m.rep.Objects++
 		if o.hasRec {
 			m.depth[i] = m.recDepth(o.sha)
@@ -47549,7 +48132,7 @@ func (s *Store) AuthorityMigrate(pol AuthPolicy) (AuthReport, error) {
 	if pol.cache != nil {
 		m.rep.PlanReuse, m.rep.RepNotBuilt = pol.cache.reuseHits, pol.cache.rejected
 	}
-	return m.rep, nil
+	return m.rep, ctx.Err()
 }
 
 // authRepAbandonMin is the group size above which a representation group may be abandoned before all its
@@ -47568,11 +48151,14 @@ type authRepCand struct {
 // and admits a kind's group only when the union of its components (shared
 // across versions) beats the group's unshared CDC bytes: a lone first-sight
 // representation is usually larger than CDC, its value is the reuse.
-func (m *authMigrator) planRepGroups() {
+func (m *authMigrator) planRepGroups() error {
 	// A lone first-sight object cannot amortize its components: kinds seen once are not even built.
 	kinds := map[int]repKind{}
 	count := map[repKind]int{}
 	for i, o := range m.order {
+		if err := m.ctx.Err(); err != nil {
+			return err
+		}
 		if o.hasRec || o.man.TotalLength < m.pol.MinObject || o.man.TotalLength > repMaxInspect {
 			continue
 		}
@@ -47585,7 +48171,7 @@ func (m *authMigrator) planRepGroups() {
 		kinds[i] = kind
 		count[kind]++
 	}
-	m.planRepGroupsUnion(kinds, count)
+	return m.planRepGroupsUnion(kinds, count)
 }
 
 // groupReclaimable is the exact CDC volume a group frees: the physical bytes
@@ -47637,7 +48223,7 @@ func (m *authMigrator) groupChunkBytes(idxs []int) int64 {
 // planRepGroupsUnion admits a kind's group by union accounting, constructing
 // members progressively and abandoning the group as soon as its projected
 // cost cannot beat the delta plan (or CDC) for the same members.
-func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKind]int) {
+func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKind]int) error {
 	groups := map[repKind][]int{}
 	for i := range m.order {
 		if kind, ok := kinds[i]; ok && count[kind] >= m.pol.MinRepGroup {
@@ -47684,18 +48270,30 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 		built := 0
 		abandoned := false
 		for k, i := range members {
+			if err := m.ctx.Err(); err != nil {
+				return err
+			}
 			var rc *authRepCand
 			if cache != nil {
 				rc = cache.repC[m.order[i].sha]
 			}
 			if rc == nil {
+				if err := m.s.checkAuthDiskReserve(m.pol.ReserveFreeBytes, 0, 0); err != nil {
+					return err
+				}
 				var src io.ReaderAt
 				if man := m.order[i].man; man.TotalLength <= authWindowMin {
 					if b, err := m.source(man); err == nil {
 						src = bytes.NewReader(b)
 					}
 				}
-				root, _, err := m.s.repConstructAt(m.order[i].man, src, nil)
+				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil }, m.pol.ReserveFreeBytes)
+				if errors.Is(err, syscall.ENOSPC) {
+					return err
+				}
+				if spaceErr := m.s.checkAuthDiskReserve(m.pol.ReserveFreeBytes, 0, 0); spaceErr != nil {
+					return spaceErr
+				}
 				if err != nil {
 					continue
 				}
@@ -47757,6 +48355,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 			}
 		}
 	}
+	return m.ctx.Err()
 }
 
 func (m *authMigrator) recDepth(sha [32]byte) int {
@@ -47768,6 +48367,9 @@ func (m *authMigrator) recDepth(sha [32]byte) int {
 
 func (m *authMigrator) addBase(i int) {
 	m.done = append(m.done, i)
+	if m.indexedBases != nil {
+		m.indexedBases[m.order[i].sha] = i
+	}
 	k := m.order[i].bucket + "\x00" + m.order[i].key
 	m.byKey[k] = append(m.byKey[k], i)
 	if sk := m.sketch[i]; sk != nil {
@@ -47787,6 +48389,20 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 	for _, f := range sk {
 		for _, j := range m.index[f] {
 			score[j]++
+		}
+	}
+	if q := m.pol.similarity; q != nil && !q.failed {
+		m.rep.SimilarityQueries++
+		start := time.Now()
+		extra, err := m.indexedCandidates(i, sk)
+		m.rep.SimilarityLookupNanos += time.Since(start).Nanoseconds()
+		if err != nil {
+			q.failed = true
+		} else {
+			m.rep.SimilarityMatches += len(extra)
+			for j, n := range extra {
+				score[j] += n
+			}
 		}
 	}
 	// Same-key neighbours are always worth a trial: version histories are the common case.
@@ -47812,6 +48428,42 @@ func (m *authMigrator) candidates(i int, sk []uint64, windowed bool) []int {
 		out = append(out, c.j)
 	}
 	return out
+}
+
+func (m *authMigrator) indexedCandidates(i int, sk []uint64) (map[int]int, error) {
+	q := m.pol.similarity
+	target := m.order[i]
+	if (m.pol.Bucket != "" && target.bucket != m.pol.Bucket) || !strings.HasPrefix(target.key, m.pol.Prefix) {
+		return nil, nil
+	}
+	score := make(map[int]int)
+	resolved := make(map[uint32]int)
+	for _, feature := range sk {
+		best, err := q.postings(feature)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range best {
+			j, visited := resolved[id]
+			if !visited {
+				sha, size, err := q.content(id)
+				if err != nil {
+					return nil, err
+				}
+				pos, eligible := m.indexedBases[sha]
+				j = -1
+				if eligible && pos != i && m.order[pos].bucket == target.bucket &&
+					strings.HasPrefix(m.order[pos].key, m.pol.Prefix) && m.order[pos].man.TotalLength == size {
+					j = pos
+				}
+				resolved[id] = j
+			}
+			if j >= 0 && !slices.Contains(m.index[feature], j) {
+				score[j]++
+			}
+		}
+	}
+	return score, nil
 }
 
 func (m *authMigrator) unsharedBytes(o *authObj) int64 {
@@ -47997,6 +48649,39 @@ func (m *authMigrator) source(man manifestV1) ([]byte, error) {
 	return m.wc.load(authWinKey{sha, 0, -1}, func() ([]byte, error) { return m.s.manifestBytes(man) })
 }
 
+// checkAuthDiskReserve prices staged output against the currently available
+// blocks. Existing data and candidate components stay charged until reclaimed.
+func (s *Store) checkAuthDiskReserve(reserve, bytes, files uint64) error {
+	if reserve == 0 {
+		return nil
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(s.root, &st); err != nil {
+		return err
+	}
+	if st.Bsize <= 0 {
+		return errors.New("invalid filesystem block size")
+	}
+	block := uint64(st.Bsize)
+	blocks := func(n uint64) uint64 {
+		if n == 0 {
+			return 0
+		}
+		return 1 + (n-1)/block
+	}
+	available, keep, staged := uint64(st.Bavail), blocks(reserve), blocks(bytes)
+	// Charge one extra block per output file for independent rounding and
+	// directory entries. The filesystem still arbitrates space for each write.
+	if keep > available || staged > available-keep || files > available-keep-staged {
+		return fmt.Errorf("authority staging needs %d data bytes and space for %d files while reserving %d bytes: %w", bytes, files, reserve, syscall.ENOSPC)
+	}
+	return nil
+}
+
+func (m *authMigrator) checkAuthComponentReserve(size int64) error {
+	return m.s.checkAuthDiskReserve(m.pol.ReserveFreeBytes, uint64(size), uint64(size/xdPieceSize+1))
+}
+
 func (m *authMigrator) process(i int, o *authObj) error {
 	pol := m.pol
 	plan := AuthPlan{SHA: hex.EncodeToString(o.sha[:]), Size: o.man.TotalLength, Form: "cdc"}
@@ -48115,12 +48800,18 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		m.addBase(i)
 		return nil
 	}
+	if err := m.ctx.Err(); err != nil {
+		return err
+	}
 	// --- build durable components, publish bases' pins, prove, commit
 	var rec *authRecord
 	var pins []int
 	if choice == "delta" {
 		rec, pins = best.rec, best.pins
-		ps, err := m.s.authWritePieces(best.blob)
+		if err := m.checkAuthComponentReserve(int64(len(best.blob))); err != nil {
+			return err
+		}
+		ps, err := m.s.authWritePieces(m.ctx, best.blob)
 		if err != nil {
 			return err
 		}
@@ -48136,8 +48827,39 @@ func (m *authMigrator) process(i int, o *authObj) error {
 // amplification gate and publishes it. A refusal keeps the object in CDC.
 func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, plan AuthPlan, choice string, finish func(AuthPlan)) error {
 	pol := m.pol
+	if pol.ReserveFreeBytes != 0 {
+		data, err := rec.marshal()
+		if err != nil {
+			return err
+		}
+		metaBytes, files := uint64(len(data)), uint64(1)
+		for _, j := range pins {
+			bo := m.order[j]
+			if bo.hasRec {
+				continue
+			}
+			ps, err := chunkPieces(bo.man)
+			if err != nil {
+				return err
+			}
+			pin := authRecord{SHA: bo.sha, Size: bo.man.TotalLength, Gen: 1, Form: authFormPin, Pieces: ps}
+			data, err := pin.marshal()
+			if err != nil {
+				return err
+			}
+			metaBytes += uint64(len(data))
+			files++
+		}
+		// FORMAT.json can be replaced when publication raises the feature floor.
+		if err := m.s.checkAuthDiskReserve(pol.ReserveFreeBytes, metaBytes, files+1); err != nil {
+			return err
+		}
+	}
 	fireTestHook(hookAuthComponentsFlushed)
 	for _, j := range pins {
+		if err := m.ctx.Err(); err != nil {
+			return err
+		}
 		if err := m.s.authEnsurePin(m.order[j]); err != nil {
 			return err
 		}
@@ -48149,8 +48871,11 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 	if _, tiered := authTierLimits[pol.Tier]; pol.MaxReadAmp <= 0 && !(tiered && !pol.NoReadCost) {
 		probes = 2
 	}
-	_, probe, err := m.s.authProve(rec, probes)
+	_, probe, err := m.s.authProveContext(m.ctx, rec, probes)
 	if err != nil {
+		if ctxErr := m.ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		plan.Reason = "proof failed: " + err.Error()
 		plan.Form = "cdc"
 		if pol.cache != nil {
@@ -48173,7 +48898,7 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		return nil
 	}
 	if _, tiered := authTierLimits[pol.Tier]; tiered && !pol.NoReadCost {
-		cost, err := m.s.authCostOf(rec, o.man, probe, plan.Depth)
+		cost, err := m.s.authCostOf(m.ctx, rec, o.man, probe, plan.Depth)
 		if err != nil {
 			return err
 		}
@@ -48193,7 +48918,7 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 	}
 	if pol.MaxReadAmp > 0 && pol.MinReadRatio > 0 {
-		ratio, err := m.s.authReadRatio(rec, o.man)
+		ratio, err := m.s.authReadRatio(m.ctx, rec, o.man)
 		if err != nil {
 			return err
 		}
@@ -48210,6 +48935,9 @@ func (m *authMigrator) commit(i int, o *authObj, rec *authRecord, pins []int, pl
 		}
 	}
 	fireTestHook(hookAuthProofDone)
+	if err := m.ctx.Err(); err != nil {
+		return err
+	}
 	if err := m.s.authPublish(rec); err != nil {
 		return err
 	}
@@ -48260,6 +48988,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		return m.commitRep(i, o, repRoot, repAdded, plan, finish)
 	}
 	tgt := m.s.newAuthObjAtC(o.man, m.wc)
+	tgt.ctx = m.ctx
 	defer tgt.close()
 	sk := pol.cache.sketchOf(o.sha)
 	if sk == nil {
@@ -48283,6 +49012,7 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		return keep("delta depth exceeds the policy")
 	}
 	base := m.s.newAuthObjAtC(bo.man, m.wc)
+	base.ctx = m.ctx
 	defer base.close()
 	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
@@ -48324,9 +49054,15 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 		m.addBase(i)
 		return nil
 	}
+	if err := m.checkAuthComponentReserve(added); err != nil {
+		return err
+	}
 	pw := m.s.newAuthPieceWriter()
 	defer pw.abort()
 	if _, err := dwDcoreWEncode(pw, tgt, o.man.TotalLength, base, bo.man.TotalLength, idx, wp); err != nil {
+		if storeErr := cmp.Or(pw.err, m.ctx.Err()); storeErr != nil {
+			return storeErr
+		}
 		return keep("windowed encoding failed: " + err.Error())
 	}
 	// Encoding has joined the window workers; release their readers before opening the proof.
@@ -48602,18 +49338,115 @@ func (s *Store) materializeCDC(man manifestV1) error {
 	return b.Flush()
 }
 
+func (s *Store) authorityStorage(rr reachabilityResult) (AuthorityStorage, error) {
+	st := AuthorityStorage{
+		LiveByForm:    map[string]int{"pin": rr.AuthPins, "rep": rr.AuthReps, "delta": rr.AuthDeltas},
+		OrphanRecords: len(rr.AuthOrphans), UnavailableRecords: rr.AuthFaults,
+	}
+	files, err := s.authFiles()
+	if err != nil {
+		return st, err
+	}
+	for _, sum := range files {
+		size, err := fileSizeOrZero(s.authPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.RecordFileBytes += size
+	}
+	for _, id := range rr.AuthOrphans {
+		sum, _ := decodeHexSHA256(id)
+		size, err := fileSizeOrZero(s.authPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.OrphanFileBytes += size
+	}
+	components := newDigestTable(1024)
+	dependents := make(map[[32]byte]int)
+	for _, id := range rr.AuthLive {
+		sum, _ := decodeHexSHA256(id)
+		size, err := fileSizeOrZero(s.authPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.LiveRecordFileBytes += size
+		r, err := s.authLoad(sum)
+		if err != nil {
+			return st, err
+		}
+		if r == nil {
+			continue
+		}
+		st.MaxDepth = max(st.MaxDepth, int(r.Depth))
+		st.MaxBases = max(st.MaxBases, len(r.Bases))
+		for _, base := range r.Bases {
+			dependents[base.SHA]++
+			st.MaxDirectDependents = max(st.MaxDirectDependents, dependents[base.SHA])
+		}
+		chunks, err := s.authRecordChunks(r)
+		if err != nil {
+			return st, err
+		}
+		for _, c := range chunks {
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil {
+				return st, err
+			}
+			components.add(sum, c.Length)
+		}
+	}
+	st.ComponentCount = len(components.lens)
+	packs := s.packSnap()
+	var locations [4]packLoc
+	for i, sum := range components.keys {
+		st.ComponentLogical += components.lens[i]
+		size, err := fileSizeOrZero(s.chunkPath(sum))
+		if err != nil {
+			return st, err
+		}
+		st.ComponentFiles += size
+		for _, loc := range packs.appendLocs(locations[:0], sum) {
+			st.ComponentFiles += int64(loc.stored) + packRecordHeaderSize
+			if !packs.packs[loc.pack].open {
+				st.ComponentFiles += packIndexEntrySize
+			}
+		}
+	}
+	return st, nil
+}
+
+type authorityAdmissionTier struct {
+	ReplayMiBs  float64 `json:"min_replay_mib_s"`
+	RelativeAmp float64 `json:"max_4k_amplification_vs_cdc"`
+	Depth       int     `json:"max_depth"`
+	MemoryMiB   int     `json:"max_read_memory_mib"`
+	HardCodecs  bool    `json:"permits_producer_replay"`
+}
+
+type authorityRangeProbe struct {
+	Offset   int64 `json:"offset"`
+	Length   int64 `json:"length"`
+	CASBytes int64 `json:"logical_cas_bytes_read"`
+}
+
 // AuthorityStatus summarizes the committed bodies.
 type AuthStatus struct {
-	Records            int            `json:"records"`
-	Pins, Reps, Deltas int            `json:"-"`
-	ByForm             map[string]int `json:"by_form"`
-	RecordBytes        int64          `json:"record_bytes"`
-	MaxDepth           int            `json:"max_depth"`
-	FormatVersion      int            `json:"format_version"`
+	Records            int                               `json:"records"`
+	Pins, Reps, Deltas int                               `json:"-"`
+	ByForm             map[string]int                    `json:"by_form"`
+	RecordBytes        int64                             `json:"record_bytes"`
+	MaxDepth           int                               `json:"max_depth"`
+	FormatVersion      int                               `json:"format_version"`
+	AdmissionTiers     map[string]authorityAdmissionTier `json:"admission_tiers"`
+	RangeProbe         *authorityRangeProbe              `json:"range_probe,omitempty"`
 }
 
 func (s *Store) AuthorityStatus() (AuthStatus, error) {
-	st := AuthStatus{ByForm: map[string]int{}}
+	st := AuthStatus{ByForm: map[string]int{}, AdmissionTiers: make(map[string]authorityAdmissionTier, len(authTierLimits))}
+	for name, limit := range authTierLimits {
+		st.AdmissionTiers[name] = authorityAdmissionTier{limit.Replay, limit.Amp, limit.Depth, limit.Mem, limit.Hard}
+	}
 	s.formatMu.Lock()
 	st.FormatVersion = s.format.StoreFormatVersion
 	s.formatMu.Unlock()
@@ -48639,27 +49472,48 @@ func (s *Store) AuthorityStatus() (AuthStatus, error) {
 
 // ---- capability negotiation and native closure transfer -----------------------
 
-// AuthCaps is what a store/binary can hold as authoritative state.
+const authXferVersion = 1
+
+// AuthCaps describes a closure's requirements or a destination's support.
 type AuthCaps struct {
+	Version     int      `json:"version"`
 	StoreFormat int      `json:"store_format"`
 	Forms       []string `json:"forms"`
+	Features    []string `json:"features,omitempty"`
 	MaxDepth    int      `json:"max_depth"`
 }
 
 func (s *Store) AuthorityCaps() AuthCaps {
-	return AuthCaps{StoreFormat: storeFormatVersionSupported, Forms: []string{"pin", "rep", "delta"}, MaxDepth: authHardDepth}
+	return AuthCaps{
+		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
+		Forms:    []string{"pin", "rep", "delta"},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature},
+	}
 }
 
-// AuthTransferMode picks native closure transfer only when the destination
-// declares the authority floor; everything else receives exact ordinary bytes.
+// AuthTransferMode requires support for every form and feature the source uses.
 func AuthTransferMode(src, dst AuthCaps) string {
-	if dst.StoreFormat >= storeFormatVersionAuthority && src.StoreFormat >= storeFormatVersionAuthority && dst.MaxDepth >= src.MaxDepth {
-		return "native"
+	if src.Version != authXferVersion || dst.Version != authXferVersion ||
+		src.StoreFormat < storeFormatVersionAuthority || dst.StoreFormat < src.StoreFormat ||
+		src.MaxDepth < 0 || src.MaxDepth > authHardDepth || dst.MaxDepth < src.MaxDepth || len(src.Forms) == 0 {
+		return "materialize"
 	}
-	return "materialize"
+	for _, form := range src.Forms {
+		if !slices.Contains(dst.Forms, form) {
+			return "materialize"
+		}
+	}
+	for _, feature := range src.Features {
+		if !slices.Contains(dst.Features, feature) {
+			return "materialize"
+		}
+	}
+	return "native"
 }
 
 const authXferMagic = "ZS3C\x01"
+
+var errAuthTransferUnsupported = errors.New("authority closure requires unsupported peer capabilities")
 
 // authClosureOrder returns the content hashes of sha's closure, bases first.
 func (s *Store) authClosureOrder(sha [32]byte, destHas func([32]byte) bool) ([]*authRecord, error) {
@@ -48723,54 +49577,190 @@ func (s *Store) ExportAuthorityClosureThin(sha [32]byte, destHas func([32]byte) 
 	if err != nil {
 		return err
 	}
+	return s.writeAuthorityClosure(recs, w, nil)
+}
+
+// ExportAuthorityClosureFor checks the actual records being sent before
+// writing any bytes. An incompatible peer can receive ordinary S3 bytes.
+func (s *Store) ExportAuthorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32]byte) bool, w io.Writer) error {
+	recs, err := s.authorityClosureFor(sha, dst, destHas)
+	if err != nil {
+		return err
+	}
+	return s.writeAuthorityClosure(recs, w, nil)
+}
+
+func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32]byte) bool) ([]*authRecord, error) {
+	recs, err := s.authClosureOrder(sha, destHas)
+	if err != nil {
+		return nil, err
+	}
+	required := AuthCaps{Version: authXferVersion, StoreFormat: storeFormatVersionAuthority}
+	addFeature := func(feature string) {
+		if !slices.Contains(required.Features, feature) {
+			required.Features = append(required.Features, feature)
+		}
+	}
+	for _, rec := range recs {
+		required.MaxDepth = max(required.MaxDepth, int(rec.Depth))
+		form := [...]string{"", "pin", "rep", "delta"}[rec.Form]
+		if !slices.Contains(required.Forms, form) {
+			required.Forms = append(required.Forms, form)
+		}
+		switch rec.Form {
+		case authFormDelta:
+			blob := newPieceSeq(s.newAuthCtx(), rec.Pieces)
+			var header [5]byte
+			if _, err := blob.ReadAt(header[:], 0); err != nil {
+				return nil, fmt.Errorf("export closure: read delta header: %w", err)
+			}
+			switch string(header[:4]) {
+			case ncNumcore_zMagic:
+				iq3, err := zn7DerivesIQ3(blob)
+				if err != nil {
+					return nil, fmt.Errorf("export closure: read ZN7 requirements: %w", err)
+				}
+				addFeature(authZN7Feature)
+				if iq3 {
+					addFeature(authIQ3Feature)
+				}
+			case wMagicZW1:
+			case xdMagic:
+				if header[4] != xdVersion {
+					return nil, errAuthTransferUnsupported
+				}
+			default:
+				return nil, errAuthTransferUnsupported
+			}
+		case authFormRep:
+			hard, stream, err := s.repRootHard(rec.Root)
+			if err != nil {
+				return nil, err
+			}
+			if hard {
+				addFeature(authHardFeature)
+			}
+			if stream {
+				addFeature(authStreamFeature)
+			}
+		}
+	}
+	if AuthTransferMode(required, dst) != "native" {
+		return nil, errAuthTransferUnsupported
+	}
+	return recs, nil
+}
+
+type authClosureWire struct {
+	records []*authRecord
+	chunks  []chunkRef
+	size    int64
+}
+
+func (s *Store) planAuthorityClosure(recs []*authRecord, held map[[32]byte]bool) (authClosureWire, error) {
+	wire := authClosureWire{records: recs}
+	var scratch [binary.MaxVarintLen64]byte
+	prefix := func(n int64) int64 {
+		return int64(binary.PutUvarint(scratch[:], uint64(n)))
+	}
+	wire.size = int64(len(authXferMagic)+sha256.Size) + prefix(int64(len(recs)))
+	add := func(n int64) error {
+		if n < 0 || wire.size > math.MaxInt64-n {
+			return errAuthLimit
+		}
+		wire.size += n
+		return nil
+	}
+	seen := map[[32]byte]bool{}
+	for _, r := range recs {
+		rb, err := r.marshal()
+		if err != nil {
+			return wire, err
+		}
+		length := int64(len(rb))
+		if err := add(prefix(length) + length); err != nil {
+			return wire, err
+		}
+		refs, err := s.authRecordChunks(r)
+		if err != nil {
+			return wire, err
+		}
+		for _, c := range refs {
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil || c.Length <= 0 || c.Length > maxSyncChunkBytes {
+				return wire, errAuthCorrupt
+			}
+			if seen[sum] || held[sum] {
+				continue
+			}
+			seen[sum] = true
+			wire.chunks = append(wire.chunks, c)
+			if err := add(int64(sha256.Size) + prefix(c.Length) + c.Length); err != nil {
+				return wire, err
+			}
+		}
+	}
+	if err := add(prefix(int64(len(wire.chunks)))); err != nil {
+		return wire, err
+	}
+	return wire, nil
+}
+
+func (s *Store) writeAuthorityClosure(recs []*authRecord, w io.Writer, held map[[32]byte]bool) error {
+	wire, err := s.planAuthorityClosure(recs, held)
+	if err != nil {
+		return err
+	}
+	return wire.write(s, w)
+}
+
+func (wire authClosureWire) write(s *Store, w io.Writer) error {
 	h := sha256.New()
 	mw := io.MultiWriter(w, h)
 	put := func(b []byte) error { _, err := mw.Write(b); return err }
+	var encodedLength [binary.MaxVarintLen64]byte
+	putLength := func(n int) error { return put(encodedLength[:binary.PutUvarint(encodedLength[:], uint64(n))]) }
 	if err := put([]byte(authXferMagic)); err != nil {
 		return err
 	}
-	hdr := binary.AppendUvarint(nil, uint64(len(recs)))
-	seen := map[[32]byte]bool{}
-	var chunks []chunkRef
-	for _, r := range recs {
+	if err := putLength(len(wire.records)); err != nil {
+		return err
+	}
+	for _, r := range wire.records {
 		rb, err := r.marshal()
 		if err != nil {
 			return err
 		}
-		hdr = binary.AppendUvarint(hdr, uint64(len(rb)))
-		hdr = append(hdr, rb...)
-		cs, err := s.authRecordChunks(r)
-		if err != nil {
+		if err := putLength(len(rb)); err != nil {
 			return err
 		}
-		for _, c := range cs {
-			if sum, _ := decodeHexSHA256(c.SHA256); !seen[sum] {
-				seen[sum] = true
-				chunks = append(chunks, c)
-			}
+		if err := put(rb); err != nil {
+			return err
 		}
 	}
-	hdr = binary.AppendUvarint(hdr, uint64(len(chunks)))
-	if err := put(hdr); err != nil {
+	if err := putLength(len(wire.chunks)); err != nil {
 		return err
 	}
-	for _, c := range chunks {
-		sum, _ := decodeHexSHA256(c.SHA256)
+	for _, c := range wire.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256) // validated during planning
 		data, err := s.casRead(sum)
 		if err != nil {
 			return fmt.Errorf("export closure: component %s: %w", c.SHA256[:12], err)
 		}
+		if int64(len(data)) != c.Length {
+			return fmt.Errorf("export closure: component %s: %w", c.SHA256[:12], errAuthMismatch)
+		}
 		if err := put(sum[:]); err != nil {
 			return err
 		}
-		if err := put(binary.AppendUvarint(nil, uint64(len(data)))); err != nil {
+		if err := putLength(len(data)); err != nil {
 			return err
 		}
 		if err := put(data); err != nil {
 			return err
 		}
 	}
-	_, err = w.Write(h.Sum(nil))
+	_, err := w.Write(h.Sum(nil))
 	return err
 }
 
@@ -48782,6 +49772,15 @@ const hookAuthImportRecord = "auth-import-record"
 // durable, then each record is proven by full reconstruction and published
 // bases-first. Records the destination already holds are kept.
 func (s *Store) ImportAuthorityClosure(r io.Reader) error {
+	return s.importAuthorityClosure(r, nil, nil, nil)
+}
+
+type authRecoveryLimit struct {
+	size       int64
+	childDepth uint8
+}
+
+func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyFrame func() error, repair map[[32]byte]authRecoveryLimit) error {
 	br := bufio.NewReaderSize(r, 1<<20)
 	h := sha256.New()
 	tr := io.TeeReader(br, h)
@@ -48795,10 +49794,16 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 		return fmt.Errorf("import closure: record count")
 	}
 	var recs []*authRecord
+	positions := make(map[[32]byte]int)
+	var metadataBytes uint64
 	for i := uint64(0); i < nrec; i++ {
 		l, err := binary.ReadUvarint(rb)
 		if err != nil || l > authMaxRecord {
 			return fmt.Errorf("import closure: record length")
+		}
+		metadataBytes += l
+		if expected != nil && metadataBytes > authMaxRecord {
+			return fmt.Errorf("import closure: network record metadata exceeds its limit")
 		}
 		buf := make([]byte, l)
 		if _, err := io.ReadFull(tr, buf); err != nil {
@@ -48808,7 +49813,54 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 		if err != nil {
 			return err
 		}
+		if limit, constrained := repair[rec.SHA]; constrained && (rec.Size != limit.size || rec.Depth >= limit.childDepth) {
+			return fmt.Errorf("import closure: %w: restored base %x conflicts with a local dependent", errAuthCorrupt, rec.SHA[:6])
+		}
+		if _, exists := positions[rec.SHA]; exists {
+			return fmt.Errorf("import closure: %w: repeated record %x", errAuthCorrupt, rec.SHA[:6])
+		}
+		positions[rec.SHA] = len(recs)
 		recs = append(recs, rec)
+	}
+	for i, rec := range recs {
+		for _, b := range rec.Bases {
+			var base *authRecord
+			if j, present := positions[b.SHA]; present {
+				if j >= i {
+					return fmt.Errorf("import closure: %w: record precedes base %x", errAuthCorrupt, b.SHA[:6])
+				}
+				base = recs[j]
+			} else {
+				base, err = s.authLoad(b.SHA)
+				if err != nil {
+					return fmt.Errorf("import closure: read held base %x: %w", b.SHA[:6], err)
+				}
+				if base == nil {
+					return fmt.Errorf("import closure: %w: thin stream needs base %x the destination does not hold", errAuthMissing, b.SHA[:6])
+				}
+			}
+			if base.Size != b.Size || base.Depth >= rec.Depth {
+				return fmt.Errorf("import closure: %w: base %x size or depth inconsistent", errAuthCorrupt, b.SHA[:6])
+			}
+		}
+	}
+	if expected != nil {
+		root := recs[len(recs)-1]
+		if root.SHA != expected.SHA || root.Size != expected.Size {
+			return fmt.Errorf("import closure: %w: unexpected content root", errAuthMismatch)
+		}
+		reachable := make([]bool, len(recs))
+		reachable[len(recs)-1] = true
+		for i := len(recs) - 1; i >= 0; i-- {
+			if !reachable[i] {
+				return fmt.Errorf("import closure: %w: record is outside the requested closure", errAuthCorrupt)
+			}
+			for _, base := range recs[i].Bases {
+				if j, present := positions[base.SHA]; present {
+					reachable[j] = true
+				}
+			}
+		}
 	}
 	nch, err := binary.ReadUvarint(rb)
 	if err != nil || nch > authMaxPieces*8 {
@@ -48833,6 +49885,16 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 		if sha256.Sum256(data) != sum {
 			return fmt.Errorf("import closure: component %x does not match its hash", sum[:6])
 		}
+		if repair != nil {
+			// Each verified component can heal an exact digest immediately.
+			// Records still wait for the trailer and reconstruction proof.
+			if _, err := s.casRead(sum); err != nil {
+				if err := s.casRepairPublish(sum, data); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		if _, err := b.add(sum, data); err != nil {
 			return err
 		}
@@ -48840,7 +49902,7 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 			if err := b.Flush(); err != nil {
 				return err
 			}
-			b, pending = s.newCASBatch(), 0
+			pending = 0
 		}
 	}
 	want := h.Sum(nil)
@@ -48848,28 +49910,24 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 	if _, err := io.ReadFull(br, got); err != nil || !bytes.Equal(got, want) {
 		return fmt.Errorf("import closure: trailing digest mismatch")
 	}
+	if verifyFrame != nil {
+		if _, err := br.ReadByte(); err != io.EOF {
+			return fmt.Errorf("import closure: unexpected data after the frame")
+		}
+		if err := verifyFrame(); err != nil {
+			return err
+		}
+	}
 	if err := b.Flush(); err != nil {
 		return err
 	}
 	fireTestHook(hookAuthImportChunks)
-	inStream := map[[32]byte]bool{}
 	for _, rec := range recs {
-		inStream[rec.SHA] = true
-	}
-	for _, rec := range recs {
-		for _, b := range rec.Bases {
-			if inStream[b.SHA] {
-				continue
-			}
-			if held, err := s.authLoad(b.SHA); err != nil || held == nil || held.Size != b.Size {
-				return fmt.Errorf("import closure: %w: thin stream needs base %x the destination does not hold", errAuthMissing, b.SHA[:6])
-			}
-		}
-	}
-	for _, rec := range recs {
-		if cur, err := s.authLoad(rec.SHA); err != nil {
+		cur, err := s.authLoad(rec.SHA)
+		if err != nil && !(repair != nil && errors.Is(err, errAuthCorrupt)) {
 			return err
-		} else if cur != nil {
+		}
+		if cur != nil {
 			continue
 		}
 		rec.Gen = 1
@@ -48877,7 +49935,7 @@ func (s *Store) ImportAuthorityClosure(r io.Reader) error {
 			return fmt.Errorf("import closure: proof of %x failed: %w", rec.SHA[:6], err)
 		}
 		fireTestHook(hookAuthImportRecord)
-		if err := s.authPublish(rec); err != nil {
+		if err := s.authPublishChecked(rec, repair != nil); err != nil {
 			return err
 		}
 	}
@@ -48890,6 +49948,91 @@ func (c *countingByteReader) ReadByte() (byte, error) {
 	var b [1]byte
 	_, err := io.ReadFull(c.r, b[:])
 	return b[0], err
+}
+
+// recoverAuthorityFromPeer restores the closure of an exact live manifest
+// under the exclusive store lock used by the authority maintenance command.
+func (s *Store) recoverAuthorityFromPeer(cfg syncClientConfig) error {
+	_, local, err := s.headServed(cfg.Bucket, cfg.Key)
+	if err != nil {
+		return fmt.Errorf("recover local manifest: %w", err)
+	}
+	sum, err := decodeHexSHA256(local.man.ObjectSHA256)
+	if err != nil {
+		return err
+	}
+	discovery, err := discoverZeroS3Sync(cfg)
+	if err != nil {
+		return fmt.Errorf("recover peer discovery: %w", err)
+	}
+	if discovery.AuthorityExport == nil || discovery.AuthorityExport.Version != authXferVersion {
+		return errAuthTransferUnsupported
+	}
+	desc, err := fetchSourceDescriptor(cfg)
+	if err != nil {
+		return fmt.Errorf("recover peer object: %w", err)
+	}
+	if desc.ObjectSHA256 != local.man.ObjectSHA256 || desc.Size != local.man.TotalLength {
+		return fmt.Errorf("recover peer object: %w", errAuthMismatch)
+	}
+	limits := make(map[[32]byte]authRecoveryLimit)
+	files, err := s.authFiles()
+	if err != nil {
+		return err
+	}
+	for _, entry := range files {
+		rec, err := s.authLoad(entry)
+		if errors.Is(err, errAuthCorrupt) || (err == nil && rec == nil) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, base := range rec.Bases {
+			limit, exists := limits[base.SHA]
+			if exists && limit.size != base.Size {
+				return fmt.Errorf("recover: %w: local dependents disagree on base %x size", errAuthCorrupt, base.SHA[:6])
+			}
+			if !exists || rec.Depth < limit.childDepth {
+				limits[base.SHA] = authRecoveryLimit{size: base.Size, childDepth: rec.Depth}
+			}
+		}
+	}
+	control, err := json.Marshal(authExportRequest{Bucket: cfg.Bucket, Key: cfg.Key, VersionID: desc.VersionID, Peer: s.AuthorityCaps()})
+	if err != nil {
+		return err
+	}
+	resp, err := cfg.signAndDoStream(context.Background(), http.MethodPost, zeros3AuthExportPath, control, map[string]string{"Content-Type": "application/json"})
+	if err != nil {
+		return fmt.Errorf("recover peer export: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, err := readAllLimited(resp.Body, 64<<10)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("recover peer export status %d: %s", resp.StatusCode, body)
+	}
+	reader := &io.LimitedReader{R: resp.Body, N: maxStreamedBodySize + 1}
+	checkSize := func() error {
+		if reader.N == 0 {
+			return errors.New("recover: closure exceeds network limit")
+		}
+		return nil
+	}
+	if err := s.importAuthorityClosure(reader, &xdBaseRef{SHA: sum, Size: local.man.TotalLength}, checkSize, limits); err != nil {
+		return err
+	}
+	root, err := s.authLoad(sum)
+	if err != nil {
+		return err
+	}
+	if root == nil {
+		return errAuthMissing
+	}
+	_, _, err = s.authProve(root, 0)
+	return err
 }
 
 // AuthorityRepairObject replaces an unreadable authoritative body with exact
@@ -49019,12 +50162,19 @@ func (s *Store) AuthorityReadCost(man manifestV1, off, n int64) (fetched int64, 
 		return 0, false, lerr
 	}
 	ctx := s.newAuthCtx()
+	defer ctx.close()
 	body, _, err := ctx.body(sha, 0, 1)
 	if err != nil {
 		return 0, true, err
 	}
+	if off < 0 || off >= body.Size() || n <= 0 {
+		return 0, true, errors.New("authority: read cost range is outside the body")
+	}
 	buf := make([]byte, min(n, body.Size()-off))
 	if k, rerr := body.ReadAt(buf, off); k != len(buf) {
+		if rerr == nil {
+			rerr = io.ErrUnexpectedEOF
+		}
 		return ctx.fetched, true, rerr
 	}
 	return ctx.fetched, true, nil
@@ -49153,13 +50303,1283 @@ func (s *Store) casReadOrVirtual(sum [32]byte) (data []byte, virtual bool, err e
 	return buf, true, nil
 }
 
-// runAuthority implements "zeros3 authority migrate|status|revert".
+// ZSR1 is a derived run of (feature uint64, catalog ID uint32) postings.
+const (
+	authSimilarityRunMagic          = "ZSR1"
+	authSimilarityRunHeader         = 20
+	authSimilarityRunBuckets        = 1 << 16
+	authSimilarityRunEntry          = 10
+	authSimilarityRunBase           = authSimilarityRunHeader + (authSimilarityRunBuckets+1)*4
+	authSimilarityRunLimit          = 64
+	authSimilarityRunScanLimit      = 2 * authSimilarityRunLimit
+	authSimilarityMaxRuns           = 256
+	authSimilarityCachedDirectories = 32
+	authSimilarityPostingBatch      = 1 << 18
+)
+
+var errAuthSimilarityRun = errors.New("invalid similarity posting run")
+
+type authSimilarityRun struct {
+	src        io.ReaderAt
+	generation uint64
+	count      uint32
+	highestID  uint32
+	directory  []uint32
+	digest     [32]byte
+}
+
+func authSimilarityPosting(entry []byte) (feature uint64, id uint32) {
+	return uint64(binary.LittleEndian.Uint32(entry)) | uint64(binary.LittleEndian.Uint16(entry[4:]))<<32,
+		binary.LittleEndian.Uint32(entry[6:])
+}
+
+func openAuthSimilarityRun(src io.ReaderAt, size int64) (*authSimilarityRun, error) {
+	if size < authSimilarityRunBase+4 {
+		return nil, fmt.Errorf("%w: truncated header", errAuthSimilarityRun)
+	}
+	head := make([]byte, authSimilarityRunBase)
+	if _, err := io.ReadFull(io.NewSectionReader(src, 0, size), head); err != nil {
+		return nil, err
+	}
+	if string(head[:4]) != authSimilarityRunMagic {
+		return nil, fmt.Errorf("%w: unsupported format", errAuthSimilarityRun)
+	}
+	gen, count := binary.LittleEndian.Uint64(head[4:]), binary.LittleEndian.Uint64(head[12:])
+	if gen == 0 || count > uint64(^uint32(0)) || size != authSimilarityRunBase+int64(count)*authSimilarityRunEntry+4 {
+		return nil, fmt.Errorf("%w: generation, count, or file size", errAuthSimilarityRun)
+	}
+	r := &authSimilarityRun{src: src, generation: gen, count: uint32(count), directory: make([]uint32, authSimilarityRunBuckets+1)}
+	var prev uint32
+	for i := range r.directory {
+		off := binary.LittleEndian.Uint32(head[authSimilarityRunHeader+i*4:])
+		if off < prev || off > r.count || i == 0 && off != 0 {
+			return nil, fmt.Errorf("%w: bucket directory at %d", errAuthSimilarityRun, i)
+		}
+		r.directory[i], prev = off, off
+	}
+	if prev != r.count {
+		return nil, fmt.Errorf("%w: bucket directory end", errAuthSimilarityRun)
+	}
+
+	crc, sha := crc32.New(castagnoliTable), sha256.New()
+	crc.Write(head)
+	sha.Write(head)
+	body := io.NewSectionReader(src, authSimilarityRunBase, size-authSimilarityRunBase-4)
+	reader := bufio.NewReaderSize(io.TeeReader(body, io.MultiWriter(crc, sha)), 64<<10)
+	var raw [authSimilarityRunEntry]byte
+	for bucket := 0; bucket < authSimilarityRunBuckets; bucket++ {
+		start, end := r.directory[bucket], r.directory[bucket+1]
+		var lastFeature uint64
+		var lastID uint32
+		for i := start; i < end; i++ {
+			if _, err := io.ReadFull(reader, raw[:]); err != nil {
+				return nil, err
+			}
+			feature, id := authSimilarityPosting(raw[:])
+			if id == 0 || i > start && (feature < lastFeature || feature == lastFeature && id <= lastID) {
+				return nil, fmt.Errorf("%w: posting order or zero ID at %d", errAuthSimilarityRun, i)
+			}
+			lastFeature, lastID = feature, id
+			r.highestID = max(r.highestID, id)
+		}
+	}
+	var trailer [4]byte
+	if _, err := src.ReadAt(trailer[:], size-4); err != nil {
+		return nil, err
+	}
+	if binary.LittleEndian.Uint32(trailer[:]) != crc.Sum32() {
+		return nil, fmt.Errorf("%w: checksum", errAuthSimilarityRun)
+	}
+	sha.Write(trailer[:])
+	sha.Sum(r.digest[:0])
+	return r, nil
+}
+
+// lookup bounds reads even for a bucket containing millions of postings.
+func (r *authSimilarityRun) lookup(feature uint64, limit int) ([]uint32, error) {
+	return r.lookupNewest(feature, min(limit, authSimilarityRunLimit))
+}
+
+func (r *authSimilarityRun) lookupNewest(feature uint64, limit int) ([]uint32, error) {
+	bucket := feature >> 48
+	want := feature & (1<<48 - 1)
+	if limit <= 0 {
+		return nil, nil
+	}
+	var start, end uint32
+	if r.directory != nil {
+		start, end = r.directory[bucket], r.directory[bucket+1]
+	} else {
+		var bounds [8]byte
+		if _, err := r.src.ReadAt(bounds[:], authSimilarityRunHeader+int64(bucket)*4); err != nil {
+			return nil, err
+		}
+		start, end = binary.LittleEndian.Uint32(bounds[:]), binary.LittleEndian.Uint32(bounds[4:])
+		if start > end || end > r.count {
+			return nil, fmt.Errorf("%w: bucket directory changed after verification", errAuthSimilarityRun)
+		}
+	}
+	limit = min(limit, authSimilarityRunScanLimit)
+	if end-start > authSimilarityRunScanLimit {
+		// Only the newest matches are needed. Find their upper bound, then
+		// read a bounded suffix which may also contain preceding features.
+		lo, hi := start, end
+		var entry [authSimilarityRunEntry]byte
+		for lo < hi {
+			mid := lo + (hi-lo)/2
+			if _, err := r.src.ReadAt(entry[:], authSimilarityRunBase+int64(mid)*authSimilarityRunEntry); err != nil {
+				return nil, err
+			}
+			got, _ := authSimilarityPosting(entry[:])
+			if got <= want {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		end = lo
+		start = end - min(end-start, uint32(limit))
+	}
+	n := end - start
+	if n == 0 {
+		return nil, nil
+	}
+	var raw [authSimilarityRunScanLimit * authSimilarityRunEntry]byte
+	if _, err := r.src.ReadAt(raw[:n*authSimilarityRunEntry], authSimilarityRunBase+int64(start)*authSimilarityRunEntry); err != nil {
+		return nil, err
+	}
+	var matches [authSimilarityRunScanLimit]uint32
+	ids := matches[:0]
+	var prev uint32
+	for i := uint32(0); i < n; i++ {
+		got, id := authSimilarityPosting(raw[i*authSimilarityRunEntry:])
+		if got != want {
+			continue
+		}
+		if id <= prev {
+			return nil, fmt.Errorf("%w: posting changed during lookup", errAuthSimilarityRun)
+		}
+		ids = append(ids, id)
+		prev = id
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return slices.Clone(ids[max(0, len(ids)-limit):]), nil
+}
+
+func inspectAuthSimilarityRun(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("authority index-run-verify", flag.ContinueOnError)
+	filename := fs.String("run", "", "immutable posting run to verify")
+	expected := fs.String("sha256", "", "expected run digest")
+	feature := fs.String("feature", "", "optional posting feature (decimal or 0x hexadecimal)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *filename == "" || fs.NArg() != 0 {
+		return errors.New("index-run-verify requires a -run file")
+	}
+	file, err := os.Open(*filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	st, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return errors.New("similarity posting run must be a regular file")
+	}
+	run, err := openAuthSimilarityRun(file, st.Size())
+	if err != nil {
+		return err
+	}
+	if *expected != "" {
+		wanted, err := decodeHexSHA256(*expected)
+		if err != nil || run.digest != wanted {
+			return fmt.Errorf("%w: SHA-256 mismatch", errAuthSimilarityRun)
+		}
+	}
+	report := struct {
+		Generation uint64   `json:"generation"`
+		Postings   uint32   `json:"postings"`
+		SHA256     string   `json:"sha256"`
+		IDs        []uint32 `json:"ids,omitempty"`
+	}{Generation: run.generation, Postings: run.count, SHA256: hex.EncodeToString(run.digest[:])}
+	if *feature != "" {
+		f, err := strconv.ParseUint(*feature, 0, 64)
+		if err != nil {
+			return err
+		}
+		report.IDs, err = run.lookup(f, authSimilarityRunLimit)
+		if err != nil {
+			return err
+		}
+	}
+	return json.NewEncoder(out).Encode(report)
+}
+
+type authSimilarityEntry struct {
+	feature uint64
+	id      uint32
+}
+
+func writeAuthSimilarityRun(w io.Writer, generation uint64, entries []authSimilarityEntry) error {
+	slices.SortFunc(entries, func(a, b authSimilarityEntry) int {
+		if n := cmp.Compare(a.feature, b.feature); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.id, b.id)
+	})
+	crc := crc32.New(castagnoliTable)
+	out := bufio.NewWriterSize(w, 64<<10)
+	body := io.MultiWriter(out, crc)
+	head := make([]byte, authSimilarityRunBase)
+	copy(head, authSimilarityRunMagic)
+	binary.LittleEndian.PutUint64(head[4:], generation)
+	binary.LittleEndian.PutUint64(head[12:], uint64(len(entries)))
+	i := 0
+	for bucket := 0; bucket <= authSimilarityRunBuckets; bucket++ {
+		binary.LittleEndian.PutUint32(head[authSimilarityRunHeader+bucket*4:], uint32(i))
+		for i < len(entries) && int(entries[i].feature>>48) == bucket {
+			i++
+		}
+	}
+	if _, err := body.Write(head); err != nil {
+		return err
+	}
+	var raw [authSimilarityRunEntry]byte
+	for i, e := range entries {
+		if e.id == 0 || i != 0 && entries[i-1] == e {
+			return fmt.Errorf("%w: duplicate or zero catalog ID", errAuthSimilarityRun)
+		}
+		binary.LittleEndian.PutUint32(raw[:], uint32(e.feature))
+		binary.LittleEndian.PutUint16(raw[4:], uint16(e.feature>>32))
+		binary.LittleEndian.PutUint32(raw[6:], e.id)
+		if _, err := body.Write(raw[:]); err != nil {
+			return err
+		}
+	}
+	var trailer [4]byte
+	binary.LittleEndian.PutUint32(trailer[:], crc.Sum32())
+	if _, err := out.Write(trailer[:]); err != nil {
+		return err
+	}
+	return out.Flush()
+}
+
+type authSimilarityStageReport struct {
+	Version       int                      `json:"version"`
+	Profile       int                      `json:"profile"`
+	StoreID       string                   `json:"store_id"`
+	Generation    uint64                   `json:"generation"`
+	JournalEnd    int64                    `json:"journal_end"`
+	JournalSeq    uint64                   `json:"journal_sequence"`
+	JournalSHA    string                   `json:"journal_sha256"`
+	SnapshotSHA   string                   `json:"snapshots_sha256"`
+	CatalogSHA    string                   `json:"catalog_sha256"`
+	LiveObjects   uint32                   `json:"live_objects"`
+	Tombstones    uint32                   `json:"tombstones"`
+	TombstonesSHA string                   `json:"tombstones_sha256,omitempty"`
+	Objects       uint32                   `json:"objects"`
+	Runs          []authSimilarityStageRun `json:"runs"`
+	Directory     string                   `json:"directory"`
+	CandidateIDs  []uint32                 `json:"candidate_ids,omitempty"`
+	retired       []uint32
+}
+
+type authSimilarityStageRun struct {
+	Name     string `json:"name"`
+	Postings uint32 `json:"postings"`
+	SHA256   string `json:"sha256"`
+}
+
+type authSimilarityRoot struct {
+	uuid string
+	sha  [32]byte
+}
+
+type authSimilaritySketchReader struct {
+	src  io.ReaderAt
+	hash hash.Hash
+	off  int64
+}
+
+func (r *authSimilaritySketchReader) ReadAt(p []byte, off int64) (int, error) {
+	if off != r.off {
+		return 0, errors.New("nonsequential similarity scan")
+	}
+	n, err := r.src.ReadAt(p, off)
+	if n != len(p) {
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return 0, err
+	}
+	if err != nil && err != io.EOF {
+		return 0, err
+	}
+	r.hash.Write(p)
+	r.off += int64(n)
+	return n, nil
+}
+
+func (s *Store) authSimilarityFence() (authSimilarityStageReport, []snapshotDescriptorV1, error) {
+	return s.authSimilarityFenceAt(0, nil)
+}
+
+// authSimilarityFenceAt checks the old prefix and new fence in one sequential scan.
+func (s *Store) authSimilarityFenceAt(prefixEnd int64, prefixDigest *[32]byte) (authSimilarityStageReport, []snapshotDescriptorV1, error) {
+	var report authSimilarityStageReport
+	report.Version, report.Profile = 2, 1
+	report.StoreID = s.formatSnapshot().StoreID
+	report.JournalEnd, report.JournalSeq = s.journal.writeOffset, s.journal.nextSeq-1
+	journalHash := sha256.New()
+	hashRange := func(off, length int64) error {
+		n, err := io.Copy(journalHash, io.NewSectionReader(s.journal.f, off, length))
+		if err == nil && n != length {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	if prefixDigest != nil {
+		if prefixEnd < 0 || prefixEnd > report.JournalEnd {
+			return report, nil, errors.New("similarity prefix is outside the durable journal")
+		}
+		if err := hashRange(0, prefixEnd); err != nil {
+			return report, nil, err
+		}
+		journalHash.Sum(prefixDigest[:0])
+	}
+	if err := hashRange(prefixEnd, report.JournalEnd-prefixEnd); err != nil {
+		return report, nil, err
+	}
+	report.JournalSHA = hex.EncodeToString(journalHash.Sum(nil))
+	snapshots, issues := s.scanSnapshots()
+	if len(issues) != 0 {
+		return report, nil, fmt.Errorf("%s: %s", issues[0].Subject, issues[0].Detail)
+	}
+	snapshotHash := sha256.New()
+	for _, snap := range snapshots {
+		if err := json.NewEncoder(snapshotHash).Encode(snap); err != nil {
+			return report, nil, err
+		}
+	}
+	report.SnapshotSHA = hex.EncodeToString(snapshotHash.Sum(nil))
+	return report, snapshots, nil
+}
+
+// buildAuthSimilarityStage requires the exclusive store lock.
+func (s *Store) buildAuthSimilarityStage() (authSimilarityStageReport, error) {
+	report, snapshots, err := s.authSimilarityFence()
+	if err != nil {
+		return report, err
+	}
+	report.Generation = uint64(time.Now().UnixNano())
+	roots, err := s.authSimilarityRoots(snapshots)
+	if err != nil {
+		return report, err
+	}
+	return s.writeAuthSimilarityStage(report, roots, nil, nil, false)
+}
+
+func (s *Store) authSimilarityRoots(snapshots []snapshotDescriptorV1) ([]authSimilarityRoot, error) {
+	s.mu.Lock()
+	count := 0
+	for _, bucket := range s.buckets {
+		count += len(bucket.objects)
+	}
+	for _, keys := range s.history {
+		for _, entries := range keys {
+			count += len(entries)
+		}
+	}
+	for _, snap := range snapshots {
+		count += len(snap.Entries)
+	}
+	roots := make([]authSimilarityRoot, 0, count)
+	for _, bucket := range s.buckets {
+		for _, obj := range bucket.objects {
+			roots = append(roots, authSimilarityRoot{obj.manifestUUID, obj.manifestSHA256})
+		}
+	}
+	for _, keys := range s.history {
+		for _, entries := range keys {
+			for _, obj := range entries {
+				roots = append(roots, authSimilarityRoot{obj.manifestUUID, obj.manifestSHA256})
+			}
+		}
+	}
+	s.mu.Unlock()
+	for _, snap := range snapshots {
+		for _, entry := range snap.Entries {
+			sum, err := decodeHexSHA256(entry.ManifestSHA256)
+			if err != nil {
+				return nil, err
+			}
+			roots = append(roots, authSimilarityRoot{entry.ManifestUUID, sum})
+		}
+	}
+	slices.SortFunc(roots, func(a, b authSimilarityRoot) int { return cmp.Compare(a.uuid, b.uuid) })
+	return roots, nil
+}
+
+func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots []authSimilarityRoot, prior *authSimilarityStageReport, live map[[32]byte]struct{}, reconcile bool) (authSimilarityStageReport, error) {
+	parent := filepath.Join(s.root, "similarity-index")
+	if err := os.Mkdir(parent, 0o700); err != nil && !os.IsExist(err) {
+		return report, err
+	}
+	info, err := os.Lstat(parent)
+	if err != nil {
+		return report, err
+	}
+	if !info.IsDir() {
+		return report, errors.New("similarity index path must be a directory")
+	}
+	if err := syncDir(s.root); err != nil {
+		return report, err
+	}
+	stage, err := os.MkdirTemp(parent, ".building-")
+	if err != nil {
+		return report, err
+	}
+	defer os.RemoveAll(stage)
+	catalog, err := os.OpenFile(filepath.Join(stage, "catalog.zsc"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return report, err
+	}
+	defer catalog.Close()
+	catalogHash := sha256.New()
+	out := bufio.NewWriterSize(io.MultiWriter(catalog, catalogHash), 64<<10)
+	var catalogHeader [12]byte
+	copy(catalogHeader[:], "ZSC1")
+	binary.LittleEndian.PutUint64(catalogHeader[4:], report.Generation)
+	if _, err := out.Write(catalogHeader[:]); err != nil {
+		return report, err
+	}
+
+	const limit = authSimilarityPostingBatch
+	batch := make([]authSimilarityEntry, 0, min(len(roots), limit/16)*16)
+	contents := make(map[[32]byte]int64)
+	if prior != nil {
+		if err := reuseAuthSimilarityCatalog(*prior, stage, out, contents, live, reconcile, &report.retired); err != nil {
+			return report, err
+		}
+		report.Runs = slices.Clone(prior.Runs)
+	}
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		run, err := writeAuthSimilarityStageRun(stage, report.Generation, batch)
+		if err != nil {
+			return err
+		}
+		report.Runs = append(report.Runs, run)
+		if len(report.Runs) > authSimilarityMaxRuns {
+			return errAuthSimilarityNeedsRebuild
+		}
+		batch = batch[:0]
+		return nil
+	}
+	for _, root := range roots {
+		man, err := s.readVerifiedManifest(root.uuid, root.sha)
+		if err != nil {
+			return report, err
+		}
+		sum, err := decodeHexSHA256(man.ObjectSHA256)
+		if err != nil || man.TotalLength < 0 {
+			return report, fmt.Errorf("invalid similarity object identity for manifest %s", root.uuid)
+		}
+		if size, ok := contents[sum]; ok {
+			if size != man.TotalLength {
+				return report, fmt.Errorf("inconsistent similarity object length for %x", sum)
+			}
+			continue
+		}
+		raw := s.newAuthObjAt(man)
+		reader := &authSimilaritySketchReader{src: raw, hash: sha256.New()}
+		features, err := authSketchAt(reader, man.TotalLength, 16)
+		raw.close()
+		if err != nil {
+			return report, err
+		}
+		if !bytes.Equal(reader.hash.Sum(nil), sum[:]) {
+			return report, fmt.Errorf("similarity rebuild: content hash mismatch for %x", sum)
+		}
+		if report.Objects == ^uint32(0) {
+			return report, errors.New("similarity catalog ID limit reached")
+		}
+		if len(batch)+len(features) > limit {
+			if err := flush(); err != nil {
+				return report, err
+			}
+		}
+		report.Objects++
+		contents[sum] = man.TotalLength
+		var item [44]byte
+		binary.LittleEndian.PutUint32(item[:], report.Objects)
+		copy(item[4:36], sum[:])
+		binary.LittleEndian.PutUint64(item[36:], uint64(man.TotalLength))
+		if _, err := out.Write(item[:]); err != nil {
+			return report, err
+		}
+		for _, feature := range features {
+			batch = append(batch, authSimilarityEntry{feature, report.Objects})
+		}
+	}
+	if err := flush(); err != nil {
+		return report, err
+	}
+	if prior != nil {
+		if err := compactAuthSimilarityTail(stage, &report, limit); err != nil {
+			return report, err
+		}
+	}
+	if err := writeAuthSimilarityTombstones(stage, &report); err != nil {
+		return report, err
+	}
+	if err := out.Flush(); err != nil {
+		return report, err
+	}
+	if err := catalog.Sync(); err != nil {
+		return report, err
+	}
+	if err := catalog.Close(); err != nil {
+		return report, err
+	}
+	report.CatalogSHA = hex.EncodeToString(catalogHash.Sum(nil))
+	verified, err := os.Open(filepath.Join(stage, "catalog.zsc"))
+	if err != nil {
+		return report, err
+	}
+	catalogErr := verifyAuthSimilarityCatalog(verified, report)
+	if err := errors.Join(catalogErr, verified.Close()); err != nil {
+		return report, err
+	}
+	report.Directory = filepath.Join(parent, "generation-"+strings.TrimPrefix(filepath.Base(stage), ".building-"))
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return report, err
+	}
+	if err := writeFileDurable(stage, filepath.Join(stage, "index.json"), append(data, '\n')); err != nil {
+		return report, err
+	}
+	fireTestHook("similarity-before-generation-sync")
+	if err := syncDir(stage); err != nil {
+		return report, err
+	}
+	fireTestHook("similarity-before-generation-rename")
+	if err := os.Rename(stage, report.Directory); err != nil {
+		return report, err
+	}
+	fireTestHook("similarity-after-generation-rename")
+	if err := syncDir(parent); err != nil {
+		return report, err
+	}
+	fireTestHook("similarity-after-generation-sync")
+	return report, nil
+}
+
+func writeAuthSimilarityStageRun(stage string, generation uint64, entries []authSimilarityEntry) (authSimilarityStageRun, error) {
+	f, err := os.CreateTemp(stage, "run-*.zsr")
+	if err != nil {
+		return authSimilarityStageRun{}, err
+	}
+	defer f.Close()
+	if err := writeAuthSimilarityRun(f, generation, entries); err != nil {
+		return authSimilarityStageRun{}, err
+	}
+	if err := f.Sync(); err != nil {
+		return authSimilarityStageRun{}, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return authSimilarityStageRun{}, err
+	}
+	run, err := openAuthSimilarityRun(f, st.Size())
+	if err != nil {
+		return authSimilarityStageRun{}, err
+	}
+	if err := f.Close(); err != nil {
+		return authSimilarityStageRun{}, err
+	}
+	return authSimilarityStageRun{
+		Name: filepath.Base(f.Name()), Postings: run.count, SHA256: hex.EncodeToString(run.digest[:]),
+	}, nil
+}
+
+// Compact fragmented tail runs in the staging directory without opening object bodies.
+func compactAuthSimilarityTail(stage string, report *authSimilarityStageReport, limit int) error {
+	const minimumRuns = 8
+	if len(report.Runs) < minimumRuns {
+		return nil
+	}
+	count := 0
+	start := len(report.Runs)
+	for start > 0 && len(report.Runs)-start < minimumRuns {
+		n := int64(report.Runs[start-1].Postings)
+		if int64(count)+n > int64(limit) {
+			break
+		}
+		count += int(n)
+		start--
+	}
+	if len(report.Runs)-start < minimumRuns {
+		return nil
+	}
+	tail := report.Runs[start:]
+	entries := make([]authSimilarityEntry, 0, count)
+	for _, desc := range tail {
+		path := filepath.Join(stage, desc.Name)
+		var err error
+		entries, err = appendAuthSimilarityRunEntries(path, report.Generation, desc, entries)
+		if err != nil {
+			return err
+		}
+	}
+	merged, err := writeAuthSimilarityStageRun(stage, report.Generation, entries)
+	if err != nil {
+		return err
+	}
+	for _, desc := range tail {
+		if err := os.Remove(filepath.Join(stage, desc.Name)); err != nil {
+			return err
+		}
+	}
+	report.Runs = append(report.Runs[:start], merged)
+	return nil
+}
+
+func appendAuthSimilarityRunEntries(path string, generation uint64, desc authSimilarityStageRun, dst []authSimilarityEntry) ([]authSimilarityEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	run, err := openAuthSimilarityRun(f, st.Size())
+	if err != nil {
+		return nil, err
+	}
+	if run.generation != generation || run.count != desc.Postings || hex.EncodeToString(run.digest[:]) != desc.SHA256 {
+		return nil, errors.New("similarity compaction input differs from its descriptor")
+	}
+	reader := bufio.NewReaderSize(io.NewSectionReader(f, authSimilarityRunBase, int64(run.count)*authSimilarityRunEntry), 64<<10)
+	var raw [authSimilarityRunEntry]byte
+	for bucket := 0; bucket < authSimilarityRunBuckets; bucket++ {
+		for i := run.directory[bucket]; i < run.directory[bucket+1]; i++ {
+			if _, err := io.ReadFull(reader, raw[:]); err != nil {
+				return nil, err
+			}
+			feature, id := authSimilarityPosting(raw[:])
+			dst = append(dst, authSimilarityEntry{feature | uint64(bucket)<<48, id})
+		}
+	}
+	return dst, nil
+}
+
+// refreshAuthSimilarityStage requires the exclusive store lock.
+func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) {
+	name, err := s.authSimilarityCurrentName()
+	if err != nil {
+		return s.buildAuthSimilarityStage()
+	}
+	prior, err := s.readAuthSimilarityGeneration(name)
+	if err != nil {
+		return s.buildAuthSimilarityStage()
+	}
+	if prior.JournalEnd < 0 || prior.JournalEnd > s.journal.writeOffset || prior.JournalSeq >= s.journal.nextSeq {
+		return s.buildAuthSimilarityStage()
+	}
+	var prefixDigest [32]byte
+	report, snapshots, err := s.authSimilarityFenceAt(prior.JournalEnd, &prefixDigest)
+	if err != nil {
+		return report, err
+	}
+	if prior.SnapshotSHA != report.SnapshotSHA || hex.EncodeToString(prefixDigest[:]) != prior.JournalSHA {
+		return s.buildAuthSimilarityStage()
+	}
+	roots, pruned, ok := similarityJournalAdditions(s.journal.f, prior, report)
+	if !ok {
+		return s.buildAuthSimilarityStage()
+	}
+	if prior.JournalEnd == report.JournalEnd {
+		return prior, nil
+	}
+	report.Generation, report.Objects = prior.Generation, prior.Objects
+	if pruned {
+		roots, err = s.authSimilarityRoots(snapshots)
+		if err != nil {
+			return report, err
+		}
+	}
+	var live map[[32]byte]struct{}
+	// Small journal suffixes need only the catalog identities they mention.
+	// Large catch-ups can bulk-load the old catalog and read each new manifest once.
+	if pruned || len(prior.retired) > 0 || uint64(len(roots)) <= uint64(prior.Objects)/2 {
+		live = make(map[[32]byte]struct{})
+		for _, root := range roots {
+			man, err := s.readVerifiedManifest(root.uuid, root.sha)
+			if err != nil {
+				return report, err
+			}
+			sum, err := decodeHexSHA256(man.ObjectSHA256)
+			if err != nil {
+				return report, err
+			}
+			live[sum] = struct{}{}
+		}
+	}
+	result, err := s.writeAuthSimilarityStage(report, roots, &prior, live, pruned)
+	if errors.Is(err, errAuthSimilarityNeedsRebuild) {
+		return s.buildAuthSimilarityStage()
+	}
+	return result, err
+}
+
+func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStageReport) ([]authSimilarityRoot, bool, bool) {
+	rebuild := errors.New("visibility transition requires a similarity rebuild")
+	var roots []authSimilarityRoot
+	var pruned bool
+	end, seq, _, applyErr, err := replayJournalRange(f, prior.JournalEnd, current.JournalEnd, prior.JournalSeq, false, func(r journalRecord) error {
+		var uuid, digest string
+		switch r.recType {
+		case recordTypePutObjectRootV2:
+			var p journalPutPayloadV2
+			if err := json.Unmarshal(r.payload, &p); err != nil {
+				return err
+			}
+			uuid, digest = p.ManifestUUID, p.ManifestSHA256
+		case recordTypeCompleteMultipartUploadV2:
+			var p journalCompleteMultipartPayloadV2
+			if err := json.Unmarshal(r.payload, &p); err != nil {
+				return err
+			}
+			uuid, digest = p.ManifestUUID, p.ManifestSHA256
+		case recordTypeCreateBucket, recordTypeDeleteBucket, recordTypeDeleteObjectRootV2,
+			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload:
+			return nil
+		case recordTypePruneHistory:
+			pruned = true
+			return nil
+		default:
+			return rebuild
+		}
+		sum, err := decodeHexSHA256(digest)
+		if err != nil {
+			return err
+		}
+		roots = append(roots, authSimilarityRoot{uuid, sum})
+		return nil
+	})
+	return roots, pruned, err == nil && applyErr == nil && end == current.JournalEnd && seq == current.JournalSeq
+}
+
+const authSimilarityMaxTombstones = 1 << 20
+
+var errAuthSimilarityNeedsRebuild = errors.New("similarity generation exceeds its run or tombstone limit")
+
+func writeAuthSimilarityTombstones(dir string, report *authSimilarityStageReport) error {
+	report.Tombstones = uint32(len(report.retired))
+	report.LiveObjects = report.Objects - report.Tombstones
+	if len(report.retired) == 0 {
+		return nil
+	}
+	if len(report.retired) > authSimilarityMaxTombstones {
+		return errAuthSimilarityNeedsRebuild
+	}
+	data := make([]byte, 4*len(report.retired))
+	for i, id := range report.retired {
+		binary.LittleEndian.PutUint32(data[4*i:], id)
+	}
+	sum := sha256.Sum256(data)
+	report.TombstonesSHA = hex.EncodeToString(sum[:])
+	return writeFileDurable(dir, filepath.Join(dir, "tombstones.bin"), data)
+}
+
+func readAuthSimilarityTombstones(dir string, report *authSimilarityStageReport) error {
+	if report.Tombstones > authSimilarityMaxTombstones || report.Tombstones > report.Objects ||
+		report.LiveObjects != report.Objects-report.Tombstones {
+		return errors.New("invalid similarity tombstone count")
+	}
+	if report.Tombstones == 0 {
+		if report.TombstonesSHA != "" {
+			return errors.New("unexpected similarity tombstone digest")
+		}
+		return nil
+	}
+	f, err := os.Open(filepath.Join(dir, "tombstones.bin"))
+	if err != nil {
+		return err
+	}
+	size := int(report.Tombstones) * 4
+	data, err := io.ReadAll(io.LimitReader(f, int64(size)+1))
+	if err := errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	sum := sha256.Sum256(data)
+	if len(data) != size || hex.EncodeToString(sum[:]) != report.TombstonesSHA {
+		return errors.New("similarity tombstone digest or length mismatch")
+	}
+	var prev uint32
+	for i := 0; i < size; i += 4 {
+		id := binary.LittleEndian.Uint32(data[i:])
+		if id <= prev || id > report.Objects {
+			return errors.New("invalid or unordered similarity tombstone ID")
+		}
+		report.retired = append(report.retired, id)
+		prev = id
+	}
+	return nil
+}
+
+func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, out io.Writer, contents map[[32]byte]int64, live map[[32]byte]struct{}, reconcile bool, retired *[]uint32) error {
+	f, err := os.Open(filepath.Join(prior.Directory, "catalog.zsc"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	reader := bufio.NewReaderSize(f, 64<<10)
+	if _, err := reader.Discard(12); err != nil {
+		return err
+	}
+	var row [44]byte
+	for i := uint32(0); i < prior.Objects; i++ {
+		if _, err := io.ReadFull(reader, row[:]); err != nil {
+			return err
+		}
+		var sum [32]byte
+		copy(sum[:], row[4:36])
+		_, wasRetired := slices.BinarySearch(prior.retired, i+1)
+		_, isLive := live[sum]
+		if (wasRetired || reconcile) && !isLive {
+			*retired = append(*retired, i+1)
+			if len(*retired) > authSimilarityMaxTombstones {
+				return errAuthSimilarityNeedsRebuild
+			}
+		} else if live == nil || isLive {
+			contents[sum] = int64(binary.LittleEndian.Uint64(row[36:]))
+		}
+		if _, err := out.Write(row[:]); err != nil {
+			return err
+		}
+	}
+	for _, run := range prior.Runs {
+		old := filepath.Join(prior.Directory, run.Name)
+		st, err := os.Lstat(old)
+		if err != nil {
+			return err
+		}
+		if !st.Mode().IsRegular() {
+			return errors.New("cannot reuse non-regular similarity postings")
+		}
+		if err := os.Link(old, filepath.Join(stage, run.Name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var errAuthSimilarityStale = errors.New("stale or wrong-store similarity generation")
+
+func (s *Store) readAuthSimilarityStage(name string) (authSimilarityStageReport, error) {
+	report, err := s.readAuthSimilarityGeneration(name)
+	if err != nil {
+		return report, err
+	}
+	return report, s.checkAuthSimilarityFence(report)
+}
+
+func (s *Store) checkAuthSimilarityFence(report authSimilarityStageReport) error {
+	want, _, err := s.authSimilarityFence()
+	if err != nil {
+		return err
+	}
+	if report.StoreID != want.StoreID || report.JournalEnd != want.JournalEnd ||
+		report.JournalSeq != want.JournalSeq || report.JournalSHA != want.JournalSHA ||
+		report.SnapshotSHA != want.SnapshotSHA {
+		return errAuthSimilarityStale
+	}
+	return nil
+}
+
+func (s *Store) readAuthSimilarityManifest(name string) (authSimilarityStageReport, error) {
+	var report authSimilarityStageReport
+	if !strings.HasPrefix(name, "generation-") || filepath.Base(name) != name {
+		return report, errors.New("invalid similarity generation name")
+	}
+	dir := filepath.Join(s.root, "similarity-index", name)
+	st, err := os.Lstat(dir)
+	if err != nil {
+		return report, err
+	}
+	if !st.IsDir() {
+		return report, errors.New("similarity generation must be a directory")
+	}
+	f, err := os.Open(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return report, err
+	}
+	body, err := io.ReadAll(io.LimitReader(f, (4<<20)+1))
+	if err := errors.Join(err, f.Close()); err != nil {
+		return report, err
+	}
+	if len(body) > 4<<20 {
+		return report, errors.New("similarity generation manifest is too large")
+	}
+	if err := json.Unmarshal(body, &report); err != nil {
+		return report, err
+	}
+	if report.Version != 2 || report.Profile != 1 || report.Generation == 0 {
+		return report, errors.New("unsupported similarity generation manifest")
+	}
+	if report.StoreID != s.formatSnapshot().StoreID {
+		return report, errors.New("wrong-store similarity generation")
+	}
+	if len(report.Runs) > authSimilarityMaxRuns {
+		return report, errAuthSimilarityNeedsRebuild
+	}
+	if err := readAuthSimilarityTombstones(dir, &report); err != nil {
+		return report, err
+	}
+	seen := make(map[string]bool, len(report.Runs))
+	for _, desc := range report.Runs {
+		if !strings.HasSuffix(desc.Name, ".zsr") || filepath.Base(desc.Name) != desc.Name || seen[desc.Name] {
+			return report, errors.New("invalid or repeated similarity run name")
+		}
+		seen[desc.Name] = true
+	}
+	report.CandidateIDs = nil
+	report.Directory = dir
+	return report, nil
+}
+
+func (s *Store) readAuthSimilarityGeneration(name string) (authSimilarityStageReport, error) {
+	report, err := s.readAuthSimilarityManifest(name)
+	if err != nil {
+		return report, err
+	}
+	catalog, err := os.Open(filepath.Join(report.Directory, "catalog.zsc"))
+	if err != nil {
+		return report, err
+	}
+	if err := verifyAuthSimilarityCatalog(catalog, report); err != nil {
+		catalog.Close()
+		return report, err
+	}
+	if err := catalog.Close(); err != nil {
+		return report, err
+	}
+	for _, desc := range report.Runs {
+		f, err := os.Open(filepath.Join(report.Directory, desc.Name))
+		if err != nil {
+			return report, err
+		}
+		_, err = openVerifiedAuthSimilarityRun(f, report, desc)
+		if err := errors.Join(err, f.Close()); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
+}
+
+func verifyAuthSimilarityCatalog(f *os.File, report authSimilarityStageReport) error {
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() || st.Size() != 12+44*int64(report.Objects) {
+		return errors.New("invalid similarity catalog size")
+	}
+	h := sha256.New()
+	reader := bufio.NewReaderSize(io.TeeReader(f, h), 64<<10)
+	var head [12]byte
+	if _, err := io.ReadFull(reader, head[:]); err != nil {
+		return err
+	}
+	if string(head[:4]) != "ZSC1" || binary.LittleEndian.Uint64(head[4:]) != report.Generation {
+		return errors.New("invalid similarity catalog version or generation")
+	}
+	var row [44]byte
+	for i := uint32(0); i < report.Objects; i++ {
+		if _, err := io.ReadFull(reader, row[:]); err != nil {
+			return err
+		}
+		if binary.LittleEndian.Uint32(row[:]) != i+1 || int64(binary.LittleEndian.Uint64(row[36:])) < 0 {
+			return errors.New("invalid similarity catalog row")
+		}
+	}
+	if hex.EncodeToString(h.Sum(nil)) != report.CatalogSHA {
+		return errors.New("similarity catalog digest mismatch")
+	}
+	return nil
+}
+
+func openVerifiedAuthSimilarityRun(f *os.File, report authSimilarityStageReport, desc authSimilarityStageRun) (*authSimilarityRun, error) {
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("similarity run %s must be a regular file", desc.Name)
+	}
+	run, err := openAuthSimilarityRun(f, st.Size())
+	if err != nil {
+		return nil, err
+	}
+	if run.generation != report.Generation || run.count != desc.Postings ||
+		run.highestID > report.Objects || hex.EncodeToString(run.digest[:]) != desc.SHA256 {
+		return nil, fmt.Errorf("similarity run %s differs from the generation manifest", desc.Name)
+	}
+	return run, nil
+}
+
+func (s *Store) publishAuthSimilarityStage(name string) error {
+	if _, err := s.readAuthSimilarityStage(name); err != nil {
+		return err
+	}
+	parent := filepath.Join(s.root, "similarity-index")
+	fireTestHook("similarity-before-current-publish")
+	if err := writeFileDurable(parent, filepath.Join(parent, "CURRENT"), []byte(name+"\n")); err != nil {
+		return err
+	}
+	fireTestHook("similarity-after-current-publish")
+	if err := syncDir(parent); err != nil {
+		return err
+	}
+	fireTestHook("similarity-after-current-sync")
+	return nil
+}
+
+func (s *Store) readAuthSimilarityCurrent() (authSimilarityStageReport, error) {
+	name, err := s.authSimilarityCurrentName()
+	if err != nil {
+		return authSimilarityStageReport{}, err
+	}
+	return s.readAuthSimilarityStage(name)
+}
+
+func (s *Store) authSimilarityCurrentName() (string, error) {
+	current, err := os.Open(filepath.Join(s.root, "similarity-index", "CURRENT"))
+	if err != nil {
+		return "", err
+	}
+	name, err := io.ReadAll(io.LimitReader(current, 257))
+	if err := errors.Join(err, current.Close()); err != nil {
+		return "", err
+	}
+	if len(name) > 256 || !bytes.HasSuffix(name, []byte("\n")) || bytes.Count(name, []byte("\n")) != 1 {
+		return "", errors.New("invalid similarity current pointer")
+	}
+	return string(name[:len(name)-1]), nil
+}
+
+type authSimilarityInventory struct {
+	State                    string                     `json:"state"`
+	Current                  string                     `json:"current,omitempty"`
+	Inactive                 int                        `json:"inactive_generations"`
+	Incomplete               int                        `json:"staging_directories"`
+	Issue                    string                     `json:"issue,omitempty"`
+	Generation               *authSimilarityStageReport `json:"generation,omitempty"`
+	ActivePayloadBytes       uint64                     `json:"active_payload_bytes,omitempty"`
+	RebuildPayloadUpperBytes uint64                     `json:"rebuild_payload_upper_bytes,omitempty"`
+}
+
+func (s *Store) inspectAuthSimilarityIndex() (authSimilarityInventory, error) {
+	info := authSimilarityInventory{State: "missing"}
+	parent, err := os.Open(filepath.Join(s.root, "similarity-index"))
+	if os.IsNotExist(err) {
+		return info, nil
+	}
+	if err != nil {
+		return info, err
+	}
+	defer parent.Close()
+	info.Current, err = s.authSimilarityCurrentName()
+	if err == nil {
+		var report authSimilarityStageReport
+		report, err = s.readAuthSimilarityStage(info.Current)
+		switch {
+		case err == nil:
+			info.State, info.Generation = "current", &report
+			const runOverhead = authSimilarityRunBase + 4
+			info.ActivePayloadBytes = 12 + 44*uint64(report.Objects) + 4*uint64(report.Tombstones)
+			for _, run := range report.Runs {
+				info.ActivePayloadBytes += runOverhead + uint64(run.Postings)*authSimilarityRunEntry
+			}
+			maxPostings := 16 * uint64(report.LiveObjects)
+			// A batch can end 15 entries short if the next object's features would exceed it.
+			const minBatch = authSimilarityPostingBatch - 15
+			maxRuns := (maxPostings + minBatch - 1) / minBatch
+			info.RebuildPayloadUpperBytes = 12 + 44*uint64(report.LiveObjects) +
+				maxPostings*authSimilarityRunEntry + maxRuns*runOverhead
+		case errors.Is(err, errAuthSimilarityStale):
+			info.State = "stale"
+		default:
+			info.State = "invalid"
+		}
+	} else if !os.IsNotExist(err) {
+		info.State = "invalid"
+	}
+	if err != nil && info.State != "missing" {
+		info.Issue = err.Error()
+	}
+	for {
+		entries, err := parent.ReadDir(128)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			switch name := entry.Name(); {
+			case strings.HasPrefix(name, "generation-") && name != info.Current:
+				info.Inactive++
+			case strings.HasPrefix(name, ".building-"):
+				info.Incomplete++
+			}
+		}
+		if err == io.EOF {
+			return info, nil
+		}
+		if err != nil {
+			return info, err
+		}
+	}
+}
+
+type authSimilarityQuery struct {
+	report  authSimilarityStageReport
+	catalog *os.File
+	files   []*os.File
+	runs    []*authSimilarityRun
+	failed  bool
+}
+
+func (s *Store) openCurrentAuthSimilarityQuery() (*authSimilarityQuery, error) {
+	name, err := s.authSimilarityCurrentName()
+	if err != nil {
+		return nil, err
+	}
+	report, err := s.readAuthSimilarityManifest(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkAuthSimilarityFence(report); err != nil {
+		return nil, err
+	}
+	return openAuthSimilarityQuery(report)
+}
+
+func openAuthSimilarityQuery(report authSimilarityStageReport) (*authSimilarityQuery, error) {
+	catalog, err := os.Open(filepath.Join(report.Directory, "catalog.zsc"))
+	if err != nil {
+		return nil, err
+	}
+	q := &authSimilarityQuery{report: report, catalog: catalog}
+	ok := false
+	defer func() {
+		if !ok {
+			q.close()
+		}
+	}()
+	if err := verifyAuthSimilarityCatalog(catalog, report); err != nil {
+		return nil, err
+	}
+	for i, desc := range report.Runs {
+		f, err := os.Open(filepath.Join(report.Directory, desc.Name))
+		if err != nil {
+			return nil, err
+		}
+		q.files = append(q.files, f)
+		run, err := openVerifiedAuthSimilarityRun(f, report, desc)
+		if err != nil {
+			return nil, err
+		}
+		// Older verified runs can fetch one bucket without retaining their full directory.
+		if i < len(report.Runs)-authSimilarityCachedDirectories {
+			run.directory = nil
+		}
+		q.runs = append(q.runs, run)
+	}
+	ok = true
+	return q, nil
+}
+
+func (q *authSimilarityQuery) close() {
+	q.catalog.Close()
+	for _, f := range q.files {
+		f.Close()
+	}
+}
+
+func (q *authSimilarityQuery) content(id uint32) ([32]byte, int64, error) {
+	var sha [32]byte
+	if id == 0 || id > q.report.Objects {
+		return sha, 0, errors.New("invalid similarity catalog ID")
+	}
+	var row [44]byte
+	if _, err := q.catalog.ReadAt(row[:], 12+44*int64(id-1)); err != nil {
+		return sha, 0, err
+	}
+	size := int64(binary.LittleEndian.Uint64(row[36:]))
+	if binary.LittleEndian.Uint32(row[:]) != id || size < 0 {
+		return sha, 0, errors.New("invalid similarity catalog row")
+	}
+	copy(sha[:], row[4:36])
+	return sha, size, nil
+}
+
+// postings looks past a bounded number of retired IDs before returning the
+// newest live candidates. Applying the scan cap globally preserves the same
+// results when runs are compacted.
+func (q *authSimilarityQuery) postings(feature uint64) ([]uint32, error) {
+	limit := min(authSimilarityRunLimit+len(q.report.retired), authSimilarityRunScanLimit)
+	var best []uint32
+	for i := len(q.runs) - 1; i >= 0; i-- {
+		run := q.runs[i]
+		if len(best) == limit && run.highestID <= best[0] {
+			continue
+		}
+		ids, err := run.lookupNewest(feature, limit)
+		if err != nil {
+			return nil, err
+		}
+		best = append(best, ids...)
+		slices.Sort(best)
+		best = slices.Compact(best)
+		if len(best) > limit {
+			copy(best, best[len(best)-limit:])
+			best = best[:limit]
+		}
+	}
+	best = slices.DeleteFunc(best, func(id uint32) bool {
+		_, retired := slices.BinarySearch(q.report.retired, id)
+		return retired
+	})
+	return best[max(0, len(best)-authSimilarityRunLimit):], nil
+}
+
+// runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status or revert")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, recover, index-build, index-refresh, index-status, index-inspect or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
+	if sub == "index-run-verify" {
+		if err := inspectAuthSimilarityRun(args[1:], os.Stdout); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintln(os.Stderr, "zeros3:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	fs := flag.NewFlagSet("authority "+sub, flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	apply := fs.Bool("apply", false, "commit the plan (default: plan only)")
@@ -49180,9 +51600,25 @@ func runAuthority(args []string) {
 	sha := fs.String("sha256", "", "revert: content SHA-256 (hex)")
 	bucket := fs.String("bucket", "", "migrate: only contents named in this bucket")
 	prefix := fs.String("prefix", "", "migrate: only contents whose key starts with this prefix")
+	peer := fs.String("from", "", "recover: compatible ZeroS3 peer endpoint")
+	key := fs.String("key", "", "recover: exact key at both stores; status: key to probe")
+	probeOffset := fs.Int64("probe-offset", -1, "status: measure a 4 KiB authority read at this object offset")
+	accessKey := fs.String("access-key", defaultAccessKeyID, "recover: peer access key (default: AWS_ACCESS_KEY_ID)")
+	secretKey := fs.String("secret-key", defaultSecretAccessKey, "recover: peer secret key (default: AWS_SECRET_ACCESS_KEY)")
+	region := fs.String("region", defaultRegion, "recover: peer region (default: AWS_REGION)")
 	memMiB := fs.Int64("max-memory-mib", 192, "soft heap limit of this process in MiB (0 = Go default)")
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
+	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
+	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
+	reserveMiB := fs.Uint64("reserve-free-mib", 0, "migrate: require this much free space after estimated staging (0 disables the reserve)")
 	fs.Parse(args[1:])
+	if sub == "recover" {
+		applyCredentialEnvFallback(fs, accessKey, secretKey, region)
+		if *peer == "" || *bucket == "" || *key == "" {
+			fmt.Fprintln(os.Stderr, "zeros3: authority recover requires -from, -bucket and -key")
+			os.Exit(2)
+		}
+	}
 	// An offline maintenance process needs no serving cache and keeps its heap near the
 	// bound: windowed deltas hold an anchor table and per-worker page caches, nothing else.
 	if os.Getenv("ZEROS3_CHUNK_CACHE_MIB") == "" {
@@ -49204,13 +51640,26 @@ func runAuthority(args []string) {
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(25)
 	}
+	indexOp := sub == "index-build" || sub == "index-refresh" || sub == "index-status" || sub == "index-inspect"
+	if indexOp {
+		if fs.NArg() != 0 {
+			log.Fatalf("zeros3: authority %s: unexpected arguments", sub)
+		}
+		if _, err := os.Stat(filepath.Join(*storeDir, "FORMAT.json")); err != nil {
+			log.Fatalf("zeros3: authority %s: %v", sub, err)
+		}
+	}
 	lock, err := acquireStoreLock(*storeDir, true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: authority: needs exclusive access to the store: %v\n", err)
 		os.Exit(1)
 	}
 	defer lock.release()
-	store, err := OpenStore(*storeDir)
+	open := OpenStore
+	if indexOp {
+		open = OpenStoreShared
+	}
+	store, err := open(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -49218,8 +51667,72 @@ func runAuthority(args []string) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	switch sub {
+	case "index-build", "index-refresh":
+		build := store.buildAuthSimilarityStage
+		if sub == "index-refresh" {
+			build = store.refreshAuthSimilarityStage
+		}
+		report, err := build()
+		if err != nil {
+			log.Fatalf("zeros3: authority %s: %v", sub, err)
+		}
+		if *apply {
+			if err := store.publishAuthSimilarityStage(filepath.Base(report.Directory)); err != nil {
+				log.Fatalf("zeros3: authority index-build: %v", err)
+			}
+		}
+		if err := enc.Encode(report); err != nil {
+			log.Fatalf("zeros3: authority index-build: %v", err)
+		}
+	case "index-inspect":
+		info, err := store.inspectAuthSimilarityIndex()
+		if err != nil {
+			log.Fatalf("zeros3: authority index-inspect: %v", err)
+		}
+		if err := enc.Encode(info); err != nil {
+			log.Fatalf("zeros3: authority index-inspect: %v", err)
+		}
+	case "index-status":
+		var report authSimilarityStageReport
+		if *indexFeature == "" {
+			report, err = store.readAuthSimilarityCurrent()
+		} else {
+			var feature uint64
+			feature, err = strconv.ParseUint(*indexFeature, 0, 64)
+			if err == nil {
+				var query *authSimilarityQuery
+				query, err = store.openCurrentAuthSimilarityQuery()
+				if err == nil {
+					defer query.close()
+					report = query.report
+					report.CandidateIDs, err = query.postings(feature)
+				}
+			}
+		}
+		if err != nil {
+			log.Fatalf("zeros3: authority index-status: %v", err)
+		}
+		if err := enc.Encode(report); err != nil {
+			log.Fatalf("zeros3: authority index-status: %v", err)
+		}
 	case "migrate":
-		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost}
+		if *reserveMiB > math.MaxUint64>>20 {
+			log.Fatal("zeros3: authority migrate: reserve-free-mib is too large")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, ReserveFreeBytes: *reserveMiB << 20}
+		var similarityOpenNanos int64
+		if *indexedDiscovery && pol.AllowDelta {
+			start := time.Now()
+			pol.similarity, err = store.openCurrentAuthSimilarityQuery()
+			similarityOpenNanos = time.Since(start).Nanoseconds()
+			if err != nil {
+				log.Printf("zeros3: similarity discovery using existing candidates: %v", err)
+			} else {
+				defer pol.similarity.close()
+			}
+		}
 		if *archive {
 			pol.Order, pol.MaxReadAmp, pol.MinReadRatio = "oldest", 0, 0
 		}
@@ -49229,17 +51742,41 @@ func runAuthority(args []string) {
 				pol.Order = "oldest"
 			}
 		}
-		rep, err := store.AuthorityMigrate(pol)
+		rep, err := store.AuthorityMigrateContext(ctx, pol)
 		if err != nil {
 			log.Fatalf("zeros3: authority migrate: %v", err)
 		}
+		rep.SimilarityOpenNanos = similarityOpenNanos
+		rep.SimilarityFallback = *indexedDiscovery && pol.AllowDelta && (pol.similarity == nil || pol.similarity.failed)
 		enc.Encode(rep)
 	case "status":
 		st, err := store.AuthorityStatus()
 		if err != nil {
 			log.Fatalf("zeros3: authority status: %v", err)
 		}
+		if *probeOffset >= 0 {
+			_, m, err := store.headServed(*bucket, *key)
+			if err != nil {
+				log.Fatalf("zeros3: authority status probe: %v", err)
+			}
+			const probeBytes = 4096
+			n, handled, err := store.AuthorityReadCost(m.man, *probeOffset, probeBytes)
+			if err != nil {
+				log.Fatalf("zeros3: authority status probe: %v", err)
+			}
+			if !handled {
+				log.Fatal("zeros3: authority status probe: object uses CDC")
+			}
+			st.RangeProbe = &authorityRangeProbe{Offset: *probeOffset, Length: min(probeBytes, m.man.TotalLength-*probeOffset), CASBytes: n}
+		}
 		enc.Encode(st)
+	case "recover":
+		cfg := syncClientConfig{Endpoint: *peer, Bucket: *bucket, Key: *key, Region: *region,
+			Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}}
+		if err := store.recoverAuthorityFromPeer(cfg); err != nil {
+			log.Fatalf("zeros3: authority recover: %v", err)
+		}
+		enc.Encode(map[string]string{"bucket": *bucket, "key": *key, "status": "verified"})
 	case "revert":
 		if *all {
 			rep, err := store.AuthorityRevertAll()
@@ -58001,21 +60538,21 @@ func authZN7Layout(r io.ReaderAt, size int64) (*ncNumcoreLayout, error) {
 	return lay, nil
 }
 
-// authZN7Locked serializes ReadAt on a reader that is not safe for concurrent use (the window workers share it).
-// zn7DerivesIQ3 reports whether the container made of ps holds a tensor of a type only this quantizer set can derive.
-func (s *Store) zn7DerivesIQ3(ps []authPiece) bool {
-	obj, err := ncNumcoreOpenObject(&authZN7Locked{r: newPieceSeq(s.newAuthCtx(), ps)}, pieceTotal(ps))
+// zn7DerivesIQ3 reports whether a container derives IQ3_S tensors.
+func zn7DerivesIQ3(blob *pieceSeq) (bool, error) {
+	obj, err := ncNumcoreOpenObject(blob, blob.size)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for i := range obj.T {
 		if obj.T[i].DT == ncNumcoreDIQ3_S {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
+// authZN7Locked serializes ReadAt for readers shared by window workers.
 type authZN7Locked struct {
 	mu sync.Mutex
 	r  io.ReaderAt
@@ -58267,6 +60804,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 		cs = cs[:min(pol.MaxBases, 3)]
 	}
 	tgt := m.s.newAuthObjAt(o.man)
+	tgt.ctx = m.ctx
 	defer tgt.close()
 	var bases []ncNumcoreBaseIn
 	var closers []*authObjAt
@@ -58280,6 +60818,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 	for _, c := range cs {
 		bo := m.order[c.j]
 		ra := m.s.newAuthObjAt(bo.man)
+		ra.ctx = m.ctx
 		closers = append(closers, ra)
 		bases = append(bases, ncNumcoreBaseIn{ID: ncNumcoreID(bo.sha), Len: bo.man.TotalLength, Src: ncNumcoreRawSource{R: ra, L: m.zn7Info(c.j).lay}})
 		js = append(js, c.j)
@@ -58315,7 +60854,7 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 		added = c.znAdded[o.sha]
 	} else {
 		var cw authCountWriter
-		if _, err := ncNumcoreEncode(context.Background(), &cw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+		if _, err := ncNumcoreEncode(m.ctx, &cw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
 			return false, nil // not codable as a container: the generic paths decide
 		}
 		added = cw.n + 96 + 160
@@ -58354,9 +60893,15 @@ func (m *authMigrator) tryZN7(i int, o *authObj, plan AuthPlan, finish func(Auth
 		m.addBase(i)
 		return true, nil
 	}
+	if err := m.checkAuthComponentReserve(added); err != nil {
+		return true, err
+	}
 	pw := m.s.newAuthPieceWriter()
 	defer pw.abort()
-	if _, err := ncNumcoreEncode(context.Background(), pw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+	if _, err := ncNumcoreEncode(m.ctx, pw, tgt, tinfo.lay, bases, cands, aux, opts); err != nil {
+		if storeErr := cmp.Or(pw.err, m.ctx.Err()); storeErr != nil {
+			return true, storeErr
+		}
 		return false, nil
 	}
 	ps, err := pw.finish()

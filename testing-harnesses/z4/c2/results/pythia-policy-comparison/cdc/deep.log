@@ -1,0 +1,9 @@
+ZeroS3 verify (deep)
+journal          6 frames checked | ok=true
+roots            5 current | 0 historical | 0 multipart | 0 snapshot
+manifests        5 checked
+chunks           2024 checked
+packs            6 checked
+integrity        0 missing | 0 corrupt | 0 invalid
+reclaimable      0 unreachable manifests | 0 unreachable chunks | 0 bytes
+result           OK

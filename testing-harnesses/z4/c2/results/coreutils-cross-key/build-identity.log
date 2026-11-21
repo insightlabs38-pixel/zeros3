@@ -1,0 +1,17 @@
+/workspace/work/zeros3/c2b-real-tar.Kxwi2i/zeros3: go1.27.4
+	path	zeros3
+	mod	zeros3	v0.1.2-0.20261120042405-02ce7a558fb4
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=1
+	build	CGO_CFLAGS=
+	build	CGO_CPPFLAGS=
+	build	CGO_CXXFLAGS=
+	build	CGO_LDFLAGS=
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=02ce7a558fb4bd9690eb03563e8e976ce885d51f
+	build	vcs.time=2026-11-20T04:24:05Z
+	build	vcs.modified=false

@@ -1,0 +1,63 @@
+{
+  "Objects": 4,
+  "Admitted": 2,
+  "Pinned": 0,
+  "KeptCDC": 2,
+  "CDCBytes": 204618,
+  "AddedBytes": 11798,
+  "Plans": [
+    {
+      "sha256": "b3e226cf6ad0e6cef8c15316dfd88b1a417755ae4b3636f1bf091029aa07b11c",
+      "size": 2097152,
+      "form": "cdc",
+      "depth": 0,
+      "cdc_unshared_bytes": 68116,
+      "added_bytes": 0,
+      "saving": 0,
+      "reason": "no admissible exact representation"
+    },
+    {
+      "sha256": "78534313561b251246ca76f213dac18cf41011327b7a076b211d792d157643d6",
+      "size": 2097152,
+      "form": "delta?",
+      "bases": [
+        "b3e226cf6ad0"
+      ],
+      "depth": 1,
+      "cdc_unshared_bytes": 68116,
+      "added_bytes": 5899,
+      "saving": 0.9133977332785249,
+      "reason": "plan only"
+    },
+    {
+      "sha256": "ea32a17bf07c61e8fd4b0665dfbf404de142585efc836a534d1425169a164860",
+      "size": 2097152,
+      "form": "delta?",
+      "bases": [
+        "78534313561b"
+      ],
+      "depth": 2,
+      "cdc_unshared_bytes": 68116,
+      "added_bytes": 5899,
+      "saving": 0.9133977332785249,
+      "reason": "plan only"
+    },
+    {
+      "sha256": "4771cdc8565cea6bf5b9dea941002de6e55904f1a5019591b75aee111878c10d",
+      "size": 86658,
+      "form": "cdc",
+      "depth": 0,
+      "cdc_unshared_bytes": 270,
+      "added_bytes": 0,
+      "saving": 0,
+      "reason": "no admissible exact representation"
+    }
+  ],
+  "Seconds": 1.237464475,
+  "PlanReuse": 0,
+  "RepNotBuilt": 0,
+  "CacheHits": 3,
+  "CacheMisses": 4,
+  "DecodedBytes": 6378114,
+  "similarity_fallback": true
+}

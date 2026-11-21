@@ -1,0 +1,1 @@
+{"choices":[{"key":"coreutils-9.5.tar","encoded_bytes":4578235,"depth":1},{"key":"coreutils-9.6.tar","encoded_bytes":2240881,"depth":2}],"index_rank":["coreutils-9.6.tar","coreutils-9.5.tar"],"lookup_ns":80830,"oracle":{"key":"coreutils-9.6.tar","encoded_bytes":2240881,"depth":2},"recall_at_1":true,"recall_at_4":true,"target":"coreutils-9.7.tar"}

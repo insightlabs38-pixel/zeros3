@@ -1,0 +1,13 @@
+=== RUN   TestAuthorityClosureSyncExport
+--- PASS: TestAuthorityClosureSyncExport (0.70s)
+=== RUN   TestAuthorityClosureSyncReplication
+    zeros3_authority_test.go:1290: native upload 15900 bytes, missing CDC payload 1001856
+--- PASS: TestAuthorityClosureSyncReplication (26.46s)
+=== RUN   TestAuthorityNativeClosureTransferAndInterruption
+--- PASS: TestAuthorityNativeClosureTransferAndInterruption (0.58s)
+=== RUN   TestAuthorityThinClosureUsesDestinationBasesAndFallsBack
+--- PASS: TestAuthorityThinClosureUsesDestinationBasesAndFallsBack (0.26s)
+=== RUN   TestAuthorityReplicationToNewAndOldDestinations
+--- PASS: TestAuthorityReplicationToNewAndOldDestinations (0.54s)
+PASS
+ok  	zeros3	28.577s

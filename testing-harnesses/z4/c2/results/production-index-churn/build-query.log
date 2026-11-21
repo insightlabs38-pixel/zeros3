@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "profile": 1,
+  "store_id": "01a1f749-95c5-7ac8-be23-dc9f4c7f3fb9",
+  "generation": 1795150188508178272,
+  "journal_end": 4233540,
+  "journal_sequence": 12289,
+  "journal_sha256": "5f6825a9b8b174d74a35e2d1c9a9f986597ca73d64f639c9ded5499d9a7208f8",
+  "snapshots_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "catalog_sha256": "8b88ef2199187acb7be165526a68998547b8ead5b0ba02fa09ac2cacc7b18d8e",
+  "live_objects": 12288,
+  "tombstones": 0,
+  "objects": 12288,
+  "runs": [
+    {
+      "name": "run-4268263653.zsr",
+      "postings": 196608,
+      "sha256": "a05acf1c6e8cc5a757d50459c5c31398fa9fb703f0d69ab741e4c0e773041fbf"
+    }
+  ],
+  "directory": "/workspace/work/zeros3/c2b-production-skew.dWsGlZ/store/similarity-index/generation-343953619",
+  "candidate_ids": [
+    12,
+    23,
+    31,
+    52,
+    62,
+    81,
+    97,
+    117,
+    854,
+    870,
+    882,
+    899,
+    921,
+    937,
+    957,
+    973,
+    1646,
+    1673,
+    1685,
+    1707,
+    1722,
+    1746,
+    1762,
+    1771
+  ]
+}

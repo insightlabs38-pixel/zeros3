@@ -1,0 +1,5 @@
+ZeroS3 compact (apply)
+loose chunks     2916 scanned | 0 unreachable (left for gc) | 0 skipped | 0 deferred (below minimum pack size)
+packs            wrote 2 into hot | 2916 chunks | 95766377 bytes | locality layout
+compression      2916 raw + 0 deflate records | 95486281 logical -> 95486281 stored bytes (0.0% saved)
+loose removed    2916 chunks | 95486281 bytes

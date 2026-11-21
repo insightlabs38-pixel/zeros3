@@ -1,0 +1,26 @@
+package main
+
+import (
+	"os"
+	"testing"
+)
+
+func BenchmarkSimilarityRootCollection(b *testing.B) {
+	s, err := OpenStoreShared(os.Getenv("ZEROS3_C2_INDEX_STORE"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	snapshots, issues := s.scanSnapshots()
+	if len(issues) != 0 {
+		b.Fatal(issues)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		roots, err := s.authSimilarityRoots(snapshots)
+		if err != nil || len(roots) != 53248 {
+			b.Fatalf("root collection returned %d roots: %v", len(roots), err)
+		}
+	}
+}

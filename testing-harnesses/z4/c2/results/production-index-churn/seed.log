@@ -1,0 +1,4 @@
+=== RUN   TestAuthorityScaleFixture
+    zeros3_authority_test.go:3572: 12288 objects written in 28.063761457s
+--- PASS: TestAuthorityScaleFixture (28.76s)
+PASS

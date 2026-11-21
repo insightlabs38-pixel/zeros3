@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/binary"
@@ -837,7 +838,7 @@ func TestAuthorityGraphLimits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ps, _ := s.authWritePieces(blob)
+			ps, _ := s.authWritePieces(context.Background(), blob)
 			d := byte(min(i, authHardDepth))
 			rec := &authRecord{SHA: sum, Size: int64(len(v)), Gen: 1, Form: authFormDelta, Depth: d, Bases: refs, Pieces: ps}
 			rawPublish(t, s, rec)
@@ -868,8 +869,8 @@ func TestAuthorityCycleRejected(t *testing.T) {
 	shaA, shaB := sha256.Sum256(a), sha256.Sum256(b)
 	blobA, refsA, _ := xdEncode([]xdSrc{{shaB, b}}, a, 64<<10)
 	blobB, refsB, _ := xdEncode([]xdSrc{{shaA, a}}, b, 64<<10)
-	psA, _ := l.s.authWritePieces(blobA)
-	psB, _ := l.s.authWritePieces(blobB)
+	psA, _ := l.s.authWritePieces(context.Background(), blobA)
+	psB, _ := l.s.authWritePieces(context.Background(), blobB)
 	rawPublish(t, l.s, &authRecord{SHA: shaA, Size: int64(len(a)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsA, Pieces: psA})
 	rawPublish(t, l.s, &authRecord{SHA: shaB, Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 2, Bases: refsB, Pieces: psB})
 	ctx := l.s.newAuthCtx()
@@ -1096,6 +1097,342 @@ func OpenStoreT(t *testing.T, dir string) *Store {
 	return s
 }
 
+func TestAuthorityClosureNegotiatesVersionFeaturesAndDepth(t *testing.T) {
+	var s Store
+	required := AuthCaps{
+		Version: authXferVersion, StoreFormat: storeFormatVersionAuthority,
+		Forms: []string{"pin", "delta"}, Features: []string{authZN7Feature, authIQ3Feature}, MaxDepth: 2,
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*AuthCaps)
+	}{
+		{"missing version", func(c *AuthCaps) { c.Version = 0 }},
+		{"future version", func(c *AuthCaps) { c.Version++ }},
+		{"old store format", func(c *AuthCaps) { c.StoreFormat = storeFormatVersionAuthority - 1 }},
+		{"shorter closure", func(c *AuthCaps) { c.MaxDepth = 1 }},
+		{"missing delta", func(c *AuthCaps) { c.Forms = []string{"pin", "rep"} }},
+		{"missing IQ3 replay", func(c *AuthCaps) { c.Features = []string{authZN7Feature} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := s.AuthorityCaps()
+			tc.edit(&dst)
+			if got := AuthTransferMode(required, dst); got != "materialize" {
+				t.Fatalf("incompatible destination chose %s", got)
+			}
+		})
+	}
+	if got := AuthTransferMode(required, s.AuthorityCaps()); got != "native" {
+		t.Fatalf("supported model closure chose %s", got)
+	}
+	if got := AuthTransferMode(required, required); got != "native" {
+		t.Fatalf("peer with the precisely required capabilities chose %s", got)
+	}
+}
+
+func TestAuthorityClosureSyncExport(t *testing.T) {
+	src := authMigratedLab(t)
+	src.reclaim()
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	server := httptest.NewServer(NewServer(src.s, creds, defaultRegion))
+	defer server.Close()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: defaultRegion}
+	status, raw := doSyncRequest(t, server.Client(), server.URL, signer, http.MethodGet, zeros3SyncInfoPath, nil)
+	var info syncDiscoveryResponse
+	if err := json.Unmarshal(raw, &info); err != nil || status != http.StatusOK || info.AuthorityExport == nil {
+		t.Fatalf("authority export discovery: %d %s %v", status, raw, err)
+	}
+	entry, manifest, err := src.s.HeadObject("b", "k3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := authExportRequest{Bucket: "b", Key: "k3", VersionID: entry.manifestUUID, Peer: *info.AuthorityExport}
+	export := func(req authExportRequest) (int, []byte) {
+		t.Helper()
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doSyncRequest(t, server.Client(), server.URL, signer, http.MethodPost, zeros3AuthExportPath, body)
+	}
+	status, wire := export(req)
+	sha, err := decodeHexSHA256(manifest.ObjectSHA256)
+	if err != nil || status != http.StatusOK || !bytes.HasPrefix(wire, []byte(authXferMagic)) {
+		t.Fatalf("closure export: status %d, digest error %v", status, err)
+	}
+	for _, budget := range []int64{-1, 1, int64(len(wire)), int64(len(wire)) + 1} {
+		request := req
+		request.MaxBytes = budget
+		got, payload := export(request)
+		switch {
+		case budget < 0:
+			if got != http.StatusBadRequest {
+				t.Fatalf("negative budget: %d %s", got, payload)
+			}
+		case budget <= int64(len(wire)):
+			if got != http.StatusConflict || !bytes.Contains(payload, []byte(`"Materialize"`)) {
+				t.Fatalf("insufficient budget %d: %d %s", budget, got, payload)
+			}
+		default:
+			if got != http.StatusOK || !bytes.Equal(payload, wire) {
+				t.Fatalf("budget %d changed the original closure: status %d, bytes %d", budget, got, len(payload))
+			}
+		}
+	}
+	dst := newAuthLab(t)
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(wire)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := dst.s.authProve(mustLoad(t, dst.s, sha), 0); err != nil {
+		t.Fatalf("remote closure produced different bytes: %v", err)
+	}
+	clientCfg := syncClientConfig{Endpoint: server.URL, Bucket: "b", Key: "k3", Creds: creds, Region: defaultRegion}
+	advertised, err := fetchSyncDescriptor(clientCfg, true)
+	if err != nil || len(advertised.AuthorityComponents) == 0 {
+		t.Fatalf("missing component inventory for the scoped object: %v", err)
+	}
+	component, err := decodeHexSHA256(advertised.AuthorityComponents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := src.s.casRead(component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thin := req
+	thin.KnownComponents = advertised.AuthorityComponents[:1]
+	status, trimmed := export(thin)
+	if status != http.StatusOK || len(wire)-len(trimmed) < len(stored) {
+		t.Fatalf("known CAS digest was transmitted again: %d, full %d, trimmed %d", status, len(wire), len(trimmed))
+	}
+	thinDst := newAuthLab(t)
+	if err := thinDst.s.ImportAuthorityClosure(bytes.NewReader(trimmed)); err == nil {
+		t.Fatal("receiver certified an absent component")
+	}
+	if _, err := thinDst.s.casWrite(stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := thinDst.s.ImportAuthorityClosure(bytes.NewReader(trimmed)); err != nil {
+		t.Fatalf("component reuse failed with the independently verified bytes: %v", err)
+	}
+	if _, _, err := thinDst.s.authProve(mustLoad(t, thinDst.s, sha), 0); err != nil {
+		t.Fatal(err)
+	}
+	thin.KnownComponents = []string{"not a valid digest"}
+	if status, body := export(thin); status != http.StatusBadRequest || !bytes.Contains(body, []byte("InvalidArgument")) {
+		t.Fatalf("invalid component advertisement: %d %s", status, body)
+	}
+	old := req
+	old.Peer = AuthCaps{}
+	if status, body := export(old); status != http.StatusConflict || !bytes.Contains(body, []byte(`"Materialize"`)) {
+		t.Fatalf("incompatible peer did not receive fallback: %d %s", status, body)
+	}
+	src.put("k3", []byte("new revision"))
+	if status, body := export(req); status != http.StatusConflict || !bytes.Contains(body, []byte(`"SourceChanged"`)) {
+		t.Fatalf("stale source version did not get refused: %d %s", status, body)
+	}
+	res, err := server.Client().Post(server.URL+zeros3AuthExportPath, "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsigned export status = %d", res.StatusCode)
+	}
+}
+
+func TestAuthorityClosureSyncReplication(t *testing.T) {
+	src, dst := authMigratedLab(t), newAuthLab(t)
+	src.reclaim()
+	want := src.want["k3"]
+	sha := sha256.Sum256(want)
+	target := mustLoad(t, src.s, sha)
+	if len(target.Bases) == 0 {
+		t.Fatal("fixture has no authority base")
+	}
+	base := target.Bases[0].SHA
+	var baseBytes []byte
+	for _, value := range src.want {
+		if sha256.Sum256(value) == base {
+			baseBytes = value
+			break
+		}
+	}
+	if baseBytes == nil {
+		t.Fatal("fixture base bytes are missing")
+	}
+	var native bytes.Buffer
+	if err := src.s.ExportAuthorityClosure(base, &native); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.s.ImportAuthorityClosure(&native); err != nil {
+		t.Fatal(err)
+	}
+	dst.put("k", baseBytes)
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	source := httptest.NewServer(NewServer(src.s, creds, defaultRegion))
+	defer source.Close()
+	destination := httptest.NewServer(NewServer(dst.s, creds, defaultRegion))
+	defer destination.Close()
+	cfg := replicateConfig{
+		Source:          syncClientConfig{Endpoint: source.URL, Bucket: "b", Key: "k3", Creds: creds, Region: defaultRegion},
+		Dest:            syncClientConfig{Endpoint: destination.URL, Bucket: "b", Key: "k", Creds: creds, Region: defaultRegion},
+		PreferAuthority: true,
+	}
+	plan, err := planReplication(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := executeReplicationPlan(plan)
+	if err != nil || stats.AuthorityBytes <= 0 || stats.AuthorityBytes >= plan.wouldTransferBytes {
+		t.Fatalf("expected economical native replication: %+v, CDC %d, %v", stats, plan.wouldTransferBytes, err)
+	}
+	t.Logf("native upload %d bytes, missing CDC payload %d", stats.AuthorityBytes, plan.wouldTransferBytes)
+	before, manifest, err := dst.s.HeadObject("b", "k")
+	if err != nil || manifest.ObjectSHA256 != fmt.Sprintf("%x", sha) {
+		t.Fatalf("destination did not publish expected identity: %v", err)
+	}
+	missing := 0
+	for _, c := range manifest.Chunks {
+		key, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dst.s.casStat(key); os.IsNotExist(err) {
+			missing++
+		}
+	}
+	if missing == 0 {
+		t.Fatal("native import stored a complete CDC copy")
+	}
+	assertVersion := func() {
+		t.Helper()
+		after, _, err := dst.s.HeadObject("b", "k")
+		if err != nil || before.manifestUUID != after.manifestUUID {
+			t.Fatalf("retry changed the visible version: %v", err)
+		}
+	}
+	if again, err := replicateObject(cfg); err != nil || again.UploadedBytes != 0 {
+		t.Fatalf("equivalent retry: %+v %v", again, err)
+	}
+	assertVersion()
+	signer := testSigner{accessKey: creds.AccessKeyID, secretKey: creds.SecretAccessKey, region: defaultRegion}
+	resp := doSignedRequest(t, destination.Client(), destination.URL, signer, http.MethodGet, "/b/k", nil, nil)
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(got, want) {
+		t.Fatalf("fresh S3 GET after native replication: %d %v", resp.StatusCode, err)
+	}
+	destination.Close()
+	dst.close()
+	dst.open()
+	dst.want["k"] = want
+	dst.exact("reopened native replica")
+	dst.verifyOK("reopened native replica")
+
+	if _, err := dst.s.AuthorityRevertAll(); err != nil {
+		t.Fatalf("revert native replica to CDC: %v", err)
+	}
+	assertVersion()
+	dst.exact("reverted native replica")
+	dst.close()
+	legacy := buildOldBinary(t)
+	if out, errOut, code := runZeros3CLI(t, legacy, "verify", "-store", dst.dir, "-deep"); code != 0 {
+		t.Fatalf("legacy verifier could not reopen reverted native replica: %s %s", out, errOut)
+	}
+}
+
+func TestAuthorityClosureSyncImportRejectsBadPayload(t *testing.T) {
+	src, dst := authMigratedLab(t), newAuthLab(t)
+	src.reclaim()
+	man := src.man("k3")
+	sum, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := mustLoad(t, src.s, sum)
+	if len(root.Bases) == 0 {
+		t.Fatal("fixture needs an omitted base")
+	}
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	server := httptest.NewServer(NewServer(dst.s, creds, defaultRegion))
+	defer server.Close()
+	control := authImportRequest{Version: authXferVersion, SHA256: man.ObjectSHA256, syncCommitRequest: syncCommitRequest{
+		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+		Bucket: "b", Key: "replica", ContentType: man.ContentType, ExpectAbsent: true,
+	}}
+	for _, ref := range man.Chunks {
+		control.Chunks = append(control.Chunks, syncChunkDescriptor{SHA256: ref.SHA256, Length: ref.Length})
+	}
+	send := func(control authImportRequest, closure []byte, wrongDigest bool) (int, []byte) {
+		t.Helper()
+		header, err := json.Marshal(control)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire := binary.BigEndian.AppendUint32(nil, uint32(len(header)))
+		wire = append(wire, header...)
+		wire = append(wire, closure...)
+		digest := sha256.Sum256(wire)
+		if wrongDigest {
+			digest[0] ^= 1
+		}
+		req, err := http.NewRequest(http.MethodPost, server.URL+zeros3AuthImportPath, bytes.NewReader(wire))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := signSigV4Request(req, creds, defaultRegion, fmt.Sprintf("%x", digest), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		res, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.StatusCode, body
+	}
+	var thin, full bytes.Buffer
+	if err := src.s.ExportAuthorityClosureThin(sum, func(sha [32]byte) bool { return sha == root.Bases[0].SHA }, &thin); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.s.ExportAuthorityClosure(sum, &full); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := send(control, thin.Bytes(), false); status != http.StatusConflict || !bytes.Contains(body, []byte("MissingAuthorityDependency")) {
+		t.Fatalf("missing base: %d %s", status, body)
+	}
+	wrong := control
+	wrong.SHA256 = strings.Repeat("1", 64)
+	if status, body := send(wrong, full.Bytes(), false); status != http.StatusConflict || !bytes.Contains(body, []byte("unexpected content root")) {
+		t.Fatalf("wrong root identity: %d %s", status, body)
+	}
+	if status, body := send(control, full.Bytes(), true); status != http.StatusForbidden || !bytes.Contains(body, []byte("XAmzContentSHA256Mismatch")) {
+		t.Fatalf("bad signed digest: %d %s", status, body)
+	}
+	if rec, err := dst.s.authLoad(sum); err != nil || rec != nil {
+		t.Fatalf("rejected transfer published a root record: %v", err)
+	}
+	if _, _, err := dst.s.HeadObject("b", "replica"); !errors.Is(err, errNoSuchKey) {
+		t.Fatalf("rejected transfer published an object: %v", err)
+	}
+	status, body := send(control, full.Bytes(), false)
+	if status != http.StatusOK {
+		t.Fatalf("valid import after failure: %d %s", status, body)
+	}
+	var first, retry syncCommitResponse
+	if err := json.Unmarshal(body, &first); err != nil || first.VersionID == "" {
+		t.Fatalf("invalid import acknowledgement: %s", body)
+	}
+	status, body = send(control, full.Bytes(), false)
+	if status != http.StatusOK || json.Unmarshal(body, &retry) != nil || retry.VersionID != first.VersionID {
+		t.Fatalf("retry after lost acknowledgement published another version: %d %s", status, body)
+	}
+}
+
 func TestAuthorityNativeClosureTransferAndInterruption(t *testing.T) {
 	l := authMigratedLab(t)
 	l.reclaim()
@@ -1108,6 +1445,19 @@ func TestAuthorityNativeClosureTransferAndInterruption(t *testing.T) {
 	var buf bytes.Buffer
 	if err := l.s.ExportAuthorityClosure(sha, &buf); err != nil {
 		t.Fatal(err)
+	}
+	peer := AuthCaps{
+		Version: authXferVersion, StoreFormat: storeFormatVersionAuthority,
+		Forms: []string{"pin", "delta"}, MaxDepth: authHardDepth,
+	}
+	var negotiated bytes.Buffer
+	if err := l.s.ExportAuthorityClosureFor(sha, peer, nil, &negotiated); err != nil || !bytes.Equal(negotiated.Bytes(), buf.Bytes()) {
+		t.Fatalf("negotiated baseline closure differs: %v", err)
+	}
+	peer.Forms = []string{"pin"}
+	negotiated.Reset()
+	if err := l.s.ExportAuthorityClosureFor(sha, peer, nil, &negotiated); !errors.Is(err, errAuthTransferUnsupported) || negotiated.Len() != 0 {
+		t.Fatalf("unsupported delta wrote %d bytes: %v", negotiated.Len(), err)
 	}
 	if buf.Len() > len(l.want["k3"])/2*3 {
 		t.Fatalf("closure of a depth-2 delta is %d bytes for a %d byte object", buf.Len(), len(l.want["k3"]))
@@ -1162,6 +1512,45 @@ func TestAuthorityNativeClosureTransferAndInterruption(t *testing.T) {
 		if res, err := s.Verify(true); err != nil || !res.OK() {
 			t.Fatalf("after retry: %v %v", err, res.Issues)
 		}
+	}
+}
+
+func TestAuthorityClosureDiscardsStagedTailAfterFlush(t *testing.T) {
+	src, dst := newAuthLab(t), newAuthLab(t)
+	body := genRandomBytes(827, 17<<20)
+	sum := sha256.Sum256(body)
+	pieces, err := src.s.authWritePieces(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &authRecord{SHA: sum, Size: int64(len(body)), Gen: 1, Form: authFormPin, Pieces: pieces}
+	if err := src.s.authPublish(rec); err != nil {
+		t.Fatal(err)
+	}
+	var wire bytes.Buffer
+	if err := src.s.ExportAuthorityClosure(sum, &wire); err != nil {
+		t.Fatal(err)
+	}
+	truncated := wire.Bytes()[:wire.Len()-sha256.Size]
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(truncated)); err == nil {
+		t.Fatal("closure with a missing trailer imported")
+	}
+	if _, err := dst.s.casStat(pieces[0].SHA); err != nil {
+		t.Fatalf("the import did not reach a durable chunk flush: %v", err)
+	}
+	if files, err := dst.s.authFiles(); err != nil || len(files) != 0 {
+		t.Fatalf("truncated closure published authority records: %v %v", files, err)
+	}
+	if staged, err := filepath.Glob(filepath.Join(dst.dir, "tmp", "cas-*.tmp")); err != nil || len(staged) != 0 {
+		t.Fatalf("truncated closure left %d staged CAS files: %v", len(staged), err)
+	}
+	dst.close()
+	dst.open()
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(wire.Bytes())); err != nil {
+		t.Fatalf("retry after reopen: %v", err)
+	}
+	if _, _, err := dst.s.authProve(mustLoad(t, dst.s, sum), 0); err != nil {
+		t.Fatalf("retried closure did not reproduce the source SHA-256: %v", err)
 	}
 }
 
@@ -1440,10 +1829,47 @@ func TestAuthorityThinClosureUsesDestinationBasesAndFallsBack(t *testing.T) {
 	if files, _ := e.s.authFiles(); len(files) != 0 {
 		t.Fatal("refused thin import published records")
 	}
+	components, err := l.s.authRecordChunks(mustLoad(t, l.s, sha3))
+	if err != nil || len(components) == 0 {
+		t.Fatalf("thin fixture needs source components: %v", err)
+	}
+	for _, c := range components {
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.s.casStat(sum); !os.IsNotExist(err) {
+			t.Fatalf("refused thin import installed component %x: %v", sum[:6], err)
+		}
+	}
 	if err := e.s.ImportAuthorityClosure(&full); err != nil {
 		t.Fatalf("full fallback: %v", err)
 	}
 	e.verifyOK("fallback")
+}
+
+func TestAuthorityClosureRejectsReversedRecordsBeforeData(t *testing.T) {
+	src, dst := authMigratedLab(t), newAuthLab(t)
+	sha, err := decodeHexSHA256(src.man("k3").ObjectSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := src.s.authClosureOrder(sha, nil)
+	if err != nil || len(recs) < 2 {
+		t.Fatalf("closure fixture needs a dependency: %v", err)
+	}
+	wire := binary.AppendUvarint([]byte(authXferMagic), uint64(len(recs)))
+	for i := len(recs) - 1; i >= 0; i-- {
+		record, err := recs[i].marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire = binary.AppendUvarint(wire, uint64(len(record)))
+		wire = append(wire, record...)
+	}
+	if err := dst.s.ImportAuthorityClosure(bytes.NewReader(wire)); !errors.Is(err, errAuthCorrupt) {
+		t.Fatalf("out-of-order records reached the component phase: %v", err)
+	}
 }
 
 // Replication reads retired-CDC source objects through the virtual chunk index and
@@ -1471,11 +1897,12 @@ func TestAuthorityReplicationToNewAndOldDestinations(t *testing.T) {
 	run := func(dstEndpoint string, dstCreds Credentials, client *http.Client, tag string) {
 		for key, want := range l.want {
 			cfg := replicateConfig{
-				Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
-				Dest:   syncClientConfig{Endpoint: dstEndpoint, Bucket: "dst", Key: key, Creds: dstCreds, Region: "us-east-1", HTTPClient: client},
+				Source:          syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
+				Dest:            syncClientConfig{Endpoint: dstEndpoint, Bucket: "dst", Key: key, Creds: dstCreds, Region: "us-east-1", HTTPClient: client},
+				PreferAuthority: true,
 			}
-			if _, err := replicateObject(cfg); err != nil {
-				t.Fatalf("%s: replicate %s: %v", tag, key, err)
+			if stats, err := replicateObject(cfg); err != nil || tag == "old-binary-destination" && (stats.AuthorityBytes != 0 || stats.AuthorityProbeBytes != 0) {
+				t.Fatalf("%s: replicate %s: %+v, %v", tag, key, stats, err)
 			}
 			signer := testSigner{accessKey: dstCreds.AccessKeyID, secretKey: dstCreds.SecretAccessKey, region: "us-east-1"}
 			r := doSignedRequest(t, client, dstEndpoint, signer, http.MethodGet, "/dst/"+key, nil, nil)
@@ -1508,6 +1935,20 @@ func TestAuthorityReplicationToNewAndOldDestinations(t *testing.T) {
 	r := doSignedRequest(t, oc, "http://"+addr, testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}, http.MethodPut, "/dst", nil, nil)
 	r.Body.Close()
 	run("http://"+addr, oldCreds, oc, "old-binary-destination")
+	mustOK(t, dst.CreateBucket("roundtrip"))
+	for key, want := range l.want {
+		stats, err := replicateObject(replicateConfig{
+			Source:          syncClientConfig{Endpoint: "http://" + addr, Bucket: "dst", Key: key, Creds: oldCreds, Region: defaultRegion},
+			Dest:            syncClientConfig{Endpoint: dstTS.URL, Bucket: "roundtrip", Key: key, Creds: creds, Region: defaultRegion},
+			PreferAuthority: true,
+		})
+		if err != nil || stats.AuthorityBytes != 0 || stats.AuthorityProbeBytes != 0 {
+			t.Fatalf("older source did not use CDC: %+v, %v", stats, err)
+		}
+		if _, got, err := dst.GetObject("roundtrip", key); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("older source round trip changed %s: %v", key, err)
+		}
+	}
 }
 
 // Syncing a new revision into a store whose older revisions are body-only: shared chunks
@@ -1783,6 +2224,130 @@ func TestAuthorityPeerAssistedComponentRepair(t *testing.T) {
 	}
 }
 
+func TestAuthorityStorageDiagnostics(t *testing.T) {
+	l := authMigratedLab(t)
+	l.reclaim()
+	st, err := l.s.computeStats(statsScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := st.Authority
+	if a == nil || a.LiveByForm["delta"] == 0 || a.LiveByForm["pin"] == 0 ||
+		a.RecordFileBytes <= 0 || a.LiveRecordFileBytes != a.RecordFileBytes ||
+		a.ComponentCount <= 0 || a.ComponentFiles <= 0 || a.ComponentLogical <= 0 ||
+		a.MaxDepth < 1 || a.MaxBases < 1 || a.MaxDirectDependents < 1 ||
+		a.UnavailableRecords != 0 || a.OrphanRecords != 0 {
+		t.Fatalf("incomplete authority accounting: %+v", a)
+	}
+	format, err := fileSizeOrZero(filepath.Join(l.dir, "FORMAT.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := st.ChunkStoreFileBytes + st.ManifestFileBytes + st.JournalFileBytes + st.TemporaryFileBytes +
+		format + st.RepresentationMetadataFileBytes + a.RecordFileBytes
+	if st.ActualStoreFileBytes != want {
+		t.Fatalf("record files omitted or component files counted twice: actual %d expected %d", st.ActualStoreFileBytes, want)
+	}
+	status, err := l.s.AuthorityStatus()
+	if err != nil || status.AdmissionTiers["cold"].RelativeAmp != authTierLimits["cold"].Amp {
+		t.Fatalf("missing tier policy: %+v %v", status, err)
+	}
+	man := l.man("k3")
+	if n, ok, err := l.s.AuthorityReadCost(man, 0, 4096); err != nil || !ok || n < 4096 {
+		t.Fatalf("authority range cost: bytes %d handled %t error %v", n, ok, err)
+	}
+	if _, _, err := l.s.AuthorityReadCost(man, man.TotalLength, 4096); err == nil {
+		t.Fatal("probe accepted end-of-file offset")
+	}
+}
+
+func TestAuthorityRecoverPeerClosure(t *testing.T) {
+	local, peer := authMigratedLab(t), authMigratedLab(t)
+	local.offline(func() {
+		if _, err := gcCollect(local.dir, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	rootSHA := sha256.Sum256(local.want["k3"])
+	root := mustLoad(t, local.s, rootSHA)
+	if len(root.Bases) == 0 || len(root.Pieces) == 0 {
+		t.Fatal("fixture has no shared base or component")
+	}
+	basePath := local.s.authPath(root.Bases[0].SHA)
+	rootPath := local.s.authPath(rootSHA)
+	component := local.s.chunkPath(root.Pieces[0].SHA)
+	local.close()
+	if err := os.Remove(basePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(component, []byte("corrupt component"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("corrupt root record")
+	if err := os.WriteFile(rootPath, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local.open()
+	if res, err := local.s.Verify(true); err != nil || res.OK() {
+		t.Fatalf("expected damage to be diagnosed: %+v %v", res, err)
+	}
+
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	server := httptest.NewServer(NewServer(peer.s, creds, defaultRegion))
+	defer server.Close()
+	cfg := syncClientConfig{Endpoint: server.URL, Bucket: "b", Key: "k3", Creds: creds, Region: defaultRegion}
+
+	// A fault before rename must leave the last record on disk. The
+	// retry can keep the bases or exact components already restored.
+	lock, err := acquireStoreLock(local.dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	if _, err := gcCollect(local.dir, true); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("maintenance did not respect recovery's exclusive lock: %v", err)
+	}
+	if _, err := repackStore(local.dir, repackOptions{TargetBytes: defaultPackTargetBytes}); !errors.Is(err, errGCStoreInUse) {
+		t.Fatalf("repack did not respect recovery's exclusive lock: %v", err)
+	}
+	fail := errors.New("simulated record write failure")
+	attempts := 0
+	authFault = func(point string) error {
+		if point == "record-write" {
+			attempts++
+			if attempts == 2 {
+				return fail
+			}
+		}
+		return nil
+	}
+	defer func() { authFault = nil }()
+	err = local.s.recoverAuthorityFromPeer(cfg)
+	authFault = nil
+	if !errors.Is(err, fail) {
+		t.Fatalf("recovery did not expose the injected failure after restoring the base: %v", err)
+	}
+	if got, err := os.ReadFile(rootPath); err != nil || !bytes.Equal(got, corrupt) {
+		t.Fatalf("failed recovery changed the previous root record: %v", err)
+	}
+	if err := local.s.recoverAuthorityFromPeer(cfg); err != nil {
+		t.Fatal(err)
+	}
+	local.close()
+	local.open()
+	local.exact("peer closure recovery covers all live dependents")
+	local.verifyOK("peer closure recovery reopened")
+
+	peer.put("k3", []byte("different source revision"))
+	if err := local.s.recoverAuthorityFromPeer(cfg); !errors.Is(err, errAuthMismatch) {
+		t.Fatalf("recovery accepted a different current source revision: %v", err)
+	}
+	server.Close()
+	if err := local.s.recoverAuthorityFromPeer(cfg); err == nil || !strings.Contains(err.Error(), "recover peer discovery") {
+		t.Fatalf("offline peer was not diagnosed: %v", err)
+	}
+}
+
 func deleteChunkOnDiskDir(t *testing.T, dir, hexSum string) {
 	t.Helper()
 	s, err := OpenStore(dir)
@@ -1806,7 +2371,7 @@ func TestAuthorityPublishRefusesIncompleteClosure(t *testing.T) {
 	b := authVersion(a, 9)
 	shaA, shaB := sha256.Sum256(a), sha256.Sum256(b)
 	blob, refs, _ := xdEncode([]xdSrc{{shaA, a}}, b, 64<<10)
-	ps, _ := l.s.authWritePieces(blob)
+	ps, _ := l.s.authWritePieces(context.Background(), blob)
 	rec := &authRecord{SHA: shaB, Size: int64(len(b)), Gen: 1, Form: authFormDelta, Depth: 1, Bases: refs, Pieces: ps}
 	if err := l.s.authPublish(rec); !errors.Is(err, errAuthMissing) {
 		t.Fatalf("delta without a committed base published: %v", err)
@@ -2185,7 +2750,7 @@ func g1Retire(s *Store, st *g1Store, man manifestV1) error {
 			return fmt.Errorf("no copy against the shifted base (%v)", err)
 		}
 		rec = &authRecord{SHA: sha, Size: man.TotalLength, Gen: 1, Form: authFormDelta, Depth: 1, Bases: refs}
-		if rec.Pieces, err = s.authWritePieces(blob); err != nil {
+		if rec.Pieces, err = s.authWritePieces(context.Background(), blob); err != nil {
 			return err
 		}
 		if _, _, err := s.authProve(rec, 2); err != nil {
@@ -2250,6 +2815,141 @@ func TestAuthorityRevertAllLowersFloorAndOldBinaryReopens(t *testing.T) {
 		t.Fatalf("floor lowered with records present: %d %v", lowered, err)
 	}
 	l.close()
+}
+
+func TestAuthorityTierDepthFiltersBeforeEncoding(t *testing.T) {
+	const feature = 100
+	m := &authMigrator{
+		pol:   AuthPolicy{Tier: "hot", MaxDepth: 4}.norm(),
+		order: []*authObj{{}, {}, {}},
+		index: map[uint64][]int{feature: {0, 1}},
+		depth: map[int]int{0: 0, 1: 1},
+	}
+	if got := m.candidates(2, []uint64{feature}, true); !slices.Equal(got, []int{0}) {
+		t.Fatalf("hot tier considered a base deeper than its known limit: %v", got)
+	}
+	m.pol = AuthPolicy{Tier: "hot", NoReadCost: true, MaxDepth: 4}.norm()
+	if got := m.candidates(2, []uint64{feature}, true); !slices.Equal(got, []int{1, 0}) {
+		t.Fatalf("read-cost override did not retain both bases: %v", got)
+	}
+}
+
+func TestAuthorityMigrationCancellationBeforePublication(t *testing.T) {
+	for _, cut := range []string{hookAuthComponentsFlushed, hookAuthProofDone} {
+		t.Run(cut, func(t *testing.T) {
+			l := authHistoryLab(t, 491, 3, 520_000)
+			l.reclaim()
+			pol := AuthPolicy{Apply: true, AllowDelta: true, NoZN7: true, MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			canceledAtCut := false
+			withTestHook(t, func(point string) {
+				if point == cut && !canceledAtCut {
+					canceledAtCut = true
+					cancel()
+				}
+			})
+			report, err := l.s.AuthorityMigrateContext(ctx, pol)
+			if !canceledAtCut || !errors.Is(err, context.Canceled) || report.Admitted != 0 {
+				t.Fatalf("cancel before publication: fired=%t report=%+v error=%v", canceledAtCut, report, err)
+			}
+			l.close()
+			l.open()
+			l.exact("reopened after cancellation")
+			l.verifyOK("reopened after cancellation")
+			for key := range l.want {
+				sum, err := decodeHexSHA256(l.man(key).ObjectSHA256)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rec, err := l.s.authLoad(sum)
+				if err != nil || rec != nil && rec.Form != authFormPin {
+					t.Fatalf("canceled pass published a target record for %s: %+v %v", key, rec, err)
+				}
+			}
+			l.reclaim()
+			retried, err := l.s.AuthorityMigrate(pol)
+			if err != nil || retried.Admitted == 0 {
+				t.Fatalf("retry after cancellation did not admit a delta: %+v %v", retried, err)
+			}
+			l.reclaim()
+			l.exact("reclaimed retry")
+			l.verifyOK("reclaimed retry")
+		})
+	}
+}
+
+func TestAuthorityRepresentationStagingHonorsDiskReserve(t *testing.T) {
+	l := newAuthLab(t)
+	body := genRandomBytes(497, 16<<10)
+	for _, logicalSize := range []int64{int64(len(body)), 128 << 20} {
+		b := l.s.newRepBuilder(logicalSize, l.s.repDescLookup, nil)
+		b.reserve = math.MaxUint64
+		_, err := b.putBlob(body)
+		b.close()
+		if !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("representation stage exceeded headroom for %d-byte object: %v", logicalSize, err)
+		}
+		if _, err := l.s.casStat(sha256.Sum256(body)); !os.IsNotExist(err) {
+			t.Fatalf("refused representation staged bytes: %v", err)
+		}
+	}
+}
+
+func TestAuthorityMigrationDiskReserve(t *testing.T) {
+	l := authHistoryLab(t, 493, 3, 520_000)
+	l.reclaim()
+	pol := AuthPolicy{Apply: true, AllowDelta: true, NoZN7: true, MaxDepth: 2, MaxReadAmp: -1, ReserveFreeBytes: math.MaxUint64}
+	report, err := l.s.AuthorityMigrate(pol)
+	if !errors.Is(err, syscall.ENOSPC) || report.Objects != 0 || report.Admitted != 0 {
+		t.Fatalf("impossible reserve did not stop before staging: report=%+v err=%v", report, err)
+	}
+	if err := l.s.checkAuthDiskReserve(1, math.MaxUint64, math.MaxUint64); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("overflow-sized output estimate bypassed the reserve: %v", err)
+	}
+	files, err := l.s.authFiles()
+	if err != nil || len(files) != 0 {
+		t.Fatalf("reserve refusal changed authority: %v %v", files, err)
+	}
+	l.exact("reserve refusal")
+	pol.ReserveFreeBytes = 1 << 20
+	report, err = l.s.AuthorityMigrate(pol)
+	if err != nil || report.Admitted == 0 {
+		t.Fatalf("available reserve wrongly refused migration: %+v %v", report, err)
+	}
+	l.reclaim()
+	l.exact("admitted with reserve")
+	l.verifyOK("admitted with reserve")
+}
+
+func TestAuthorityWindowedMigrationReportsStagingENOSPC(t *testing.T) {
+	defer func(a, b int64) { authWindowMin, authWindowSize = a, b }(authWindowMin, authWindowSize)
+	authWindowMin, authWindowSize = 64<<10, 64<<10
+	l := authHistoryLab(t, 492, 3, 520_000)
+	l.reclaim()
+	pol := AuthPolicy{Apply: true, AllowDelta: true, NoZN7: true, MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1}
+	authFault = func(point string) error {
+		if point == "pieces-write" {
+			return syscall.ENOSPC
+		}
+		return nil
+	}
+	defer func() { authFault = nil }()
+	report, err := l.s.AuthorityMigrate(pol)
+	if !errors.Is(err, syscall.ENOSPC) || report.Admitted != 0 {
+		t.Fatalf("windowed writer failure was not reported: report=%+v error=%v", report, err)
+	}
+	authFault = nil
+	l.reclaim()
+	l.exact("reopened after ENOSPC")
+	l.verifyOK("reopened after ENOSPC")
+	retried, err := l.s.AuthorityMigrate(pol)
+	if err != nil || retried.Admitted == 0 {
+		t.Fatalf("retry after ENOSPC did not admit a delta: %+v %v", retried, err)
+	}
+	l.reclaim()
+	l.exact("reclaimed retry")
+	l.verifyOK("reclaimed retry")
 }
 
 // Objects above the in-memory window take the windowed single-base delta: exact
@@ -3143,11 +3843,12 @@ func TestAuthorityFiveGenerationMatrix(t *testing.T) {
 			r.Body.Close()
 			for key, want := range l.want {
 				cfg := replicateConfig{
-					Source: syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
-					Dest:   syncClientConfig{Endpoint: "http://" + addr, Bucket: "dst", Key: key, Creds: oc2, Region: "us-east-1", HTTPClient: oc},
+					Source:          syncClientConfig{Endpoint: srcTS.URL, Bucket: "b", Key: key, Creds: creds, Region: "us-east-1", HTTPClient: srcTS.Client()},
+					Dest:            syncClientConfig{Endpoint: "http://" + addr, Bucket: "dst", Key: key, Creds: oc2, Region: "us-east-1", HTTPClient: oc},
+					PreferAuthority: true,
 				}
-				if _, err := replicateObject(cfg); err != nil {
-					t.Fatalf("replicate %s: %v", key, err)
+				if stats, err := replicateObject(cfg); err != nil || stats.AuthorityBytes != 0 || stats.AuthorityProbeBytes != 0 {
+					t.Fatalf("replicate %s using legacy transport: %+v, %v", key, stats, err)
 				}
 				r := doSignedRequest(t, oc, "http://"+addr, testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}, http.MethodGet, "/dst/"+key, nil, nil)
 				got, _ := io.ReadAll(r.Body)
@@ -4950,6 +5651,25 @@ func zn7QuantDerivation(t *testing.T, qt ncQcoreType, typeID uint32, ar ncQcoreA
 	}
 	if raw, _ := os.ReadFile(filepath.Join(l.dir, "FORMAT.json")); strings.Contains(string(raw), authIQ3Feature) != (qt == ncQcoreIQ3_S) {
 		t.Fatalf("the %s store feature must be recorded exactly for IQ3_S containers: %s", authIQ3Feature, raw)
+	}
+	if qt == ncQcoreIQ3_S {
+		peer := l.s.AuthorityCaps()
+		peer.Features = []string{authZN7Feature}
+		var wire bytes.Buffer
+		if err := l.s.ExportAuthorityClosureFor(qsha, peer, nil, &wire); !errors.Is(err, errAuthTransferUnsupported) || wire.Len() != 0 {
+			t.Fatalf("peer without IQ3 support received %d bytes: %v", wire.Len(), err)
+		}
+		peer.Features = append(peer.Features, authIQ3Feature)
+		if err := l.s.ExportAuthorityClosureFor(qsha, peer, nil, &wire); err != nil {
+			t.Fatal(err)
+		}
+		dst := newAuthLab(t)
+		if err := dst.s.ImportAuthorityClosure(&wire); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := dst.s.authProve(mustLoad(t, dst.s, qsha), 0); err != nil {
+			t.Fatalf("negotiated IQ3 closure lost exact content: %v", err)
+		}
 	}
 	l.exact("derived")
 	l.verifyOK("derived")

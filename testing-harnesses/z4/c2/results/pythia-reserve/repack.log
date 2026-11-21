@@ -1,0 +1,7 @@
+ZeroS3 repack (apply)
+live set         ok=true
+packs            2 | 408 chunks | 28374584 bytes
+selected         0 packs | 0 with no live chunk | 0 partly dead
+rewrite          read 0 chunks (0 bytes) | write 0 packs (0 bytes)
+remove           0 packs (0 bytes)
+reclaimed        0 bytes

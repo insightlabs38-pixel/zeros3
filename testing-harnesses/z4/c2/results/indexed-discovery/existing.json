@@ -1,0 +1,26 @@
+{
+  "Objects": 3,
+  "Admitted": 0,
+  "Pinned": 0,
+  "KeptCDC": 1,
+  "CDCBytes": 1550000,
+  "AddedBytes": 0,
+  "Plans": [
+    {
+      "sha256": "b0061bd250faef8d4e5d4b8a96bfa5c7ce8e4e49dcf959abcfb27c074ef9d309",
+      "size": 1550000,
+      "form": "cdc",
+      "depth": 0,
+      "cdc_unshared_bytes": 1550000,
+      "added_bytes": 0,
+      "saving": 0,
+      "reason": "no admissible exact representation"
+    }
+  ],
+  "Seconds": 0.084929155,
+  "PlanReuse": 0,
+  "RepNotBuilt": 0,
+  "CacheHits": 0,
+  "CacheMisses": 1,
+  "DecodedBytes": 1550000
+}

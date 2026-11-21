@@ -363,6 +363,40 @@ After commit, the destination is an ordinary S3-visible object.
 Recursive namespace replication adds client-side ListObjectsV2 enumeration and
 reuses the same per-object pipeline.
 
+### Authority closure framing
+
+The `ZS3C` version 1 closure requires the destination to support the advertised
+record forms, codec features, store format and dependency depth. The closure
+capability check selects materialization when any requirement is missing.
+Negotiated export derives the requirements from the records it will send and
+checks them before writing the first frame byte.
+
+The closure reader checks that records are unique and ordered bases first. A
+thin frame can omit a base already held by the destination. The receiver checks
+that the held base matches the declared size and fits the dependency depth before
+staging components. It verifies component digests and the frame trailer, then
+reconstructs each new record and verifies its logical SHA-256 before publication.
+After an interrupted read the receiver discards pending staging files. A retry
+can reuse components that were already durable.
+
+`replicate -authority-closure` opts into native transfer when both ZeroS3
+peers advertise it and the frame plus import header cost less than the missing
+CDC payload. The SigV4-signed export request binds the source manifest version
+and advertises the destination's decoder capabilities. The client can offer the
+current authoritative content at the destination key as a base. It can also
+offer up to 96 exact component digests physically present at that key. The
+receiver independently proves reconstruction using the components it holds. Outdated
+source identity fails the transfer. Older peers, unsupported forms, uneconomical
+frames and missing destination dependencies use the existing CDC replication path.
+
+Import receives a four-byte big-endian header length, a JSON object descriptor
+and the closure frame. It checks the signed whole-request SHA-256 as well as
+the frame digest, proves each new authority record and verifies reconstructed
+content against both the descriptor's chunk hashes and whole-object SHA-256.
+The destination publishes an ordinary S3 manifest through the existing
+journal commit and enforces the same destination preconditions. A retry for
+equivalent content and metadata returns the existing version.
+
 ## Peer repair
 
 Repair reuses the v1 chunk fetch endpoint.
@@ -373,6 +407,30 @@ requests exactly that digest from an explicit peer.
 Candidate bytes are locally SHA-256 verified before CAS publication.
 
 Repair changes physical content availability, not namespace roots.
+
+`authority recover -from PEER -bucket BUCKET -key KEY` restores a native
+closure for the SHA-256 named by the local live manifest. The peer must
+advertise closure export and expose the same exact content at that key.
+Recovery takes the exclusive maintenance lock, checks the depth constraints
+of local dependents, and preserves readable authority records. Each
+component is independently hashed before repair. Missing or unreadable
+records are published bases-first after validation of the complete frame
+and reconstruction of each record. A failed replacement keeps the existing
+record until a fully written, fsynced replacement can be renamed over it.
+
+### Authority diagnostics
+
+`stats` reports store-wide live authority forms, recorded depth, direct
+dependents, record file bytes and storage occupied by closure components.
+The component amount includes the stored payload and per-record metadata
+for packed copies, plus loose copies. These bytes are already in the chunk
+store total. Comparing two stores after the same GC and repack policy gives
+the measured savings for that workload.
+
+`verify` and `doctor` report unavailable authority records and their issues.
+`authority status` shows the static admission limits. Pass
+`-bucket BUCKET -key KEY -probe-offset OFFSET` to measure logical CAS bytes
+read by an individual 4 KiB authority range.
 
 ## Optional bulk transport v2
 
