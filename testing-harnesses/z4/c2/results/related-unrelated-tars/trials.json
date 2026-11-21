@@ -1,0 +1,158 @@
+{
+  "source": "7fcfdaa11806858a84af9dd22333f85ba39a6f1f",
+  "binary_sha256": "0681f5fbebc6f5d54a397d1a6644a3d21051974ac85df667868c3394caace24a",
+  "pinned_coreutils": [
+    "d71f1075012c8fd1fb30be24dac9b91b973dfff6bb6574d0a3b4f3f8de960355  ./src/coreutils-9.5.tar",
+    "c4b9b4ca3fdc0e3baa7905ec41f6a465ab3f4188b47f195264eb48dde283bc21  ./src/coreutils-9.6.tar",
+    "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924  ./src/coreutils-9.7.tar"
+  ],
+  "sqlite_sha256": "808be77deecee8f2343996e8af2576c4a9040d5da6222e6552dd7fd73a134adb",
+  "lanes": {
+    "existing": {
+      "ordinary_allocated_bytes": 129200128,
+      "recompressed_allocated_bytes": 40185856,
+      "both_deep_verified": true,
+      "plan": {
+        "storage_cost_model": "recompressed",
+        "Objects": 4,
+        "Admitted": 1,
+        "Pinned": 0,
+        "KeptCDC": 1,
+        "CDCBytes": 21128461,
+        "AddedBytes": 3130414,
+        "Plans": [
+          {
+            "sha256": "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924",
+            "size": 63078400,
+            "form": "cdc",
+            "depth": 0,
+            "cdc_unshared_bytes": 17614950,
+            "added_bytes": 0,
+            "saving": 0,
+            "reason": "no similar base"
+          },
+          {
+            "sha256": "808be77deecee8f2343996e8af2576c4a9040d5da6222e6552dd7fd73a134adb",
+            "size": 10997760,
+            "form": "delta",
+            "bases": [
+              "a24305fc8b26"
+            ],
+            "depth": 1,
+            "cdc_unshared_bytes": 3513511,
+            "added_bytes": 3130414,
+            "saving": 0.10903537800223195,
+            "read_amp_4k": 644116.5,
+            "cdc_amp_4k": 95225.42869311568
+          }
+        ],
+        "Seconds": 2.928925492,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 0,
+        "CacheMisses": 2,
+        "DecodedBytes": 74076160
+      }
+    },
+    "indexed": {
+      "ordinary_allocated_bytes": 70881280,
+      "recompressed_allocated_bytes": 25690112,
+      "both_deep_verified": true,
+      "plan": {
+        "storage_cost_model": "recompressed",
+        "Objects": 4,
+        "Admitted": 2,
+        "Pinned": 0,
+        "KeptCDC": 0,
+        "CDCBytes": 21128461,
+        "AddedBytes": 5350388,
+        "Plans": [
+          {
+            "sha256": "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924",
+            "size": 63078400,
+            "form": "delta",
+            "bases": [
+              "c4b9b4ca3fdc"
+            ],
+            "depth": 2,
+            "cdc_unshared_bytes": 17614950,
+            "added_bytes": 2241137,
+            "saving": 0.8727707430336163,
+            "read_amp_4k": 234288862.5,
+            "cdc_amp_4k": 151872.32768389813
+          },
+          {
+            "sha256": "808be77deecee8f2343996e8af2576c4a9040d5da6222e6552dd7fd73a134adb",
+            "size": 10997760,
+            "form": "delta",
+            "bases": [
+              "d71f1075012c"
+            ],
+            "depth": 1,
+            "cdc_unshared_bytes": 3513511,
+            "added_bytes": 3109251,
+            "saving": 0.11505869769583758,
+            "read_amp_4k": 560643,
+            "cdc_amp_4k": 95225.42869311568
+          }
+        ],
+        "Seconds": 8.412114347,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 21885,
+        "CacheMisses": 63,
+        "DecodedBytes": 197672960,
+        "similarity_queries": 2,
+        "similarity_matches": 4,
+        "similarity_lookup_ns": 158412,
+        "similarity_open_ns": 8046212
+      }
+    },
+    "indexed-related-only": {
+      "ordinary_allocated_bytes": 79765504,
+      "recompressed_allocated_bytes": 26943488,
+      "both_deep_verified": true,
+      "plan": {
+        "storage_cost_model": "recompressed",
+        "Objects": 3,
+        "Admitted": 1,
+        "Pinned": 0,
+        "KeptCDC": 0,
+        "CDCBytes": 17614950,
+        "AddedBytes": 2241137,
+        "Plans": [
+          {
+            "sha256": "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924",
+            "size": 63078400,
+            "form": "delta",
+            "bases": [
+              "c4b9b4ca3fdc"
+            ],
+            "depth": 2,
+            "cdc_unshared_bytes": 17614950,
+            "added_bytes": 2241137,
+            "saving": 0.8727707430336163,
+            "read_amp_4k": 234288862.5,
+            "cdc_amp_4k": 151872.32768389813
+          }
+        ],
+        "Seconds": 9.177470933,
+        "PlanReuse": 0,
+        "RepNotBuilt": 0,
+        "CacheHits": 21172,
+        "CacheMisses": 699,
+        "DecodedBytes": 732033024,
+        "similarity_queries": 1,
+        "similarity_matches": 2,
+        "similarity_lookup_ns": 90287,
+        "similarity_open_ns": 5664246
+      }
+    }
+  },
+  "signed_readback": [
+    "d71f1075012c8fd1fb30be24dac9b91b973dfff6bb6574d0a3b4f3f8de960355  coreutils-9.5.tar",
+    "c4b9b4ca3fdc0e3baa7905ec41f6a465ab3f4188b47f195264eb48dde283bc21  coreutils-9.6.tar",
+    "a24305fc8b2690fd6409df97b9c6d47c685a4b42731a3e8d0e22a66c1ce6b924  coreutils-9.7.tar",
+    "808be77deecee8f2343996e8af2576c4a9040d5da6222e6552dd7fd73a134adb  sqlite-amalgamation-3490100.tar"
+  ]
+}

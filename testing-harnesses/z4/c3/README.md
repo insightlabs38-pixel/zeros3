@@ -58,3 +58,7 @@ The focused test covers a CDC-only store and a peer with legacy capabilities.
 Use `-peer-bucket` and `-peer-key` when the exact peer copy lives under
 another name. The focused test also covers a renamed source and rejects a
 source whose logical digest or length differs.
+When the exact replica is retained history, add `-peer-version ID` using
+the peer's ZeroS3 version listing. Recovery checks that the descriptor
+confirmed that version and binds the closure request to its manifest.
+The historical lookup leaves the peer's current key and history intact.

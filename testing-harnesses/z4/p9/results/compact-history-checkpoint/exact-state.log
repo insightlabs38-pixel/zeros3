@@ -1,0 +1,5 @@
+=== RUN   TestNamespaceCheckpointScaleState
+    zeros3_checkpoint_test.go:374: 200 fresh reads and absence checks against original fixture stamps
+    zeros3_checkpoint_test.go:378: 701053 visible objects and 298947 retained roots, state SHA-256 4cf7033a989b22e0d357ee9ac8d3054d3adab441fce901a29adcf1f877915d57
+--- PASS: TestNamespaceCheckpointScaleState (11.83s)
+PASS

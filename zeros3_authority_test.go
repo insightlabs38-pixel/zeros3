@@ -2365,7 +2365,7 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 		return nil
 	}
 	defer func() { authFault = nil }()
-	err = local.s.recoverAuthorityFromPeer("b", "k3", cfg)
+	err = local.s.recoverAuthorityFromPeer("b", "k3", "", cfg)
 	authFault = nil
 	if !errors.Is(err, fail) {
 		t.Fatalf("recovery did not expose the injected failure after restoring the base: %v", err)
@@ -2373,7 +2373,7 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 	if got, err := os.ReadFile(rootPath); err != nil || !bytes.Equal(got, corrupt) {
 		t.Fatalf("failed recovery changed the previous root record: %v", err)
 	}
-	if err := local.s.recoverAuthorityFromPeer("b", "k3", cfg); err != nil {
+	if err := local.s.recoverAuthorityFromPeer("b", "k3", "", cfg); err != nil {
 		t.Fatal(err)
 	}
 	local.close()
@@ -2382,11 +2382,25 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 	local.verifyOK("peer closure recovery reopened")
 
 	peer.put("k3", []byte("different source revision"))
-	if err := local.s.recoverAuthorityFromPeer("b", "k3", cfg); !errors.Is(err, errAuthMismatch) {
+	if err := local.s.recoverAuthorityFromPeer("b", "k3", "", cfg); !errors.Is(err, errAuthMismatch) {
 		t.Fatalf("recovery accepted a different current source revision: %v", err)
 	}
+	versions, _, err := peer.s.ListVersions("b", "k3")
+	mustOK(t, err)
+	if len(versions) == 0 {
+		t.Fatal("the exact source was not retained")
+	}
+	peerVersion := versions[len(versions)-1].versionID
+	local.offline(func() { mustOK(t, os.WriteFile(rootPath, corrupt, 0o600)) })
+	if err := local.s.recoverAuthorityFromPeer("b", "k3", "missing-version", cfg); err == nil || !strings.Contains(err.Error(), "NoSuchVersion") {
+		t.Fatalf("unknown retained version was not refused: %v", err)
+	}
+	mustOK(t, local.s.recoverAuthorityFromPeer("b", "k3", peerVersion, cfg))
+	local.offline(func() {})
+	local.exact("peer closure recovered from retained revision")
+	local.verifyOK("peer closure recovered from retained revision")
 	server.Close()
-	if err := local.s.recoverAuthorityFromPeer("b", "k3", cfg); err == nil || !strings.Contains(err.Error(), "recover peer discovery") {
+	if err := local.s.recoverAuthorityFromPeer("b", "k3", "", cfg); err == nil || !strings.Contains(err.Error(), "recover peer discovery") {
 		t.Fatalf("offline peer was not diagnosed: %v", err)
 	}
 }
@@ -2440,11 +2454,11 @@ func TestAuthorityRecoverPeerWithExactCDCFallback(t *testing.T) {
 			defer server.Close()
 			cfg := mustPeerConfig(server, creds, "us-east-1")
 			cfg.Bucket, cfg.Key = remoteBucket, "different"
-			if err := local.s.recoverAuthorityFromPeer("b", key, cfg); !errors.Is(err, errAuthMismatch) {
+			if err := local.s.recoverAuthorityFromPeer("b", key, "", cfg); !errors.Is(err, errAuthMismatch) {
 				t.Fatalf("recover accepted a wrong peer object: %v", err)
 			}
 			cfg.Key = remoteKey
-			mustOK(t, local.s.recoverAuthorityFromPeer("b", key, cfg))
+			mustOK(t, local.s.recoverAuthorityFromPeer("b", key, "", cfg))
 			wantExports := int32(1)
 			if legacy {
 				wantExports = 0

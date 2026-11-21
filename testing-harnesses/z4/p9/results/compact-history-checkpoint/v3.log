@@ -1,0 +1,7 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkNamespaceCheckpointOpen/checkpoint-2         	       1	2605867183 ns/op	861981632 B/op	 5510710 allocs/op
+BenchmarkNamespaceCheckpointOpen/checkpoint-2         	       1	2181182536 ns/op	861571712 B/op	 5510690 allocs/op
+PASS

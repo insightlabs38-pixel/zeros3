@@ -94,37 +94,37 @@ import (
 //     6667    Visibility journal (append-only, checksummed)
 //     7189    Store: format, namespace, and object CRUD
 //     9173    Version history/restore, history pruning, ListObjectsV2
-//     9654    SigV4 authentication (header and presigned-URL)
-//    10631    Request payload checksums and S3-shaped XML error/response types
-//    10848    HTTP routing and S3 operation handlers
-//    11274    Conditional operations (PUT/GET/HEAD preconditions)
-//    11969    CopyObject
-//    12274    Multipart upload
-//    13214    Stats and reachability scanning
-//    14718    Verify
-//    14933    Store locking and safe offline GC
-//    15236    Offline compaction (`zeros3 compact`)
-//    16302    Pack reclamation and repacking (`zeros3 repack`)
-//    16805    Physical tiers: status and pack movement (`zeros3 tier`)
-//    17318    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    18383    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    19187    Delta sync client, credentials, and parallel transfer
-//    21459    Bulk logical-chunk transport (v2)
-//    22370    Recursive directory sync
-//    22675    Remote replication (`zeros3 replicate`)
-//    23578    Peer-assisted corruption repair (`zeros3 repair`)
-//    24146    Namespace (prefix/bucket) replication
-//    24462    Copy-on-write namespace fork (`zeros3 fork`)
-//    24670    Snapshots and restore
-//    25831    Structural diff and inspect (introspection)
-//    27201    Portable snapshot bundles (`zeros3 bundle`)
-//    28398    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    29033    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    46206    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    53115    Windowed and estimated similarity deltas (extracted dcore)
-//    54644    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    62336    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    68608    CLI dispatch, HTTP server/startup, and main
+//     9672    SigV4 authentication (header and presigned-URL)
+//    10649    Request payload checksums and S3-shaped XML error/response types
+//    10866    HTTP routing and S3 operation handlers
+//    11292    Conditional operations (PUT/GET/HEAD preconditions)
+//    11987    CopyObject
+//    12292    Multipart upload
+//    13232    Stats and reachability scanning
+//    14736    Verify
+//    14951    Store locking and safe offline GC
+//    15254    Offline compaction (`zeros3 compact`)
+//    16320    Pack reclamation and repacking (`zeros3 repack`)
+//    16823    Physical tiers: status and pack movement (`zeros3 tier`)
+//    17336    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    18401    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    19205    Delta sync client, credentials, and parallel transfer
+//    21483    Bulk logical-chunk transport (v2)
+//    22394    Recursive directory sync
+//    22699    Remote replication (`zeros3 replicate`)
+//    23612    Peer-assisted corruption repair (`zeros3 repair`)
+//    24180    Namespace (prefix/bucket) replication
+//    24496    Copy-on-write namespace fork (`zeros3 fork`)
+//    24704    Snapshots and restore
+//    25865    Structural diff and inspect (introspection)
+//    27235    Portable snapshot bundles (`zeros3 bundle`)
+//    28432    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    29067    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    46240    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    53150    Windowed and estimated similarity deltas (extracted dcore)
+//    54679    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    62371    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    68643    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -9233,6 +9233,37 @@ func (s *Store) ListVersions(bucket, key string) ([]*historyVersionEntry, *objec
 	return entries, cur, nil
 }
 
+func (s *Store) findHistoryVersion(bucket, key, version string) (*historyVersionEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.buckets[bucket]; !exists {
+		return nil, errNoSuchBucket
+	}
+	for _, e := range s.history[bucket][key] {
+		if e.versionID == version {
+			return e, nil
+		}
+	}
+	return nil, errNoSuchVersion
+}
+
+func (s *Store) headReplicaVersion(bucket, key, version string) (*objectEntry, manifestV1, error) {
+	if version == "" {
+		return s.HeadObject(bucket, key)
+	}
+	row, err := s.findHistoryVersion(bucket, key, version)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	man, err := s.readVerifiedManifest(row.manifestUUID, row.manifestSHA256)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	entry := &objectEntry{manifestUUID: row.manifestUUID, manifestSHA256: row.manifestSHA256,
+		size: row.size, etag: row.etag, contentType: row.contentType, seq: row.seq}
+	return entry, man, nil
+}
+
 // RestoreObjectVersion makes versionID the new current root of bucket/key.
 // It never builds a new manifest and never re-chunks or rewrites CAS
 // content: the restored current root points at exactly the same
@@ -9244,22 +9275,9 @@ func (s *Store) ListVersions(bucket, key string) ([]*historyVersionEntry, *objec
 // never rewinds or removes any existing history entry (see
 // commitObjectRoot, which this shares).
 func (s *Store) RestoreObjectVersion(bucket, key, versionID string) (*objectEntry, manifestV1, error) {
-	s.mu.Lock()
-	_, bucketExists := s.buckets[bucket]
-	entries := s.history[bucket][key]
-	s.mu.Unlock()
-	if !bucketExists {
-		return nil, manifestV1{}, errNoSuchBucket
-	}
-	var found *historyVersionEntry
-	for _, e := range entries {
-		if e.versionID == versionID {
-			found = e
-			break
-		}
-	}
-	if found == nil {
-		return nil, manifestV1{}, errNoSuchVersion
+	found, err := s.findHistoryVersion(bucket, key, versionID)
+	if err != nil {
+		return nil, manifestV1{}, err
 	}
 
 	man, err := s.readVerifiedManifest(found.manifestUUID, found.manifestSHA256)
@@ -19366,6 +19384,7 @@ type syncObjectDescriptor struct {
 	Bucket              string                `json:"bucket"`
 	Key                 string                `json:"key"`
 	VersionID           string                `json:"version_id"`
+	RetainedVersion     string                `json:"retained_version,omitempty"`
 	ObjectSHA256        string                `json:"object_sha256,omitempty"`
 	AuthorityComponents []string              `json:"authority_components,omitempty"`
 	Authoritative       bool                  `json:"authoritative,omitempty"`
@@ -19519,17 +19538,20 @@ func (srv *Server) handleZeroS3Sync(w http.ResponseWriter, r *http.Request, rawP
 func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Request) {
 	bucket := r.URL.Query().Get("bucket")
 	key := r.URL.Query().Get("key")
+	version := r.URL.Query().Get("retained-version")
 	if bucket == "" || key == "" {
 		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "bucket and key query parameters are required")
 		return
 	}
-	entry, man, err := srv.store.HeadObject(bucket, key)
+	entry, man, err := srv.store.headReplicaVersion(bucket, key, version)
 	if err != nil {
 		switch {
 		case errors.Is(err, errNoSuchBucket):
 			writeSyncError(w, http.StatusNotFound, "NoSuchBucket", "the specified bucket does not exist")
 		case errors.Is(err, errNoSuchKey):
 			writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the specified key does not exist")
+		case errors.Is(err, errNoSuchVersion):
+			writeSyncError(w, http.StatusNotFound, "NoSuchVersion", "the specified retained version does not exist")
 		default:
 			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		}
@@ -19570,8 +19592,9 @@ func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Reque
 	writeSyncJSON(w, http.StatusOK, syncObjectDescriptor{
 		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
 		Bucket: bucket, Key: key, VersionID: entry.manifestUUID,
-		ObjectSHA256:  man.ObjectSHA256,
-		Authoritative: authoritative, AuthorityComponents: held,
+		RetainedVersion: version,
+		ObjectSHA256:    man.ObjectSHA256,
+		Authoritative:   authoritative, AuthorityComponents: held,
 		Size: entry.size, ETag: entry.etag, ContentType: entry.contentType,
 		Metadata: metadata, Chunks: chunks,
 	})
@@ -19811,6 +19834,7 @@ type authExportRequest struct {
 	Bucket          string   `json:"bucket"`
 	Key             string   `json:"key"`
 	VersionID       string   `json:"version_id"`
+	RetainedVersion string   `json:"retained_version,omitempty"`
 	Peer            AuthCaps `json:"peer"`
 	KnownBase       string   `json:"known_base,omitempty"`
 	KnownComponents []string `json:"known_components,omitempty"`
@@ -19948,9 +19972,9 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "closure byte budget cannot be negative")
 		return
 	}
-	entry, man, err := srv.store.headServed(req.Bucket, req.Key)
+	entry, man, err := srv.store.headReplicaVersion(req.Bucket, req.Key, req.RetainedVersion)
 	if err != nil {
-		if errors.Is(err, errNoSuchBucket) || errors.Is(err, errNoSuchKey) {
+		if errors.Is(err, errNoSuchBucket) || errors.Is(err, errNoSuchKey) || errors.Is(err, errNoSuchVersion) {
 			writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the source object no longer exists")
 		} else {
 			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
@@ -19961,7 +19985,7 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		writeSyncError(w, http.StatusConflict, "SourceChanged", "the source object changed since discovery")
 		return
 	}
-	sha, err := decodeHexSHA256(man.man.ObjectSHA256)
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
 	if err != nil {
 		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -22757,9 +22781,16 @@ func fetchSourceDescriptor(cfg syncClientConfig) (syncObjectDescriptor, error) {
 }
 
 func fetchSyncDescriptor(cfg syncClientConfig, components bool) (syncObjectDescriptor, error) {
+	return fetchSyncDescriptorVersion(cfg, components, "")
+}
+
+func fetchSyncDescriptorVersion(cfg syncClientConfig, components bool, version string) (syncObjectDescriptor, error) {
 	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
 	if components {
 		q.Set("closure", "1")
+	}
+	if version != "" {
+		q.Set("retained-version", version)
 	}
 	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncObjectPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
@@ -22774,6 +22805,9 @@ func fetchSyncDescriptor(cfg syncClientConfig, components bool) (syncObjectDescr
 	}
 	if err := validateSyncProtocolFields(d.Protocol, d.CDC, d.Hash); err != nil {
 		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor incompatible: %w", err)
+	}
+	if d.RetainedVersion != version {
+		return syncObjectDescriptor{}, errors.New("source did not confirm the requested retained version")
 	}
 	return d, nil
 }
@@ -51108,7 +51142,7 @@ func (c *countingByteReader) ReadByte() (byte, error) {
 
 // recoverAuthorityFromPeer restores the authority of an exact live manifest
 // under the exclusive store lock used by the authority maintenance command.
-func (s *Store) recoverAuthorityFromPeer(bucket, key string, cfg syncClientConfig) error {
+func (s *Store) recoverAuthorityFromPeer(bucket, key, peerVersion string, cfg syncClientConfig) error {
 	_, local, err := s.headServed(bucket, key)
 	if err != nil {
 		return fmt.Errorf("recover local manifest: %w", err)
@@ -51121,7 +51155,7 @@ func (s *Store) recoverAuthorityFromPeer(bucket, key string, cfg syncClientConfi
 	if err != nil {
 		return fmt.Errorf("recover peer discovery: %w", err)
 	}
-	desc, err := fetchSourceDescriptor(cfg)
+	desc, err := fetchSyncDescriptorVersion(cfg, false, peerVersion)
 	if err != nil {
 		return fmt.Errorf("recover peer object: %w", err)
 	}
@@ -51174,7 +51208,7 @@ func (s *Store) recoverAuthorityFromPeer(bucket, key string, cfg syncClientConfi
 	if discovery.AuthorityExport == nil || discovery.AuthorityExport.Version != authXferVersion {
 		return recoverExact()
 	}
-	control, err := json.Marshal(authExportRequest{Bucket: cfg.Bucket, Key: cfg.Key, VersionID: desc.VersionID, Peer: s.AuthorityCaps()})
+	control, err := json.Marshal(authExportRequest{Bucket: cfg.Bucket, Key: cfg.Key, VersionID: desc.VersionID, RetainedVersion: peerVersion, Peer: s.AuthorityCaps()})
 	if err != nil {
 		return err
 	}
@@ -52893,6 +52927,7 @@ func runAuthority(args []string) {
 	key := fs.String("key", "", "recover: local object key; status: key to probe")
 	peerBucket := fs.String("peer-bucket", "", "recover: bucket holding the exact peer copy (default: local bucket)")
 	peerKey := fs.String("peer-key", "", "recover: key holding the exact peer copy (default: local key)")
+	peerVersion := fs.String("peer-version", "", "recover: explicit retained version ID at the peer (default: current)")
 	probeOffset := fs.Int64("probe-offset", -1, "status: measure a 4 KiB authority read at this object offset")
 	accessKey := fs.String("access-key", defaultAccessKeyID, "recover: peer access key (default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "recover: peer secret key (default: AWS_SECRET_ACCESS_KEY)")
@@ -53085,7 +53120,7 @@ func runAuthority(args []string) {
 	case "recover":
 		cfg := syncClientConfig{Endpoint: *peer, Bucket: cmp.Or(*peerBucket, *bucket), Key: cmp.Or(*peerKey, *key), Region: *region,
 			Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}}
-		if err := store.recoverAuthorityFromPeer(*bucket, *key, cfg); err != nil {
+		if err := store.recoverAuthorityFromPeer(*bucket, *key, *peerVersion, cfg); err != nil {
 			log.Fatalf("zeros3: authority recover: %v", err)
 		}
 		enc.Encode(map[string]string{"bucket": *bucket, "key": *key, "status": "verified"})
