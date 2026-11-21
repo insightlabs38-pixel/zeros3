@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/rand"
 	"os"
@@ -998,6 +999,22 @@ func TestAuthorityOptInCodecReplay(t *testing.T) {
 				if got := l.read(key, byteRange{off, off + n - 1}); !bytes.Equal(got, want[off:off+n]) {
 					t.Fatalf("%s range differs", key)
 				}
+				// a ranged authority context (a delta's base, an executor interval): this plaintext holds nested codec
+				// members, so the body materializes
+				sha := sha256.Sum256(want)
+				if rec, _ := l.s.authLoad(sha); rec != nil && rec.Form == authFormRep {
+					ctx := l.s.newAuthCtx()
+					body, _, err := ctx.body(sha, 0, 1)
+					mustOK(t, err)
+					r := rand.New(rand.NewSource(int64(len(want))))
+					for i := 0; i < 24; i++ {
+						o := r.Int63n(int64(len(want)))
+						p := make([]byte, min(1+r.Int63n(20000), int64(len(want))-o))
+						if k, err := body.ReadAt(p, o); k != len(p) || !bytes.Equal(p, want[o:o+int64(len(p))]) {
+							t.Fatalf("%s: ranged body read %d+%d: %v", key, o, len(p), err)
+						}
+					}
+				}
 			}
 			l.verifyOK("codec group after reclaim")
 		})
@@ -1022,4 +1039,276 @@ func TestRepCodecTemporaryWritesRespectDiskReserve(t *testing.T) {
 	if info.Size() != 0 {
 		t.Fatalf("temporary file grew to %d bytes", info.Size())
 	}
+}
+
+// seekFixtures are the producers the seekable codec path is checked against: zlib gzip (predicted headers, stored
+// blocks), Go's flate, libzstd at both ends of its level range, and the multi-frame and repeat-table zstd vectors.
+func seekFixtures(t *testing.T) map[string][]byte {
+	files := map[string][]byte{}
+	for _, f := range []string{"b2-seek/text.l6.gz", "b2-seek/text.l9.gz", "b2-seek/text.l3.zst", "b2-seek/text.l19.zst",
+		"../z3/zstdz3/testdata/skip_concat.zst", "../z3/zstdz3/testdata/fx_repeat_tables.zst", "../z3/zstdz3/testdata/ref157_json.zst"} {
+		b, err := os.ReadFile(filepath.Join("testing-harnesses/testdata", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[filepath.Base(f)] = b
+	}
+	plain, nested := repCodecFixtureBytes(t)
+	files["go-speed.gz"], files["nested.zst"] = repCodecGzip(t, plain), nested
+	return files
+}
+
+// seekRestarts lists the stream offsets a seeker restarts at.
+func seekRestarts(sk repSeeker) (offs []int64) {
+	switch z := sk.(type) {
+	case *gzSeek:
+		for _, b := range z.bits {
+			offs = append(offs, int64(len(z.g.header))+b/8)
+		}
+	case *zsSeek:
+		for _, sg := range z.segs {
+			offs = append(offs, sg.off)
+		}
+	}
+	return offs
+}
+
+func seekRead(t *testing.T, s *Store, root *repRoot, off, n int64) ([]byte, error) {
+	rd, err := s.repOpenRootReader(root, byteRange{off, off + n - 1})
+	if err != nil || rd == nil {
+		return nil, fmt.Errorf("no reader (%v)", err)
+	}
+	defer rd.close()
+	var out []byte
+	for {
+		b, err := rd.next()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return out, err
+		}
+		out = append(out, b...)
+	}
+}
+
+func seekOf(t *testing.T, s *Store, root *repRoot) repSeeker {
+	src := s.newRepSource(root.Descs, nil)
+	defer src.close()
+	call, err := (&repEnv{Src: src, Limits: repProdLimits}).open(root.Rep)
+	mustOK(t, err)
+	sk, err := repSeekerOf(call)
+	mustOK(t, err)
+	return sk
+}
+
+// A seek-indexed codec representation serves any range from the restart point before it, byte-identical to the
+// original stream: ranges starting at, before and after every restart point, crossing them, and the whole object.
+func TestRepCodecSeekableRanges(t *testing.T) {
+	t.Run("sequential", func(t *testing.T) { seekableRanges(t) })
+	defer func() { repSeekMinPiece = 0 }()
+	repSeekMinPiece = 8 << 10
+	t.Run("parallel", func(t *testing.T) { seekableRanges(t) })
+}
+
+func seekableRanges(t *testing.T) {
+	l := newAuthLab(t)
+	for name, data := range seekFixtures(t) {
+		t.Run(name, func(t *testing.T) {
+			l.put(name, data)
+			root, _, err := l.s.repConstructAt(l.man(name), nil, nil, 0, true)
+			mustOK(t, err)
+			sk := seekOf(t, l.s, root)
+			size := int64(len(data))
+			if name == "go-speed.gz" || name == "nested.zst" {
+				// the plaintext holds nested codec members: no plaintext range reader, so ranges replay the stream
+				if sk != nil {
+					t.Fatal("a container whose plaintext cannot be read by range is seekable")
+				}
+				if rd, err := l.s.repOpenRootReader(root, byteRange{size / 2, size/2 + 4095}); rd != nil || err != nil {
+					t.Fatalf("native range reader without a seeker: %v", err)
+				}
+				return
+			}
+			if sk == nil {
+				t.Fatal("no seek index")
+			}
+			offs := []int64{0, size - 1, size / 2}
+			for _, b := range seekRestarts(sk) {
+				offs = append(offs, b-1, b, b+1, b+2)
+			}
+			for o := int64(0); o < size; o += 4093 {
+				offs = append(offs, o)
+			}
+			for i, off := range offs {
+				if off < 0 || off >= size {
+					continue
+				}
+				n := min([]int64{1, 9, 4096, 70000, 300000}[i%5], size-off)
+				got, err := seekRead(t, l.s, root, off, n)
+				if err != nil || !bytes.Equal(got, data[off:off+n]) {
+					t.Fatalf("range %d+%d: %v (%d bytes)", off, n, err, len(got))
+				}
+			}
+			if got, err := seekRead(t, l.s, root, 0, size); err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("whole: %v", err)
+			}
+			// a cold 4 KiB read replays a few units, not the stream
+			var tr repCodecTrace
+			repSourceObserver = func(_ repReadStats, cw repCodecTrace) { tr.Units += cw.Units; tr.PlainBytes += cw.PlainBytes }
+			_, err = seekRead(t, l.s, root, size/2, min(4096, size-size/2))
+			repSourceObserver = nil
+			mustOK(t, err)
+			if size > 1<<18 && (tr.Units > 16 || tr.PlainBytes > 3<<20) {
+				t.Fatalf("a 4 KiB read decoded %d units and %d plaintext bytes", tr.Units, tr.PlainBytes)
+			}
+		})
+	}
+}
+
+// The seek index is part of what a representation's proof establishes: an index that disagrees with the stream
+// fails the whole decode, and a range crossing the disagreement fails instead of serving other bytes. Damaged
+// units and plaintext chunks fail the ranges that need them.
+func TestRepCodecSeekIndexIntegrity(t *testing.T) {
+	files := seekFixtures(t)
+	for _, name := range []string{"text.l9.gz", "text.l3.zst"} {
+		t.Run(name, func(t *testing.T) {
+			l := newAuthLab(t)
+			data := files[name]
+			l.put(name, data)
+			man := l.man(name)
+			root, _, err := l.s.repConstructAt(man, nil, nil, 0, true)
+			mustOK(t, err)
+			src := l.s.newRepSource(root.Descs, nil)
+			env := &repEnv{Src: src, Limits: repProdLimits}
+			call, err := env.open(root.Rep)
+			mustOK(t, err)
+			sk, err := repSeekerOf(call)
+			mustOK(t, err)
+			src.close()
+			restarts := seekRestarts(sk)
+			mid := len(restarts) / 2
+			// forge: one index entry moves by a byte (and so, for gzip, every later unit)
+			forged := *call.Rep
+			var seek []uint64
+			if call.Rep.Kind == repKindGzip {
+				g, _ := gzipRecipe(call.Rep)
+				seek = slices.Clone(g.seek)
+				seek[mid] += 8
+				forged.Recipe = repSeekAppend(call.Rep.Recipe[:len(call.Rep.Recipe)-len(repSeekAppend(nil, g.seek))], seek)
+			} else {
+				_, sizes, _ := zstdRecipe(call.Rep)
+				seek = slices.Clone(sizes)
+				seek[len(seek)/2]++
+				seek[len(seek)/2+1]--
+				forged.Recipe = repSeekAppend(call.Rep.Recipe[:len(call.Rep.Recipe)-len(repSeekAppend(nil, sizes))], seek)
+			}
+			b := l.s.newRepBuilder(man.TotalLength, nil, nil)
+			defer b.close()
+			for id, d := range root.Descs {
+				b.descs[id] = d
+			}
+			id, err := b.finishRep(&forged)
+			mustOK(t, err)
+			mustOK(t, b.flush())
+			if err := b.proof(id, man.TotalLength, root.ObjSHA); err == nil {
+				t.Fatal("a representation with a forged seek index passed its proof")
+			}
+			bad := &repRoot{ManifestUUID: root.ManifestUUID, ObjSHA: root.ObjSHA, ObjSize: root.ObjSize, Rep: id, Descs: maps.Clone(root.Descs)}
+			bad.Descs[id] = b.src.desc(id)
+			if got, err := seekRead(t, l.s, bad, 0, int64(len(data))); err == nil && bytes.Equal(got, data) {
+				t.Fatal("whole read of the forged representation succeeded")
+			}
+			lo, hi := restarts[max(0, mid-2)], restarts[min(len(restarts)-1, mid+3)]
+			if got, err := seekRead(t, l.s, bad, lo, hi-lo); err == nil {
+				t.Fatalf("a range crossing the forged entry served %d bytes (exact: %v)", len(got), bytes.Equal(got, data[lo:hi]))
+			}
+			// damage: one unit chunk and one plaintext chunk
+			reach, err := env.reachable(root.Rep)
+			mustOK(t, err)
+			var victims [][32]byte
+			for _, oid := range reach.Order {
+				if r := reach.Role[oid]; r == repDepVia || r == repDepStored {
+					victims = append(victims, oid)
+				}
+			}
+			for _, v := range victims[len(victims)/2 : len(victims)/2+1] {
+				corruptChunkAnyLayout(t, l.s, v)
+			}
+			failed := 0
+			for _, off := range restarts {
+				n := min(4096, int64(len(data))-off)
+				got, err := seekRead(t, l.s, root, off, n)
+				if err != nil {
+					failed++
+				} else if !bytes.Equal(got, data[off:off+n]) {
+					t.Fatalf("a damaged representation served wrong bytes at %d", off)
+				}
+			}
+			if failed == 0 {
+				t.Fatal("no range noticed the damaged component")
+			}
+		})
+	}
+}
+
+// Authority codec replay with seek indexes: S3 ranges and ranged dependency reads regenerate only the units they
+// need, through gc, repack, reopen, deep verification and revert.
+func TestAuthoritySeekableCodecReplay(t *testing.T) {
+	l := newAuthLab(t)
+	for _, f := range []string{"text.l6.gz", "text.l9.gz", "text.l3.zst", "text.l19.zst"} {
+		b, err := os.ReadFile(filepath.Join("testing-harnesses/testdata/b2-seek", f))
+		mustOK(t, err)
+		l.put(f, b)
+	}
+	report := l.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, NoZN7: true, CodecReplay: true})
+	reps := 0
+	for _, p := range report.Plans {
+		if p.Form == "rep" {
+			reps++
+		}
+	}
+	if reps != 4 {
+		t.Fatalf("%d of 4 containers became representations: %+v", reps, report.Plans)
+	}
+	check := func(stage string) {
+		l.exact(stage)
+		for key, want := range l.want {
+			sha := sha256.Sum256(want)
+			ctx := l.s.newAuthCtx()
+			body, _, err := ctx.body(sha, 0, 1)
+			mustOK(t, err)
+			r := rand.New(rand.NewSource(int64(len(want))))
+			for i := 0; i < 16; i++ {
+				o := r.Int63n(int64(len(want)))
+				p := make([]byte, min(1+r.Int63n(4096), int64(len(want))-o))
+				if k, err := body.ReadAt(p, o); k != len(p) || !bytes.Equal(p, want[o:o+int64(len(p))]) {
+					t.Fatalf("%s %s: ranged body read %d+%d: %v", stage, key, o, len(p), err)
+				}
+			}
+			if b := body.(*authRepBody); b.data != nil || ctx.fetched > 16*(3<<20)/2 {
+				t.Fatalf("%s %s: ranged reads materialized the object (fetched %d)", stage, key, ctx.fetched)
+			}
+		}
+	}
+	check("migrated")
+	l.reclaim()
+	check("reclaimed")
+	l.verifyOK("reclaimed")
+	l.close()
+	l.open()
+	before := l.s.auth.rangeReads.Load()
+	check("reopened")
+	if l.s.auth.rangeReads.Load() == before {
+		t.Fatal("ranges did not go through the authoritative representation")
+	}
+	sha := sha256.Sum256(l.want["text.l3.zst"])
+	mustOK(t, l.s.AuthorityRevert(sha))
+	if rec, _ := l.s.authLoad(sha); rec != nil {
+		t.Fatal("reverted record remains")
+	}
+	l.exact("one reverted")
+	l.reclaim()
+	l.exact("one reverted, reclaimed")
+	l.verifyOK("one reverted, reclaimed")
 }

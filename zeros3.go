@@ -120,11 +120,11 @@ import (
 //    27248    Portable snapshot bundles (`zeros3 bundle`)
 //    28445    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    29080    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    46268    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    53561    Windowed and estimated similarity deltas (extracted dcore)
-//    55308    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    63069    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    69341    CLI dispatch, HTTP server/startup, and main
+//    47302    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    54643    Windowed and estimated similarity deltas (extracted dcore)
+//    56390    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    64152    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    70424    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -29707,6 +29707,7 @@ type repCall struct {
 	declared map[[32]byte]int64
 	scratch  []byte
 	work     *repDecodeWork // one aggregate budget, shared by derived readers
+	trace    *repCodecTrace // codec range work of this call (nil: the source's)
 }
 
 // loadRep fetches a representation object by digest, verifies the digest and
@@ -31251,6 +31252,16 @@ type storeRepSource struct {
 	last  [32]byte
 	lastD []byte
 	stats repReadStats
+	codec repCodecTrace
+}
+
+// repCodecTrace counts the replay work of codec range reads on one source.
+type repCodecTrace struct {
+	Restarts   int64 // restart points used
+	Units      int64 // replay units decoded
+	UnitBytes  int64 // their stored bytes
+	PlainBytes int64 // semantic plaintext read
+	OutBytes   int64 // compressed bytes regenerated, lead-in included
 }
 
 const (
@@ -31262,9 +31273,15 @@ func (s *Store) newRepSource(local map[[32]byte]*repDesc, base func([32]byte) *r
 	return &storeRepSource{s: s, local: local, base: base}
 }
 
+// repSourceObserver, when set (experiments), sees every source's read statistics as it closes.
+var repSourceObserver func(st repReadStats, cw repCodecTrace)
+
 func (src *storeRepSource) close() {
 	src.mu.Lock()
 	defer src.mu.Unlock()
+	if repSourceObserver != nil {
+		repSourceObserver(src.stats, src.codec)
+	}
 	src.release()
 }
 
@@ -33849,7 +33866,8 @@ type repBuilder struct {
 	descs   map[[32]byte]*repDesc
 	written map[[32]byte]struct{}
 	budget  repBudget
-	depth   int // analysis nesting; default 3, decode hard limit remains 4
+	depth   int  // analysis nesting; default 3, decode hard limit remains 4
+	seek    bool // a top-level gzip or zstd container records a seek index (authority representations)
 	src     *storeRepSource
 	env     *repEnv
 	cat     *repCatalog
@@ -34440,6 +34458,20 @@ func (b *repBuilder) encodeGzip(src io.ReaderAt, size int64) (*repObject, error)
 	out.Recipe = append(out.Recipe, header...)
 	out.Recipe = append(out.Recipe, trailer[:]...)
 	out.Recipe = binary.AppendUvarint(out.Recipe, uint64(len(members)))
+	if b.seek && b.depth == 1 {
+		deltas := make([]uint64, 0, stats.Units)
+		for ix := stats.RangeIndexData; len(ix) > 0; {
+			v, k := binary.Uvarint(ix)
+			if k <= 0 {
+				return nil, fmt.Errorf("%w: gzip unit offsets", errRepCorrupt)
+			}
+			deltas, ix = append(deltas, v), ix[k:]
+		}
+		if len(deltas) != stats.Units {
+			return nil, fmt.Errorf("%w: gzip unit offsets", errRepCorrupt)
+		}
+		out.Recipe = repSeekAppend(out.Recipe, deltas)
+	}
 	return out, nil
 }
 
@@ -34500,6 +34532,16 @@ func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error)
 	sink.digest.Sum(plainSHA[:0])
 	out := &repObject{Kind: repKindZstd, Size: size, Members: members, Recipe: binary.AppendUvarint(nil, uint64(len(members)))}
 	out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	if b.seek && b.depth == 1 {
+		sizes, err := zsBlockSizes(src, size, result.Skeleton)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := zsLayout(result.Skeleton, sizes, size); err != nil {
+			return nil, err
+		}
+		out.Recipe = repSeekAppend(out.Recipe, sizes)
+	}
 	return out, nil
 }
 
@@ -35134,12 +35176,13 @@ func (s *Store) repConstruct(man manifestV1) (*repRoot, error) {
 // manifest's object without publishing a root for it; floor is the capability
 // level its closure needs.
 func (s *Store) repConstructFor(man manifestV1, live func() bool) (*repRoot, int, error) {
-	return s.repConstructAt(man, nil, live, 0)
+	return s.repConstructAt(man, nil, live, 0, false)
 }
 
 // repConstructAt is repConstructFor over src, the object's logical bytes when the caller already holds them
 // (nil: read them through the manifest). The caller must have read src from this manifest's verified chunks.
-func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64) (*repRoot, int, error) {
+// seek records the seek index of a top-level codec container (authority representations).
+func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64, seek bool) (*repRoot, int, error) {
 	if man.TotalLength < 1 {
 		return nil, 0, errRepUnsupported
 	}
@@ -35164,7 +35207,7 @@ func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool
 	fireTestHook(hookRepAnalysisStarted)
 	t0 := time.Now()
 	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
-	b.reserve = reserve
+	b.reserve, b.seek = reserve, seek
 	defer b.close()
 	var rep *repObject
 	if err := func() (err error) {
@@ -36121,40 +36164,30 @@ func (s *Store) repOpenRootReader(root *repRoot, rng byteRange) (objectReader, e
 			}
 			return nil
 		}
+		// A zstd frame replays block after block; its seek index lets workers regenerate parts of it concurrently.
+		if call, err := env.open(root.Rep); err == nil && call.Rep.Kind == repKindZstd && call.Rep.Size == root.ObjSize {
+			if sk, err := repSeekerOf(call); err == nil && sk != nil {
+				produce = func(w io.Writer) error {
+					h := sha256.New()
+					if err := repSeekRead(call, sk, 0, root.ObjSize, io.MultiWriter(w, h)); err != nil {
+						return err
+					}
+					if [32]byte(h.Sum(nil)) != root.ObjSHA {
+						return fmt.Errorf("%w: reconstruction differs from the object", errRepMismatch)
+					}
+					return nil
+				}
+			}
+		}
 	} else {
 		call, err := env.open(root.Rep)
 		if err != nil {
 			src.close()
 			return nil, err
 		}
-		off, n := rng.start, rng.end-rng.start+1
-		switch call.Rep.Kind {
-		case repKindSQLite:
-			produce = func(w io.Writer) error { return sqliteReadRange(call, off, n, w) }
-		case repKindCAR:
-			if n > 64<<20 {
-				src.close()
-				return nil, nil
-			}
-			produce = func(w io.Writer) error { return carReadRange(call, off, n, w) }
-		case repKindParquet:
-			if n > 64<<20 {
-				src.close()
-				return nil, nil
-			}
-			produce = func(w io.Writer) error {
-				_, err := repSCParquetRangeTo(call, w, off, n)
-				return err
-			}
-		case repKindConcat:
-			if !concatRangeSupported(call.Rep, off, off+n) {
-				src.close()
-				return nil, nil
-			}
-			produce = func(w io.Writer) error { return concatReadRange(call, off, n, w) }
-		default:
+		if produce, err = repRangeReader(call, rng.start, rng.end-rng.start+1); produce == nil || err != nil {
 			src.close()
-			return nil, nil
+			return nil, err
 		}
 	}
 	rd := startRepStream(src, produce)
@@ -40103,6 +40136,9 @@ type repIRStreamDecodeOptions struct {
 	// Workers is how many units are decoded ahead of the token writer (0: up to four, bounded by GOMAXPROCS; 1: on
 	// the writing goroutine). A unit decodes from the plaintext alone, so the output is identical for any value.
 	Workers int
+	// UnitBits, when set, is the bit offset at which each unit's first token is written (a seek index); a stream
+	// that disagrees with it is corrupt.
+	UnitBits []int64
 }
 
 // Port source: zeros3-z3/ir/stream.go
@@ -40168,6 +40204,7 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 		tok += sk.Blocks[i].NTokens
 	}
 	startPos := make([]int64, len(sk.Units))
+	tokStart := make([]int, len(sk.Units))
 	{
 		var acc int64
 		si, ti := 0, 0
@@ -40182,10 +40219,24 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 			if u.PlainLen > opt.MaxUnitPlain {
 				return fmt.Errorf("%w: unit %d has %d plaintext bytes (max %d)", repIRErrLimit, k, u.PlainLen, opt.MaxUnitPlain)
 			}
-			startPos[k] = acc
+			startPos[k], tokStart[k] = acc, ti
 			acc += int64(u.PlainLen)
 			ti += u.NTokens
 		}
+	}
+	if opt.UnitBits != nil && len(opt.UnitBits) != len(sk.Units) {
+		return repIRcorrupt("seek index lists %d units, the skeleton %d", len(opt.UnitBits), len(sk.Units))
+	}
+	written, checked := 0, 0 // tokens written; units whose starting bit was compared with the seek index
+	put := func(t repDFToken) error {
+		if checked < len(opt.UnitBits) && written == tokStart[checked] {
+			if sw.BitPos() != opt.UnitBits[checked] {
+				return repIRcorrupt("unit %d starts at bit %d, the seek index says %d", checked, sw.BitPos(), opt.UnitBits[checked])
+			}
+			checked++
+		}
+		written++
+		return sw.Token(t)
 	}
 
 	var (
@@ -40354,7 +40405,7 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 		}
 		if m.Pred {
 			for _, t := range buf {
-				if err := sw.Token(t); err != nil {
+				if err := put(t); err != nil {
 					return err
 				}
 			}
@@ -40364,7 +40415,7 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 				if err != nil {
 					return err
 				}
-				if err := sw.Token(t); err != nil {
+				if err := put(t); err != nil {
 					return err
 				}
 			}
@@ -40373,7 +40424,7 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 			return err
 		}
 	}
-	if unitLeft != 0 || unitIdx != len(sk.Units) {
+	if unitLeft != 0 || unitIdx != len(sk.Units) || checked != len(opt.UnitBits) {
 		return repIRcorrupt("units not fully consumed")
 	}
 	if err := sw.Finish(sk.TailPadBits, sk.TailPadLen); err != nil {
@@ -44397,58 +44448,61 @@ type gzUnit struct {
 type gzRecipe struct {
 	header, trailer []byte
 	nTable          int
+	seek            []uint64 // per unit: bits from the previous unit's first token to this one's (nil: no seek index)
 }
 
-func gzipRecipe(c *repCall) (*gzRecipe, error) {
-	r := c.Rep.Recipe
+func gzipRecipe(rep *repObject) (*gzRecipe, error) {
+	r := rep.Recipe
 	hl, n := binary.Uvarint(r)
 	if n <= 0 || hl < 10 || hl > maxGzHeader || uint64(len(r)-n) < hl+8 {
 		return nil, fmt.Errorf("%w: gzip recipe header", errRepCorrupt)
 	}
 	g := &gzRecipe{header: r[n : n+int(hl)], trailer: r[n+int(hl) : n+int(hl)+8]}
 	nt, k := binary.Uvarint(r[n+int(hl)+8:])
-	if k <= 0 || n+int(hl)+8+k != len(r) || nt < 1 || nt+1 != uint64(len(c.Rep.Members)) || c.Rep.Members[nt].Role != repDerived {
+	if k <= 0 || nt < 1 || nt+1 != uint64(len(rep.Members)) || rep.Members[nt].Role != repDerived {
 		return nil, fmt.Errorf("%w: gzip recipe members", errRepCorrupt)
 	}
 	g.nTable = int(nt)
 	if gl, err := gzipHeaderLen(g.header); err != nil || gl != len(g.header) {
 		return nil, fmt.Errorf("%w: gzip header", errRepCorrupt)
 	}
-	return g, nil
+	var err error
+	g.seek, err = repSeekParse(r[n+int(hl)+8+k:], 1<<16)
+	return g, err
 }
 
-func gzipTable(c *repCall, g *gzRecipe) (skel []byte, units []gzUnit, err error) {
+func gzipTable(c *repCall, g *gzRecipe) (skel []byte, parsed *repIRSkeleton, units []gzUnit, err error) {
 	t, err := readTable(c, g.nTable, maxGzTable)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	bad := func(what string) error { return fmt.Errorf("%w: gzip table %s", errRepCorrupt, what) }
 	sl, k := binary.Uvarint(t)
 	if k <= 0 || sl > 4<<20 || sl > uint64(len(t)-k) {
-		return nil, nil, bad("skeleton")
+		return nil, nil, nil, bad("skeleton")
 	}
 	skel, t = t[k:k+int(sl)], t[k+int(sl):]
 	n, k := binary.Uvarint(t)
 	if k <= 0 || n > 1<<16 || n > uint64(len(t)-k) {
-		return nil, nil, bad("unit count")
+		return nil, nil, nil, bad("unit count")
 	}
 	t = t[k:]
 	units = make([]gzUnit, 0, n)
 	for i := uint64(0); i < n; i++ {
 		l, k := binary.Uvarint(t)
 		if k <= 0 || l > 1<<20 {
-			return nil, nil, bad("unit length")
+			return nil, nil, nil, bad("unit length")
 		}
 		t = t[k:]
 		u := gzUnit{size: int64(l)}
 		if l < gzUnitInline {
 			if uint64(len(t)) < l {
-				return nil, nil, bad("inline unit")
+				return nil, nil, nil, bad("inline unit")
 			}
 			u.inline, t = t[:l], t[l:]
 		} else {
 			if len(t) < 32 {
-				return nil, nil, bad("unit digest")
+				return nil, nil, nil, bad("unit digest")
 			}
 			copy(u.sha[:], t)
 			t = t[32:]
@@ -44456,17 +44510,23 @@ func gzipTable(c *repCall, g *gzRecipe) (skel []byte, units []gzUnit, err error)
 		units = append(units, u)
 	}
 	if len(t) != 0 {
-		return nil, nil, bad("trailing bytes")
+		return nil, nil, nil, bad("trailing bytes")
 	}
-	parsed, err := repIRParseSkeleton(skel, MaxGzipInflated)
+	parsed, err = repIRParseSkeleton(skel, MaxGzipInflated)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(parsed.Units) != len(units) {
-		return nil, nil, repCorrupt("gzip table unit count differs from skeleton")
+		return nil, nil, nil, repCorrupt("gzip table unit count differs from skeleton")
 	}
+	return skel, parsed, units, nil
+}
 
-	return skel, units, nil
+func (u *gzUnit) bytes(c *repCall) ([]byte, error) {
+	if u.size < gzUnitInline {
+		return u.inline, nil
+	}
+	return c.getExact(u.sha, u.size)
 }
 
 type crcReader struct {
@@ -44503,11 +44563,11 @@ func replayCause(replayErr, childErr error) error {
 }
 
 func (gzipDecoder) Decode(c *repCall) error {
-	g, err := gzipRecipe(c)
+	g, err := gzipRecipe(c.Rep)
 	if err != nil {
 		return err
 	}
-	skel, units, err := gzipTable(c, g)
+	skel, _, units, err := gzipTable(c, g)
 	if err != nil {
 		return err
 	}
@@ -44527,11 +44587,8 @@ func (gzipDecoder) Decode(c *repCall) error {
 		if i < 0 || i >= len(units) {
 			return nil, fmt.Errorf("%w: unit %d of %d", errRepCorrupt, i, len(units))
 		}
-		if units[i].size < gzUnitInline {
-			return units[i].inline, nil
-		}
-		return c.getExact(units[i].sha, units[i].size)
-	}, cr, repIRStreamDecodeOptions{})
+		return units[i].bytes(c)
+	}, cr, repIRStreamDecodeOptions{UnitBits: repSeekSums(g.seek)})
 	pr.CloseWithError(errAbort)
 	werr := <-done
 	if err = replayCause(err, werr); err != nil {
@@ -44546,11 +44603,11 @@ func (gzipDecoder) Decode(c *repCall) error {
 
 // Expand: the large IR units are named by the stored table.
 func (gzipDecoder) Expand(c *repCall, emit func([32]byte)) error {
-	g, err := gzipRecipe(c)
+	g, err := gzipRecipe(c.Rep)
 	if err != nil {
 		return err
 	}
-	_, units, err := gzipTable(c, g)
+	_, _, units, err := gzipTable(c, g)
 	if err != nil {
 		return err
 	}
@@ -44578,12 +44635,14 @@ type zsUnit struct {
 	size   int64
 }
 
-func zstdRecipe(c *repCall) (nTable int, err error) {
-	nt, k := binary.Uvarint(c.Rep.Recipe)
-	if k <= 0 || k != len(c.Rep.Recipe) || nt < 1 || nt+1 != uint64(len(c.Rep.Members)) || c.Rep.Members[nt].Role != repDerived {
-		return 0, fmt.Errorf("%w: zstd recipe members", errRepCorrupt)
+// zstdRecipe returns the table member count and the seek index: the rebuilt size of every compressed block.
+func zstdRecipe(rep *repObject) (nTable int, seek []uint64, err error) {
+	nt, k := binary.Uvarint(rep.Recipe)
+	if k <= 0 || nt < 1 || nt+1 != uint64(len(rep.Members)) || rep.Members[nt].Role != repDerived {
+		return 0, nil, fmt.Errorf("%w: zstd recipe members", errRepCorrupt)
 	}
-	return int(nt), nil
+	seek, err = repSeekParse(rep.Recipe[k:], 1<<16)
+	return int(nt), seek, err
 }
 
 func zstdTable(c *repCall, nTable int) (skel []byte, units []zsUnit, err error) {
@@ -44637,7 +44696,8 @@ type unitReader struct {
 	units []zsUnit
 	next  int
 	cur   []byte
-	err   error // the source's own failure, kept because the replay reports only a truncated stream
+	err   error          // the source's own failure, kept because the replay reports only a truncated stream
+	tr    *repCodecTrace // counts the units a range read fetches (nil: not counted)
 }
 
 func (u *unitReader) Read(p []byte) (int, error) {
@@ -44647,14 +44707,14 @@ func (u *unitReader) Read(p []byte) (int, error) {
 		}
 		x := u.units[u.next]
 		u.next++
-		if x.size < zsUnitInline {
-			u.cur = x.inline
-			continue
-		}
-		b, err := u.c.getExact(x.sha, x.size)
+		b, err := x.bytes(u.c)
 		if err != nil {
 			u.err = err
 			return 0, err
+		}
+		if u.tr != nil {
+			u.tr.Units++
+			u.tr.UnitBytes += int64(len(b))
 		}
 		u.cur = b
 	}
@@ -44664,7 +44724,7 @@ func (u *unitReader) Read(p []byte) (int, error) {
 }
 
 func (zstdDecoder) Decode(c *repCall) error {
-	nTable, err := zstdRecipe(c)
+	nTable, seek, err := zstdRecipe(c.Rep)
 	if err != nil {
 		return err
 	}
@@ -44680,7 +44740,19 @@ func (zstdDecoder) Decode(c *repCall) error {
 		done <- err
 	}()
 	ur := &unitReader{c: c, units: units}
-	_, err = repZSReplay(c.W, skel, bufio.NewReaderSize(ur, 1<<16), pr, repZstdLimits())
+	w := c.W
+	if seek != nil { // the replayed block sizes must be the seek index
+		s, err := repZSUnmarshal(skel, repZstdLimits())
+		if err != nil {
+			return err
+		}
+		segs, err := zsLayout(s, seek, c.Rep.Size)
+		if err != nil {
+			return err
+		}
+		w = &zsLayoutCheck{w: c.W, s: s, segs: segs}
+	}
+	_, err = repZSReplay(w, skel, bufio.NewReaderSize(ur, 1<<16), pr, repZstdLimits())
 	pr.CloseWithError(errAbort)
 	if err != nil && ur.err != nil { // a missing or corrupt unit is the cause of a "truncated unit stream"
 		err = fmt.Errorf("%w (replay: %v)", ur.err, err)
@@ -44690,7 +44762,7 @@ func (zstdDecoder) Decode(c *repCall) error {
 
 // Expand: the large units are named by the stored table.
 func (zstdDecoder) Expand(c *repCall, emit func([32]byte)) error {
-	nTable, err := zstdRecipe(c)
+	nTable, _, err := zstdRecipe(c.Rep)
 	if err != nil {
 		return err
 	}
@@ -44721,6 +44793,968 @@ func readTable(c *repCall, n int, max int64) ([]byte, error) {
 		buf = append(buf, b...)
 	}
 	return buf, nil
+}
+
+// ---- Seekable codec replay -------------------------------------------------
+//
+// A gzip or zstd representation built for authority carries a seek index after its recipe: for gzip the bit offset
+// of every IR unit's first token, for zstd the rebuilt size of every compressed block. A range of the original
+// compressed bytes is then regenerated from the restart point before it rather than from the start. A DEFLATE unit
+// decodes from the semantic plaintext alone, except that a block whose Huffman header is predicted needs every
+// token of the block first; a zstd block needs the entropy tables it inherits, which the skeleton records, and the
+// match model's window of plaintext. The plaintext is read by range from the derived child. Every input is
+// authenticated (content-addressed components and the representation's digest) and the output is not re-hashed: a
+// whole decode compares the index with the replayed stream, so the proof that admits the representation and deep
+// verification establish it like the rest of the recipe.
+
+const repSeekTag = 'S'
+
+func repSeekAppend(b []byte, vals []uint64) []byte {
+	b = append(b, repSeekTag)
+	b = binary.AppendUvarint(b, uint64(len(vals)))
+	for _, v := range vals {
+		b = binary.AppendUvarint(b, v)
+	}
+	return b
+}
+
+// repSeekParse reads a seek index filling b exactly; an empty b is no index.
+func repSeekParse(b []byte, max int) ([]uint64, error) {
+	if len(b) == 0 {
+		return nil, nil
+	}
+	bad := fmt.Errorf("%w: seek index", errRepCorrupt)
+	n, k := binary.Uvarint(b[1:])
+	if b[0] != repSeekTag || k <= 0 || n > uint64(max) || n > uint64(len(b)-1-k) {
+		return nil, bad
+	}
+	b = b[1+k:]
+	out := make([]uint64, n)
+	for i := range out {
+		v, k := binary.Uvarint(b)
+		if k <= 0 {
+			return nil, bad
+		}
+		out[i], b = v, b[k:]
+	}
+	if len(b) != 0 {
+		return nil, bad
+	}
+	return out, nil
+}
+
+// repSeekSums turns the gzip index's deltas into absolute bit offsets (nil stays nil).
+func repSeekSums(d []uint64) []int64 {
+	if d == nil {
+		return nil
+	}
+	out := make([]int64, len(d))
+	var acc int64
+	for i, v := range d {
+		acc += int64(min(v, 1<<56))
+		out[i] = acc
+	}
+	return out
+}
+
+// repSeeker serves [off, off+n) of an exact codec container from its restart points.
+type repSeeker interface {
+	readRange(c *repCall, off, n int64, w io.Writer) error
+	// restarts lists the stream offsets a range can start at without lead-in, and the smallest worthwhile piece
+	// of a range split across workers.
+	restarts() ([]int64, int64)
+}
+
+// repSeekerOf returns the seeker of c's representation, nil when it has no seek index or its plaintext cannot be
+// read by range. Parsed seekers are immutable and shared through the read cache.
+func repSeekerOf(c *repCall) (repSeeker, error) {
+	if c.env.Cache != nil {
+		if v, ok := c.env.Cache.getDerived(c.ID).(repSeeker); ok {
+			return v, nil
+		}
+	}
+	var sk repSeeker
+	var cost int64
+	switch c.Rep.Kind {
+	case repKindGzip:
+		g, err := gzipRecipe(c.Rep)
+		if err != nil || g.seek == nil || !repPlainSeekable(c, g.nTable) {
+			return nil, err
+		}
+		z, err := newGzSeek(c, g)
+		if err != nil {
+			return nil, err
+		}
+		sk, cost = z, z.cost
+	case repKindZstd:
+		nt, seek, err := zstdRecipe(c.Rep)
+		if err != nil || seek == nil || !repPlainSeekable(c, nt) {
+			return nil, err
+		}
+		z, err := newZsSeek(c, nt, seek)
+		if err != nil {
+			return nil, err
+		}
+		sk, cost = z, z.cost
+	default:
+		return nil, nil
+	}
+	if c.env.Cache != nil {
+		c.env.Cache.putDerived(c.ID, sk, cost)
+	}
+	return sk, nil
+}
+
+// repPlainSeekable reports whether the derived plaintext member i is a concatenation of stored components.
+func repPlainSeekable(c *repCall, i int) bool {
+	m := &c.Rep.Members[i]
+	rep, err := c.env.load(m.Child, c.depth+1, c.path)
+	if err != nil || rep.Kind != repKindConcat || rep.Size != m.Size {
+		return false
+	}
+	return concatRangeSupported(rep, 0, rep.Size)
+}
+
+// repRangeReader returns the kind's native decoder of [off, off+n), or nil when it has none for that range.
+func repRangeReader(c *repCall, off, n int64) (func(w io.Writer) error, error) {
+	switch c.Rep.Kind {
+	case repKindSQLite:
+		return func(w io.Writer) error { return sqliteReadRange(c, off, n, w) }, nil
+	case repKindCAR:
+		if n <= 64<<20 {
+			return func(w io.Writer) error { return carReadRange(c, off, n, w) }, nil
+		}
+	case repKindParquet:
+		if n <= 64<<20 {
+			return func(w io.Writer) error { _, err := repSCParquetRangeTo(c, w, off, n); return err }, nil
+		}
+	case repKindConcat:
+		if concatRangeSupported(c.Rep, off, off+n) {
+			return func(w io.Writer) error { return concatReadRange(c, off, n, w) }, nil
+		}
+	case repKindGzip, repKindZstd:
+		sk, err := repSeekerOf(c)
+		if sk == nil || err != nil {
+			return nil, err
+		}
+		return func(w io.Writer) error { return repSeekRead(c, sk, off, n, w) }, nil
+	}
+	return nil, nil
+}
+
+func (c *repCall) codecTrace() *repCodecTrace {
+	if c.trace != nil {
+		return c.trace
+	}
+	if src, ok := c.env.Src.(*storeRepSource); ok {
+		return &src.codec
+	}
+	c.trace = &repCodecTrace{}
+	return c.trace
+}
+
+func (t *repCodecTrace) add(o repCodecTrace) {
+	t.Restarts, t.Units, t.UnitBytes, t.PlainBytes, t.OutBytes = t.Restarts+o.Restarts, t.Units+o.Units, t.UnitBytes+o.UnitBytes, t.PlainBytes+o.PlainBytes, t.OutBytes+o.OutBytes
+}
+
+var repSeekMinPiece int64 // tests: the smallest parallel piece (0: the codec's)
+
+// repSeekRead serves [off, off+n) through sk; a long range is cut at restart points into pieces that a few workers
+// regenerate concurrently, each from its own restart, and that are written in order.
+func repSeekRead(c *repCall, sk repSeeker, off, n int64, w io.Writer) error {
+	workers := min(runtime.GOMAXPROCS(0), 4)
+	restarts, minPiece := sk.restarts()
+	minPiece = cmp.Or(repSeekMinPiece, minPiece)
+	if workers < 2 || n < 2*minPiece {
+		return sk.readRange(c, off, n, w)
+	}
+	target := min(max(n/int64(2*workers), minPiece), 4<<20)
+	cuts := []int64{off}
+	for next := off + target; ; {
+		i, _ := slices.BinarySearch(restarts, next)
+		if i == len(restarts) || restarts[i] >= off+n-minPiece/2 {
+			break
+		}
+		cuts, next = append(cuts, restarts[i]), restarts[i]+target
+	}
+	cuts = append(cuts, off+n)
+	type piece struct {
+		buf  []byte
+		err  error
+		tr   repCodecTrace
+		done chan struct{}
+	}
+	var inflight []*piece
+	issue := func(a, b int64) {
+		p := &piece{done: make(chan struct{})}
+		cc := *c
+		cc.work, cc.declared, cc.scratch, cc.trace = nil, nil, nil, &p.tr
+		go func() {
+			defer close(p.done)
+			p.buf = make([]byte, 0, b-a)
+			p.err = sk.readRange(&cc, a, b-a, repAppendWriter{&p.buf})
+		}()
+		inflight = append(inflight, p)
+	}
+	tr := c.codecTrace()
+	var err error
+	for i := 0; i+1 < len(cuts) || len(inflight) > 0; {
+		for err == nil && i+1 < len(cuts) && len(inflight) < workers {
+			issue(cuts[i], cuts[i+1])
+			i++
+		}
+		if len(inflight) == 0 {
+			break
+		}
+		p := inflight[0]
+		inflight = inflight[1:]
+		<-p.done
+		tr.add(p.tr)
+		if err == nil {
+			if err = p.err; err == nil {
+				_, err = w.Write(p.buf)
+			}
+		}
+	}
+	return err
+}
+
+// repClip passes on the part of a stream written from offset pos that lies in [a, b).
+type repClip struct {
+	w         io.Writer
+	pos, a, b int64
+}
+
+func (c *repClip) Write(p []byte) (int, error) {
+	if lo, hi := max(c.a, c.pos), min(c.b, c.pos+int64(len(p))); lo < hi {
+		if _, err := c.w.Write(p[lo-c.pos : hi-c.pos]); err != nil {
+			return 0, err
+		}
+	}
+	c.pos += int64(len(p))
+	return len(p), nil
+}
+
+// repPlainWin reads the semantic plaintext from the derived child by range, keeping the latest window so the
+// overlapping warm-up windows of consecutive units are read once. Returned slices are valid until the next call.
+type repPlainWin struct {
+	c    *repCall
+	size int64
+	lo   int64
+	buf  []byte
+	tr   *repCodecTrace
+}
+
+const (
+	repPlainAhead = 256 << 10
+	repPlainKeep  = 1 << 20
+)
+
+func (p *repPlainWin) at(from, to int64) ([]byte, error) {
+	if from < 0 || from > to || to > p.size {
+		return nil, repCorrupt("plaintext range %d-%d of %d", from, to, p.size)
+	}
+	hi := p.lo + int64(len(p.buf))
+	if from < p.lo || from > hi {
+		p.lo, p.buf, hi = from, p.buf[:0], from
+	}
+	if to > hi {
+		if d := from - p.lo; d > repPlainKeep {
+			p.buf, p.lo = p.buf[:copy(p.buf, p.buf[d:])], from
+		}
+		end := min(p.size, max(to, hi+repPlainAhead))
+		rd, err := repRangeReader(p.c, hi, end-hi)
+		if err == nil && rd == nil {
+			err = fmt.Errorf("%w: plaintext of kind %d has no range reader", errRepUnsupported, p.c.Rep.Kind)
+		}
+		if err == nil {
+			err = rd(repAppendWriter{&p.buf})
+		}
+		if err != nil {
+			return nil, err
+		}
+		if p.lo+int64(len(p.buf)) != end {
+			return nil, repCorrupt("plaintext range read returned %d bytes, want %d", p.lo+int64(len(p.buf))-hi, end-hi)
+		}
+		p.tr.PlainBytes += end - hi
+	}
+	return p.buf[from-p.lo : to-p.lo], nil
+}
+
+type repAppendWriter struct{ b *[]byte }
+
+func (w repAppendWriter) Write(p []byte) (int, error) { *w.b = append(*w.b, p...); return len(p), nil }
+
+// gzSeek is the parsed restart structure of a gzip representation with a seek index.
+type gzSeek struct {
+	g     *gzRecipe
+	sk    *repIRSkeleton
+	units []gzUnit
+	bits  []int64 // bit offset of each unit's first token in the DEFLATE stream
+	upos  []int64 // plaintext offset of each unit
+	utok  []int   // global index of each unit's first token
+	btok  []int   // global index of each block's first token; len(Blocks)+1 entries
+	bpos  []int64 // plaintext offset of each stored block
+	plain int64
+	cost  int64
+	rs    []int64 // the byte after each unit's first bit: a range starting there restarts at that unit
+}
+
+func (z *gzSeek) restarts() ([]int64, int64) { return z.rs, 256 << 10 }
+
+func newGzSeek(c *repCall, g *gzRecipe) (*gzSeek, error) {
+	skel, sk, units, err := gzipTable(c, g)
+	if err != nil {
+		return nil, err
+	}
+	if sk.Codec != repIRPred {
+		return nil, nil
+	}
+	nb, nu := len(sk.Blocks), len(sk.Units)
+	z := &gzSeek{g: g, sk: sk, units: units, bits: repSeekSums(g.seek), btok: make([]int, nb+1), bpos: make([]int64, nb),
+		upos: make([]int64, nu), utok: make([]int, nu), plain: c.Rep.Members[g.nTable].Size}
+	if len(z.bits) != nu || int64(len(g.header))+int64(sk.StreamLen)+8 != c.Rep.Size {
+		return nil, repCorrupt("gzip seek index does not match the skeleton")
+	}
+	var stored []int
+	for bi := range sk.Blocks {
+		m := &sk.Blocks[bi]
+		if m.Kind == repDFStored {
+			stored = append(stored, bi)
+		} else if m.Pred && m.NTokens > repIRmaxPredictTokens {
+			return nil, repCorrupt("gzip block %d predicts its header from %d tokens", bi, m.NTokens)
+		}
+		z.btok[bi+1] = z.btok[bi] + m.NTokens
+	}
+	var acc int64
+	si, ti := 0, 0
+	for k, u := range sk.Units {
+		for ; si < len(stored) && z.btok[stored[si]] <= ti; si++ {
+			z.bpos[stored[si]] = acc
+			acc += int64(sk.Blocks[stored[si]].StoredLen)
+		}
+		if si < len(stored) && z.btok[stored[si]] < ti+u.NTokens || u.NTokens < 1 || u.PlainLen > 1<<20 {
+			return nil, repCorrupt("gzip unit %d layout", k)
+		}
+		if k > 0 && z.bits[k] < z.bits[k-1] || z.bits[k] > 8*int64(sk.StreamLen) {
+			return nil, repCorrupt("gzip seek index entry %d", k)
+		}
+		z.upos[k], z.utok[k] = acc, ti
+		acc += int64(u.PlainLen)
+		ti += u.NTokens
+	}
+	for ; si < len(stored); si++ {
+		z.bpos[stored[si]] = acc
+		acc += int64(sk.Blocks[stored[si]].StoredLen)
+	}
+	if ti != z.btok[nb] || acc != z.plain {
+		return nil, repCorrupt("gzip units cover %d tokens and %d plaintext bytes, the stream %d and %d", ti, acc, z.btok[nb], z.plain)
+	}
+	z.rs = make([]int64, nu)
+	for k, b := range z.bits {
+		z.rs[k] = int64(len(g.header)) + b/8 + 1
+	}
+	z.cost = int64(len(skel)) + 64*int64(nb) + 72*int64(nu) + 4096
+	return z, nil
+}
+
+func (z *gzSeek) readRange(c *repCall, off, n int64, w io.Writer) error {
+	hl, sl := int64(len(z.g.header)), int64(z.sk.StreamLen)
+	end := off + n
+	if off < 0 || n < 0 || end > hl+sl+8 {
+		return repCorrupt("range %d+%d of a %d byte gzip member", off, n, hl+sl+8)
+	}
+	if off < hl {
+		if _, err := w.Write(z.g.header[off:min(end, hl)]); err != nil {
+			return err
+		}
+	}
+	if a, b := max(off, hl)-hl, min(end, hl+sl)-hl; a < b {
+		if err := z.deflate(c, a, b, w); err != nil {
+			return err
+		}
+	}
+	if end > hl+sl {
+		_, err := w.Write(z.g.trailer[max(off-hl-sl, 0) : end-hl-sl])
+		return err
+	}
+	return nil
+}
+
+// deflate writes bytes [a, b) of the DEFLATE stream, starting at the last unit whose first token begins in a byte
+// before a.
+func (z *gzSeek) deflate(c *repCall, a, b int64, w io.Writer) error {
+	child, err := c.child(z.g.nTable)
+	if err != nil {
+		return err
+	}
+	tr := c.codecTrace()
+	tk := &gzTokens{z: z, c: c, pw: &repPlainWin{c: child, size: z.plain, tr: tr}, tr: tr}
+	u0 := sort.Search(len(z.bits), func(i int) bool { return z.bits[i]/8 >= a }) - 1
+	var startBit int64
+	first, bi := 0, 0
+	if a > 0 && u0 >= 0 {
+		startBit, first = z.bits[u0], z.utok[u0]
+		bi = sort.Search(len(z.sk.Blocks), func(i int) bool { return z.btok[i+1] > first })
+	} else {
+		u0 = -1
+	}
+	clip := &repClip{w: w, pos: startBit / 8, a: a, b: b}
+	sw := repDFNewStreamWriterAt(clip, startBit)
+	next := u0 + 1 // the next unit whose starting bit is compared with the index
+	done := func() bool { return sw.BitPos() >= 8*b }
+	resume := u0 >= 0
+	var buf []repDFToken
+	for ; bi < len(z.sk.Blocks) && !done(); bi++ {
+		m := &z.sk.Blocks[bi]
+		blk := repDFBlock{Final: m.Final, Kind: m.Kind}
+		if m.Kind == repDFStored {
+			blk.PadBits, blk.PadLen, blk.PlainLen, blk.AutoPad = m.PadBits, m.PadLen, m.StoredLen, m.AutoPad
+			data, err := tk.pw.at(z.bpos[bi], z.bpos[bi]+int64(m.StoredLen))
+			if err != nil {
+				return err
+			}
+			if err := sw.Begin(&blk); err != nil {
+				return err
+			}
+			if err := sw.Stored(&blk, data); err != nil {
+				return err
+			}
+			continue
+		}
+		hdr := m
+		if m.Pred {
+			buf = buf[:0]
+			plainLen := 0
+			for t := z.btok[bi]; t < z.btok[bi+1]; t++ {
+				x, err := tk.at(t)
+				if err != nil {
+					return err
+				}
+				buf = append(buf, x)
+				plainLen += repIRtokenPlain(x)
+			}
+			kind, pm, ok := repIRzlibBlock(buf, plainLen)
+			if !ok || kind != repDFDynamic {
+				return repCorrupt("gzip block %d: predicted header is not dynamic", bi)
+			}
+			hdr = &pm
+		}
+		if m.Kind == repDFDynamic {
+			blk.HLIT, blk.HDIST, blk.HCLEN, blk.CLLens, blk.CLSyms = hdr.HLIT, hdr.HDIST, hdr.HCLEN, hdr.CLLens, hdr.CLSyms
+			if blk.LitLens, blk.DistLens = repIRExpandLengths(hdr); blk.LitLens == nil {
+				return repCorrupt("gzip block %d code lengths", bi)
+			}
+		}
+		t := z.btok[bi]
+		if resume {
+			t, resume = first, false
+			err = sw.Resume(&blk)
+		} else {
+			err = sw.Begin(&blk)
+		}
+		if err != nil {
+			return err
+		}
+		for ; t < z.btok[bi+1] && !done(); t++ {
+			if next < len(z.utok) && z.utok[next] == t {
+				if sw.BitPos() != z.bits[next] {
+					return repCorrupt("gzip unit %d starts at bit %d, the seek index says %d", next, sw.BitPos(), z.bits[next])
+				}
+				next++
+			}
+			x, err := tk.at(t)
+			if err != nil {
+				return err
+			}
+			if err := sw.Token(x); err != nil {
+				return err
+			}
+		}
+		if done() {
+			break
+		}
+		if err := sw.End(); err != nil {
+			return err
+		}
+	}
+	if bi >= len(z.sk.Blocks) && !done() {
+		if err := sw.Finish(z.sk.TailPadBits, z.sk.TailPadLen); err != nil {
+			return err
+		}
+	}
+	if err := sw.Drain(); err != nil {
+		return err
+	}
+	if clip.pos < b || b == int64(z.sk.StreamLen) && clip.pos != b {
+		return repCorrupt("gzip replay ends at %d, the range at %d", clip.pos, b)
+	}
+	tr.Restarts++
+	tr.OutBytes += clip.pos - startBit/8
+	return nil
+}
+
+// gzTokens decodes units on demand, keeping the last few (a predicted header revisits its block's units).
+type gzTokens struct {
+	z    *gzSeek
+	c    *repCall
+	pw   *repPlainWin
+	tr   *repCodecTrace
+	keys [8]int
+	toks [8][]repDFToken
+	n, k int // units held; index of the current one
+}
+
+func (g *gzTokens) at(t int) (repDFToken, error) {
+	if g.n > 0 {
+		if u := g.keys[g.k]; g.z.utok[u] <= t && t-g.z.utok[u] < len(g.toks[g.k]) {
+			return g.toks[g.k][t-g.z.utok[u]], nil
+		}
+	}
+	u := sort.Search(len(g.z.utok), func(i int) bool { return g.z.utok[i] > t }) - 1
+	if u < 0 {
+		return 0, repCorrupt("gzip token %d has no unit", t)
+	}
+	for i := 0; i < g.n; i++ {
+		if g.keys[i] == u {
+			g.k = i
+			return g.toks[i][t-g.z.utok[u]], nil
+		}
+	}
+	slot := g.n
+	if g.n == len(g.keys) {
+		slot = (g.k + 1) % len(g.keys)
+	} else {
+		g.n++
+	}
+	toks, err := g.decode(u, g.toks[slot][:0])
+	if err != nil {
+		return 0, err
+	}
+	g.keys[slot], g.toks[slot], g.k = u, toks, slot
+	return toks[t-g.z.utok[u]], nil
+}
+
+func (g *gzTokens) decode(k int, toks []repDFToken) ([]repDFToken, error) {
+	u, start := g.z.sk.Units[k], g.z.upos[k]
+	wbase := max(0, start-repIRwarmMax)
+	pl, err := g.pw.at(wbase, start+int64(u.PlainLen))
+	if err != nil {
+		return nil, err
+	}
+	data, err := g.z.units[k].bytes(g.c)
+	if err != nil {
+		return nil, err
+	}
+	rel := int(start - wbase)
+	runs, err := repIRnewPredictor(pl, 0).decodeUnit(data, rel, u.PlainLen)
+	if err != nil {
+		return nil, fmt.Errorf("%w: gzip unit %d: %v", errRepCorrupt, k, err)
+	}
+	pos := rel
+	for _, r := range runs {
+		if int(r.Lits) > len(pl)-pos {
+			return nil, repCorrupt("gzip unit %d overruns its plaintext", k)
+		}
+		for _, b := range pl[pos : pos+int(r.Lits)] {
+			toks = append(toks, repDFLiteral(b))
+		}
+		pos += int(r.Lits)
+		if r.M != 0 {
+			if int64(r.M.Distance()) > start+int64(pos-rel) {
+				return nil, repCorrupt("gzip unit %d match distance", k)
+			}
+			toks = append(toks, r.M)
+			pos += r.M.Length()
+		}
+	}
+	if len(toks) != u.NTokens || pos-rel != u.PlainLen {
+		return nil, repCorrupt("gzip unit %d decodes to %d tokens / %d bytes, the skeleton says %d / %d", k, len(toks), pos-rel, u.NTokens, u.PlainLen)
+	}
+	g.tr.Units++
+	g.tr.UnitBytes += int64(len(data))
+	return toks, nil
+}
+
+// zsSeg is one piece of a zstd stream: a block (header included) or the verbatim bytes of a frame header
+// (block -1), a content checksum (-2) or a skippable frame (-3).
+type zsSeg struct {
+	off, n       int64
+	frame, block int
+	plain        int64 // stream plaintext offset where the segment starts
+	unit         int   // index of the first unit at or after the segment
+}
+
+// zsLayout places every segment of the stream described by s, the compressed blocks sized by the seek index.
+func zsLayout(s *repZSSkeleton, sizes []uint64, total int64) ([]zsSeg, error) {
+	var segs []zsSeg
+	var pos, plain int64
+	ci, ui := 0, 0
+	for fi := range s.Frames {
+		f := &s.Frames[fi]
+		if f.Skippable {
+			segs = append(segs, zsSeg{pos, 8 + int64(len(f.Skip)), fi, -3, plain, ui})
+			pos += 8 + int64(len(f.Skip))
+			continue
+		}
+		fh, err := repZSparseFrameHeader(f.Header, repZSLimits{MaxWindow: 1 << 62, MaxFrameDecoded: 1 << 62})
+		if err != nil {
+			return nil, err
+		}
+		segs = append(segs, zsSeg{pos, 4 + int64(len(f.Header)), fi, -1, plain, ui})
+		pos += 4 + int64(len(f.Header))
+		bmax := int64(min(fh.blockMax(), repZSmaxBlock))
+		for bi := range f.Blocks {
+			k := &f.Blocks[bi]
+			size := int64(k.DecLen)
+			switch k.Type {
+			case repZSBlockRLE:
+				size = 1
+			case repZSBlockFallback:
+				size = int64(k.CompLen)
+			case repZSBlockCompressed:
+				if ci == len(sizes) {
+					return nil, repCorrupt("zstd seek index lists %d compressed blocks, the skeleton more", len(sizes))
+				}
+				size = int64(min(sizes[ci], 1<<62))
+				ci++
+			}
+			if size > bmax || int64(k.DecLen) > bmax {
+				return nil, repCorrupt("zstd frame %d block %d of %d bytes", fi, bi, size)
+			}
+			segs = append(segs, zsSeg{pos, 3 + size, fi, bi, plain, ui})
+			pos, plain = pos+3+size, plain+int64(k.DecLen)
+			if k.HasUnit() {
+				ui++
+			}
+		}
+		if fh.checksum {
+			segs = append(segs, zsSeg{pos, 4, fi, -2, plain, ui})
+			pos += 4
+		}
+	}
+	if ci != len(sizes) || pos != total {
+		return nil, repCorrupt("zstd seek index places %d bytes and %d blocks, the stream has %d and %d", pos, ci, total, len(sizes))
+	}
+	return segs, nil
+}
+
+// zsBlockSizes reads the size of every block the skeleton rebuilds (type compressed) from the original stream.
+func zsBlockSizes(src io.ReaderAt, size int64, s *repZSSkeleton) ([]uint64, error) {
+	var sizes []uint64
+	var pos int64
+	for fi := range s.Frames {
+		f := &s.Frames[fi]
+		if f.Skippable {
+			pos += 8 + int64(len(f.Skip))
+			continue
+		}
+		fh, err := repZSparseFrameHeader(f.Header, repZSLimits{MaxWindow: 1 << 62, MaxFrameDecoded: 1 << 62})
+		if err != nil {
+			return nil, err
+		}
+		pos += 4 + int64(len(f.Header))
+		for bi := range f.Blocks {
+			var h [3]byte
+			if err := repReadFullAt(src, h[:], pos); err != nil {
+				return nil, err
+			}
+			v := uint32(h[0]) | uint32(h[1])<<8 | uint32(h[2])<<16
+			k, typ, n := &f.Blocks[bi], repZSBlockType(v>>1&3), int64(v>>3)
+			if typ != min(k.Type, repZSBlockCompressed) || v&1 == 1 != k.Last {
+				return nil, fmt.Errorf("%w: zstd frame %d block %d header", errRepUnsupported, fi, bi)
+			}
+			if k.Type == repZSBlockCompressed {
+				sizes = append(sizes, uint64(n))
+			}
+			if typ == repZSBlockRLE {
+				n = 1
+			}
+			pos += 3 + n
+		}
+		if fh.checksum {
+			pos += 4
+		}
+	}
+	if pos != size {
+		return nil, fmt.Errorf("%w: zstd stream layout ends at %d of %d", errRepUnsupported, pos, size)
+	}
+	return sizes, nil
+}
+
+// zsLayoutCheck passes a whole replayed stream through, refusing one whose block headers disagree with the layout.
+type zsLayoutCheck struct {
+	w    io.Writer
+	s    *repZSSkeleton
+	segs []zsSeg
+	pos  int64
+	i    int
+	hdr  [3]byte
+}
+
+func (c *zsLayoutCheck) Write(p []byte) (int, error) {
+	for q := p; len(q) > 0; {
+		for c.i < len(c.segs) && c.pos >= c.segs[c.i].off+c.segs[c.i].n {
+			c.i++
+		}
+		if c.i == len(c.segs) {
+			return 0, repCorrupt("zstd replay is longer than its seek index")
+		}
+		sg := c.segs[c.i]
+		take := min(int64(len(q)), sg.off+sg.n-c.pos)
+		if from := c.pos - sg.off; sg.block >= 0 && from < 3 {
+			k := copy(c.hdr[from:], q[:min(take, 3-from)])
+			if from+int64(k) == 3 {
+				b := &c.s.Frames[sg.frame].Blocks[sg.block]
+				want := sg.n - 3
+				if b.Type == repZSBlockRLE {
+					want = int64(b.DecLen)
+				}
+				if v := uint32(c.hdr[0]) | uint32(c.hdr[1])<<8 | uint32(c.hdr[2])<<16; int64(v>>3) != want {
+					return 0, repCorrupt("zstd frame %d block %d is %d bytes, the seek index says %d", sg.frame, sg.block, v>>3, want)
+				}
+			}
+		}
+		c.pos += take
+		q = q[take:]
+	}
+	return c.w.Write(p)
+}
+
+// zsSeek is the parsed restart structure of a zstd representation with a seek index.
+type zsSeek struct {
+	nTable int
+	s      *repZSSkeleton
+	hdrs   []*repZSframeHdr
+	units  []zsUnit
+	segs   []zsSeg
+	first  []int // per frame: index of its first segment
+	plain  int64
+	cost   int64
+	rs     []int64 // block offsets
+}
+
+func (z *zsSeek) restarts() ([]int64, int64) { return z.rs, 512 << 10 }
+
+func newZsSeek(c *repCall, nTable int, sizes []uint64) (*zsSeek, error) {
+	skel, units, err := zstdTable(c, nTable)
+	if err != nil {
+		return nil, err
+	}
+	s, err := repZSUnmarshal(skel, repZstdLimits())
+	if err != nil {
+		return nil, err
+	}
+	segs, err := zsLayout(s, sizes, c.Rep.Size)
+	if err != nil {
+		return nil, err
+	}
+	z := &zsSeek{nTable: nTable, s: s, units: units, segs: segs, first: make([]int, len(s.Frames)), hdrs: make([]*repZSframeHdr, len(s.Frames)), plain: c.Rep.Members[nTable].Size}
+	for i := len(segs) - 1; i >= 0; i-- {
+		z.first[segs[i].frame] = i
+	}
+	for fi := range s.Frames {
+		if !s.Frames[fi].Skippable {
+			z.hdrs[fi], _ = repZSparseFrameHeader(s.Frames[fi].Header, repZSLimits{MaxWindow: 1 << 62, MaxFrameDecoded: 1 << 62})
+		}
+	}
+	if last := segs[len(segs)-1]; last.unit+boolInt(last.block >= 0 && s.Frames[last.frame].Blocks[last.block].HasUnit()) != len(units) || segs[len(segs)-1].plain+repZSsegPlain(s, last) != z.plain {
+		return nil, repCorrupt("zstd units or plaintext disagree with the skeleton")
+	}
+	for _, sg := range segs {
+		if sg.block >= 0 {
+			z.rs = append(z.rs, sg.off)
+		}
+	}
+	z.cost = int64(len(skel))*3 + 56*int64(len(segs)) + 48*int64(len(units)) + 4096
+	return z, nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func repZSsegPlain(s *repZSSkeleton, sg zsSeg) int64 {
+	if sg.block < 0 {
+		return 0
+	}
+	return int64(s.Frames[sg.frame].Blocks[sg.block].DecLen)
+}
+
+func (u *zsUnit) bytes(c *repCall) ([]byte, error) {
+	if u.size < zsUnitInline {
+		return u.inline, nil
+	}
+	return c.getExact(u.sha, u.size)
+}
+
+func (z *zsSeek) readRange(c *repCall, off, n int64, w io.Writer) error {
+	end := off + n
+	if off < 0 || n < 0 || end > z.segs[len(z.segs)-1].off+z.segs[len(z.segs)-1].n {
+		return repCorrupt("range %d+%d outside the zstd stream", off, n)
+	}
+	i := sort.Search(len(z.segs), func(i int) bool { return z.segs[i].off+z.segs[i].n > off })
+	if i == len(z.segs) {
+		return nil
+	}
+	tr := c.codecTrace()
+	clip := &repClip{w: w, pos: z.segs[i].off, a: off, b: end}
+	var pw *repPlainWin
+	var rf *repZSreplayFrame
+	var units *bufio.Reader
+	for ; i < len(z.segs) && clip.pos < end; i++ {
+		sg := z.segs[i]
+		f := &z.s.Frames[sg.frame]
+		var err error
+		switch sg.block {
+		case -3:
+			var h [8]byte
+			binary.LittleEndian.PutUint32(h[:], repZSmagicSkip|uint32(f.SkipLow))
+			binary.LittleEndian.PutUint32(h[4:], uint32(len(f.Skip)))
+			_, err = clip.Write(append(h[:], f.Skip...))
+		case -2:
+			_, err = clip.Write(binary.LittleEndian.AppendUint32(nil, f.Checksum))
+		case -1:
+			rf = nil
+			_, err = clip.Write(append(binary.LittleEndian.AppendUint32(nil, repZSmagicStd), f.Header...))
+		default:
+			if pw == nil {
+				child, err := c.child(z.nTable)
+				if err != nil {
+					return err
+				}
+				pw = &repPlainWin{c: child, size: z.plain, tr: tr}
+			}
+			if rf == nil {
+				if rf, err = z.enter(c, pw, sg); err != nil {
+					return err
+				}
+				units = bufio.NewReaderSize(&unitReader{c: c, units: z.units, next: sg.unit, tr: tr}, 1<<12)
+				tr.Restarts++
+			}
+			err = z.block(rf, pw, units, sg, clip)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	tr.OutBytes += clip.pos - z.segs[sort.Search(len(z.segs), func(i int) bool { return z.segs[i].off+z.segs[i].n > off })].off
+	return nil
+}
+
+func (z *zsSeek) block(rf *repZSreplayFrame, pw *repPlainWin, units *bufio.Reader, sg zsSeg, w io.Writer) error {
+	k := &z.s.Frames[sg.frame].Blocks[sg.block]
+	plain, err := pw.at(sg.plain, sg.plain+int64(k.DecLen))
+	if err != nil {
+		return err
+	}
+	content, typ, err := rf.rebuildBlock(k, plain, units)
+	if err != nil {
+		return fmt.Errorf("%w: zstd frame %d block %d: %v", errRepCorrupt, sg.frame, sg.block, err)
+	}
+	size := len(content)
+	if typ == repZSBlockRLE {
+		size = int(k.DecLen)
+	}
+	if int64(len(content))+3 != sg.n {
+		return repCorrupt("zstd frame %d block %d rebuilt to %d bytes, the seek index says %d", sg.frame, sg.block, len(content), sg.n-3)
+	}
+	if _, err := w.Write(repZSblockHeader(k.Last, typ, size)); err != nil {
+		return err
+	}
+	_, err = w.Write(content)
+	return err
+}
+
+// enter prepares the replay of a frame from block sg: the inherited entropy tables and, when the frame's later
+// blocks are model-coded, the window of plaintext before it.
+func (z *zsSeek) enter(c *repCall, pw *repPlainWin, sg zsSeg) (*repZSreplayFrame, error) {
+	f, fh := &z.s.Frames[sg.frame], z.hdrs[sg.frame]
+	rf := &repZSreplayFrame{bmax: min(fh.blockMax(), repZSmaxBlock), hist: repZShistory{window: fh.window}}
+	fplain := z.segs[z.first[sg.frame]].plain
+	if sg.block > 0 {
+		var err error
+		if rf.st, err = z.state(c, sg); err != nil {
+			return nil, err
+		}
+	}
+	for j := sg.block; j < len(f.Blocks); j++ {
+		if f.Blocks[j].Model {
+			rf.model = repZSnewMatchModel(fh.window)
+			break
+		}
+	}
+	rf.hist.total = sg.plain - fplain
+	if rf.model != nil && sg.plain > fplain {
+		wb, err := pw.at(max(fplain, sg.plain-fh.window), sg.plain)
+		if err != nil {
+			return nil, err
+		}
+		rf.hist.buf = append([]byte(nil), wb...)
+	}
+	return rf, nil
+}
+
+// state is the coding state block sg inherits: the last Huffman tree and FSE tables its frame's earlier blocks
+// define, read from their skeleton records (a fallback block's from its original bytes).
+func (z *zsSeek) state(c *repCall, sg zsSeg) (repZScodingState, error) {
+	f, base := &z.s.Frames[sg.frame], z.first[sg.frame]+1
+	var st repZScodingState
+	tree, def := -1, [3]int{-1, -1, -1}
+	apply := func() error {
+		if tree >= 0 {
+			t, n, err := repZSreadHuffTree(f.Blocks[tree].TreeDesc)
+			if err != nil || n != len(f.Blocks[tree].TreeDesc) {
+				return repCorrupt("zstd block %d tree", tree)
+			}
+			st.huff, tree = t, -1
+		}
+		for x, j := range def {
+			if j >= 0 {
+				k := &f.Blocks[j]
+				tabs, used, err := repZSparseSeqTables(k.Modes, k.TabBytes, repZSpredTables)
+				if err != nil || used != len(k.TabBytes) {
+					return repCorrupt("zstd block %d tables", j)
+				}
+				st.fse[x], def[x] = tabs[x], -1
+			}
+		}
+		return nil
+	}
+	for j := 0; j < sg.block; j++ {
+		k := &f.Blocks[j]
+		switch k.Type {
+		case repZSBlockCompressed:
+			if k.LitMode == repZSlitComp {
+				tree = j
+			}
+			if k.NSeq > 0 {
+				for x := range def {
+					if k.Modes>>uint(6-2*x)&3 != 3 {
+						def[x] = j
+					}
+				}
+			}
+		case repZSBlockFallback:
+			if err := apply(); err != nil {
+				return st, err
+			}
+			content, err := z.units[z.segs[base+j].unit].bytes(c)
+			if err != nil {
+				return st, err
+			}
+			if len(content) != int(k.CompLen) {
+				return st, repCorrupt("zstd fallback block %d", j)
+			}
+			if _, err := repZSscanBlock(&st, content, min(z.hdrs[sg.frame].blockMax(), repZSmaxBlock)); err != nil {
+				return st, fmt.Errorf("%w: zstd fallback block %d: %v", errRepCorrupt, j, err)
+			}
+		}
+	}
+	return st, apply()
 }
 
 // Mechanically extracted from zeros3-z3 codec sources; see provenance manifest.
@@ -47093,18 +48127,18 @@ func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 		}
 	}
 	if rec.Form == authFormRep && rec.Root != nil {
-		hard, stream, _, err := s.repRootReplay(rec.Root)
+		hard, stream, _, seek, err := s.repRootReplay(rec.Root)
 		if err != nil {
 			return err
 		}
-		if hard {
-			if err := s.ensureFeature(authHardFeature); err != nil {
-				return err
-			}
-		}
-		if stream {
-			if err := s.ensureFeature(authStreamFeature); err != nil {
-				return err
+		for _, f := range []struct {
+			on   bool
+			name string
+		}{{hard, authHardFeature}, {stream, authStreamFeature}, {seek, authSeekFeature}} {
+			if f.on {
+				if err := s.ensureFeature(f.name); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -47469,15 +48503,60 @@ func (b *authPinBody) ReadAt(p []byte, off int64) (int, error) {
 	return b.q.ReadAt(p, off)
 }
 
-// authRepBody materializes a structural representation (bounded, disposable).
+// authRepBody materializes a structural representation (bounded, disposable). In a ranged context a seekable
+// codec representation serves each read from its restart points instead.
 type authRepBody struct {
-	c    *authCtx
-	rec  *authRecord
-	data []byte
+	c      *authCtx
+	rec    *authRecord
+	data   []byte
+	noSeek bool
 }
 
 func (b *authRepBody) Size() int64 { return b.rec.Size }
+
+// readSeek reads p at off through the representation's seek index; ok is false when it has none.
+func (b *authRepBody) readSeek(p []byte, off int64) (n int, ok bool, err error) {
+	if off >= b.rec.Size {
+		return 0, true, io.EOF
+	}
+	src := b.c.s.newRepSource(b.rec.Root.Descs, nil)
+	defer src.close()
+	env := &repEnv{Src: src, Limits: repProdLimits, Cache: b.c.s.repCache()}
+	call, err := env.open(b.rec.Root.Rep)
+	if err == nil && call.Rep.Size != b.rec.Size {
+		err = fmt.Errorf("%w: representation of %d bytes for a %d byte record", errAuthCorrupt, call.Rep.Size, b.rec.Size)
+	}
+	if err != nil {
+		return 0, true, err
+	}
+	sk, err := repSeekerOf(call)
+	if sk == nil || err != nil {
+		b.noSeek = err == nil
+		return 0, err != nil, err
+	}
+	want := min(int64(len(p)), b.rec.Size-off)
+	buf := p[:0:want]
+	if err := sk.readRange(call, off, want, repAppendWriter{&buf}); err != nil {
+		return 0, true, err
+	}
+	if int64(len(buf)) != want {
+		return 0, true, fmt.Errorf("%w: range read returned %d of %d bytes", errAuthMismatch, len(buf), want)
+	}
+	b.c.pmu.Lock()
+	b.c.fetched += src.stats.LogicalBytes
+	b.c.pmu.Unlock()
+	if int(want) < len(p) {
+		return int(want), true, io.EOF
+	}
+	return int(want), true, nil
+}
+
 func (b *authRepBody) ReadAt(p []byte, off int64) (int, error) {
+	if b.data == nil && b.c.ranged && !b.noSeek {
+		if n, ok, err := b.readSeek(p, off); ok {
+			return n, err
+		}
+	}
 	if b.data == nil {
 		key := "obj:" + hex.EncodeToString(b.rec.SHA[:])
 		if d := b.c.s.authCacheGet(key); d != nil {
@@ -47832,7 +48911,7 @@ type authWinProg struct {
 	size int64
 }
 
-var authWinProgBytes int64 = 8 << 20 // parsed programs one windowed body keeps, least recently used out (at least one)
+var authWinProgBytes int64 = 8 << 20 // parsed programs one windowed body keeps, least recently used out; a larger one is used once
 
 func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authBody, error) {
 	wr, err := dwDcoreOpenWRecord(blob, blob.size)
@@ -48010,7 +49089,7 @@ func (b *authWinBody) unit(fi int, off int64, keep bool) ([]xdOp, error) {
 }
 
 // cached returns the program or directory k, building it with fn on a miss and keeping it when keep is set
-// (least recently used out once authWinProgBytes is exceeded).
+// and it fits authWinProgBytes (least recently used out).
 func (b *authWinBody) cached(k authProgKey, keep bool, fn func() (authWinProg, error)) (authWinProg, error) {
 	if pr, ok := b.progs[k]; ok {
 		if i := slices.Index(b.porder, k); i < len(b.porder)-1 {
@@ -48019,7 +49098,7 @@ func (b *authWinBody) cached(k authProgKey, keep bool, fn func() (authWinProg, e
 		return pr, nil
 	}
 	pr, err := fn()
-	if err != nil || !keep {
+	if err != nil || !keep || pr.size > authWinProgBytes {
 		return pr, err
 	}
 	if b.progs == nil {
@@ -48730,7 +49809,7 @@ func (s *Store) authCostOf(runCtx context.Context, rec *authRecord, pins map[[32
 	}
 	switch {
 	case rec.Form == authFormRep && rec.Root != nil:
-		hard, _, codec, err := s.repRootReplay(rec.Root)
+		hard, _, codec, _, err := s.repRootReplay(rec.Root)
 		if err != nil {
 			return nil, err
 		}
@@ -49730,7 +50809,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 						src = bytes.NewReader(b)
 					}
 				}
-				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil }, m.pol.ReserveFreeBytes)
+				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil }, m.pol.ReserveFreeBytes, true)
 				if errors.Is(err, syscall.ENOSPC) {
 					return err
 				}
@@ -51083,7 +52162,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature},
 	}
 }
 
@@ -51231,7 +52310,7 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 				return nil, errAuthTransferUnsupported
 			}
 		case authFormRep:
-			hard, stream, _, err := s.repRootReplay(rec.Root)
+			hard, stream, _, seek, err := s.repRootReplay(rec.Root)
 			if err != nil {
 				return nil, err
 			}
@@ -51240,6 +52319,9 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 			}
 			if stream {
 				addFeature(authStreamFeature)
+			}
+			if seek {
+				addFeature(authSeekFeature)
 			}
 		}
 	}
@@ -62461,6 +63543,7 @@ const (
 	authStreamFeature = "hardstream" // Parquet recipes with streaming-Brotli pages (recipe version 3)
 	authIQ3Feature    = "zn7iq3s"    // containers that derive IQ3_S tensors: builds without the quantizer refuse the store
 	authZW2Feature    = "zw2"        // windowed deltas with restartable program segments
+	authSeekFeature   = "cxseek"     // gzip and zstd representations whose recipes carry a seek index
 	authZN7MaxAux     = 64 << 20
 	authZN7ReadChunk  = 4 << 20 // decoded span a body keeps between ReadAt calls
 )
@@ -63035,7 +64118,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature {
 			return x
 		}
 	}
@@ -71451,13 +72534,14 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 
 // repRootReplay reports the format requirements of structured recipes and
 // identifies a top-level exact compressed container for cost reporting.
-func (s *Store) repRootReplay(r *repRoot) (hard, stream, codec bool, err error) {
+// seek reports a codec container with a seek index anywhere in the closure.
+func (s *Store) repRootReplay(r *repRoot) (hard, stream, codec, seek bool, err error) {
 	src := s.newRepSource(r.Descs, nil)
 	defer src.close()
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	reach, err := env.reachable(r.Rep)
 	if err != nil {
-		return false, false, false, err
+		return false, false, false, false, err
 	}
 	for id, role := range reach.Role {
 		if role != repDepRep {
@@ -71465,7 +72549,7 @@ func (s *Store) repRootReplay(r *repRoot) (hard, stream, codec bool, err error) 
 		}
 		obj, err := env.loadRep(id)
 		if err != nil {
-			return false, false, false, err
+			return false, false, false, false, err
 		}
 		if len(obj.Recipe) > 0 && (obj.Kind == repKindParquet && obj.Recipe[0] >= repPQrecipeVersionHard || obj.Kind == repKindSST && obj.Recipe[0] == repSSrecipeVersionHard) {
 			hard = true
@@ -71474,8 +72558,22 @@ func (s *Store) repRootReplay(r *repRoot) (hard, stream, codec bool, err error) 
 		if id == r.Rep {
 			codec = obj.Kind == repKindGzip || obj.Kind == repKindZstd
 		}
+		switch obj.Kind {
+		case repKindGzip:
+			g, err := gzipRecipe(obj)
+			if err != nil {
+				return false, false, false, false, err
+			}
+			seek = seek || g.seek != nil
+		case repKindZstd:
+			_, sizes, err := zstdRecipe(obj)
+			if err != nil {
+				return false, false, false, false, err
+			}
+			seek = seek || sizes != nil
+		}
 	}
-	return hard, stream, codec, nil
+	return hard, stream, codec, seek, nil
 }
 
 // repFloorOf is the store-format level the representation closure reach describes

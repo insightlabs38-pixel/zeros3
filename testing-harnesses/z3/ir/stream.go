@@ -433,6 +433,9 @@ type StreamDecodeOptions struct {
 	// Workers is how many units are decoded ahead of the token writer (0: up to four, bounded by GOMAXPROCS; 1: on
 	// the writing goroutine). A unit decodes from the plaintext alone, so the output is identical for any value.
 	Workers int
+	// UnitBits, when set, is the bit offset at which each unit's first token is written (a seek index); a stream
+	// that disagrees with it is corrupt.
+	UnitBits []int64
 }
 
 // unitBufs recycles the plaintext copies handed to unit workers (about 150 KiB per unit).
@@ -492,6 +495,7 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 		tok += sk.Blocks[i].NTokens
 	}
 	startPos := make([]int64, len(sk.Units))
+	tokStart := make([]int, len(sk.Units))
 	{
 		var acc int64
 		si, ti := 0, 0
@@ -506,10 +510,24 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 			if u.PlainLen > opt.MaxUnitPlain {
 				return fmt.Errorf("%w: unit %d has %d plaintext bytes (max %d)", ErrLimit, k, u.PlainLen, opt.MaxUnitPlain)
 			}
-			startPos[k] = acc
+			startPos[k], tokStart[k] = acc, ti
 			acc += int64(u.PlainLen)
 			ti += u.NTokens
 		}
+	}
+	if opt.UnitBits != nil && len(opt.UnitBits) != len(sk.Units) {
+		return corrupt("seek index lists %d units, the skeleton %d", len(opt.UnitBits), len(sk.Units))
+	}
+	written, checked := 0, 0 // tokens written; units whose starting bit was compared with the seek index
+	put := func(t deflate.Token) error {
+		if checked < len(opt.UnitBits) && written == tokStart[checked] {
+			if sw.BitPos() != opt.UnitBits[checked] {
+				return corrupt("unit %d starts at bit %d, the seek index says %d", checked, sw.BitPos(), opt.UnitBits[checked])
+			}
+			checked++
+		}
+		written++
+		return sw.Token(t)
 	}
 
 	var (
@@ -678,7 +696,7 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 		}
 		if m.Pred {
 			for _, t := range buf {
-				if err := sw.Token(t); err != nil {
+				if err := put(t); err != nil {
 					return err
 				}
 			}
@@ -688,7 +706,7 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 				if err != nil {
 					return err
 				}
-				if err := sw.Token(t); err != nil {
+				if err := put(t); err != nil {
 					return err
 				}
 			}
@@ -697,7 +715,7 @@ func ReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, error
 			return err
 		}
 	}
-	if unitLeft != 0 || unitIdx != len(sk.Units) {
+	if unitLeft != 0 || unitIdx != len(sk.Units) || checked != len(opt.UnitBits) {
 		return corrupt("units not fully consumed")
 	}
 	if err := sw.Finish(sk.TailPadBits, sk.TailPadLen); err != nil {

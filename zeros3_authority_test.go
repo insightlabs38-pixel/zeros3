@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"maps"
@@ -3481,7 +3482,8 @@ func TestAuthorityNestedRangeExecution(t *testing.T) {
 	t.Run("zw2", func(t *testing.T) { authNestedRangeExecution(t, 16<<10) })
 }
 
-func authNestedRangeExecution(t *testing.T, segment int64) {
+// authNestedLab is a three-revision history whose newest object is a depth-2 windowed delta (ZW2 when segment > 0).
+func authNestedLab(t *testing.T, segment int64) (*authLab, string, *authRecord) {
 	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
 	defer func(a, b, c int64) { authWindowMin, authWindowSize, authSegmentSize = a, b, c }(authWindowMin, authWindowSize, authSegmentSize)
 	authWindowMin, authWindowSize, authSegmentSize = 1<<20, 64<<10, cmp.Or(segment, 1<<30)
@@ -3503,6 +3505,11 @@ func authNestedRangeExecution(t *testing.T, segment int64) {
 	if rec == nil || rec.Depth != 2 {
 		t.Fatalf("no depth-2 record: %+v", rec)
 	}
+	return l, key, rec
+}
+
+func authNestedRangeExecution(t *testing.T, segment int64) {
+	l, key, rec := authNestedLab(t, segment)
 	if b, _, err := l.s.newAuthCtx().body(rec.SHA, 0, 1); err != nil || b.(*authWinBody).wr.segmented != (segment > 0) {
 		t.Fatalf("record segmented=%v, want %v: %v", b.(*authWinBody).wr.segmented, segment > 0, err)
 	}
@@ -3608,6 +3615,158 @@ func authNestedRangeExecution(t *testing.T, segment int64) {
 	for _, off := range []int64{0, size / 3, size - 4096} {
 		if _, _, got, err := l.s.GetObjectRange("b", key, byteRange{off, off + 4095}); err == nil && !bytes.Equal(got, want[off:off+4096]) {
 			t.Fatalf("missing parent served wrong bytes at %d", off)
+		}
+	}
+}
+
+// TestAuthorityPartialReadBinding: a partial-frame read serves bytes computed only from the record's content-addressed
+// pieces and its bases' records, never from frame output digests. The record (CRC-checked, filed under the content
+// SHA-256, published only after a whole-object proof and immutable until a proven republish) is the root of trust, as
+// a pin record's chunk list is. Substitutions and inconsistent metadata must fail closed; a forgery that is internally
+// consistent is found by whole reads and deep verification, which check the content digest.
+func TestAuthorityPartialReadBinding(t *testing.T) {
+	l, key, rec := authNestedLab(t, 16<<10)
+	want := l.want[key]
+	off := int64(len(want)/2 + 999)
+	partial := func() error {
+		ctx := l.s.newAuthCtx()
+		body, _, err := ctx.body(rec.SHA, 0, 1)
+		if err != nil {
+			return err
+		}
+		p := make([]byte, 4096)
+		if _, err := body.ReadAt(p, off); err != nil {
+			return err
+		}
+		if !bytes.Equal(p, want[off:off+4096]) {
+			t.Fatalf("partial read served bytes that differ from the object")
+		}
+		return nil
+	}
+	mustOK(t, partial())
+	put := func(r authRecord) {
+		data, err := r.marshal()
+		mustOK(t, err)
+		mustOK(t, os.WriteFile(l.s.authPath(rec.SHA), data, 0o644))
+		l.close()
+		l.open()
+	}
+	parent, err := l.s.authLoad(rec.Bases[0].SHA)
+	mustOK(t, err)
+	t.Run("substituted-envelope", func(t *testing.T) {
+		r := *rec
+		r.Pieces = parent.Pieces
+		put(r)
+		if err := partial(); !errors.Is(err, errAuthCorrupt) {
+			t.Fatalf("another object's envelope opened: %v", err)
+		}
+	})
+	t.Run("substituted-base", func(t *testing.T) {
+		r := *rec
+		r.Bases = []xdBaseRef{{SHA: parent.Bases[0].SHA, Size: rec.Bases[0].Size}}
+		put(r)
+		if err := partial(); err == nil {
+			t.Fatal("a record naming a base its envelope was not computed against opened")
+		}
+	})
+	t.Run("inconsistent-segment-directory", func(t *testing.T) {
+		blob := make([]byte, pieceTotal(rec.Pieces))
+		_, err := newPieceSeq(l.s.newAuthCtx(), rec.Pieces).ReadAt(blob, 0)
+		mustOK(t, err)
+		wr, err := dwDcoreOpenWRecord(bytes.NewReader(blob), int64(len(blob)))
+		mustOK(t, err)
+		fi := wr.frameAt(off)
+		segs, err := wr.segments(fi)
+		mustOK(t, err)
+		if len(segs) < 2 {
+			t.Fatalf("frame %d has %d segments", fi, len(segs))
+		}
+		// Move one byte of target from the second segment to the first: the directory still covers the frame.
+		segs[0].tlen++
+		segs[1].tlen--
+		dir := binary.AppendUvarint(nil, uint64(len(segs)))
+		for _, sg := range segs {
+			dir = binary.AppendUvarint(dir, uint64(sg.tlen))
+			dir = append(dir, sg.mode)
+			dir = binary.AppendUvarint(dir, uint64(sg.plen))
+		}
+		forged := authRebuildZW2(t, blob, wr, fi, append(binary.AppendUvarint(nil, uint64(len(dir))), append(dir, blob[segs[0].poff:wr.pstart[fi]+wr.frames[fi].plen]...)...))
+		pieces, err := l.s.authWritePieces(context.Background(), forged)
+		mustOK(t, err)
+		r := *rec
+		r.Pieces = pieces
+		put(r)
+		if err := partial(); !errors.Is(err, errAuthCorrupt) {
+			t.Fatalf("inconsistent segment directory served: %v", err)
+		}
+		if res, err := l.s.Verify(true); err != nil || res.OK() {
+			t.Fatalf("deep verification accepted the inconsistent record: %v", err)
+		}
+	})
+	put(*rec)
+	mustOK(t, partial())
+}
+
+// authRebuildZW2 is blob with frame fi's payload replaced and the frame table and trailer rewritten to match.
+func authRebuildZW2(t *testing.T, blob []byte, wr *dwDcoreWRecord, fi int, payload []byte) []byte {
+	out := append([]byte(nil), blob[:wr.pstart[fi]]...)
+	out = append(out, payload...)
+	end := wr.pstart[len(wr.frames)-1] + wr.frames[len(wr.frames)-1].plen
+	out = append(out, blob[wr.pstart[fi]+wr.frames[fi].plen:end]...)
+	tbl := append(append([]byte(nil), wr.BaseSHA[:]...), binary.AppendUvarint(nil, uint64(wr.BaseSize))...)
+	tbl = binary.AppendUvarint(tbl, uint64(wr.Size))
+	tbl = append(tbl, wr.SHA[:]...)
+	tbl = binary.AppendUvarint(tbl, uint64(len(wr.frames)))
+	for i, f := range wr.frames {
+		if i == fi {
+			f.plen = int64(len(payload))
+		}
+		tbl = binary.AppendUvarint(tbl, uint64(f.tlen))
+		tbl = append(tbl, f.mode)
+		tbl = binary.AppendUvarint(tbl, uint64(f.plen))
+		tbl = append(tbl, f.sum[:]...)
+	}
+	var tr [dwDcore_wTrailerLen]byte
+	copy(tr[:], dwDcore_w2TrailerMagic)
+	binary.LittleEndian.PutUint64(tr[4:], uint64(len(out)))
+	binary.LittleEndian.PutUint64(tr[12:], uint64(len(tbl)))
+	binary.LittleEndian.PutUint32(tr[20:], crc32.Checksum(tbl, dwDcore_crcTab))
+	binary.LittleEndian.PutUint64(tr[24:], uint64(len(wr.frames)))
+	out = append(append(out, tbl...), tr[:]...)
+	if _, err := dwDcoreOpenWRecord(bytes.NewReader(out), int64(len(out))); err != nil {
+		t.Fatalf("rebuilt envelope: %v", err)
+	}
+	return out
+}
+
+// TestAuthorityProgramCacheBound: a windowed body never retains more parsed programs than authWinProgBytes,
+// including a single program larger than the whole budget.
+func TestAuthorityProgramCacheBound(t *testing.T) {
+	l, key, rec := authNestedLab(t, 16<<10)
+	want := l.want[key]
+	defer func(v int64) { authWinProgBytes = v }(authWinProgBytes)
+	for _, limit := range []int64{1, 64 << 10} {
+		authWinProgBytes = limit
+		body, _, err := l.s.newAuthCtx().body(rec.SHA, 0, 1)
+		mustOK(t, err)
+		wb := body.(*authWinBody)
+		rng := mrand.New(mrand.NewPCG(uint64(limit), 5))
+		for i := 0; i < 64; i++ {
+			off := rng.Int64N(int64(len(want)) - 4096)
+			p := make([]byte, 1+rng.Int64N(4096))
+			if _, err := wb.ReadAt(p, off); err != nil || !bytes.Equal(p, want[off:off+int64(len(p))]) {
+				t.Fatalf("limit %d: read %d+%d: %v", limit, off, len(p), err)
+			}
+			var sum int64
+			for _, pr := range wb.progs {
+				sum += pr.size
+			}
+			if sum != wb.pbytes || wb.pbytes > authWinProgBytes {
+				t.Fatalf("limit %d: %d bytes of parsed programs retained (accounted %d)", limit, sum, wb.pbytes)
+			}
+		}
+		if limit == 1 && len(wb.progs) != 0 {
+			t.Fatalf("a budget no program fits still retained %d", len(wb.progs))
 		}
 	}
 }
@@ -6908,11 +7067,11 @@ func TestAuthorityHardCodecsFeatureLifecycle(t *testing.T) {
 // (Parquet recipes with streaming-Brotli pages). A build that predates either refuses the store and names the
 // feature, nothing changes on disk, and revert -all clears the feature.
 func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
-	prev := buildBinaryAt(t, "d0391eb203b939ceb26fd9009d859abaaa5ae045") // hardcodec and zn7, neither new feature
 	cases := []struct {
 		name, feature string
 		lab           func() *authLab
 		policy        AuthPolicy
+		prev          string // the older build (default: hardcodec and zn7, none of the newer features)
 	}{
 		{"hardstream", authStreamFeature, func() *authLab {
 			repPQbrStreamOnly = true
@@ -6926,7 +7085,7 @@ func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
 				l.put(f, b)
 			}
 			return l
-		}, AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true}},
+		}, AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, MinObject: 1, MinRepGroup: 1, HardCodecs: true}, ""},
 		{"zn7iq3s", authIQ3Feature, func() *authLab {
 			src, im, derived := zn7QuantFixture(t, ncQcoreIQ3_S, 21, ncQcoreGCCFMA)
 			l := newAuthLab(t)
@@ -6934,16 +7093,28 @@ func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
 			l.put("m/imatrix.dat", im)
 			l.put("m/iq3_s.gguf", derived)
 			return l
-		}, AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxBases: 2, MaxReadAmp: -1, AllowDelta: true}},
+		}, AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxBases: 2, MaxReadAmp: -1, AllowDelta: true}, ""},
 		{"zw2", authZW2Feature, func() *authLab {
 			prior := [3]int64{authWindowMin, authWindowSize, authSegmentSize}
 			authWindowMin, authWindowSize, authSegmentSize = 1<<20, 64<<10, 16<<10
 			t.Cleanup(func() { authWindowMin, authWindowSize, authSegmentSize = prior[0], prior[1], prior[2] })
 			return authHistoryLab(t, 734, 3, 1_500_000)
-		}, AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1, AllowDelta: true, NoZN7: true}},
+		}, AuthPolicy{MinSaving: 0.05, MaxDepth: 2, MaxReadAmp: -1, AllowDelta: true, NoZN7: true}, ""},
+		{"cxseek", authSeekFeature, func() *authLab {
+			l := newAuthLab(t)
+			for _, f := range []string{"text.l6.gz", "text.l9.gz", "text.l3.zst", "text.l19.zst"} {
+				b, err := os.ReadFile(filepath.Join("testing-harnesses/testdata/b2-seek", f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				l.put(f, b)
+			}
+			return l
+		}, AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, NoZN7: true, CodecReplay: true}, "b2cde270f688037642045107c16f187db421e72a"}, // B1: zw2, not cxseek
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			prev := buildBinaryAt(t, cmp.Or(c.prev, "d0391eb203b939ceb26fd9009d859abaaa5ae045"))
 			l := c.lab()
 			l.close()
 			_, before := readFormatVersion(t, l.dir)
