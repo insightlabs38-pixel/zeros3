@@ -1312,3 +1312,62 @@ func TestAuthoritySeekableCodecReplay(t *testing.T) {
 	l.exact("one reverted, reclaimed")
 	l.verifyOK("one reverted, reclaimed")
 }
+
+// Concurrent ranged reads share the store chunk cache (ZW2 programs and base chunks) and the cached parsed seekers
+// while the cache is purged under them, as maintenance does. Run with -race.
+func TestAuthorityConcurrentRangedReadsSharedCaches(t *testing.T) {
+	l, zkey, _ := authNestedLab(t, 16<<10)
+	for _, f := range []string{"text.l6.gz", "text.l9.gz", "text.l3.zst", "text.l19.zst"} {
+		b, err := os.ReadFile(filepath.Join("testing-harnesses/testdata/b2-seek", f))
+		mustOK(t, err)
+		l.put(f, b)
+	}
+	l.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -10, NoZN7: true, CodecReplay: true, Prefix: "text."})
+	l.close()
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "8")
+	l.open()
+	if !l.s.ccache.enabled() {
+		t.Fatal("chunk cache off")
+	}
+	keys := []string{zkey, "text.l6.gz", "text.l9.gz", "text.l3.zst", "text.l19.zst"}
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	stop, purged := make(chan struct{}), make(chan struct{})
+	s := l.s
+	go func() {
+		defer close(purged)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(3 * time.Millisecond):
+				s.ccache.purge()
+				s.repCache().purge()
+			}
+		}
+	}()
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			r := rand.New(rand.NewSource(int64(g)))
+			for i := 0; i < 24; i++ {
+				key := keys[(g+i)%len(keys)]
+				want := l.want[key]
+				off := r.Int63n(int64(len(want)) - 1)
+				n := 1 + r.Int63n(min(int64(len(want))-off, 40000))
+				if got := l.read(key, byteRange{off, off + n - 1}); !bytes.Equal(got, want[off:off+n]) {
+					errs <- fmt.Errorf("goroutine %d: %s %d+%d differs", g, key, off, n)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(stop)
+	<-purged
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}

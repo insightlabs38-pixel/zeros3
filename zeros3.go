@@ -120,11 +120,11 @@ import (
 //    27248    Portable snapshot bundles (`zeros3 bundle`)
 //    28445    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    29080    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    47302    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    54643    Windowed and estimated similarity deltas (extracted dcore)
-//    56390    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    64152    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    70424    CLI dispatch, HTTP server/startup, and main
+//    47315    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    54656    Windowed and estimated similarity deltas (extracted dcore)
+//    56403    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    64165    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    70437    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -31253,6 +31253,9 @@ type storeRepSource struct {
 	lastD []byte
 	stats repReadStats
 	codec repCodecTrace
+	// the virtual component read last, where that read ended and how long it has been read sequentially
+	seqID          [32]byte
+	seqEnd, seqRun int64
 }
 
 // repCodecTrace counts the replay work of codec range reads on one source.
@@ -31597,14 +31600,24 @@ func (src *storeRepSource) ReadAt(id [32]byte, p []byte, off int64) (int, error)
 	}
 	offs := d.offsets()
 	i := sort.Search(len(d.Refs), func(k int) bool { return offs[k+1] > off })
+	// Read ahead as far as the sequential run so far reaches: a scan coalesces whole pack runs, a random read
+	// fetches the chunks it covers.
+	span := int64(len(p))
+	if id == src.seqID && off == src.seqEnd {
+		span = max(span, src.seqRun)
+	} else {
+		src.seqRun = 0
+	}
+	src.seqID, src.seqRun = id, src.seqRun+int64(len(p))
 	n := 0
+	defer func() { src.seqEnd = off + int64(n) }()
 	for ; n < len(p) && i < len(d.Refs); i++ {
 		ref := d.Refs[i]
 		if _, cached := src.pre[ref.SHA]; !cached && !(src.lastD != nil && src.last == ref.SHA) {
 			// Fetch ahead along the descriptor: one coalesced read for several chunks.
 			var sums [][32]byte
 			var lens []int64
-			for k := i; k < len(d.Refs) && k < i+packRunMaxRecords; k++ {
+			for k := i; k < len(d.Refs) && k < i+packRunMaxRecords && offs[k] < off+int64(n)+span; k++ {
 				sums, lens = append(sums, d.Refs[k].SHA), append(lens, int64(d.Refs[k].Len))
 			}
 			src.prefetchSums(sums, lens)
