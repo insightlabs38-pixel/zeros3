@@ -1,0 +1,3 @@
+2026/11/20 19:44:55 zeros3: listening on 127.0.0.1:38935 (store=/workspace/work/zeros3/p9-scale-recovery-shadow/store, tls=false)
+2026/11/20 19:44:56 zeros3: terminated received, draining active requests (grace=30s)
+2026/11/20 19:44:56 zeros3: shutdown complete

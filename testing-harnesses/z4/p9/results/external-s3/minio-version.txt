@@ -1,0 +1,4 @@
+minio.linux-amd64.RELEASE.2025-04-22T22-12-26Z version RELEASE.2025-04-22T22-12-26Z (commit-id=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e)
+Runtime: go1.24.2 linux/amd64
+License: GNU AGPLv3 - https://www.gnu.org/licenses/agpl-3.0.html
+Copyright: 2015-2025 MinIO, Inc.

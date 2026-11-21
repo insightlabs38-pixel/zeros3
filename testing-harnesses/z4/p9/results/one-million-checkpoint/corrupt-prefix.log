@@ -1,0 +1,2 @@
+2026/11/20 19:44:52 zeros3: namespace checkpoint ignored: checkpoint: journal prefix changed
+2026/11/20 19:44:52 zeros3: failed to open store: store: failed to open journal: journal: corrupt at offset 0: crc mismatch (seq=1)

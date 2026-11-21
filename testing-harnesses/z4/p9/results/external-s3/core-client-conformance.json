@@ -1,0 +1,40 @@
+{
+  "profile": "zeros3-core-client-v1",
+  "passed": 264,
+  "failed": 0,
+  "skipped": 2,
+  "reports": [
+    {
+      "profile": "zeros3-core-client-v1",
+      "client": "aws-sdk-go-v2",
+      "endpoint": "http://127.0.0.1:45027",
+      "passed": 133,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "profile": "zeros3-core-client-v1",
+      "client": "minio-go",
+      "endpoint": "http://127.0.0.1:45027",
+      "passed": 129,
+      "failed": 0,
+      "skipped": 1
+    },
+    {
+      "profile": "zeros3-core-client-v1",
+      "client": "aws-cli",
+      "endpoint": "http://127.0.0.1:45027",
+      "passed": 0,
+      "failed": 0,
+      "skipped": 1
+    },
+    {
+      "profile": "zeros3-core-client-v1",
+      "client": "fixture-restart",
+      "endpoint": "http://127.0.0.1:45027",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    }
+  ]
+}

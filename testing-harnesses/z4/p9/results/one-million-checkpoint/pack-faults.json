@@ -1,0 +1,20 @@
+{
+  "deflate_control_store": {
+    "codec": 1,
+    "pack_sha256": "bd724138ee52c5e3abb8f785cf648ab983453a75369767f564f9cb9295889c3d",
+    "record_sha256": "d056e4d0922dad7f71a1734bc15cc5a756f3affe4258bf3145c2791f7ac001df",
+    "stored_bytes": 30,
+    "logical_bytes": 4096,
+    "fault_http_status": 500,
+    "exact_unaffected_and_restored": true
+  },
+  "raw_million_object_shadow": {
+    "codec": 0,
+    "pack_sha256": "f909a75750520bc91b816d3a019aa1d34d288255ed9f9bc9abdfcab92fb69e57",
+    "record_sha256": "1fa653e5ec66888333257977774a8927aa083d14c74a1a94f47e7aab6859aa9c",
+    "stored_bytes": 4096,
+    "logical_bytes": 4096,
+    "fault_http_status": 500,
+    "exact_unaffected_and_restored": true
+  }
+}

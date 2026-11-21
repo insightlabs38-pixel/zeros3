@@ -41,6 +41,8 @@ func main() {
 		cmdCLI(args)
 	case "mkstore":
 		cmdMkstore(args)
+	case "mkstream":
+		cmdMkstream(args)
 	case "verifystore":
 		cmdVerifyStore(args)
 	case "readstore":

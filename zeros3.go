@@ -30,6 +30,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -82,45 +83,45 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      535    Content-defined chunking (CDC)
-//      722    Content-addressed chunk storage (CAS)
-//     2465    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4347    Small-object segments (inline manifests, store level 11)
-//     5587    Manifests (immutable, JSON)
-//     6383    Visibility journal (append-only, checksummed)
-//     6882    Store: format, namespace, and object CRUD
-//     8337    Version history/restore, history pruning, ListObjectsV2
-//     8818    SigV4 authentication (header and presigned-URL)
-//     9795    Request payload checksums and S3-shaped XML error/response types
-//    10012    HTTP routing and S3 operation handlers
-//    10438    Conditional operations (PUT/GET/HEAD preconditions)
-//    11133    CopyObject
-//    11438    Multipart upload
-//    12378    Stats and reachability scanning
-//    13882    Verify
-//    14097    Store locking and safe offline GC
-//    14400    Offline compaction (`zeros3 compact`)
-//    15466    Pack reclamation and repacking (`zeros3 repack`)
-//    15951    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16464    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17529    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18333    Delta sync client, credentials, and parallel transfer
-//    20605    Bulk logical-chunk transport (v2)
-//    21516    Recursive directory sync
-//    21821    Remote replication (`zeros3 replicate`)
-//    22724    Peer-assisted corruption repair (`zeros3 repair`)
-//    23292    Namespace (prefix/bucket) replication
-//    23608    Copy-on-write namespace fork (`zeros3 fork`)
-//    23816    Snapshots and restore
-//    24977    Structural diff and inspect (introspection)
-//    26323    Portable snapshot bundles (`zeros3 bundle`)
-//    27520    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28155    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45261    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    51820    Windowed and estimated similarity deltas (extracted dcore)
-//    53349    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    61041    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    67313    CLI dispatch, HTTP server/startup, and main
+//      536    Content-defined chunking (CDC)
+//      723    Content-addressed chunk storage (CAS)
+//     2466    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     4348    Small-object segments (inline manifests, store level 11)
+//     5588    Manifests (immutable, JSON)
+//     6384    Visibility journal (append-only, checksummed)
+//     6906    Store: format, namespace, and object CRUD
+//     8765    Version history/restore, history pruning, ListObjectsV2
+//     9246    SigV4 authentication (header and presigned-URL)
+//    10223    Request payload checksums and S3-shaped XML error/response types
+//    10440    HTTP routing and S3 operation handlers
+//    10866    Conditional operations (PUT/GET/HEAD preconditions)
+//    11561    CopyObject
+//    11866    Multipart upload
+//    12806    Stats and reachability scanning
+//    14310    Verify
+//    14525    Store locking and safe offline GC
+//    14828    Offline compaction (`zeros3 compact`)
+//    15894    Pack reclamation and repacking (`zeros3 repack`)
+//    16379    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16892    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17957    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18761    Delta sync client, credentials, and parallel transfer
+//    21033    Bulk logical-chunk transport (v2)
+//    21944    Recursive directory sync
+//    22249    Remote replication (`zeros3 replicate`)
+//    23152    Peer-assisted corruption repair (`zeros3 repair`)
+//    23720    Namespace (prefix/bucket) replication
+//    24036    Copy-on-write namespace fork (`zeros3 fork`)
+//    24244    Snapshots and restore
+//    25405    Structural diff and inspect (introspection)
+//    26774    Portable snapshot bundles (`zeros3 bundle`)
+//    27971    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28606    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45712    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    52271    Windowed and estimated similarity deltas (extracted dcore)
+//    53800    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    61492    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    67764    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -6766,11 +6767,18 @@ const journalReadBuffer = 1 << 20
 // precedence over the first apply error, so the error a caller sees is the one
 // the collecting replay would have produced. n is the number of valid frames.
 func replayJournalFn(f *os.File, keep bool, apply func(journalRecord) error) (validEnd int64, lastSeq uint64, n int, applyErr, err error) {
+	return replayJournalTail(f, 0, 0, keep, apply)
+}
+
+func replayJournalTail(f *os.File, offset int64, lastSeq uint64, keep bool, apply func(journalRecord) error) (validEnd int64, seqEnd uint64, n int, applyErr, err error) {
 	st, serr := f.Stat()
 	if serr != nil {
 		return 0, 0, 0, nil, fmt.Errorf("journal: stat failed: %w", serr)
 	}
-	return replayJournalRange(f, 0, st.Size(), 0, keep, apply)
+	if offset < 0 || offset > st.Size() {
+		return 0, 0, 0, nil, errors.New("journal was truncated after checkpoint validation")
+	}
+	return replayJournalRange(f, offset, st.Size(), lastSeq, keep, apply)
 }
 
 func replayJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep bool, apply func(journalRecord) error) (validEnd int64, lastSeq uint64, n int, applyErr, err error) {
@@ -6851,12 +6859,28 @@ var errJournalReadOnly = errors.New("journal: opened read-only by a shared opene
 //
 // An error from apply is returned as applyErr, after the whole file has been
 // validated, and only if the journal itself is sound.
-func openJournal(path string, readOnly bool, apply func(journalRecord) error) (j *Journal, applyErr, err error) {
+func openJournal(path string, readOnly bool, apply func(journalRecord) error) (*Journal, error, error) {
+	return openJournalWithCheckpoint(path, readOnly, apply, nil)
+}
+
+func openJournalWithCheckpoint(path string, readOnly bool, apply func(journalRecord) error, checkpoint func(*os.File) (int64, uint64, error)) (j *Journal, applyErr, err error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, nil, err
 	}
-	validEnd, lastSeq, _, applyErr, err := replayJournalFn(f, false, apply)
+	var offset int64
+	var sequence uint64
+	if checkpoint != nil {
+		var checkpointErr error
+		offset, sequence, checkpointErr = checkpoint(f)
+		if checkpointErr != nil {
+			offset, sequence = 0, 0
+			if !errors.Is(checkpointErr, os.ErrNotExist) {
+				log.Printf("zeros3: namespace checkpoint ignored: %v", checkpointErr)
+			}
+		}
+	}
+	validEnd, lastSeq, _, applyErr, err := replayJournalTail(f, offset, sequence, false, apply)
 	if err != nil {
 		f.Close()
 		return nil, nil, err
@@ -7061,18 +7085,18 @@ type Store struct {
 // exist, then replays the journal to rebuild the in-memory namespace.
 // Opening a store with an unsupported format version fails clearly rather
 // than attempting to read it.
-func OpenStore(root string) (*Store, error) { return openStore(root, true) }
+func OpenStore(root string) (*Store, error) { return openStore(root, true, false) }
 
 // OpenStoreShared opens a store for reading while a server may be running: it
 // never takes ownership of the small-object segments (no recovery, truncation,
 // adoption or sealing), so `stats`, `verify` and `doctor` cannot disturb a live
 // writer and a later server still gets ownership.
-func OpenStoreShared(root string) (*Store, error) { return openStore(root, false) }
+func OpenStoreShared(root string) (*Store, error) { return openStore(root, false, false) }
 
 // openGCPercent is the collector's GOGC while a store is opened.
 const openGCPercent = 400
 
-func openStore(root string, ownSegments bool) (*Store, error) {
+func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 	for _, sub := range []string{"", "journal", "chunks", "manifests", "tmp", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("store: failed to create %s: %w", sub, err)
@@ -7101,7 +7125,11 @@ func openStore(root string, ownSegments bool) (*Store, error) {
 	defer debug.SetGCPercent(debug.SetGCPercent(openGCPercent))
 	// The namespace is folded in while the journal is read: no record list is kept.
 	s.replayIn = &strIntern{m: map[string]string{}}
-	j, applyErr, err := openJournal(journalPath, !ownSegments, s.applyRecord)
+	var checkpoint func(*os.File) (int64, uint64, error)
+	if useCheckpoint {
+		checkpoint = s.loadNamespaceCheckpoint
+	}
+	j, applyErr, err := openJournalWithCheckpoint(journalPath, !ownSegments, s.applyRecord, checkpoint)
 	s.replayIn = nil
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to open journal: %w", err)
@@ -7142,6 +7170,406 @@ func (s *Store) finishOpen() (*Store, error) {
 		s.auth.mayHave.Store(true)
 	}
 	return s, nil
+}
+
+// The checkpoint is a derived namespace. Its journal prefix SHA-256 prevents
+// a valid last-frame CRC from hiding a damaged earlier frame.
+const namespaceCheckpointName = "namespace-v2.zck"
+const namespaceCheckpointMagic = "ZS3NSC2\n"
+const hookNamespaceCheckpointSynced = "namespace-checkpoint-synced"
+const hookNamespaceCheckpointRenamed = "namespace-checkpoint-renamed"
+
+type namespaceCheckpointHeader struct {
+	StoreID   string
+	Offset    int64
+	Sequence  uint64
+	LastCRC   uint32
+	PrefixSHA [32]byte
+	Buckets   int
+	Histories int
+	Uploads   int
+}
+
+type namespaceCheckpointBucket struct {
+	Name    string
+	Created time.Time
+	Objects int
+}
+
+type namespaceCheckpointRoot struct {
+	Key         string
+	Manifest    string
+	Digest      [32]byte
+	Size        int64
+	ETag        string
+	ContentType string
+	Sequence    uint64
+}
+
+type namespaceCheckpointHistory struct {
+	Bucket string
+	Key    string
+	Count  int
+}
+
+type namespaceCheckpointVersion struct {
+	Root    namespaceCheckpointRoot
+	ID      string
+	Archive time.Time
+	Reason  string
+}
+
+type namespaceCheckpointUpload struct {
+	ID          string
+	Bucket      string
+	Key         string
+	ContentType string
+	Metadata    map[string]string
+	Created     time.Time
+	Parts       int
+}
+
+type namespaceCheckpointPart struct {
+	Number   int
+	Size     int64
+	ETag     string
+	Chunks   []chunkRef
+	Uploaded time.Time
+}
+
+func journalCheckpointDigest(f *os.File, end int64) (sum [32]byte, crc uint32, err error) {
+	if end < 0 || (end > 0 && end < journalHeaderSize+4) {
+		return sum, 0, errors.New("checkpoint: invalid journal offset")
+	}
+	if end > 0 {
+		var trailer [4]byte
+		if _, err := f.ReadAt(trailer[:], end-4); err != nil {
+			return sum, 0, err
+		}
+		crc = binary.BigEndian.Uint32(trailer[:])
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.NewSectionReader(f, 0, end))
+	if err == nil && n != end {
+		err = io.ErrUnexpectedEOF
+	}
+	h.Sum(sum[:0])
+	return sum, crc, err
+}
+
+// The offline writer uses a full replay while it holds the exclusive lock.
+func (s *Store) writeNamespaceCheckpoint() error {
+	end := s.journal.writeOffset
+	sum, crc, err := journalCheckpointDigest(s.journal.f, end)
+	if err != nil {
+		return err
+	}
+	header := namespaceCheckpointHeader{
+		StoreID: s.format.StoreID, Offset: end, Sequence: s.journal.nextSeq - 1, LastCRC: crc, PrefixSHA: sum,
+		Buckets: len(s.buckets), Uploads: len(s.uploads),
+	}
+	for _, keys := range s.history {
+		header.Histories += len(keys)
+	}
+	dir := filepath.Join(s.root, "journal")
+	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "namespace-*.zck")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	out := bufio.NewWriterSize(f, journalReadBuffer)
+	hash := sha256.New()
+	body := io.MultiWriter(out, hash)
+	if _, err := io.WriteString(body, namespaceCheckpointMagic); err != nil {
+		return err
+	}
+	enc := gob.NewEncoder(body)
+	if err := enc.Encode(header); err != nil {
+		return err
+	}
+	if err := s.encodeNamespaceCheckpoint(enc, body); err != nil {
+		return err
+	}
+	if _, err := out.Write(hash.Sum(nil)); err != nil {
+		return err
+	}
+	if err := out.Flush(); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fireTestHook(hookNamespaceCheckpointSynced)
+	if err := os.Rename(f.Name(), filepath.Join(dir, namespaceCheckpointName)); err != nil {
+		return err
+	}
+	fireTestHook(hookNamespaceCheckpointRenamed)
+	return syncDir(dir)
+}
+
+func (s *Store) encodeNamespaceCheckpoint(enc *gob.Encoder, output io.Writer) error {
+	var row []byte
+	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
+		b := s.buckets[name]
+		if err := enc.Encode(namespaceCheckpointBucket{Name: name, Created: b.createdAt, Objects: len(b.objects)}); err != nil {
+			return err
+		}
+		for _, key := range slices.Sorted(maps.Keys(b.objects)) {
+			row = appendCheckpointObject(row[:0], key, b.objects[key])
+			if len(row) > maxNamespaceCheckpointRow {
+				return errors.New("checkpoint: object root exceeds row size limit")
+			}
+			var prefix [4]byte
+			binary.LittleEndian.PutUint32(prefix[:], uint32(len(row)))
+			if _, err := output.Write(prefix[:]); err != nil {
+				return err
+			}
+			if _, err := output.Write(row); err != nil {
+				return err
+			}
+		}
+	}
+	for _, bucket := range slices.Sorted(maps.Keys(s.history)) {
+		keys := s.history[bucket]
+		for _, key := range slices.Sorted(maps.Keys(keys)) {
+			rows := keys[key]
+			if err := enc.Encode(namespaceCheckpointHistory{Bucket: bucket, Key: key, Count: len(rows)}); err != nil {
+				return err
+			}
+			for _, v := range rows {
+				row := namespaceCheckpointVersion{
+					Root: namespaceCheckpointRoot{Manifest: v.manifestUUID, Digest: v.manifestSHA256, Size: v.size,
+						ETag: v.etag, ContentType: v.contentType, Sequence: v.seq},
+					ID: v.versionID, Archive: v.archivedAt, Reason: v.reason,
+				}
+				if err := enc.Encode(row); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(s.uploads)) {
+		u := s.uploads[id]
+		row := namespaceCheckpointUpload{id, u.bucket, u.key, u.contentType, u.metadata, u.createdAt, len(u.parts)}
+		if err := enc.Encode(row); err != nil {
+			return err
+		}
+		for _, number := range slices.Sorted(maps.Keys(u.parts)) {
+			p := u.parts[number]
+			if err := enc.Encode(namespaceCheckpointPart{number, p.size, p.etag, p.chunks, p.uploadedAt}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+const maxNamespaceCheckpointRow = 1 << 20
+
+var errNamespaceCheckpointObject = errors.New("checkpoint: invalid object encoding")
+
+func appendCheckpointObject(buf []byte, key string, root *objectEntry) []byte {
+	buf = append(buf, root.manifestSHA256[:]...)
+	buf = binary.AppendUvarint(buf, uint64(root.size))
+	buf = binary.AppendUvarint(buf, root.seq)
+	for _, value := range [...]string{key, root.manifestUUID, root.etag, root.contentType} {
+		buf = binary.AppendUvarint(buf, uint64(len(value)))
+		buf = append(buf, value...)
+	}
+	return buf
+}
+
+func readCheckpointObject(row []byte, intern *strIntern) (string, objectEntry, error) {
+	if len(row) < sha256.Size {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	var root objectEntry
+	copy(root.manifestSHA256[:], row[:sha256.Size])
+	values := row[sha256.Size:]
+	size, n := binary.Uvarint(values)
+	if n < 1 || int64(size) < 0 {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	root.size = int64(size)
+	values = values[n:]
+	root.seq, n = binary.Uvarint(values)
+	if n < 1 {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	values = values[n:]
+	var strings [4][]byte
+	for i := range strings {
+		length, n := binary.Uvarint(values)
+		if n < 1 || length > uint64(len(values)-n) {
+			return "", objectEntry{}, errNamespaceCheckpointObject
+		}
+		strings[i] = values[n : n+int(length)]
+		values = values[n+int(length):]
+	}
+	if len(values) != 0 {
+		return "", objectEntry{}, errNamespaceCheckpointObject
+	}
+	root.manifestUUID = string(strings[1])
+	root.etag = string(strings[2])
+	root.contentType = intern.get(strings[3])
+	return string(strings[0]), root, nil
+}
+
+func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error) {
+	f, err := os.Open(filepath.Join(s.root, "journal", namespaceCheckpointName))
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, 0, err
+	}
+	end := info.Size() - sha256.Size
+	if end <= int64(len(namespaceCheckpointMagic)) {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	hash := sha256.New()
+	if n, err := io.Copy(hash, io.NewSectionReader(f, 0, end)); err != nil || n != end {
+		return 0, 0, fmt.Errorf("checkpoint: unable to read complete body")
+	}
+	var want [sha256.Size]byte
+	if _, err := f.ReadAt(want[:], end); err != nil || !bytes.Equal(want[:], hash.Sum(nil)) {
+		return 0, 0, errors.New("checkpoint: checksum mismatch")
+	}
+	input := bufio.NewReaderSize(io.NewSectionReader(f, 0, end), journalReadBuffer)
+	var magic [len(namespaceCheckpointMagic)]byte
+	if _, err := io.ReadFull(input, magic[:]); err != nil || string(magic[:]) != namespaceCheckpointMagic {
+		return 0, 0, errors.New("checkpoint: unrecognized format")
+	}
+	dec := gob.NewDecoder(input)
+	var hdr namespaceCheckpointHeader
+	if err := dec.Decode(&hdr); err != nil {
+		return 0, 0, err
+	}
+	if hdr.StoreID != s.format.StoreID || hdr.Buckets < 0 || hdr.Histories < 0 || hdr.Uploads < 0 ||
+		(hdr.Sequence == 0) != (hdr.Offset == 0) {
+		return 0, 0, errors.New("checkpoint: invalid header")
+	}
+	prefix, crc, err := journalCheckpointDigest(journal, hdr.Offset)
+	if err != nil || prefix != hdr.PrefixSHA || crc != hdr.LastCRC {
+		return 0, 0, errors.New("checkpoint: journal prefix changed")
+	}
+	staged := &Store{buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{},
+		history: map[string]map[string][]*historyVersionEntry{}, replayIn: s.replayIn}
+	if err := staged.decodeNamespaceCheckpoint(dec, input, hdr, end); err != nil {
+		return 0, 0, err
+	}
+	var extra namespaceCheckpointBucket
+	if err := dec.Decode(&extra); err != io.EOF {
+		return 0, 0, errors.New("checkpoint: trailing namespace data")
+	}
+	s.buckets, s.history, s.uploads = staged.buckets, staged.history, staged.uploads
+	return hdr.Offset, hdr.Sequence, nil
+}
+
+func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr namespaceCheckpointHeader, checkpointBytes int64) error {
+	// Every object row requires a length prefix, digest and at least six scalar fields.
+	// Bound the aggregate map hint before allocating from serialized object counts.
+	const minObjectRow = 4 + sha256.Size + 6
+	remainingObjectRows := checkpointBytes / minObjectRow
+	var rowBuffer []byte
+	var prefix [4]byte
+	for range hdr.Buckets {
+		var b namespaceCheckpointBucket
+		if err := dec.Decode(&b); err != nil {
+			return err
+		}
+		if b.Name == "" || b.Objects < 0 || int64(b.Objects) > remainingObjectRows || s.buckets[b.Name] != nil {
+			return errors.New("checkpoint: invalid bucket")
+		}
+		remainingObjectRows -= int64(b.Objects)
+		objects := make(map[string]*objectEntry, min(b.Objects, 1<<20))
+		entry := &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created, objects: objects}
+		for range b.Objects {
+			if _, err := io.ReadFull(input, prefix[:]); err != nil {
+				return err
+			}
+			n := binary.LittleEndian.Uint32(prefix[:])
+			if n > maxNamespaceCheckpointRow {
+				return errors.New("checkpoint: invalid object root length")
+			}
+			rowBuffer = slices.Grow(rowBuffer[:0], int(n))[:n]
+			if _, err := io.ReadFull(input, rowBuffer); err != nil {
+				return err
+			}
+			key, root, err := readCheckpointObject(rowBuffer, s.replayIn)
+			if err != nil {
+				return err
+			}
+			if root.seq == 0 || root.seq > hdr.Sequence || entry.objects[key] != nil {
+				return errors.New("checkpoint: invalid object root")
+			}
+			entry.objects[key] = &root
+		}
+		s.buckets[entry.name] = entry
+	}
+	for range hdr.Histories {
+		var item namespaceCheckpointHistory
+		if err := dec.Decode(&item); err != nil {
+			return err
+		}
+		if item.Bucket == "" || item.Count < 1 || len(s.history[item.Bucket][item.Key]) != 0 {
+			return errors.New("checkpoint: invalid history key")
+		}
+		bucket := s.replayIn.get([]byte(item.Bucket))
+		if s.history[bucket] == nil {
+			s.history[bucket] = map[string][]*historyVersionEntry{}
+		}
+		var previous uint64
+		versions := make([]*historyVersionEntry, 0, min(item.Count, 1024))
+		for range item.Count {
+			var row namespaceCheckpointVersion
+			if err := dec.Decode(&row); err != nil {
+				return err
+			}
+			root := row.Root
+			if root.Sequence <= previous || root.Sequence > hdr.Sequence || root.Size < 0 {
+				return errors.New("checkpoint: invalid history order or size")
+			}
+			previous = root.Sequence
+			versions = append(versions, &historyVersionEntry{
+				versionID: row.ID, manifestUUID: root.Manifest, manifestSHA256: root.Digest,
+				size: root.Size, etag: root.ETag, contentType: s.replayIn.get([]byte(root.ContentType)),
+				archivedAt: row.Archive, reason: s.replayIn.get([]byte(row.Reason)), seq: root.Sequence,
+			})
+		}
+		s.history[bucket][item.Key] = versions
+	}
+	for range hdr.Uploads {
+		var row namespaceCheckpointUpload
+		if err := dec.Decode(&row); err != nil {
+			return err
+		}
+		if row.ID == "" || row.Parts < 0 || row.Parts > 10000 || s.uploads[row.ID] != nil {
+			return errors.New("checkpoint: invalid multipart upload")
+		}
+		u := &multipartUpload{uploadID: row.ID, bucket: row.Bucket, key: row.Key, contentType: row.ContentType,
+			metadata: row.Metadata, createdAt: row.Created, parts: map[int]*multipartPart{}}
+		for range row.Parts {
+			var part namespaceCheckpointPart
+			if err := dec.Decode(&part); err != nil {
+				return err
+			}
+			if part.Number < 1 || part.Number > 10000 || part.Size < 0 || u.parts[part.Number] != nil {
+				return errors.New("checkpoint: invalid multipart part")
+			}
+			u.parts[part.Number] = &multipartPart{
+				partNumber: part.Number, size: part.Size, etag: part.ETag, chunks: part.Chunks, uploadedAt: part.Uploaded,
+			}
+		}
+		s.uploads[row.ID] = u
+	}
+	return nil
 }
 
 func supportedStoreFormat(v int) bool {
@@ -25638,10 +26066,33 @@ func newHardenedHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
+func runNamespaceCheckpoint(args []string) {
+	fs := flag.NewFlagSet("namespace-checkpoint", flag.ExitOnError)
+	root := fs.String("store", "./zeros3-data", "path to an existing offline store")
+	fs.Parse(args)
+	if _, err := os.Stat(filepath.Join(*root, "FORMAT.json")); err != nil {
+		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
+	}
+	lock, err := acquireStoreLock(*root, true)
+	if err != nil {
+		log.Fatalf("zeros3: namespace-checkpoint needs exclusive access: %v", err)
+	}
+	defer lock.release()
+	s, err := OpenStoreShared(*root)
+	if err != nil {
+		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
+	}
+	defer s.Close()
+	if err := s.writeNamespaceCheckpoint(); err != nil {
+		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
+	}
+}
+
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	addr := fs.String("addr", "127.0.0.1:9000", "listen address")
+	checkpoint := fs.Bool("namespace-checkpoint", false, "use a validated offline namespace checkpoint if available")
 	vhostBase := fs.String("vhost-base", "", "base domain for virtual-hosted-style addressing (bucket.<base>); empty disables it and only path-style is served")
 	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID clients must sign with (default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key clients must sign with (default: AWS_SECRET_ACCESS_KEY)")
@@ -25672,7 +26123,18 @@ func runServe(args []string) {
 		os.Exit(2)
 	}
 
-	store, err := OpenStore(*storeDir)
+	// A running server holds a SHARED advisory lock on the store for its
+	// whole lifetime -- see section 13b -- so that destructive `gc -apply`
+	// (which requires EXCLUSIVE ownership) refuses safely instead of
+	// racing a live writer, rather than the server refusing to start
+	// merely because some other ordinary reader has the store open.
+	lock, err := acquireStoreLock(*storeDir, false)
+	if err != nil {
+		log.Fatalf("zeros3: failed to acquire store lock (a destructive `gc -apply` may currently be running against this store): %v", err)
+	}
+	defer lock.release()
+
+	store, err := openStore(*storeDir, true, *checkpoint)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -25684,17 +26146,6 @@ func runServe(args []string) {
 			store.enableRepDeferred(*repWorkers, *repQueueMax)
 		}
 	}
-
-	// A running server holds a SHARED advisory lock on the store for its
-	// whole lifetime -- see section 13b -- so that destructive `gc -apply`
-	// (which requires EXCLUSIVE ownership) refuses safely instead of
-	// racing a live writer, rather than the server refusing to start
-	// merely because some other ordinary reader has the store open.
-	lock, err := acquireStoreLock(*storeDir, false)
-	if err != nil {
-		log.Fatalf("zeros3: failed to acquire store lock (a destructive `gc -apply` may currently be running against this store): %v", err)
-	}
-	defer lock.release()
 
 	srv := NewServer(store, Credentials{
 		AccessKeyID:     *accessKey,
@@ -67323,6 +67774,8 @@ func main() {
 	switch cmd {
 	case "serve":
 		runServe(args)
+	case "namespace-checkpoint":
+		runNamespaceCheckpoint(args)
 	case "stats":
 		runStats(args)
 	case "verify":

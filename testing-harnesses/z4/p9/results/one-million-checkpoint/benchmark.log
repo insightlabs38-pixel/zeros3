@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkNamespaceCheckpointOpen/journal-2         	       2	27676564438 ns/op	1345407520 B/op	13011395 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkNamespaceCheckpointOpen/checkpoint-2         	       2	10163031070 ns/op	1059527988 B/op	 9708730 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkNamespaceCheckpointOpen/checkpoint-2         	       2	7290429701 ns/op	1059455552 B/op	 9708733 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkNamespaceCheckpointOpen/journal-2         	       2	13067491052 ns/op	1344494848 B/op	13011354 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkNamespaceCheckpointOpen/journal-2         	       2	11707752498 ns/op	1346692448 B/op	13011462 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkNamespaceCheckpointOpen/checkpoint-2         	       2	10618719236 ns/op	1060272120 B/op	 9708768 allocs/op
+PASS

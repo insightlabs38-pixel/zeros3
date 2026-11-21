@@ -1,0 +1,12 @@
+{
+  "blocks": 2739,
+  "build_ms": 7924,
+  "lookup_p50_us": 15.636,
+  "lookup_p95_us": 79.645,
+  "manifest_sha256": "d6c9e869a1f99c7a312b7b163d59a057bed9ebda3b41c0299c93c0990594802f",
+  "open_allocated_bytes": 982656,
+  "open_us": 3544,
+  "random_visible_or_deleted_lookups_exact": 3894,
+  "table_bytes": 27632402,
+  "visible_rows_exact": 701053
+}

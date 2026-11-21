@@ -1,0 +1,22 @@
+File: zeros3.test
+Build ID: 87d7606909c0a18380d4ff622c5728c2768f7f17
+Type: inuse_space
+Time: 2026-11-20 19:56:19 EST
+Showing nodes accounting for 392.10MB, 100% of 392.10MB total
+Showing top 15 nodes out of 18
+      flat  flat%   sum%        cum   cum%
+  112.16MB 28.60% 28.60%   290.36MB 74.05%  zeros3.(*Store).applyRecord
+   99.19MB 25.30% 53.90%   101.23MB 25.82%  zeros3.loadPackState
+   71.20MB 18.16% 72.06%    71.20MB 18.16%  zeros3.(*Store).archiveVersionLocked
+   65.50MB 16.71% 88.76%    65.50MB 16.71%  zeros3.decodePutV2Fast.func1
+      40MB 10.20% 98.97%       40MB 10.20%  zeros3.decodeArchivedFast.func1
+    2.04MB  0.52% 99.49%     2.04MB  0.52%  zeros3.buildLocIndex
+    1.50MB  0.38% 99.87%    41.50MB 10.58%  zeros3.decodeDeleteV2Fast.func1
+    0.51MB  0.13%   100%   392.10MB   100%  zeros3.openStore
+         0     0%   100%   392.10MB   100%  testing.tRunner
+         0     0%   100%   101.23MB 25.82%  zeros3.(*Store).reloadPacks
+         0     0%   100%     2.04MB  0.52%  zeros3.(*packState).index
+         0     0%   100%   392.10MB   100%  zeros3.TestNamespaceOpenLiveHeap
+         0     0%   100%       40MB 10.20%  zeros3.decodeArchivedFast
+         0     0%   100%    41.50MB 10.58%  zeros3.decodeDeleteV2Fast
+         0     0%   100%    65.50MB 16.71%  zeros3.decodePutV2Fast

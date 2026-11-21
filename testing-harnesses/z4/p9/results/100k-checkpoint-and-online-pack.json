@@ -1,0 +1,248 @@
+{
+  "epoch_tests": [
+    "=== RUN   TestLeaseAndConcurrentCommitReconciliation",
+    "--- PASS: TestLeaseAndConcurrentCommitReconciliation (0.00s)",
+    "=== RUN   TestMixedVerifiedReadsDuringPackPublication",
+    "    store_test.go:150: 192 writes, 768 independently checked concurrent reads and 32 publications in 101.920325ms",
+    "--- PASS: TestMixedVerifiedReadsDuringPackPublication (0.11s)",
+    "=== RUN   TestLeaseAndConcurrentCommitReconciliation",
+    "--- PASS: TestLeaseAndConcurrentCommitReconciliation (0.00s)",
+    "=== RUN   TestMixedVerifiedReadsDuringPackPublication",
+    "    store_test.go:150: 192 writes, 768 independently checked concurrent reads and 32 publications in 291.379136ms",
+    "--- PASS: TestMixedVerifiedReadsDuringPackPublication (0.30s)",
+    "=== RUN   TestLeaseAndConcurrentCommitReconciliation",
+    "--- PASS: TestLeaseAndConcurrentCommitReconciliation (0.00s)",
+    "=== RUN   TestMixedVerifiedReadsDuringPackPublication",
+    "    store_test.go:150: 192 writes, 768 independently checked concurrent reads and 32 publications in 167.520634ms",
+    "--- PASS: TestMixedVerifiedReadsDuringPackPublication (0.18s)",
+    "PASS",
+    "ok  \tzeros3-z4/p9/epoch\t1.621s"
+  ],
+  "fixture_retry": {
+    "deep_verify": {
+      "authorities_verified": 0,
+      "authority_bodies": 0,
+      "authority_orphan_bodies": 0,
+      "chunks_checked": 799,
+      "corrupt": 0,
+      "current_root_count": 799,
+      "deep": true,
+      "historical_root_count": 0,
+      "invalid": 0,
+      "issues": null,
+      "journal_frames_checked": 800,
+      "journal_ok": true,
+      "manifests_checked": 799,
+      "missing": 0,
+      "multipart_root_count": 0,
+      "packs_checked": 1,
+      "reclaimable_bytes": 0,
+      "representation_orphan_roots": 0,
+      "representation_roots": 0,
+      "representations_verified": 0,
+      "snapshot_root_count": 0,
+      "unreachable_chunks": 0,
+      "unreachable_manifests": 0
+    },
+    "run": {
+      "binary_sha256": "24dd66711b85cb6f3614d6aab8db328068804af2c2acfd5c2d6c3717c89a939e",
+      "ingest_s": 0.136733021,
+      "label": "run",
+      "logical_bytes": 818176,
+      "object_bytes": 1024,
+      "objects": 799,
+      "resumed_objects": 676,
+      "sampled_exact_reads": 799,
+      "scenario": "mkstream",
+      "seed": 910035,
+      "store": {
+        "ChunkFiles": 0,
+        "Chunks": 0,
+        "Files": 7,
+        "Journal": 288535,
+        "Other": 1387456,
+        "PackFiles": 0,
+        "Packs": 0,
+        "Tmp": 0,
+        "Total": 1675991
+      },
+      "store_id": "01a1fb61-a579-76d6-819a-3971a0cee41b",
+      "ts": "2026-11-20T23:55:54Z"
+    },
+    "versions": [
+      {
+        "content_type": "application/octet-stream",
+        "etag": "c64593c4ff8502606a32ba27d86b64e5",
+        "size": 1024,
+        "status": "current",
+        "timestamp": "",
+        "version_id": "01a1fb61-aa69-73ca-8b6f-9bcc6b7fa883"
+      }
+    ]
+  },
+  "v1": {
+    "fixture": {
+      "binary_sha256": "24dd66711b85cb6f3614d6aab8db328068804af2c2acfd5c2d6c3717c89a939e",
+      "ingest_s": 483.799690864,
+      "label": "run",
+      "logical_bytes": 25600000,
+      "object_bytes": 256,
+      "objects": 100000,
+      "resumed_objects": 0,
+      "sampled_exact_reads": 102,
+      "scenario": "mkstream",
+      "seed": 910035,
+      "store": {
+        "ChunkFiles": 0,
+        "Chunks": 0,
+        "Files": 9,
+        "Journal": 36000096,
+        "Other": 351,
+        "PackFiles": 3,
+        "Packs": 98089322,
+        "Tmp": 0,
+        "Total": 134089769
+      },
+      "store_id": "01a1fb63-59fb-79d0-90db-aaf6b69d1437",
+      "ts": "2026-11-21T00:04:17Z"
+    },
+    "journal_files": [
+      "total 52484",
+      "-rw------- 1 agent agent 17733283 Nov 20 19:05 namespace-v1.zck",
+      "-rw------- 1 agent agent 36000096 Nov 20 19:04 visibility.log"
+    ],
+    "runs": [
+      {
+        "allocated": 103153618,
+        "allocs": 1001444,
+        "mode": "journal",
+        "ns": 1625425056
+      },
+      {
+        "allocated": 103153378,
+        "allocs": 1001443,
+        "mode": "journal",
+        "ns": 1429452686
+      },
+      {
+        "allocated": 103149296,
+        "allocs": 1001442,
+        "mode": "journal",
+        "ns": 1134747809
+      },
+      {
+        "allocated": 115230221,
+        "allocs": 1001720,
+        "mode": "checkpoint",
+        "ns": 2732039970
+      },
+      {
+        "allocated": 115221493,
+        "allocs": 1001716,
+        "mode": "checkpoint",
+        "ns": 2870695967
+      },
+      {
+        "allocated": 115221085,
+        "allocs": 1001715,
+        "mode": "checkpoint",
+        "ns": 2066529990
+      }
+    ]
+  },
+  "v2": {
+    "fixture": {
+      "binary_sha256": "24dd66711b85cb6f3614d6aab8db328068804af2c2acfd5c2d6c3717c89a939e",
+      "ingest_s": 483.799690864,
+      "label": "run",
+      "logical_bytes": 25600000,
+      "object_bytes": 256,
+      "objects": 100000,
+      "resumed_objects": 0,
+      "sampled_exact_reads": 102,
+      "scenario": "mkstream",
+      "seed": 910035,
+      "store": {
+        "ChunkFiles": 0,
+        "Chunks": 0,
+        "Files": 9,
+        "Journal": 36000096,
+        "Other": 351,
+        "PackFiles": 3,
+        "Packs": 98089322,
+        "Tmp": 0,
+        "Total": 134089769
+      },
+      "store_id": "01a1fb63-59fb-79d0-90db-aaf6b69d1437",
+      "ts": "2026-11-21T00:04:17Z"
+    },
+    "journal_files": [
+      "total 49896",
+      "-rw------- 1 agent agent 15083937 Nov 20 19:13 namespace-v2.zck",
+      "-rw------- 1 agent agent 36000096 Nov 20 19:04 visibility.log"
+    ],
+    "legacy_verify": {
+      "authorities_verified": 0,
+      "authority_bodies": 0,
+      "authority_orphan_bodies": 0,
+      "chunks_checked": 100000,
+      "corrupt": 0,
+      "current_root_count": 100000,
+      "deep": true,
+      "historical_root_count": 0,
+      "invalid": 0,
+      "issues": null,
+      "journal_frames_checked": 100001,
+      "journal_ok": true,
+      "manifests_checked": 100000,
+      "missing": 0,
+      "multipart_root_count": 0,
+      "packs_checked": 3,
+      "reclaimable_bytes": 0,
+      "representation_orphan_roots": 0,
+      "representation_roots": 0,
+      "representations_verified": 0,
+      "snapshot_root_count": 0,
+      "unreachable_chunks": 0,
+      "unreachable_manifests": 0
+    },
+    "runs": [
+      {
+        "allocated": 103146549,
+        "allocs": 1001441,
+        "mode": "journal",
+        "ns": 3874139902
+      },
+      {
+        "allocated": 103151197,
+        "allocs": 1001444,
+        "mode": "journal",
+        "ns": 3084455642
+      },
+      {
+        "allocated": 103152229,
+        "allocs": 1001441,
+        "mode": "journal",
+        "ns": 3653504355
+      },
+      {
+        "allocated": 77487994,
+        "allocs": 701674,
+        "mode": "checkpoint",
+        "ns": 1937452261
+      },
+      {
+        "allocated": 77476250,
+        "allocs": 701675,
+        "mode": "checkpoint",
+        "ns": 1581389332
+      },
+      {
+        "allocated": 77474626,
+        "allocs": 701674,
+        "mode": "checkpoint",
+        "ns": 3319861396
+      }
+    ]
+  }
+}

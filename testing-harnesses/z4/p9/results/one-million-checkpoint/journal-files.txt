@@ -1,0 +1,4 @@
+total 826736
+-rw------- 1 agent agent 195570479 Nov 20 19:30 namespace-v1.zck
+-rw------- 1 agent agent 176676394 Nov 20 19:32 namespace-v2.zck
+-rw------- 1 agent agent 474318153 Nov 20 19:30 visibility.log
