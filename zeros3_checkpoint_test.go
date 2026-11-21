@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"testing"
@@ -359,4 +360,32 @@ func BenchmarkNamespaceCheckpointOpen(b *testing.B) {
 			}
 		})
 	}
+}
+
+// Profile one held-open store so the heap profile retains its live namespace and locators.
+func TestNamespaceOpenLiveHeap(t *testing.T) {
+	dir, dest := os.Getenv("ZEROS3_P3_STORE"), os.Getenv("ZEROS3_P9_HEAP_PROFILE")
+	if dir == "" || dest == "" {
+		t.Skip("set ZEROS3_P3_STORE and ZEROS3_P9_HEAP_PROFILE to profile an offline fixture")
+	}
+	mode := os.Getenv("ZEROS3_P9_PROFILE_MODE")
+	if mode != "journal" && mode != "checkpoint" {
+		t.Fatal("ZEROS3_P9_PROFILE_MODE must be journal or checkpoint")
+	}
+	s, err := openStore(dir, false, mode == "checkpoint")
+	mustOK(t, err)
+	defer s.Close()
+
+	runtime.GC()
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	mustOK(t, err)
+	err = pprof.WriteHeapProfile(f)
+	closeErr := f.Close()
+	mustOK(t, err)
+	mustOK(t, closeErr)
+	t.Logf("%s heap live %d bytes in %d objects, allocation total %d bytes", mode,
+		stats.HeapAlloc, stats.HeapObjects, stats.TotalAlloc)
+	runtime.KeepAlive(s)
 }

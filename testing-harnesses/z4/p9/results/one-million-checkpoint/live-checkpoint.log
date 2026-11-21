@@ -1,0 +1,4 @@
+=== RUN   TestNamespaceOpenLiveHeap
+    zeros3_checkpoint_test.go:388: checkpoint heap live 389901728 bytes in 4751931 objects, allocation total 1060032496 bytes
+--- PASS: TestNamespaceOpenLiveHeap (22.41s)
+PASS

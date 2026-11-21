@@ -1,0 +1,23 @@
+File: zeros3.test
+Build ID: 31183b64164fa0cc0ce1ae21f5382129ece4f798
+Type: inuse_space
+Time: 2026-11-20 20:01:28 EST
+Showing nodes accounting for 349.37MB, 99.86% of 349.87MB total
+Dropped 4 nodes (cum <= 1.75MB)
+Showing top 15 nodes out of 17
+      flat  flat%   sum%        cum   cum%
+  152.64MB 43.63% 43.63%   248.14MB 70.92%  zeros3.(*Store).decodeNamespaceCheckpoint
+   99.19MB 28.35% 71.98%   101.23MB 28.93%  zeros3.loadPackState
+      60MB 17.15% 89.13%       60MB 17.15%  zeros3.readCheckpointObject
+   35.50MB 10.15% 99.27%    35.50MB 10.15%  encoding/gob.decString
+    2.04MB  0.58% 99.86%     2.04MB  0.58%  zeros3.buildLocIndex
+         0     0% 99.86%    35.50MB 10.15%  encoding/gob.(*Decoder).Decode
+         0     0% 99.86%    35.50MB 10.15%  encoding/gob.(*Decoder).DecodeValue
+         0     0% 99.86%       18MB  5.14%  encoding/gob.(*Decoder).decOpFor.func4
+         0     0% 99.86%    35.50MB 10.15%  encoding/gob.(*Decoder).decodeStruct
+         0     0% 99.86%    35.50MB 10.15%  encoding/gob.(*Decoder).decodeValue
+         0     0% 99.86%   349.37MB 99.86%  testing.tRunner
+         0     0% 99.86%   248.14MB 70.92%  zeros3.(*Store).loadNamespaceCheckpoint
+         0     0% 99.86%   101.23MB 28.93%  zeros3.(*Store).reloadPacks
+         0     0% 99.86%     2.04MB  0.58%  zeros3.(*packState).index
+         0     0% 99.86%   349.37MB 99.86%  zeros3.TestNamespaceOpenLiveHeap

@@ -90,38 +90,38 @@ import (
 //     5588    Manifests (immutable, JSON)
 //     6384    Visibility journal (append-only, checksummed)
 //     6901    Store: format, namespace, and object CRUD
-//     8752    Version history/restore, history pruning, ListObjectsV2
-//     9233    SigV4 authentication (header and presigned-URL)
-//    10210    Request payload checksums and S3-shaped XML error/response types
-//    10427    HTTP routing and S3 operation handlers
-//    10843    Conditional operations (PUT/GET/HEAD preconditions)
-//    11538    CopyObject
-//    11843    Multipart upload
-//    12783    Stats and reachability scanning
-//    14258    Verify
-//    14471    Store locking and safe offline GC
-//    14774    Offline compaction (`zeros3 compact`)
-//    15840    Pack reclamation and repacking (`zeros3 repack`)
-//    16325    Physical tiers: status and pack movement (`zeros3 tier`)
-//    16838    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    17903    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    18707    Delta sync client, credentials, and parallel transfer
-//    20701    Bulk logical-chunk transport (v2)
-//    21612    Recursive directory sync
-//    21917    Remote replication (`zeros3 replicate`)
-//    22676    Peer-assisted corruption repair (`zeros3 repair`)
-//    23244    Namespace (prefix/bucket) replication
-//    23551    Copy-on-write namespace fork (`zeros3 fork`)
-//    23759    Snapshots and restore
-//    24920    Structural diff and inspect (introspection)
-//    26282    Portable snapshot bundles (`zeros3 bundle`)
-//    27479    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    28114    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    45186    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    49708    Windowed and estimated similarity deltas (extracted dcore)
-//    51237    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    58877    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    65149    CLI dispatch, HTTP server/startup, and main
+//     8760    Version history/restore, history pruning, ListObjectsV2
+//     9241    SigV4 authentication (header and presigned-URL)
+//    10218    Request payload checksums and S3-shaped XML error/response types
+//    10435    HTTP routing and S3 operation handlers
+//    10851    Conditional operations (PUT/GET/HEAD preconditions)
+//    11546    CopyObject
+//    11851    Multipart upload
+//    12791    Stats and reachability scanning
+//    14266    Verify
+//    14479    Store locking and safe offline GC
+//    14782    Offline compaction (`zeros3 compact`)
+//    15848    Pack reclamation and repacking (`zeros3 repack`)
+//    16333    Physical tiers: status and pack movement (`zeros3 tier`)
+//    16846    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    17911    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    18715    Delta sync client, credentials, and parallel transfer
+//    20709    Bulk logical-chunk transport (v2)
+//    21620    Recursive directory sync
+//    21925    Remote replication (`zeros3 replicate`)
+//    22684    Peer-assisted corruption repair (`zeros3 repair`)
+//    23252    Namespace (prefix/bucket) replication
+//    23559    Copy-on-write namespace fork (`zeros3 fork`)
+//    23767    Snapshots and restore
+//    24928    Structural diff and inspect (introspection)
+//    26290    Portable snapshot bundles (`zeros3 bundle`)
+//    27487    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    28122    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    45194    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    49716    Windowed and estimated similarity deltas (extracted dcore)
+//    51245    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    58885    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    65157    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -7456,7 +7456,7 @@ func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error)
 	}
 	staged := &Store{buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{},
 		history: map[string]map[string][]*historyVersionEntry{}, replayIn: s.replayIn}
-	if err := staged.decodeNamespaceCheckpoint(dec, input, hdr); err != nil {
+	if err := staged.decodeNamespaceCheckpoint(dec, input, hdr, end); err != nil {
 		return 0, 0, err
 	}
 	var extra namespaceCheckpointBucket
@@ -7467,19 +7467,25 @@ func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error)
 	return hdr.Offset, hdr.Sequence, nil
 }
 
-func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr namespaceCheckpointHeader) error {
+func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr namespaceCheckpointHeader, checkpointBytes int64) error {
+	// Every object row requires a length prefix, digest and at least six scalar fields.
+	// Bound the aggregate map hint before allocating from serialized object counts.
+	const minObjectRow = 4 + sha256.Size + 6
+	remainingObjectRows := checkpointBytes / minObjectRow
 	var rowBuffer []byte
+	var prefix [4]byte
 	for range hdr.Buckets {
 		var b namespaceCheckpointBucket
 		if err := dec.Decode(&b); err != nil {
 			return err
 		}
-		if b.Name == "" || b.Objects < 0 || s.buckets[b.Name] != nil {
+		if b.Name == "" || b.Objects < 0 || int64(b.Objects) > remainingObjectRows || s.buckets[b.Name] != nil {
 			return errors.New("checkpoint: invalid bucket")
 		}
-		entry := &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created, objects: map[string]*objectEntry{}}
+		remainingObjectRows -= int64(b.Objects)
+		objects := make(map[string]*objectEntry, min(b.Objects, 1<<20))
+		entry := &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created, objects: objects}
 		for range b.Objects {
-			var prefix [4]byte
 			if _, err := io.ReadFull(input, prefix[:]); err != nil {
 				return err
 			}
@@ -7515,6 +7521,7 @@ func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr
 			s.history[bucket] = map[string][]*historyVersionEntry{}
 		}
 		var previous uint64
+		versions := make([]*historyVersionEntry, 0, min(item.Count, 1024))
 		for range item.Count {
 			var row namespaceCheckpointVersion
 			if err := dec.Decode(&row); err != nil {
@@ -7525,12 +7532,13 @@ func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr
 				return errors.New("checkpoint: invalid history order or size")
 			}
 			previous = root.Sequence
-			s.history[bucket][item.Key] = append(s.history[bucket][item.Key], &historyVersionEntry{
+			versions = append(versions, &historyVersionEntry{
 				versionID: row.ID, manifestUUID: root.Manifest, manifestSHA256: root.Digest,
 				size: root.Size, etag: root.ETag, contentType: s.replayIn.get([]byte(root.ContentType)),
-				archivedAt: row.Archive, reason: row.Reason, seq: root.Sequence,
+				archivedAt: row.Archive, reason: s.replayIn.get([]byte(row.Reason)), seq: root.Sequence,
 			})
 		}
+		s.history[bucket][item.Key] = versions
 	}
 	for range hdr.Uploads {
 		var row namespaceCheckpointUpload
