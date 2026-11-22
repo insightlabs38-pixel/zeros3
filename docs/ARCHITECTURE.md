@@ -101,6 +101,14 @@ exist without being visible through S3.
 This separation is central to crash safety. A failed request may leave
 unreachable immutable data, but it must not publish a partial object.
 
+In memory the namespace is an immutable paged table (a generation file read
+through a sparse page directory and a bounded page cache) plus sorted overlays
+for what changed since, merged in key order by reads and listings. A generation
+published as `journal/namespace-v4.zck` is derived state bound to a journal
+prefix by per-block SHA-256; opening it replays only the journal suffix, and a
+missing, stale or damaged one falls back to full replay. A damaged page found
+later fails reads explicitly instead of answering from a partial view.
+
 ## Write path
 
 The common logical write path is:

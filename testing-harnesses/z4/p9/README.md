@@ -1,28 +1,24 @@
 # Durability and namespace scale
 
-## Offline namespace checkpoint
+## Namespace checkpoint
 
-`zeros3 namespace-checkpoint -store DIR` takes the exclusive store lock,
-replays the complete journal and writes a derived checkpoint. It fsyncs a
-staging file, renames it into the journal directory, then fsyncs that directory.
-The fixed name replaces the previous checkpoint atomically. Each checkpoint
-covers buckets, visible objects, retained history and incomplete multipart
-uploads, with no locator data. The store format and journal remain compatible
-with binaries that ignore the checkpoint.
+`zeros3 namespace-checkpoint -store DIR` takes the exclusive store lock, opens
+the store (through its existing checkpoint when it is still valid), folds the
+journal suffix in and publishes `journal/namespace-v4.zck`: a paged generation
+of the visible namespace and retained history (see `testing-harnesses/next/b3`).
+It fsyncs a staging file, renames it into the journal directory, then fsyncs
+that directory. Each checkpoint covers buckets, visible objects, retained
+history and incomplete multipart uploads, with no locator data. The store
+format and journal remain compatible with binaries that ignore the checkpoint.
+`-compact-history` is accepted and ignored. V2 and V3 files are still read.
 
-`namespace-checkpoint -compact-history` writes a separate V3 checkpoint
-with binary retained-history rows. The writer preserves the V2 file.
-Checkpoint opens prefer a valid V3 and fall back to V2 or journal replay.
-The sequence, prefix hash, final-frame CRC and file digest checks apply
-to both layouts.
-
-`zeros3 serve -namespace-checkpoint -store DIR` opts into loading this
-derived state. The reader verifies its SHA-256 trailer, store ID, journal
-prefix SHA-256, offset, sequence and last-frame CRC before replaying the
-journal suffix. The full prefix hash catches earlier journal changes even
-when the final covered frame is intact. An invalid checkpoint falls back to
-the existing full replay. Verify, GC and repack continue to use full journal
-validation.
+`zeros3 serve -namespace-checkpoint -store DIR` opts into loading this derived
+state and into publishing a fresh generation in the background when the
+mutable overlay outgrows its bound. The reader verifies the file's SHA-256
+trailer, store ID, per-block SHA-256 of the covered journal prefix, offset,
+sequence and last-frame CRC before replaying the journal suffix into the
+overlay. An invalid checkpoint falls back to the existing full replay. Verify,
+GC and repack continue to use full journal validation.
 
 The focused race suite covers torn and corrupt checkpoint files, a changed
 early journal frame, foreign stores, tail PUT/DELETE/multipart records and
@@ -30,7 +26,7 @@ process cuts on both sides of the rename. The process cuts do not model
 physical power loss.
 
 ```sh
-go test -race -run '^Test(NamespaceCheckpoint|Journal)' .
+go test -race -run '^Test(NS|Namespace|Journal)' .
 zeros3 namespace-checkpoint -store "$FIXTURE"
 ZEROS3_P3_STORE="$FIXTURE" go test -run '^$' -bench '^BenchmarkNamespaceCheckpointOpen$' -benchmem -benchtime=2x -count=3 .
 ```

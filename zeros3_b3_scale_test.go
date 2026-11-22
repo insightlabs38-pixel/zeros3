@@ -7,6 +7,8 @@ package main
 //	ZEROS3_B3_BUILD=DIR [ZEROS3_B3_N=1000000]  go test -run '^TestB3BuildFixture$' .
 //	ZEROS3_B3_APPEND=DIR ZEROS3_B3_SUFFIX=20000 go test -run '^TestB3AppendFixture$' .
 //	ZEROS3_B3_PROBE=DIR ZEROS3_B3_MODE=journal|checkpoint go test -run '^TestB3Probe$' -v .
+//	ZEROS3_B3_ROOTS=DIR go test -run '^TestB3RootsProbe$' -v .   (rootsLen is supplied per tree)
+//	ZEROS3_B3_TGZ=a,b,c go test -run '^TestB3AdmissionProbe$' -v .
 
 import (
 	"bytes"
@@ -21,6 +23,8 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -267,4 +271,119 @@ func fileSize(paths ...string) int64 {
 		}
 	}
 	return 0
+}
+
+// TestB3RootsProbe measures enumerating every manifest root of a large
+// namespace, the first step of a similarity index build or refresh.
+func TestB3RootsProbe(t *testing.T) {
+	dir := os.Getenv("ZEROS3_B3_ROOTS")
+	if dir == "" {
+		t.Skip("set ZEROS3_B3_ROOTS")
+	}
+	s, err := openStore(dir, false, true)
+	mustOK(t, err)
+	defer s.Close()
+	runtime.GC()
+	var base, end runtime.MemStats
+	runtime.ReadMemStats(&base)
+	var peak atomic.Uint64
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var m runtime.MemStats
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+				runtime.ReadMemStats(&m)
+				if m.HeapInuse > peak.Load() {
+					peak.Store(m.HeapInuse)
+				}
+			}
+		}
+	}()
+	start := time.Now()
+	roots, err := s.authSimilarityRoots(nil)
+	mustOK(t, err)
+	elapsed := time.Since(start)
+	close(stop)
+	<-done
+	runtime.ReadMemStats(&end)
+	n := rootsLen(roots)
+	runtime.GC()
+	var live runtime.MemStats
+	runtime.ReadMemStats(&live)
+	out := map[string]any{"roots": n, "ms": elapsed.Milliseconds(), "alloc_bytes": end.TotalAlloc - base.TotalAlloc,
+		"peak_heap_inuse_above_base": int64(peak.Load()) - int64(base.HeapInuse), "retained_bytes": int64(live.HeapAlloc) - int64(base.HeapAlloc)}
+	line, _ := json.Marshal(out)
+	fmt.Printf("B3ROOTS %s\n", line)
+	runtime.KeepAlive(roots)
+}
+
+func TestB3AdmissionProbe(t *testing.T) {
+	list := os.Getenv("ZEROS3_B3_TGZ")
+	if list == "" {
+		t.Skip("set ZEROS3_B3_TGZ")
+	}
+	var files [][]byte
+	var logical int64
+	for _, p := range strings.Split(list, ",") {
+		b, err := os.ReadFile(p)
+		mustOK(t, err)
+		files, logical = append(files, b), logical+int64(len(b))
+	}
+	lab := func() *authLab {
+		l := newAuthLab(t)
+		for i, b := range files {
+			l.put(fmt.Sprintf("v%d.tgz", i), b)
+		}
+		return l
+	}
+	out := map[string]any{"logical": logical}
+	cdc := lab()
+	cdc.offline(func() {
+		_, err := repackStore(cdc.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true, Recompress: true})
+		mustOK(t, err)
+	})
+	out["cdc_physical"] = dirBytes(t, cdc.dir)
+
+	l := lab()
+	sum := func(rep AuthReport) (added, cdcBytes int64, forms []string) {
+		for _, p := range rep.Plans {
+			added, cdcBytes, forms = added+p.AddedBytes, cdcBytes+p.CDCBytes, append(forms, p.Form)
+		}
+		return
+	}
+	ordinary, err := l.s.AuthorityMigrate(AuthPolicy{Order: "oldest", AllowRep: true, CodecReplay: true, NoZN7: true, MinSaving: 0.10})
+	mustOK(t, err)
+	a, c, f := sum(ordinary)
+	out["ordinary_forms"], out["ordinary_added"], out["ordinary_cdc"] = f, a, c
+	reasons := []string{}
+	for _, p := range ordinary.Plans {
+		reasons = append(reasons, p.Reason)
+	}
+	out["ordinary_reasons"] = reasons
+	forcedPlan, err := l.s.AuthorityMigrate(AuthPolicy{Order: "oldest", AllowRep: true, CodecReplay: true, NoZN7: true, MinSaving: -100})
+	mustOK(t, err)
+	fa, fc, _ := sum(forcedPlan)
+	out["forced_plan_added"], out["forced_plan_cdc"] = fa, fc
+	if fc > 0 {
+		out["forced_plan_saving"] = 1 - float64(fa)/float64(fc)
+	}
+	applied := lab()
+	applied.migrate(AuthPolicy{Strategy: "forced", AllowRep: true, MinSaving: -100, NoZN7: true, CodecReplay: true})
+	applied.offline(func() {
+		_, err := gcCollect(applied.dir, true)
+		mustOK(t, err)
+		_, err = repackStore(applied.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true, Recompress: true})
+		mustOK(t, err)
+		_, err = compactStore(applied.dir, authCompactOpts())
+		mustOK(t, err)
+	})
+	out["forced_physical"] = dirBytes(t, applied.dir)
+	out["actual_saving"] = 1 - float64(out["forced_physical"].(int64))/float64(out["cdc_physical"].(int64))
+	line, _ := json.Marshal(out)
+	fmt.Printf("B3ADMIT %s\n", line)
 }
