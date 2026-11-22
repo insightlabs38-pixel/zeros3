@@ -228,10 +228,8 @@ func TestP4DeferredSkipsManifestsThatLeftTheNamespace(t *testing.T) {
 	e, _ := repManifestOf(t, s, "b", "gone")
 	<-reached
 	// the key is deleted and its retained history pruned (what an offline prune does) before the build proceeds
-	s.mu.Lock()
-	delete(s.buckets["b"].objects, "gone")
-	delete(s.history, "b")
-	s.mu.Unlock()
+	s.tDelObj("b", "gone")
+	s.tClearHistory("b")
 	close(hold)
 	s.repQuiesce()
 	if repHasRoot(s, e.manifestUUID) {

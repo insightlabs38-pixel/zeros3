@@ -934,7 +934,7 @@ func TestManifest_CorruptOrMissingDetected(t *testing.T) {
 		t.Fatalf("expected error for a missing key")
 	}
 
-	obj := s.buckets["b"].objects["k"]
+	obj := s.tObj("b", "k")
 	tamperManifest(t, s, obj.manifestUUID, []byte("{not valid json"))
 	if _, _, err := s.GetObject("b", "k"); err == nil {
 		t.Fatalf("expected error reading a corrupt manifest")
@@ -5086,10 +5086,9 @@ func TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached(t *testing.T) {
 				if _, err := s.journal.appendFrame(recordTypePutObjectRoot, payloadGood); err != nil {
 					t.Fatal(err)
 				}
-				s.mu.Lock()
-				s.buckets["b"].objects["bad2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: wrongSHA, size: entry.size, etag: entry.etag, contentType: entry.contentType}
-				s.buckets["b"].objects["good2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: entry.manifestSHA256, size: entry.size, etag: entry.etag, contentType: entry.contentType}
-				s.mu.Unlock()
+				s.tSetObj("b", "bad2", &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: wrongSHA, size: entry.size, etag: entry.etag, contentType: entry.contentType})
+				s.tSetObj("b", "good2", &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: entry.manifestSHA256, size: entry.size, etag: entry.etag, contentType: entry.contentType})
+
 			} else {
 				if _, err := s.journal.appendFrame(recordTypePutObjectRoot, payloadGood); err != nil {
 					t.Fatal(err)
@@ -5097,10 +5096,9 @@ func TestVerify_PerRootManifestHashCheckedEvenWhenUUIDCached(t *testing.T) {
 				if _, err := s.journal.appendFrame(recordTypePutObjectRoot, payloadBad); err != nil {
 					t.Fatal(err)
 				}
-				s.mu.Lock()
-				s.buckets["b"].objects["good2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: entry.manifestSHA256, size: entry.size, etag: entry.etag, contentType: entry.contentType}
-				s.buckets["b"].objects["bad2"] = &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: wrongSHA, size: entry.size, etag: entry.etag, contentType: entry.contentType}
-				s.mu.Unlock()
+				s.tSetObj("b", "good2", &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: entry.manifestSHA256, size: entry.size, etag: entry.etag, contentType: entry.contentType})
+				s.tSetObj("b", "bad2", &objectEntry{manifestUUID: entry.manifestUUID, manifestSHA256: wrongSHA, size: entry.size, etag: entry.etag, contentType: entry.contentType})
+
 			}
 
 			res, err := s.Verify(false)
@@ -9922,8 +9920,8 @@ func TestPrune_DeletedBucketHistoryIsPruneable(t *testing.T) {
 	if n := len(historyFor(t, s2, "b", "k")); n != 0 {
 		t.Fatalf("history rows left: %d", n)
 	}
-	if len(s2.history) != 0 {
-		t.Fatalf("empty history maps not released: %+v", s2.history)
+	if hist, _ := s2.snapshotHistory(); len(hist) != 0 {
+		t.Fatalf("history left after prune: %d rows", len(hist))
 	}
 }
 
@@ -37104,10 +37102,10 @@ func tierRootSets(t *testing.T, s *Store) tierSets {
 			sets[sc][c.SHA256] = true
 		}
 	}
-	for _, o := range s.snapshotNamespace() {
+	for _, o := range s.snapshotNamespaceBestEffort() {
 		add(scopeCurrent, o.entry.manifestUUID)
 	}
-	for _, o := range s.snapshotHistory() {
+	for _, o := range s.snapshotHistoryBestEffort() {
 		add(scopeHistory, o.entry.manifestUUID)
 	}
 	snaps, _ := s.scanSnapshots()
@@ -37534,7 +37532,7 @@ func tierCheckFixture(t *testing.T, dir string) {
 		}
 	}
 	hist := map[string]bool{}
-	for _, o := range s.snapshotHistory() {
+	for _, o := range s.snapshotHistoryBestEffort() {
 		hist[string(tierManifestBytes(t, s, o.entry.manifestUUID))] = true
 	}
 	if len(hist) != 2 || !hist[string(tierJoin("a", "d"))] || !hist[string(tierJoin("a", "b"))] {
@@ -39214,7 +39212,7 @@ func bundleNamespaceFingerprint(s *Store) string {
 	for _, b := range s.ListBuckets() {
 		fmt.Fprintf(&sb, "bucket %s %s\n", b.name, b.createdAt.Format(time.RFC3339Nano))
 	}
-	for _, o := range s.snapshotNamespace() {
+	for _, o := range s.snapshotNamespaceBestEffort() {
 		fmt.Fprintf(&sb, "%s/%s %s %x %d %s %s %d\n", o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256, o.entry.size, o.entry.etag, o.entry.contentType, o.entry.seq)
 	}
 	return sb.String()

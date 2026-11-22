@@ -300,22 +300,16 @@ func setSmallObjectPolicyForTest(t *testing.T, on bool) {
 // store's current and historical roots (test-only: production callers always
 // hold the SHA from the root that names the manifest).
 func (s *Store) manifestSHAForTest(id string) ([32]byte, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, b := range s.buckets {
-		for _, o := range b.objects {
-			if o.manifestUUID == id {
-				return o.manifestSHA256, true
-			}
+	objs, _ := s.snapshotNamespace()
+	for _, o := range objs {
+		if o.entry.manifestUUID == id {
+			return o.entry.manifestSHA256, true
 		}
 	}
-	for _, keys := range s.history {
-		for _, vs := range keys {
-			for _, v := range vs {
-				if v.manifestUUID == id {
-					return v.manifestSHA256, true
-				}
-			}
+	hist, _ := s.snapshotHistory()
+	for _, h := range hist {
+		if h.entry.manifestUUID == id {
+			return h.entry.manifestSHA256, true
 		}
 	}
 	return [32]byte{}, false

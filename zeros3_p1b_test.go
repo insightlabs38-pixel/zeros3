@@ -426,16 +426,12 @@ func TestP1B_GroupCommit_ConcurrentPutsReplayIdentically(t *testing.T) {
 }
 
 func namespaceSignature(s *Store) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	objs, _ := s.snapshotNamespace()
 	var sb bytes.Buffer
-	for _, b := range sortedKeys(s.buckets) {
-		for _, k := range sortedKeys(s.buckets[b].objects) {
-			o := s.buckets[b].objects[k]
-			fmt.Fprintf(&sb, "%s/%s=%s:%d:%d;", b, k, o.manifestUUID, o.size, o.seq)
-			for _, h := range s.history[b][k] {
-				fmt.Fprintf(&sb, "h(%s,%s,%d);", h.versionID, h.manifestUUID, h.seq)
-			}
+	for _, o := range objs {
+		fmt.Fprintf(&sb, "%s/%s=%s:%d:%d;", o.bucket, o.key, o.entry.manifestUUID, o.entry.size, o.entry.seq)
+		for _, h := range s.tHist(o.bucket, o.key) {
+			fmt.Fprintf(&sb, "h(%s,%s,%d);", h.versionID, h.manifestUUID, h.seq)
 		}
 	}
 	return sb.String()

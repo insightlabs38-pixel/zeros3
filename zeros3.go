@@ -31,6 +31,7 @@ import (
 	"crypto/sha3"
 	"crypto/sha512"
 	"crypto/subtle"
+	"encoding"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
@@ -7232,7 +7233,7 @@ type objectEntry struct {
 type bucketEntry struct {
 	name      string
 	createdAt time.Time
-	objects   map[string]*objectEntry
+	count     int // visible objects; the rows live in Store.ns
 }
 
 // historyVersionEntry is one retained, immutable historical object state
@@ -7300,18 +7301,13 @@ type Store struct {
 	// about (e.g. a bucket delete racing an upload's completion).
 	uploads map[string]*multipartUpload
 
-	// history holds every retained internal historical version, keyed
-	// first by bucket then by key, ordered oldest-first (append order ==
-	// archival order == journal seq order). Deliberately keyed by name
-	// (never a filesystem path -- same policy as buckets/objects) and
-	// guarded by the same s.mu: history is archived in the exact same
-	// locked critical section, and often the exact same journal frame, as
-	// the commit or delete that produces it (section 7c). A key's history
-	// slice outlives the key's current root (a DeleteBucket that removes
-	// an emptied bucket leaves that bucket's former keys' history rows in
-	// place, addressable by zeros3 versions/restore, until an explicit
-	// `versions prune` retires them; nothing expires automatically).
-	history map[string]map[string][]*historyVersionEntry
+	// ns holds the visible objects and every retained historical version
+	// (section 7a), keyed by bucket and key and ordered oldest-first per key
+	// (append order == archival order == journal seq order). History
+	// outlives the key's current root: a DeleteBucket that removes an emptied
+	// bucket leaves its keys' history addressable by zeros3 versions/restore
+	// until an explicit `versions prune` retires them. Guarded by mu.
+	ns nsState
 
 	// snapshotMu guards store/snapshots/ create-vs-delete and
 	// delete-vs-read ordering (section 15h, M8E-A13). It is deliberately
@@ -7410,10 +7406,11 @@ func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 		format:  format,
 		buckets: map[string]*bucketEntry{},
 		uploads: map[string]*multipartUpload{},
-		history: map[string]map[string][]*historyVersionEntry{},
 		mcache:  newManifestCache(manifestCacheBytes()),
 		ccache:  newChunkCache(chunkCacheBytes()),
 	}
+	s.ns.init()
+	s.ns.auto = useCheckpoint && ownSegments
 	// Replay builds the namespace: nearly everything it allocates stays live, so
 	// collecting often only rescans a growing heap. Collect less often while the
 	// namespace is built; the heap cannot outgrow what replay allocates in total.
@@ -7535,164 +7532,9 @@ type namespaceCheckpointPart struct {
 	Uploaded time.Time
 }
 
-func journalCheckpointDigest(f *os.File, end int64) (sum [32]byte, crc uint32, err error) {
-	if end < 0 || (end > 0 && end < journalHeaderSize+4) {
-		return sum, 0, errors.New("checkpoint: invalid journal offset")
-	}
-	if end > 0 {
-		var trailer [4]byte
-		if _, err := f.ReadAt(trailer[:], end-4); err != nil {
-			return sum, 0, err
-		}
-		crc = binary.BigEndian.Uint32(trailer[:])
-	}
-	h := sha256.New()
-	n, err := io.Copy(h, io.NewSectionReader(f, 0, end))
-	if err == nil && n != end {
-		err = io.ErrUnexpectedEOF
-	}
-	h.Sum(sum[:0])
-	return sum, crc, err
-}
-
-// The offline writer uses a full replay while it holds the exclusive lock.
-func (s *Store) writeNamespaceCheckpoint() error {
-	return s.writeNamespaceCheckpointLayout(false)
-}
-
-func (s *Store) writeNamespaceCheckpointLayout(compactHistory bool) error {
-	end := s.journal.writeOffset
-	sum, crc, err := journalCheckpointDigest(s.journal.f, end)
-	if err != nil {
-		return err
-	}
-	header := namespaceCheckpointHeader{
-		StoreID: s.format.StoreID, Offset: end, Sequence: s.journal.nextSeq - 1, LastCRC: crc, PrefixSHA: sum,
-		Buckets: len(s.buckets), Uploads: len(s.uploads),
-	}
-	for _, keys := range s.history {
-		header.Histories += len(keys)
-	}
-	dir := filepath.Join(s.root, "journal")
-	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "namespace-*.zck")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	out := bufio.NewWriterSize(f, journalReadBuffer)
-	hash := sha256.New()
-	body := io.MultiWriter(out, hash)
-	name, magic := namespaceCheckpointName, namespaceCheckpointMagic
-	if compactHistory {
-		name, magic = namespaceCompactCheckpointName, namespaceCompactCheckpointMagic
-	}
-	if _, err := io.WriteString(body, magic); err != nil {
-		return err
-	}
-	enc := gob.NewEncoder(body)
-	if err := enc.Encode(header); err != nil {
-		return err
-	}
-	if err := s.encodeNamespaceCheckpoint(enc, body, compactHistory); err != nil {
-		return err
-	}
-	if _, err := out.Write(hash.Sum(nil)); err != nil {
-		return err
-	}
-	if err := out.Flush(); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	fireTestHook(hookNamespaceCheckpointSynced)
-	if err := os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
-		return err
-	}
-	fireTestHook(hookNamespaceCheckpointRenamed)
-	return syncDir(dir)
-}
-
-func (s *Store) encodeNamespaceCheckpoint(enc *gob.Encoder, output io.Writer, compactHistory bool) error {
-	var row []byte
-	var prefix [4]byte
-	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
-		b := s.buckets[name]
-		if err := enc.Encode(namespaceCheckpointBucket{Name: name, Created: b.createdAt, Objects: len(b.objects)}); err != nil {
-			return err
-		}
-		for _, key := range slices.Sorted(maps.Keys(b.objects)) {
-			row = appendCheckpointObject(row[:0], key, b.objects[key])
-			if err := writeCheckpointRow(output, row, &prefix); err != nil {
-				return err
-			}
-		}
-	}
-	for _, bucket := range slices.Sorted(maps.Keys(s.history)) {
-		keys := s.history[bucket]
-		for _, key := range slices.Sorted(maps.Keys(keys)) {
-			rows := keys[key]
-			if err := enc.Encode(namespaceCheckpointHistory{Bucket: bucket, Key: key, Count: len(rows)}); err != nil {
-				return err
-			}
-			for _, v := range rows {
-				if compactHistory {
-					var err error
-					row, err = appendCheckpointHistory(row[:0], v)
-					if err != nil {
-						return err
-					}
-					if err := writeCheckpointRow(output, row, &prefix); err != nil {
-						return err
-					}
-					continue
-				}
-				row := namespaceCheckpointVersion{
-					Root: namespaceCheckpointRoot{Manifest: v.manifestUUID, Digest: v.manifestSHA256, Size: v.size,
-						ETag: v.etag, ContentType: v.contentType, Sequence: v.seq},
-					ID: v.versionID, Archive: v.archivedAt, Reason: v.reason,
-				}
-				if err := enc.Encode(row); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	for _, id := range slices.Sorted(maps.Keys(s.uploads)) {
-		u := s.uploads[id]
-		row := namespaceCheckpointUpload{id, u.bucket, u.key, u.contentType, u.metadata, u.createdAt, len(u.parts)}
-		if err := enc.Encode(row); err != nil {
-			return err
-		}
-		for _, number := range slices.Sorted(maps.Keys(u.parts)) {
-			p := u.parts[number]
-			if err := enc.Encode(namespaceCheckpointPart{number, p.size, p.etag, p.chunks, p.uploadedAt}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 const maxNamespaceCheckpointRow = 1 << 20
 
 var errNamespaceCheckpointObject = errors.New("checkpoint: invalid object encoding")
-
-func writeCheckpointRow(output io.Writer, row []byte, prefix *[4]byte) error {
-	if len(row) > maxNamespaceCheckpointRow {
-		return errors.New("checkpoint: root exceeds row size limit")
-	}
-	binary.LittleEndian.PutUint32(prefix[:], uint32(len(row)))
-	if _, err := output.Write(prefix[:]); err != nil {
-		return err
-	}
-	_, err := output.Write(row)
-	return err
-}
 
 func readCheckpointRow(input io.Reader, buf []byte, prefix *[4]byte) ([]byte, error) {
 	if _, err := io.ReadFull(input, prefix[:]); err != nil {
@@ -7705,26 +7547,6 @@ func readCheckpointRow(input io.Reader, buf []byte, prefix *[4]byte) ([]byte, er
 	buf = slices.Grow(buf[:0], int(n))[:n]
 	_, err := io.ReadFull(input, buf)
 	return buf, err
-}
-
-func appendCheckpointHistory(buf []byte, v *historyVersionEntry) ([]byte, error) {
-	when, err := v.archivedAt.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	id := v.versionID
-	if id == v.manifestUUID {
-		buf, id = append(buf, 1), ""
-	} else {
-		buf = append(buf, 0)
-	}
-	buf = binary.AppendUvarint(buf, uint64(len(when)))
-	buf = append(buf, when...)
-	buf = binary.AppendUvarint(buf, uint64(len(v.reason)))
-	buf = append(buf, v.reason...)
-	root := objectEntry{manifestUUID: v.manifestUUID, manifestSHA256: v.manifestSHA256, size: v.size,
-		etag: v.etag, contentType: v.contentType, seq: v.seq}
-	return appendCheckpointObject(buf, id, &root), nil
 }
 
 func readCheckpointHistory(buf []byte, intern *strIntern) (*historyVersionEntry, error) {
@@ -7755,17 +7577,6 @@ func readCheckpointHistory(buf []byte, intern *strIntern) (*historyVersionEntry,
 	return &historyVersionEntry{versionID: id, manifestUUID: root.manifestUUID, manifestSHA256: root.manifestSHA256,
 		size: root.size, etag: root.etag, contentType: root.contentType, archivedAt: archived,
 		reason: intern.get(fields[1]), seq: root.seq}, nil
-}
-
-func appendCheckpointObject(buf []byte, key string, root *objectEntry) []byte {
-	buf = append(buf, root.manifestSHA256[:]...)
-	buf = binary.AppendUvarint(buf, uint64(root.size))
-	buf = binary.AppendUvarint(buf, root.seq)
-	for _, value := range [...]string{key, root.manifestUUID, root.etag, root.contentType} {
-		buf = binary.AppendUvarint(buf, uint64(len(value)))
-		buf = append(buf, value...)
-	}
-	return buf
 }
 
 func readCheckpointObject(row []byte, intern *strIntern) (string, objectEntry, error) {
@@ -7813,18 +7624,1679 @@ func readCheckpointObject(row []byte, intern *strIntern) (string, objectEntry, e
 	return rowIdentity[:keyEnd], root, nil
 }
 
-func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error) {
-	offset, seq, compactErr := s.loadNamespaceCheckpointLayout(journal, true)
-	if compactErr == nil {
-		return offset, seq, nil
-	}
-	offset, seq, err := s.loadNamespaceCheckpointLayout(journal, false)
-	if err == nil || errors.Is(compactErr, os.ErrNotExist) {
-		return offset, seq, err
-	}
-	return 0, 0, errors.Join(compactErr, err)
+// =============================================================================
+// 7a. Compact namespace generations (B3)
+//
+// The visible namespace and the retained history are an immutable, paged,
+// prefix-compressed table (a generation file, mapped by a sparse in-memory
+// directory of page first-keys) plus small sorted overlays holding what changed
+// since: a mutable one and, while a new generation is written, a frozen one.
+// A nil overlay value is a tombstone. Reads resolve overlay-first; a list merges
+// the table and both overlays in key order. Pages are read on demand, verified
+// by CRC and kept in a bounded cache. The journal stays authoritative: a
+// generation published as a checkpoint is bound to a journal prefix by length,
+// sequence, last CRC and a chained SHA-256, and anything stale or damaged is
+// discarded at open in favor of replay.
+//
+// Rows are keyed bucket+"\x00"+key (bucket names never contain NUL). A page
+// holds rows with shared-prefix key compression and a restart every 16 rows.
+// Payload strings that repeat (content types, history reasons) are referenced
+// through a generation dictionary that only grows, so a consolidation copies
+// untouched rows byte for byte.
+// =============================================================================
+
+const (
+	nsGenName       = "namespace-v4.zck"
+	nsGenMagic      = "ZS3NSC4\n"
+	nsGenFooter     = "ZS3NSE4\n"
+	nsPageTarget    = 16 << 10
+	nsRestartEvery  = 16
+	nsBlockMax      = 256
+	nsMaxPage       = 64 << 20
+	nsDictMax       = 4096
+	nsOverlayFloor  = 1 << 18 // overlay entries before a consolidation is considered
+	nsPageCacheMiB  = 32
+	nsFlagUUID      = 1 // manifest UUID stored as 16 raw bytes
+	nsFlagETag      = 2 // ETag stored as 16 raw bytes (32 hex digits)
+	nsFlagVersionID = 4 // history: version ID differs from the manifest UUID
+	nsFlagIDUUID    = 8 // history: version ID stored as 16 raw bytes
+	nsFlagUTC       = 16
+)
+
+var errNSCorrupt = errors.New("namespace generation: corrupt page")
+
+type nsKV[V any] struct {
+	k string
+	v V
 }
 
+// nsOverlay is a sorted set of keyed values in blocks of at most nsBlockMax,
+// so an insert moves a block rather than the whole set. Blocks are never empty.
+type nsOverlay[V any] struct {
+	blocks [][]nsKV[V]
+	n      int
+}
+
+func nsCmpKV[V any](e nsKV[V], k string) int { return strings.Compare(e.k, k) }
+
+// locate returns the first position whose key is >= k; bi == len(blocks) when none is.
+func (o *nsOverlay[V]) locate(k string) (bi, i int) {
+	bi = sort.Search(len(o.blocks), func(j int) bool { b := o.blocks[j]; return b[len(b)-1].k >= k })
+	if bi < len(o.blocks) {
+		i, _ = slices.BinarySearchFunc(o.blocks[bi], k, nsCmpKV[V])
+	}
+	return bi, i
+}
+
+func (o *nsOverlay[V]) find(k string) (v V, ok bool) {
+	if bi, i := o.locate(k); bi < len(o.blocks) && o.blocks[bi][i].k == k {
+		return o.blocks[bi][i].v, true
+	}
+	return v, false
+}
+
+func (o *nsOverlay[V]) set(k string, v V) {
+	bi, i := o.locate(k)
+	switch {
+	case len(o.blocks) == 0:
+		o.blocks = append(o.blocks, make([]nsKV[V], 0, nsBlockMax/4))
+		bi = 0
+	case bi == len(o.blocks):
+		bi, i = bi-1, len(o.blocks[bi-1])
+	case o.blocks[bi][i].k == k:
+		o.blocks[bi][i].v = v
+		return
+	}
+	b := slices.Insert(o.blocks[bi], i, nsKV[V]{k, v})
+	o.n++
+	if len(b) > nsBlockMax {
+		half := len(b) / 2
+		right := slices.Clone(b[half:])
+		clear(b[half:])
+		o.blocks = slices.Insert(o.blocks, bi+1, right)
+		b = b[:half]
+	}
+	o.blocks[bi] = b
+}
+
+// slice copies the entries in [lo, hi) into one block; an empty hi means no bound.
+func (o *nsOverlay[V]) slice(lo, hi string) [][]nsKV[V] {
+	bi, i := o.locate(lo)
+	var out []nsKV[V]
+	for ; bi < len(o.blocks); bi, i = bi+1, 0 {
+		for _, e := range o.blocks[bi][i:] {
+			if hi != "" && e.k >= hi {
+				return nsOneBlock(out)
+			}
+			out = append(out, e)
+		}
+	}
+	return nsOneBlock(out)
+}
+
+func nsOneBlock[V any](b []nsKV[V]) [][]nsKV[V] {
+	if len(b) == 0 {
+		return nil
+	}
+	return [][]nsKV[V]{b}
+}
+
+func (o *nsOverlay[V]) clone() *nsOverlay[V] {
+	c := &nsOverlay[V]{blocks: make([][]nsKV[V], len(o.blocks)), n: o.n}
+	for i, b := range o.blocks {
+		c.blocks[i] = slices.Clone(b)
+	}
+	return c
+}
+
+// nsOvIter walks immutable blocks in order.
+type nsOvIter[V any] struct {
+	blocks [][]nsKV[V]
+	bi, i  int
+}
+
+func (it *nsOvIter[V]) seek(k string) {
+	o := nsOverlay[V]{blocks: it.blocks}
+	it.bi, it.i = o.locate(k)
+	it.skipEmpty()
+}
+
+func (it *nsOvIter[V]) skipEmpty() {
+	for it.bi < len(it.blocks) && it.i >= len(it.blocks[it.bi]) {
+		it.bi, it.i = it.bi+1, 0
+	}
+}
+func (it *nsOvIter[V]) valid() bool  { return it.bi < len(it.blocks) }
+func (it *nsOvIter[V]) cur() nsKV[V] { return it.blocks[it.bi][it.i] }
+func (it *nsOvIter[V]) next() {
+	it.i++
+	it.skipEmpty()
+}
+
+// nsDirectory is the sparse page index of one table: the first key of every page.
+type nsDirectory struct {
+	Rows int
+	Keys []byte
+	Ends []uint32
+	Off  []uint64
+	Len  []uint32
+}
+
+// nsGen is one generation file shared by its object and history tables.
+type nsGen struct {
+	f       *os.File
+	id      uint64
+	refs    atomic.Int64
+	cache   *nsPageCache
+	strs    []string
+	meta    nsMeta
+	reads   atomic.Int64 // pages read from the file
+	hashSt  []byte
+	private bool
+}
+
+var nsGenIDs atomic.Uint64
+
+func (g *nsGen) acquire() { g.refs.Add(1) }
+func (g *nsGen) release() {
+	if g.refs.Add(-1) == 0 {
+		g.f.Close()
+	}
+}
+
+type nsTable struct {
+	g    *nsGen
+	hist bool
+	dir  nsDirectory
+}
+
+func (t *nsTable) pages() int { return len(t.dir.Off) }
+
+func (t *nsTable) firstKey(i int) []byte {
+	start := uint32(0)
+	if i > 0 {
+		start = t.dir.Ends[i-1]
+	}
+	return t.dir.Keys[start:t.dir.Ends[i]]
+}
+
+// pageFor returns the last page whose first key is <= key (page 0 when none is).
+func (t *nsTable) pageFor(key string) int {
+	n := sort.Search(t.pages(), func(i int) bool { return nsCmpBS(t.firstKey(i), key) > 0 })
+	return max(n-1, 0)
+}
+
+func nsCmpBS(b []byte, s string) int {
+	n := min(len(b), len(s))
+	for i := 0; i < n; i++ {
+		if b[i] != s[i] {
+			if b[i] < s[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return cmp.Compare(len(b), len(s))
+}
+
+func (t *nsTable) page(i int) ([]byte, error) {
+	g := t.g
+	ck := nsPageKey{g.id, uint32(i), t.hist}
+	if b := g.cache.get(ck); b != nil {
+		return b, nil
+	}
+	buf := make([]byte, t.dir.Len[i])
+	if _, err := g.f.ReadAt(buf, int64(t.dir.Off[i])); err != nil {
+		return nil, fmt.Errorf("namespace generation: read page: %w", err)
+	}
+	g.reads.Add(1)
+	if len(buf) < 12 || crc32.Checksum(buf[:len(buf)-4], castagnoliTable) != binary.LittleEndian.Uint32(buf[len(buf)-4:]) {
+		return nil, errNSCorrupt
+	}
+	g.cache.put(ck, buf)
+	return buf, nil
+}
+
+// nsPage is a parsed page: rows, then restart offsets, restart count, row count, CRC.
+type nsPage struct {
+	rows     []byte
+	restarts []byte
+}
+
+func nsParsePage(b []byte) (nsPage, error) {
+	if len(b) < 12 {
+		return nsPage{}, errNSCorrupt
+	}
+	nr := int(binary.LittleEndian.Uint32(b[len(b)-12:]))
+	end := len(b) - 12 - 4*nr
+	if nr < 1 || end < 0 {
+		return nsPage{}, errNSCorrupt
+	}
+	return nsPage{rows: b[:end], restarts: b[end : len(b)-12]}, nil
+}
+
+func (p nsPage) restart(i int) int { return int(binary.LittleEndian.Uint32(p.restarts[4*i:])) }
+
+// row decodes the row at pos into key (extending key[:shared]) and its payload.
+func (p nsPage) row(pos int, key []byte) (next int, k, payload []byte, err error) {
+	b := p.rows[pos:]
+	shared, n1 := binary.Uvarint(b)
+	if n1 < 1 {
+		return 0, nil, nil, errNSCorrupt
+	}
+	unshared, n2 := binary.Uvarint(b[n1:])
+	if n2 < 1 {
+		return 0, nil, nil, errNSCorrupt
+	}
+	plen, n3 := binary.Uvarint(b[n1+n2:])
+	hdr := n1 + n2 + n3
+	if n3 < 1 || shared > uint64(len(key)) || unshared > uint64(len(b)-hdr) || plen > uint64(len(b)-hdr)-unshared {
+		return 0, nil, nil, errNSCorrupt
+	}
+	k = append(key[:shared], b[hdr:hdr+int(unshared)]...)
+	end := hdr + int(unshared) + int(plen)
+	return pos + end, k, b[hdr+int(unshared) : end], nil
+}
+
+// restartKey is the full key of a restart row, aliasing the page.
+func (p nsPage) restartKey(i int) ([]byte, error) {
+	b := p.rows[p.restart(i):]
+	shared, n1 := binary.Uvarint(b)
+	unshared, n2 := binary.Uvarint(b[min(n1, len(b)):])
+	_, n3 := binary.Uvarint(b[min(n1+n2, len(b)):])
+	hdr := n1 + n2 + n3
+	if shared != 0 || n1 < 1 || n2 < 1 || n3 < 1 || unshared > uint64(len(b)-hdr) {
+		return nil, errNSCorrupt
+	}
+	return b[hdr : hdr+int(unshared)], nil
+}
+
+// startFor returns the offset of the last restart row whose key is <= key.
+func (p nsPage) startFor(key string) (int, error) {
+	lo, hi := 0, len(p.restarts)/4
+	for lo < hi {
+		mid := (lo + hi) / 2
+		k, err := p.restartKey(mid)
+		if err != nil {
+			return 0, err
+		}
+		if nsCmpBS(k, key) <= 0 {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return p.restart(max(lo-1, 0)), nil
+}
+
+// find returns the payload of key within the page. It aliases the page.
+func (p nsPage) find(key string) ([]byte, bool, error) {
+	pos, err := p.startFor(key)
+	if err != nil {
+		return nil, false, err
+	}
+	var cur [96]byte
+	k := cur[:0]
+	for pos < len(p.rows) {
+		var payload []byte
+		pos, k, payload, err = p.row(pos, k)
+		if err != nil {
+			return nil, false, err
+		}
+		switch c := nsCmpBS(k, key); {
+		case c == 0:
+			return payload, true, nil
+		case c > 0:
+			return nil, false, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func (t *nsTable) get(key string) ([]byte, bool, error) {
+	if t == nil || t.pages() == 0 {
+		return nil, false, nil
+	}
+	b, err := t.page(t.pageFor(key))
+	if err != nil {
+		return nil, false, err
+	}
+	p, err := nsParsePage(b)
+	if err != nil {
+		return nil, false, err
+	}
+	return p.find(key)
+}
+
+// nsTableIter walks rows in key order from a seek position.
+type nsTableIter struct {
+	t       *nsTable
+	pg      int
+	page    nsPage
+	pos     int
+	key     []byte
+	payload []byte
+	ok      bool
+	err     error
+}
+
+func (t *nsTable) iter(from string) *nsTableIter {
+	it := &nsTableIter{t: t}
+	if t == nil || t.pages() == 0 {
+		return it
+	}
+	it.pg = t.pageFor(from)
+	if !it.load() {
+		return it
+	}
+	if it.pos, it.err = it.page.startFor(from); it.err != nil {
+		return it
+	}
+	it.key = it.key[:0]
+	for it.step() {
+		if nsCmpBS(it.key, from) >= 0 {
+			return it
+		}
+	}
+	it.advancePage()
+	return it
+}
+
+func (it *nsTableIter) load() bool {
+	b, err := it.t.page(it.pg)
+	if err == nil {
+		it.page, err = nsParsePage(b)
+	}
+	it.pos, it.key = 0, it.key[:0]
+	if err != nil {
+		it.err, it.ok = err, false
+		return false
+	}
+	return true
+}
+
+// step decodes the next row of the current page.
+func (it *nsTableIter) step() bool {
+	if it.err != nil || it.pos >= len(it.page.rows) {
+		it.ok = false
+		return false
+	}
+	it.pos, it.key, it.payload, it.err = it.page.row(it.pos, it.key)
+	it.ok = it.err == nil
+	return it.ok
+}
+
+func (it *nsTableIter) advancePage() {
+	if it.pg+1 >= it.t.pages() {
+		it.ok = false
+		return
+	}
+	it.pg++
+	if it.load() {
+		it.step()
+	}
+}
+
+func (it *nsTableIter) next() {
+	if !it.ok || it.step() {
+		return
+	}
+	if it.err == nil {
+		it.advancePage()
+	}
+}
+
+// nsView merges a table with overlays (newest first) into one ordered stream of
+// live rows. dead reports a tombstone and dec turns a table payload into a value.
+type nsView[V any] struct {
+	base    *nsTableIter
+	layers  []*nsOvIter[V]
+	dead    func(V) bool
+	dec     func(payload []byte) (V, error)
+	key     []byte
+	val     V
+	payload []byte // the table row's payload when from < 0
+	from    int    // -1: the row comes from the table, else the layer index
+	err     error
+}
+
+func newNSView[V any](t *nsTable, from string, dead func(V) bool, dec func([]byte) (V, error), layers ...[][]nsKV[V]) *nsView[V] {
+	v := &nsView[V]{base: t.iter(from), dead: dead, dec: dec}
+	for _, blocks := range layers {
+		it := &nsOvIter[V]{blocks: blocks}
+		it.seek(from)
+		v.layers = append(v.layers, it)
+	}
+	return v
+}
+
+// next moves to the next live row; false at the end or on a read error (v.err).
+func (v *nsView[V]) next() bool {
+	for {
+		if v.base.err != nil {
+			v.err = v.base.err
+			return false
+		}
+		var low []byte
+		have := false
+		if v.base.ok {
+			low, have = v.base.key, true
+		}
+		for _, l := range v.layers {
+			if l.valid() && (!have || nsCmpBS(low, l.cur().k) > 0) {
+				v.key = append(v.key[:0], l.cur().k...)
+				low, have = v.key, true
+			}
+		}
+		if !have {
+			return false
+		}
+		v.key = append(v.key[:0], low...)
+		v.from = -1
+		for i, l := range v.layers {
+			if l.valid() && nsCmpBS(v.key, l.cur().k) == 0 {
+				if v.from < 0 {
+					v.from, v.val = i, l.cur().v
+				}
+				l.next()
+			}
+		}
+		if v.base.ok && bytes.Equal(v.key, v.base.key) {
+			v.payload = v.base.payload
+			v.base.next()
+		}
+		if v.from < 0 || !v.dead(v.val) {
+			return true
+		}
+	}
+}
+
+// value decodes the current row; overlay values need no decoding.
+func (v *nsView[V]) value() (V, error) {
+	if v.from >= 0 {
+		return v.val, nil
+	}
+	return v.dec(v.payload)
+}
+
+// ---- payload encoding ----
+
+func nsParseUUID(s string) (u [16]byte, ok bool) {
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return u, false
+	}
+	var hexDigits [32]byte
+	n := 0
+	for i := 0; i < 36; i++ {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return u, false
+		}
+		hexDigits[n] = c
+		n++
+	}
+	_, err := hex.Decode(u[:], hexDigits[:])
+	return u, err == nil
+}
+
+func nsAppendUUID(b []byte, u []byte) []byte {
+	var t [36]byte
+	hex.Encode(t[0:8], u[0:4])
+	t[8] = '-'
+	hex.Encode(t[9:13], u[4:6])
+	t[13] = '-'
+	hex.Encode(t[14:18], u[6:8])
+	t[18] = '-'
+	hex.Encode(t[19:23], u[8:10])
+	t[23] = '-'
+	hex.Encode(t[24:], u[10:16])
+	return append(b, t[:]...)
+}
+
+func nsParseETag(s string) (e [16]byte, ok bool) {
+	if len(s) != 32 {
+		return e, false
+	}
+	for i := 0; i < 32; i++ {
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return e, false
+		}
+	}
+	_, err := hex.Decode(e[:], []byte(s))
+	return e, err == nil
+}
+
+// nsDict assigns small indexes to repeated payload strings; index 0 means the
+// string follows inline, once the dictionary is full.
+type nsDict struct {
+	strs []string
+	idx  map[string]uint64
+}
+
+func newNSDict(base []string) *nsDict {
+	d := &nsDict{strs: slices.Clone(base), idx: make(map[string]uint64, len(base))}
+	for i, s := range d.strs {
+		d.idx[s] = uint64(i + 1)
+	}
+	return d
+}
+
+func (d *nsDict) appendRef(b []byte, s string) []byte {
+	i, ok := d.idx[s]
+	if !ok && len(d.strs) < nsDictMax {
+		d.strs = append(d.strs, s)
+		i = uint64(len(d.strs))
+		d.idx[s] = i
+		ok = true
+	}
+	if ok {
+		return binary.AppendUvarint(b, i)
+	}
+	b = binary.AppendUvarint(b, 0)
+	b = binary.AppendUvarint(b, uint64(len(s)))
+	return append(b, s...)
+}
+
+type nsReader struct {
+	b    []byte
+	strs []string
+	err  error
+}
+
+func (r *nsReader) fail() { r.err = errNSCorrupt }
+
+func (r *nsReader) uv() uint64 {
+	v, n := binary.Uvarint(r.b)
+	if n < 1 {
+		r.fail()
+		return 0
+	}
+	r.b = r.b[n:]
+	return v
+}
+
+func (r *nsReader) take(n int) []byte {
+	if n < 0 || n > len(r.b) {
+		r.fail()
+		return nil
+	}
+	out := r.b[:n]
+	r.b = r.b[n:]
+	return out
+}
+
+// lenBytes reads a length-prefixed byte string.
+func (r *nsReader) lenBytes() []byte {
+	n := r.uv()
+	if r.err != nil || n > uint64(len(r.b)) {
+		r.fail()
+		return nil
+	}
+	return r.take(int(n))
+}
+
+func (r *nsReader) ref() string {
+	i := r.uv()
+	if i == 0 {
+		return string(r.lenBytes())
+	}
+	if i > uint64(len(r.strs)) {
+		r.fail()
+		return ""
+	}
+	return r.strs[i-1]
+}
+
+// nsAppendIdentity appends the UUID and ETag, raw when canonical, and returns
+// the flag bits that say so.
+func nsAppendIdentity(b []byte, uuid, etag string) ([]byte, byte) {
+	var flags byte
+	if u, ok := nsParseUUID(uuid); ok {
+		flags |= nsFlagUUID
+		b = append(b, u[:]...)
+	} else {
+		b = binary.AppendUvarint(b, uint64(len(uuid)))
+		b = append(b, uuid...)
+	}
+	if e, ok := nsParseETag(etag); ok {
+		flags |= nsFlagETag
+		return append(b, e[:]...), flags
+	}
+	b = binary.AppendUvarint(b, uint64(len(etag)))
+	return append(b, etag...), flags
+}
+
+// identity reads the manifest UUID and ETag into one allocation.
+func (r *nsReader) identity(flags byte) (uuid, etag string) {
+	var rawU, rawE []byte
+	ul, el := 36, 32
+	if flags&nsFlagUUID != 0 {
+		rawU = r.take(16)
+	} else if rawU = r.lenBytes(); r.err == nil {
+		ul = len(rawU)
+	}
+	if flags&nsFlagETag != 0 {
+		rawE = r.take(16)
+	} else if rawE = r.lenBytes(); r.err == nil {
+		el = len(rawE)
+	}
+	if r.err != nil {
+		return "", ""
+	}
+	var sb strings.Builder
+	sb.Grow(ul + el)
+	var scratch [36]byte
+	if flags&nsFlagUUID != 0 {
+		sb.Write(nsAppendUUID(scratch[:0], rawU))
+	} else {
+		sb.Write(rawU)
+	}
+	if flags&nsFlagETag != 0 {
+		hex.Encode(scratch[:32], rawE)
+		sb.Write(scratch[:32])
+	} else {
+		sb.Write(rawE)
+	}
+	all := sb.String()
+	return all[:ul], all[ul:]
+}
+
+func (d *nsDict) appendObject(b []byte, e *objectEntry) []byte {
+	b = d.appendRef(b, e.contentType)
+	flagAt := len(b)
+	b = append(b, 0)
+	b = append(b, e.manifestSHA256[:]...)
+	b = binary.AppendUvarint(b, uint64(e.size))
+	b = binary.AppendUvarint(b, e.seq)
+	b, flags := nsAppendIdentity(b, e.manifestUUID, e.etag)
+	b[flagAt] = flags
+	return b
+}
+
+func (g *nsGen) decodeObject(payload []byte) (*objectEntry, error) {
+	r := nsReader{b: payload, strs: g.strs}
+	e := &objectEntry{contentType: r.ref()}
+	flags := r.take(1)
+	if r.err != nil {
+		return nil, r.err
+	}
+	copy(e.manifestSHA256[:], r.take(sha256.Size))
+	e.size = int64(r.uv())
+	e.seq = r.uv()
+	e.manifestUUID, e.etag = r.identity(flags[0])
+	if r.err != nil || len(r.b) != 0 || e.size < 0 {
+		return nil, errNSCorrupt
+	}
+	return e, nil
+}
+
+func (d *nsDict) appendHistory(b []byte, list []*historyVersionEntry) ([]byte, error) {
+	b = binary.AppendUvarint(b, uint64(len(list)))
+	var prev uint64
+	for _, v := range list {
+		flagAt := len(b)
+		b = append(b, 0)
+		var flags byte
+		b = binary.AppendUvarint(b, v.seq-prev)
+		prev = v.seq
+		if v.archivedAt.Location() == time.UTC {
+			flags |= nsFlagUTC
+			b = binary.AppendVarint(b, v.archivedAt.Unix())
+			b = binary.AppendUvarint(b, uint64(v.archivedAt.Nanosecond()))
+		} else {
+			when, err := v.archivedAt.MarshalBinary()
+			if err != nil {
+				return nil, err
+			}
+			b = binary.AppendUvarint(b, uint64(len(when)))
+			b = append(b, when...)
+		}
+		b = d.appendRef(b, v.reason)
+		b = d.appendRef(b, v.contentType)
+		b = append(b, v.manifestSHA256[:]...)
+		b = binary.AppendUvarint(b, uint64(v.size))
+		var idFlags byte
+		b, idFlags = nsAppendIdentity(b, v.manifestUUID, v.etag)
+		flags |= idFlags
+		if v.versionID != v.manifestUUID {
+			flags |= nsFlagVersionID
+			if u, ok := nsParseUUID(v.versionID); ok {
+				flags |= nsFlagIDUUID
+				b = append(b, u[:]...)
+			} else {
+				b = binary.AppendUvarint(b, uint64(len(v.versionID)))
+				b = append(b, v.versionID...)
+			}
+		}
+		b[flagAt] = flags
+	}
+	return b, nil
+}
+
+func (g *nsGen) decodeHistory(payload []byte) ([]*historyVersionEntry, error) {
+	r := nsReader{b: payload, strs: g.strs}
+	n := r.uv()
+	if r.err != nil || n == 0 || n > uint64(len(payload)) {
+		return nil, errNSCorrupt
+	}
+	out := make([]*historyVersionEntry, 0, n)
+	var seq uint64
+	for range n {
+		fl := r.take(1)
+		if r.err != nil {
+			return nil, r.err
+		}
+		flags := fl[0]
+		v := &historyVersionEntry{}
+		seq += r.uv()
+		v.seq = seq
+		if flags&nsFlagUTC != 0 {
+			sec, n := binary.Varint(r.b)
+			if n < 1 {
+				return nil, errNSCorrupt
+			}
+			r.b = r.b[n:]
+			v.archivedAt = time.Unix(sec, int64(r.uv())).UTC()
+		} else if err := v.archivedAt.UnmarshalBinary(r.lenBytes()); err != nil {
+			return nil, err
+		}
+		v.reason = r.ref()
+		v.contentType = r.ref()
+		copy(v.manifestSHA256[:], r.take(sha256.Size))
+		v.size = int64(r.uv())
+		v.manifestUUID, v.etag = r.identity(flags)
+		switch {
+		case flags&nsFlagVersionID == 0:
+			v.versionID = v.manifestUUID
+		case flags&nsFlagIDUUID != 0:
+			if raw := r.take(16); r.err == nil {
+				v.versionID = string(nsAppendUUID(nil, raw))
+			}
+		default:
+			v.versionID = string(r.lenBytes())
+		}
+		if r.err != nil || v.size < 0 {
+			return nil, errNSCorrupt
+		}
+		out = append(out, v)
+	}
+	if len(r.b) != 0 {
+		return nil, errNSCorrupt
+	}
+	return out, nil
+}
+
+// ---- page cache ----
+
+type nsPageKey struct {
+	gen  uint64
+	page uint32
+	hist bool
+}
+
+type nsCacheEntry struct {
+	key  nsPageKey
+	data []byte
+}
+
+type nsPageShard struct {
+	mu    sync.Mutex
+	m     map[nsPageKey]*list.Element
+	lru   list.List
+	bytes int64
+}
+
+// nsPageCache is a sharded, byte-bounded LRU of verified pages.
+type nsPageCache struct {
+	shards [16]nsPageShard
+	limit  int64
+}
+
+func newNSPageCache() *nsPageCache {
+	limit := int64(nsPageCacheMiB)
+	if v, err := strconv.ParseInt(os.Getenv("ZEROS3_NS_PAGE_CACHE_MIB"), 10, 64); err == nil && v >= 0 && v <= 1<<20 {
+		limit = v
+	}
+	return &nsPageCache{limit: limit << 20 / int64(len(nsPageCache{}.shards))}
+}
+
+func (c *nsPageCache) shard(k nsPageKey) *nsPageShard {
+	h := k.gen*0x9e3779b97f4a7c15 + uint64(k.page)*0xff51afd7ed558ccd
+	if k.hist {
+		h ^= 0xc4ceb9fe1a85ec53
+	}
+	return &c.shards[(h>>32)%uint64(len(c.shards))]
+}
+
+func (c *nsPageCache) get(k nsPageKey) []byte {
+	sh := c.shard(k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if el, ok := sh.m[k]; ok {
+		sh.lru.MoveToFront(el)
+		return el.Value.(*nsCacheEntry).data
+	}
+	return nil
+}
+
+func (c *nsPageCache) put(k nsPageKey, data []byte) {
+	if int64(len(data)) > c.limit {
+		return
+	}
+	sh := c.shard(k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if sh.m == nil {
+		sh.m = map[nsPageKey]*list.Element{}
+	}
+	if _, ok := sh.m[k]; ok {
+		return
+	}
+	sh.m[k] = sh.lru.PushFront(&nsCacheEntry{k, data})
+	sh.bytes += int64(len(data))
+	for sh.bytes > c.limit {
+		old := sh.lru.Back()
+		e := sh.lru.Remove(old).(*nsCacheEntry)
+		delete(sh.m, e.key)
+		sh.bytes -= int64(len(e.data))
+	}
+}
+
+// ---- generation file: writer ----
+
+type nsBucketRec struct {
+	Name    string
+	Created time.Time
+	Count   int
+}
+
+type nsUploadRec struct {
+	ID, Bucket, Key, ContentType string
+	Metadata                     map[string]string
+	Created                      time.Time
+	Parts                        []namespaceCheckpointPart
+}
+
+// nsMeta is the generation's trailer: journal binding, dictionary, bucket list,
+// page directories and the (small, eagerly loaded) incomplete uploads.
+type nsMeta struct {
+	StoreID   string
+	Published bool
+	Offset    int64
+	Sequence  uint64
+	LastCRC   uint32
+	PrefixSHA [32]byte
+	HashState []byte // marshaled SHA-256 state after the covered journal prefix
+	Buckets   []nsBucketRec
+	Strings   []string
+	Obj, Hist nsDirectory
+	Uploads   []nsUploadRec
+}
+
+type nsFileOut struct {
+	bw *bufio.Writer
+	h  hash.Hash
+	n  int64
+}
+
+func (o *nsFileOut) Write(p []byte) (int, error) {
+	o.h.Write(p)
+	o.n += int64(len(p))
+	return o.bw.Write(p)
+}
+
+type nsTableWriter struct {
+	out      *nsFileOut
+	page     []byte
+	restarts []uint32
+	nrows    int
+	first    []byte
+	last     []byte
+	dir      nsDirectory
+}
+
+func (w *nsTableWriter) add(key, payload []byte) error {
+	if w.nrows == 0 {
+		w.first = append(w.first[:0], key...)
+	}
+	shared := 0
+	if w.nrows%nsRestartEvery == 0 {
+		w.restarts = append(w.restarts, uint32(len(w.page)))
+	} else {
+		for shared < min(len(w.last), len(key)) && w.last[shared] == key[shared] {
+			shared++
+		}
+	}
+	w.page = binary.AppendUvarint(w.page, uint64(shared))
+	w.page = binary.AppendUvarint(w.page, uint64(len(key)-shared))
+	w.page = binary.AppendUvarint(w.page, uint64(len(payload)))
+	w.page = append(w.page, key[shared:]...)
+	w.page = append(w.page, payload...)
+	w.last = append(w.last[:0], key...)
+	w.nrows++
+	w.dir.Rows++
+	if len(w.page) >= nsPageTarget {
+		return w.flush()
+	}
+	return nil
+}
+
+func (w *nsTableWriter) flush() error {
+	if w.nrows == 0 {
+		return nil
+	}
+	for _, r := range w.restarts {
+		w.page = binary.LittleEndian.AppendUint32(w.page, r)
+	}
+	w.page = binary.LittleEndian.AppendUint32(w.page, uint32(len(w.restarts)))
+	w.page = binary.LittleEndian.AppendUint32(w.page, uint32(w.nrows))
+	w.page = binary.LittleEndian.AppendUint32(w.page, crc32.Checksum(w.page, castagnoliTable))
+	if len(w.page) > nsMaxPage {
+		return errors.New("namespace generation: row exceeds page size limit")
+	}
+	w.dir.Off = append(w.dir.Off, uint64(w.out.n))
+	w.dir.Len = append(w.dir.Len, uint32(len(w.page)))
+	w.dir.Keys = append(w.dir.Keys, w.first...)
+	w.dir.Ends = append(w.dir.Ends, uint32(len(w.dir.Keys)))
+	_, err := w.out.Write(w.page)
+	w.page, w.restarts, w.nrows = w.page[:0], w.restarts[:0], 0
+	return err
+}
+
+// nsSnapshot is a frozen view of the namespace that a new generation is built from.
+type nsSnapshot struct {
+	gen     *nsGen
+	obj     *nsTable
+	hist    *nsTable
+	objOv   *nsOverlay[*objectEntry]
+	histOv  *nsOverlay[[]*historyVersionEntry]
+	buckets []nsBucketRec
+	uploads []nsUploadRec
+	bind    nsMeta // journal binding when publishing
+	publish bool
+}
+
+func nsObjDead(e *objectEntry) bool            { return e == nil }
+func nsHistDead(l []*historyVersionEntry) bool { return len(l) == 0 }
+
+// writeGeneration merges the base tables with the frozen overlays into a new
+// synced file in tmp/. The returned generation holds the open file; the caller
+// renames or unlinks it.
+func (s *Store) nsWriteGeneration(snap *nsSnapshot) (*nsGen, string, error) {
+	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "namespace-*.zck")
+	if err != nil {
+		return nil, "", err
+	}
+	name := f.Name()
+	fail := func(err error) (*nsGen, string, error) {
+		f.Close()
+		os.Remove(name)
+		return nil, "", err
+	}
+	out := &nsFileOut{bw: bufio.NewWriterSize(f, journalReadBuffer), h: sha256.New()}
+	if _, err := io.WriteString(out, nsGenMagic); err != nil {
+		return fail(err)
+	}
+	var baseStrs []string
+	if snap.gen != nil {
+		baseStrs = snap.gen.strs
+	}
+	dict := newNSDict(baseStrs)
+	meta := snap.bind
+	meta.Published, meta.StoreID = snap.publish, s.format.StoreID
+	meta.Buckets, meta.Uploads = snap.buckets, snap.uploads
+
+	// Visible objects: untouched rows are copied byte for byte.
+	ow := &nsTableWriter{out: out}
+	counts := map[string]int{}
+	var curBucket []byte
+	var curCount int
+	var row []byte
+	var objOv [][]nsKV[*objectEntry]
+	if snap.objOv != nil {
+		objOv = snap.objOv.blocks
+	}
+	var objDec func([]byte) (*objectEntry, error)
+	if snap.gen != nil {
+		objDec = snap.gen.decodeObject
+	}
+	view := newNSView(snap.obj, "", nsObjDead, objDec, objOv)
+	for view.next() {
+		payload := view.payload
+		if view.from >= 0 {
+			row = dict.appendObject(row[:0], view.val)
+			payload = row
+		}
+		nul := bytes.IndexByte(view.key, 0)
+		if nul < 0 {
+			return fail(errors.New("namespace generation: object key without bucket"))
+		}
+		if !bytes.Equal(curBucket, view.key[:nul]) {
+			if curCount > 0 {
+				counts[string(curBucket)] = curCount
+			}
+			curBucket, curCount = append(curBucket[:0], view.key[:nul]...), 0
+		}
+		curCount++
+		if err := ow.add(view.key, payload); err != nil {
+			return fail(err)
+		}
+	}
+	if view.err != nil {
+		return fail(view.err)
+	}
+	if curCount > 0 {
+		counts[string(curBucket)] = curCount
+	}
+	if err := ow.flush(); err != nil {
+		return fail(err)
+	}
+	for _, b := range snap.buckets {
+		if counts[b.Name] != b.Count {
+			return fail(fmt.Errorf("namespace generation: bucket %q has %d rows, expected %d", b.Name, counts[b.Name], b.Count))
+		}
+		delete(counts, b.Name)
+	}
+	if len(counts) != 0 {
+		return fail(errors.New("namespace generation: rows for an unknown bucket"))
+	}
+
+	hw := &nsTableWriter{out: out}
+	var histOv [][]nsKV[[]*historyVersionEntry]
+	if snap.histOv != nil {
+		histOv = snap.histOv.blocks
+	}
+	var histDec func([]byte) ([]*historyVersionEntry, error)
+	if snap.gen != nil {
+		histDec = snap.gen.decodeHistory
+	}
+	hview := newNSView(snap.hist, "", nsHistDead, histDec, histOv)
+	for hview.next() {
+		payload := hview.payload
+		if hview.from >= 0 {
+			if row, err = dict.appendHistory(row[:0], hview.val); err != nil {
+				return fail(err)
+			}
+			payload = row
+		}
+		if err := hw.add(hview.key, payload); err != nil {
+			return fail(err)
+		}
+	}
+	if hview.err != nil {
+		return fail(hview.err)
+	}
+	if err := hw.flush(); err != nil {
+		return fail(err)
+	}
+	meta.Obj, meta.Hist, meta.Strings = ow.dir, hw.dir, dict.strs
+
+	var mb bytes.Buffer
+	if err := gob.NewEncoder(&mb).Encode(meta); err != nil {
+		return fail(err)
+	}
+	var tail [16]byte
+	binary.LittleEndian.PutUint32(tail[0:], uint32(mb.Len()))
+	binary.LittleEndian.PutUint32(tail[4:], crc32.Checksum(mb.Bytes(), castagnoliTable))
+	copy(tail[8:], nsGenFooter)
+	if _, err := out.Write(mb.Bytes()); err != nil {
+		return fail(err)
+	}
+	if _, err := out.Write(tail[:]); err != nil {
+		return fail(err)
+	}
+	if _, err := out.bw.Write(out.h.Sum(nil)); err != nil {
+		return fail(err)
+	}
+	if err := out.bw.Flush(); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	g := &nsGen{f: f, id: nsGenIDs.Add(1), cache: s.ns.cache, strs: dict.strs, meta: meta, private: !snap.publish}
+	g.refs.Store(1)
+	return g, name, nil
+}
+
+// ---- generation file: reader ----
+
+// openNSGen verifies the file digest and trailer, then returns the generation
+// with its directories. Pages are not read.
+func openNSGen(f *os.File, cache *nsPageCache) (*nsGen, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	const tailLen = 16 + sha256.Size
+	if size < int64(len(nsGenMagic))+tailLen {
+		return nil, io.ErrUnexpectedEOF
+	}
+	body := size - sha256.Size
+	h := sha256.New()
+	buf := make([]byte, 1<<20)
+	if n, err := io.CopyBuffer(h, io.NewSectionReader(f, 0, body), buf); err != nil || n != body {
+		return nil, errors.New("namespace generation: unable to read complete body")
+	}
+	var want [sha256.Size]byte
+	if _, err := f.ReadAt(want[:], body); err != nil || !bytes.Equal(want[:], h.Sum(nil)) {
+		return nil, errors.New("namespace generation: checksum mismatch")
+	}
+	var tail [16]byte
+	if _, err := f.ReadAt(tail[:], body-16); err != nil || string(tail[8:]) != nsGenFooter {
+		return nil, errors.New("namespace generation: unrecognized trailer")
+	}
+	metaLen := int64(binary.LittleEndian.Uint32(tail[:]))
+	metaOff := body - 16 - metaLen
+	if metaOff < int64(len(nsGenMagic)) {
+		return nil, errors.New("namespace generation: invalid trailer length")
+	}
+	mb := make([]byte, metaLen)
+	if _, err := f.ReadAt(mb, metaOff); err != nil || crc32.Checksum(mb, castagnoliTable) != binary.LittleEndian.Uint32(tail[4:]) {
+		return nil, errors.New("namespace generation: trailer checksum mismatch")
+	}
+	var magic [len(nsGenMagic)]byte
+	if _, err := f.ReadAt(magic[:], 0); err != nil || string(magic[:]) != nsGenMagic {
+		return nil, errors.New("namespace generation: unrecognized format")
+	}
+	g := &nsGen{f: f, id: nsGenIDs.Add(1), cache: cache}
+	if err := gob.NewDecoder(bytes.NewReader(mb)).Decode(&g.meta); err != nil {
+		return nil, err
+	}
+	g.strs = g.meta.Strings
+	for _, d := range []*nsDirectory{&g.meta.Obj, &g.meta.Hist} {
+		if err := d.validate(int64(len(nsGenMagic)), metaOff); err != nil {
+			return nil, err
+		}
+	}
+	g.refs.Store(1)
+	return g, nil
+}
+
+func (d *nsDirectory) validate(lo, hi int64) error {
+	n := len(d.Off)
+	if len(d.Len) != n || len(d.Ends) != n || d.Rows < 0 || (n == 0) != (d.Rows == 0) {
+		return errors.New("namespace generation: invalid page directory")
+	}
+	end, prevKeyEnd := lo, uint32(0)
+	var prev []byte
+	for i := range n {
+		if int64(d.Off[i]) < end || d.Len[i] < 12 || d.Len[i] > nsMaxPage || int64(d.Off[i])+int64(d.Len[i]) > hi ||
+			d.Ends[i] <= prevKeyEnd || int(d.Ends[i]) > len(d.Keys) {
+			return errors.New("namespace generation: invalid page directory")
+		}
+		key := d.Keys[prevKeyEnd:d.Ends[i]]
+		if prev != nil && bytes.Compare(prev, key) >= 0 {
+			return errors.New("namespace generation: page directory out of order")
+		}
+		end, prevKeyEnd, prev = int64(d.Off[i])+int64(d.Len[i]), d.Ends[i], key
+	}
+	if n > 0 && int(prevKeyEnd) != len(d.Keys) {
+		return errors.New("namespace generation: invalid page directory")
+	}
+	return nil
+}
+
+func (g *nsGen) tables() (obj, hist *nsTable) {
+	return &nsTable{g: g, dir: g.meta.Obj}, &nsTable{g: g, hist: true, dir: g.meta.Hist}
+}
+
+// ---- store state ----
+
+// nsState is the compact namespace. Everything except the immutable tables and
+// frozen overlay is guarded by Store.mu.
+type nsState struct {
+	cache      *nsPageCache
+	gen        *nsGen
+	obj, hist  *nsTable
+	objMut     *nsOverlay[*objectEntry]
+	objFrozen  *nsOverlay[*objectEntry]
+	histMut    *nsOverlay[[]*historyVersionEntry]
+	histFrozen *nsOverlay[[]*historyVersionEntry]
+	damaged    error
+	auto       bool // consolidate in the background and publish checkpoints
+	busy       bool
+	limit      int // overlay entries that trigger a consolidation
+}
+
+func (ns *nsState) init() {
+	ns.cache = newNSPageCache()
+	ns.objMut = &nsOverlay[*objectEntry]{}
+	ns.histMut = &nsOverlay[[]*historyVersionEntry]{}
+	ns.limit = nsOverlayFloor
+}
+
+func nsKey(bucket, key string) string { return bucket + "\x00" + key }
+
+// fail records a damaged generation: every later namespace read errors rather
+// than answering from a partial view.
+func (ns *nsState) fail(err error) error {
+	if errors.Is(err, errNSCorrupt) && ns.damaged == nil {
+		log.Printf("zeros3: namespace generation damaged, restart to rebuild from the journal: %v", err)
+		ns.damaged = err
+	}
+	return err
+}
+
+func (ns *nsState) overlayLen() int { return ns.objMut.n + ns.histMut.n }
+
+// objFind resolves a visible object; nil with a nil error means absent. Held: mu.
+func (s *Store) objFind(bucket, key string) (*objectEntry, error) {
+	ns := &s.ns
+	if ns.damaged != nil {
+		return nil, ns.damaged
+	}
+	ck := nsKey(bucket, key)
+	if e, ok := ns.objMut.find(ck); ok {
+		return e, nil
+	}
+	if ns.objFrozen != nil {
+		if e, ok := ns.objFrozen.find(ck); ok {
+			return e, nil
+		}
+	}
+	e, err := objFromBase(ns.obj, ck)
+	return e, ns.fail(err)
+}
+
+// objFromBase reads one row of a table; it needs no lock.
+func objFromBase(t *nsTable, ck string) (*objectEntry, error) {
+	payload, ok, err := t.get(ck)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return t.g.decodeObject(payload)
+}
+
+// objSet records a new visible state; existed says whether the key was visible
+// before. It cannot fail, so it is safe after the journal commit. Held: mu.
+func (s *Store) objSet(bucket, key string, e *objectEntry, existed bool) {
+	b := s.buckets[bucket]
+	switch {
+	case e != nil && !existed:
+		b.count++
+	case e == nil && existed:
+		b.count--
+	}
+	s.ns.objMut.set(nsKey(bucket, key), e)
+	s.nsMaybeConsolidate()
+}
+
+// histFind returns the retained versions of a key, oldest first. The slice is
+// shared: append to it, never edit it. Held: mu.
+func (s *Store) histFind(bucket, key string) ([]*historyVersionEntry, error) {
+	ns := &s.ns
+	if ns.damaged != nil {
+		return nil, ns.damaged
+	}
+	ck := nsKey(bucket, key)
+	if l, ok := ns.histMut.find(ck); ok {
+		return l, nil
+	}
+	if ns.histFrozen != nil {
+		if l, ok := ns.histFrozen.find(ck); ok {
+			return l, nil
+		}
+	}
+	payload, ok, err := ns.hist.get(ck)
+	if err != nil || !ok {
+		return nil, ns.fail(err)
+	}
+	l, err := ns.hist.g.decodeHistory(payload)
+	return l, ns.fail(err)
+}
+
+// histSet replaces a key's retained versions; an empty list removes them.
+func (s *Store) histSet(bucket, key string, list []*historyVersionEntry) {
+	s.ns.histMut.set(nsKey(bucket, key), list)
+	s.nsMaybeConsolidate()
+}
+
+// nsLimit grows with the table so a rewrite stays amortized O(1) per update.
+func (ns *nsState) nsLimit() int {
+	rows := 0
+	if ns.obj != nil {
+		rows = ns.obj.dir.Rows + ns.hist.dir.Rows
+	}
+	return max(ns.limit, min(rows/4, 4*ns.limit))
+}
+
+func (s *Store) nsMaybeConsolidate() {
+	ns := &s.ns
+	if !ns.auto || ns.busy || ns.overlayLen() < ns.nsLimit() {
+		return
+	}
+	ns.busy = true
+	go func() {
+		if err := s.nsConsolidate(true); err != nil {
+			log.Printf("zeros3: namespace consolidation failed: %v", err)
+		}
+		s.mu.Lock()
+		s.ns.busy = false
+		s.mu.Unlock()
+	}()
+}
+
+// nsView sources. Held: mu. The caller releases the returned function after use.
+func (s *Store) nsObjectView(lo, hi string) (*nsView[*objectEntry], func(), error) {
+	ns := &s.ns
+	if ns.damaged != nil {
+		return nil, nil, ns.damaged
+	}
+	layers := [][][]nsKV[*objectEntry]{ns.objMut.slice(lo, hi)}
+	if ns.objFrozen != nil {
+		layers = append(layers, ns.objFrozen.blocks)
+	}
+	var dec func([]byte) (*objectEntry, error)
+	release := func() {}
+	if ns.gen != nil {
+		g := ns.gen
+		g.acquire()
+		release, dec = g.release, g.decodeObject
+	}
+	return newNSView(ns.obj, lo, nsObjDead, dec, layers...), release, nil
+}
+
+func (s *Store) nsHistoryView(lo, hi string) (*nsView[[]*historyVersionEntry], func(), error) {
+	ns := &s.ns
+	if ns.damaged != nil {
+		return nil, nil, ns.damaged
+	}
+	layers := [][][]nsKV[[]*historyVersionEntry]{ns.histMut.slice(lo, hi)}
+	if ns.histFrozen != nil {
+		layers = append(layers, ns.histFrozen.blocks)
+	}
+	var dec func([]byte) ([]*historyVersionEntry, error)
+	release := func() {}
+	if ns.gen != nil {
+		g := ns.gen
+		g.acquire()
+		release, dec = g.release, g.decodeHistory
+	}
+	return newNSView(ns.hist, lo, nsHistDead, dec, layers...), release, nil
+}
+
+// nsPrefixEnd is the smallest string greater than every string with prefix p
+// ("" when there is none).
+func nsPrefixEnd(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] != 0xff {
+			return p[:i] + string([]byte{p[i] + 1})
+		}
+	}
+	return ""
+}
+
+// ---- consolidation and publication ----
+
+// nsFreeze freezes the overlays and captures what a generation needs. It runs
+// with commitMu held, so the journal and the namespace agree on one position.
+func (s *Store) nsFreeze(publish bool) (*nsSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := &s.ns
+	if ns.damaged != nil {
+		return nil, ns.damaged
+	}
+	if ns.objFrozen != nil {
+		return nil, errors.New("namespace consolidation already running")
+	}
+	snap := &nsSnapshot{gen: ns.gen, obj: ns.obj, hist: ns.hist, objOv: ns.objMut, histOv: ns.histMut, publish: publish}
+	if publish {
+		j := s.journal
+		j.mu.Lock()
+		off, seq := j.writeOffset, j.nextSeq-1
+		j.mu.Unlock()
+		snap.bind = nsMeta{Offset: off, Sequence: seq}
+		if off > 0 {
+			var trailer [4]byte
+			if _, err := j.f.ReadAt(trailer[:], off-4); err != nil {
+				return nil, err
+			}
+			snap.bind.LastCRC = binary.BigEndian.Uint32(trailer[:])
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
+		b := s.buckets[name]
+		snap.buckets = append(snap.buckets, nsBucketRec{b.name, b.createdAt, b.count})
+	}
+	for _, id := range slices.Sorted(maps.Keys(s.uploads)) {
+		u := s.uploads[id]
+		rec := nsUploadRec{ID: id, Bucket: u.bucket, Key: u.key, ContentType: u.contentType, Metadata: u.metadata, Created: u.createdAt}
+		for _, n := range slices.Sorted(maps.Keys(u.parts)) {
+			p := u.parts[n]
+			rec.Parts = append(rec.Parts, namespaceCheckpointPart{n, p.size, p.etag, p.chunks, p.uploadedAt})
+		}
+		snap.uploads = append(snap.uploads, rec)
+	}
+	if ns.gen != nil {
+		ns.gen.acquire()
+	}
+	ns.objFrozen, ns.histFrozen = ns.objMut, ns.histMut
+	ns.objMut = &nsOverlay[*objectEntry]{}
+	ns.histMut = &nsOverlay[[]*historyVersionEntry]{}
+	return snap, nil
+}
+
+// nsConsolidate folds the overlays into a new generation. With publish the
+// generation replaces the namespace checkpoint; otherwise it is private and
+// unlinked at once. The overlays keep serving reads and absorbing writes meanwhile.
+func (s *Store) nsConsolidate(publish bool) error {
+	s.commitMu.Lock()
+	snap, err := s.nsFreeze(publish)
+	s.commitMu.Unlock()
+	if err != nil {
+		return err
+	}
+	gen, err := s.nsBuild(snap)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snap.gen != nil {
+		defer snap.gen.release()
+	}
+	ns := &s.ns
+	if err != nil {
+		ns.objMut = nsMergeOver(ns.objFrozen, ns.objMut)
+		ns.histMut = nsMergeOver(ns.histFrozen, ns.histMut)
+		ns.objFrozen, ns.histFrozen = nil, nil
+		return err
+	}
+	old := ns.gen
+	ns.gen = gen
+	ns.obj, ns.hist = gen.tables()
+	ns.objFrozen, ns.histFrozen = nil, nil
+	if old != nil {
+		old.release()
+	}
+	return nil
+}
+
+// nsMergeOver returns base with every entry of top applied on a copy.
+func nsMergeOver[V any](base, top *nsOverlay[V]) *nsOverlay[V] {
+	out := base.clone()
+	for _, b := range top.blocks {
+		for _, e := range b {
+			out.set(e.k, e.v)
+		}
+	}
+	return out
+}
+
+func (s *Store) nsBuild(snap *nsSnapshot) (*nsGen, error) {
+	if snap.publish {
+		prefix, state, err := s.nsPrefixHash(snap)
+		if err != nil {
+			return nil, err
+		}
+		snap.bind.PrefixSHA, snap.bind.HashState = prefix, state
+	}
+	gen, tmp, err := s.nsWriteGeneration(snap)
+	if err != nil {
+		return nil, err
+	}
+	if !snap.publish {
+		os.Remove(tmp)
+		return gen, nil
+	}
+	dir := filepath.Join(s.root, "journal")
+	fireTestHook(hookNamespaceCheckpointSynced)
+	if err := os.Rename(tmp, filepath.Join(dir, nsGenName)); err != nil {
+		gen.f.Close()
+		os.Remove(tmp)
+		return nil, err
+	}
+	fireTestHook(hookNamespaceCheckpointRenamed)
+	if err := syncDir(dir); err != nil {
+		gen.f.Close()
+		return nil, err
+	}
+	return gen, nil
+}
+
+// nsPrefixHash chains from the previous generation's hash state when it covers
+// a prefix of the journal, so publication costs the suffix, not the journal.
+func (s *Store) nsPrefixHash(snap *nsSnapshot) ([32]byte, []byte, error) {
+	var from int64
+	var state []byte
+	if g := snap.gen; g != nil && g.meta.Published && len(g.meta.HashState) > 0 && g.meta.Offset <= snap.bind.Offset {
+		from, state = g.meta.Offset, g.meta.HashState
+	}
+	sum, st, _, err := journalPrefixHash(s.journal.f, from, snap.bind.Offset, state)
+	return sum, st, err
+}
+
+// journalPrefixHash hashes journal bytes [from, to) onto an optional saved SHA-256 state.
+func journalPrefixHash(f *os.File, from, to int64, state []byte) (sum [32]byte, saved []byte, crc uint32, err error) {
+	if to < 0 || (to > 0 && to < journalHeaderSize+4) || from < 0 || from > to {
+		return sum, nil, 0, errors.New("checkpoint: invalid journal offset")
+	}
+	h := sha256.New()
+	if state != nil {
+		if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(state); err != nil {
+			return sum, nil, 0, err
+		}
+	}
+	if to > 0 {
+		var trailer [4]byte
+		if _, err := f.ReadAt(trailer[:], to-4); err != nil {
+			return sum, nil, 0, err
+		}
+		crc = binary.BigEndian.Uint32(trailer[:])
+	}
+	buf := make([]byte, 1<<20)
+	n, err := io.CopyBuffer(h, io.NewSectionReader(f, from, to-from), buf)
+	if err == nil && n != to-from {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil {
+		return sum, nil, 0, err
+	}
+	saved, err = h.(encoding.BinaryMarshaler).MarshalBinary()
+	h.Sum(sum[:0])
+	return sum, saved, crc, err
+}
+
+func journalCheckpointDigest(f *os.File, end int64) ([32]byte, uint32, error) {
+	sum, _, crc, err := journalPrefixHash(f, 0, end, nil)
+	return sum, crc, err
+}
+
+// loadNamespaceGeneration installs the published generation if it still matches
+// the journal prefix. Nothing is changed unless every check passes.
+func (s *Store) loadNamespaceGeneration(journal *os.File) (int64, uint64, error) {
+	f, err := os.Open(filepath.Join(s.root, "journal", nsGenName))
+	if err != nil {
+		return 0, 0, err
+	}
+	g, err := openNSGen(f, s.ns.cache)
+	if err == nil {
+		err = s.nsAdopt(g, journal)
+	}
+	if err != nil {
+		f.Close()
+		return 0, 0, err
+	}
+	return g.meta.Offset, g.meta.Sequence, nil
+}
+
+func (s *Store) nsAdopt(g *nsGen, journal *os.File) error {
+	m := &g.meta
+	if !m.Published || m.StoreID != s.format.StoreID || m.Offset < 0 || (m.Sequence == 0) != (m.Offset == 0) {
+		return errors.New("checkpoint: invalid header")
+	}
+	sum, crc, err := journalCheckpointDigest(journal, m.Offset)
+	if err != nil || sum != m.PrefixSHA || crc != m.LastCRC {
+		return errors.New("checkpoint: journal prefix changed")
+	}
+	if len(m.HashState) > 0 {
+		h := sha256.New()
+		if h.(encoding.BinaryUnmarshaler).UnmarshalBinary(m.HashState) != nil || [32]byte(h.Sum(nil)) != m.PrefixSHA {
+			return errors.New("checkpoint: hash state does not match the journal prefix")
+		}
+	}
+	rows := 0
+	buckets := make(map[string]*bucketEntry, len(m.Buckets))
+	for _, b := range m.Buckets {
+		if b.Name == "" || b.Count < 0 || buckets[b.Name] != nil {
+			return errors.New("checkpoint: invalid bucket")
+		}
+		rows += b.Count
+		buckets[b.Name] = &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created, count: b.Count}
+	}
+	if rows != m.Obj.Rows {
+		return errors.New("checkpoint: bucket counts disagree with the object table")
+	}
+	uploads := make(map[string]*multipartUpload, len(m.Uploads))
+	for _, r := range m.Uploads {
+		if r.ID == "" || len(r.Parts) > 10000 || uploads[r.ID] != nil {
+			return errors.New("checkpoint: invalid multipart upload")
+		}
+		u := &multipartUpload{uploadID: r.ID, bucket: r.Bucket, key: r.Key, contentType: r.ContentType,
+			metadata: r.Metadata, createdAt: r.Created, parts: make(map[int]*multipartPart, len(r.Parts))}
+		for _, p := range r.Parts {
+			if p.Number < 1 || p.Number > 10000 || p.Size < 0 || u.parts[p.Number] != nil {
+				return errors.New("checkpoint: invalid multipart part")
+			}
+			u.parts[p.Number] = &multipartPart{partNumber: p.Number, size: p.Size, etag: p.ETag, chunks: p.Chunks, uploadedAt: p.Uploaded}
+		}
+		uploads[r.ID] = u
+	}
+	s.buckets, s.uploads = buckets, uploads
+	s.ns.gen = g
+	s.ns.obj, s.ns.hist = g.tables()
+	return nil
+}
+
+// ---- legacy V2/V3 checkpoints: read into the overlay ----
+
+func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error) {
+	offset, seq, err := s.loadNamespaceGeneration(journal)
+	if err == nil {
+		return offset, seq, nil
+	}
+	errs := []error{err}
+	for _, compact := range []bool{true, false} {
+		offset, seq, err := s.loadNamespaceCheckpointLayout(journal, compact)
+		if err == nil {
+			return offset, seq, nil
+		}
+		errs = append(errs, err)
+	}
+	var real []error
+	for _, err := range errs {
+		if !errors.Is(err, os.ErrNotExist) {
+			real = append(real, err)
+		}
+	}
+	if len(real) == 0 {
+		return 0, 0, os.ErrNotExist
+	}
+	return 0, 0, errors.Join(real...)
+}
 func (s *Store) loadNamespaceCheckpointLayout(journal *os.File, compactHistory bool) (int64, uint64, error) {
 	name, wantMagic := namespaceCheckpointName, namespaceCheckpointMagic
 	if compactHistory {
@@ -7869,8 +9341,8 @@ func (s *Store) loadNamespaceCheckpointLayout(journal *os.File, compactHistory b
 	if err != nil || prefix != hdr.PrefixSHA || crc != hdr.LastCRC {
 		return 0, 0, errors.New("checkpoint: journal prefix changed")
 	}
-	staged := &Store{buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{},
-		history: map[string]map[string][]*historyVersionEntry{}, replayIn: s.replayIn}
+	staged := &Store{buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{}, replayIn: s.replayIn}
+	staged.ns.init()
 	if err := staged.decodeNamespaceCheckpoint(dec, input, hdr, end, compactHistory); err != nil {
 		return 0, 0, err
 	}
@@ -7878,7 +9350,8 @@ func (s *Store) loadNamespaceCheckpointLayout(journal *os.File, compactHistory b
 	if err := dec.Decode(&extra); err != io.EOF {
 		return 0, 0, errors.New("checkpoint: trailing namespace data")
 	}
-	s.buckets, s.history, s.uploads = staged.buckets, staged.history, staged.uploads
+	s.buckets, s.uploads = staged.buckets, staged.uploads
+	s.ns.objMut, s.ns.histMut = staged.ns.objMut, staged.ns.histMut
 	return hdr.Offset, hdr.Sequence, nil
 }
 
@@ -7898,8 +9371,8 @@ func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr
 			return errors.New("checkpoint: invalid bucket")
 		}
 		remainingObjectRows -= int64(b.Objects)
-		objects := make(map[string]*objectEntry, min(b.Objects, 1<<20))
-		entry := &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created, objects: objects}
+		entry := &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created}
+		s.buckets[entry.name] = entry
 		for range b.Objects {
 			var err error
 			rowBuffer, err = readCheckpointRow(input, rowBuffer, &prefix)
@@ -7910,25 +9383,21 @@ func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr
 			if err != nil {
 				return err
 			}
-			if root.seq == 0 || root.seq > hdr.Sequence || entry.objects[key] != nil {
+			if _, dup := s.ns.objMut.find(nsKey(entry.name, key)); root.seq == 0 || root.seq > hdr.Sequence || dup {
 				return errors.New("checkpoint: invalid object root")
 			}
-			entry.objects[key] = &root
+			s.objSet(entry.name, key, &root, false)
 		}
-		s.buckets[entry.name] = entry
 	}
 	for range hdr.Histories {
 		var item namespaceCheckpointHistory
 		if err := dec.Decode(&item); err != nil {
 			return err
 		}
-		if item.Bucket == "" || item.Count < 1 || len(s.history[item.Bucket][item.Key]) != 0 {
+		if _, dup := s.ns.histMut.find(nsKey(item.Bucket, item.Key)); item.Bucket == "" || item.Count < 1 || dup {
 			return errors.New("checkpoint: invalid history key")
 		}
 		bucket := s.replayIn.get([]byte(item.Bucket))
-		if s.history[bucket] == nil {
-			s.history[bucket] = map[string][]*historyVersionEntry{}
-		}
 		var previous uint64
 		versions := make([]*historyVersionEntry, 0, min(item.Count, 1024))
 		for range item.Count {
@@ -7964,7 +9433,7 @@ func (s *Store) decodeNamespaceCheckpoint(dec *gob.Decoder, input io.Reader, hdr
 				archivedAt: row.Archive, reason: s.replayIn.get([]byte(row.Reason)), seq: root.Sequence,
 			})
 		}
-		s.history[bucket][item.Key] = versions
+		s.histSet(bucket, item.Key, versions)
 	}
 	for range hdr.Uploads {
 		var row namespaceCheckpointUpload
@@ -8339,6 +9808,16 @@ func decodeDeleteV2Fast(b []byte, p *journalDeleteObjectPayloadV2, in *strIntern
 	})
 }
 
+// objApply is objSet for replay, which has no earlier lookup to reuse.
+func (s *Store) objApply(bucket, key string, e *objectEntry) error {
+	old, err := s.objFind(bucket, key)
+	if err != nil {
+		return err
+	}
+	s.objSet(bucket, key, e, old != nil)
+	return nil
+}
+
 // applyRecord folds one already-validated journal record into the
 // in-memory namespace during replay.
 func (s *Store) applyRecord(rec journalRecord) error {
@@ -8349,14 +9828,14 @@ func (s *Store) applyRecord(rec journalRecord) error {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 		if _, exists := s.buckets[p.Bucket]; !exists {
-			s.buckets[p.Bucket] = &bucketEntry{name: p.Bucket, createdAt: p.CreatedAt, objects: map[string]*objectEntry{}}
+			s.buckets[p.Bucket] = &bucketEntry{name: p.Bucket, createdAt: p.CreatedAt}
 		}
 	case recordTypePutObjectRoot:
 		var p journalPutPayload
 		if err := json.Unmarshal(rec.payload, &p); err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		b, ok := s.buckets[p.Bucket]
+		_, ok := s.buckets[p.Bucket]
 		if !ok {
 			return fmt.Errorf("seq %d: put-object-root for unknown bucket %q", rec.seq, p.Bucket)
 		}
@@ -8364,24 +9843,28 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		if err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		b.objects[p.Key] = &objectEntry{
+		if err := s.objApply(p.Bucket, p.Key, &objectEntry{
 			manifestUUID:   p.ManifestUUID,
 			manifestSHA256: sum,
 			size:           p.Size,
 			etag:           p.ETag,
 			contentType:    p.ContentType,
 			seq:            rec.seq,
+		}); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 	case recordTypeDeleteObjectRoot:
 		var p journalDeleteObjectPayload
 		if err := json.Unmarshal(rec.payload, &p); err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		b, ok := s.buckets[p.Bucket]
+		_, ok := s.buckets[p.Bucket]
 		if !ok {
 			return fmt.Errorf("seq %d: delete-object-root for unknown bucket %q", rec.seq, p.Bucket)
 		}
-		delete(b.objects, p.Key)
+		if err := s.objApply(p.Bucket, p.Key, nil); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
 	case recordTypeDeleteBucket:
 		var p journalDeleteBucketPayload
 		if err := json.Unmarshal(rec.payload, &p); err != nil {
@@ -8431,7 +9914,7 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		if err := json.Unmarshal(rec.payload, &p); err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		b, ok := s.buckets[p.Bucket]
+		_, ok := s.buckets[p.Bucket]
 		if !ok {
 			return fmt.Errorf("seq %d: complete-multipart-upload for unknown bucket %q", rec.seq, p.Bucket)
 		}
@@ -8442,13 +9925,15 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		if err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		b.objects[p.Key] = &objectEntry{
+		if err := s.objApply(p.Bucket, p.Key, &objectEntry{
 			manifestUUID:   p.ManifestUUID,
 			manifestSHA256: sum,
 			size:           p.Size,
 			etag:           p.ETag,
 			contentType:    p.ContentType,
 			seq:            rec.seq,
+		}); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 		delete(s.uploads, p.UploadID)
 	case recordTypePutObjectRootV2:
@@ -8459,7 +9944,7 @@ func (s *Store) applyRecord(rec journalRecord) error {
 				return fmt.Errorf("seq %d: %w", rec.seq, err)
 			}
 		}
-		b, ok := s.buckets[p.Bucket]
+		_, ok := s.buckets[p.Bucket]
 		if !ok {
 			return fmt.Errorf("seq %d: put-object-root-v2 for unknown bucket %q", rec.seq, p.Bucket)
 		}
@@ -8472,20 +9957,22 @@ func (s *Store) applyRecord(rec journalRecord) error {
 				return fmt.Errorf("seq %d: %w", rec.seq, err)
 			}
 		}
-		b.objects[p.Key] = &objectEntry{
+		if err := s.objApply(p.Bucket, p.Key, &objectEntry{
 			manifestUUID:   p.ManifestUUID,
 			manifestSHA256: sum,
 			size:           p.Size,
 			etag:           p.ETag,
 			contentType:    p.ContentType,
 			seq:            rec.seq,
+		}); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 	case recordTypeCompleteMultipartUploadV2:
 		var p journalCompleteMultipartPayloadV2
 		if err := json.Unmarshal(rec.payload, &p); err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		b, ok := s.buckets[p.Bucket]
+		_, ok := s.buckets[p.Bucket]
 		if !ok {
 			return fmt.Errorf("seq %d: complete-multipart-upload-v2 for unknown bucket %q", rec.seq, p.Bucket)
 		}
@@ -8501,13 +9988,15 @@ func (s *Store) applyRecord(rec journalRecord) error {
 				return fmt.Errorf("seq %d: %w", rec.seq, err)
 			}
 		}
-		b.objects[p.Key] = &objectEntry{
+		if err := s.objApply(p.Bucket, p.Key, &objectEntry{
 			manifestUUID:   p.ManifestUUID,
 			manifestSHA256: sum,
 			size:           p.Size,
 			etag:           p.ETag,
 			contentType:    p.ContentType,
 			seq:            rec.seq,
+		}); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 		delete(s.uploads, p.UploadID)
 	case recordTypeDeleteObjectRootV2:
@@ -8518,20 +10007,24 @@ func (s *Store) applyRecord(rec journalRecord) error {
 				return fmt.Errorf("seq %d: %w", rec.seq, err)
 			}
 		}
-		b, ok := s.buckets[p.Bucket]
+		_, ok := s.buckets[p.Bucket]
 		if !ok {
 			return fmt.Errorf("seq %d: delete-object-root-v2 for unknown bucket %q", rec.seq, p.Bucket)
 		}
 		if err := s.archiveVersionLocked(p.Bucket, p.Key, rec.seq, p.Archived); err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		delete(b.objects, p.Key)
+		if err := s.objApply(p.Bucket, p.Key, nil); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
 	case recordTypePruneHistory:
 		p, err := parsePruneHistoryPayload(rec.payload)
 		if err != nil {
 			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
-		s.removeHistoryLocked(p)
+		if _, err := s.removeHistoryLocked(p); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
 	default:
 		return fmt.Errorf("seq %d: unknown record type %d", rec.seq, rec.recType)
 	}
@@ -8568,13 +10061,16 @@ func parsePruneHistoryPayload(payload []byte) (journalPruneHistoryPayload, error
 // effect, shared by live application and replay. A valid ID that is not
 // present is skipped. History slices are replaced, never edited in place,
 // because readers hold them outside s.mu. Must be called with s.mu held.
-func (s *Store) removeHistoryLocked(p journalPruneHistoryPayload) (removed int) {
+func (s *Store) removeHistoryLocked(p journalPruneHistoryPayload) (removed int, err error) {
 	for _, e := range p.Entries {
 		drop := make(map[string]bool, len(e.VersionIDs))
 		for _, id := range e.VersionIDs {
 			drop[id] = true
 		}
-		old := s.history[e.Bucket][e.Key]
+		old, err := s.histFind(e.Bucket, e.Key)
+		if err != nil {
+			return removed, err
+		}
 		kept := make([]*historyVersionEntry, 0, len(old))
 		for _, h := range old {
 			if drop[h.versionID] {
@@ -8583,19 +10079,11 @@ func (s *Store) removeHistoryLocked(p journalPruneHistoryPayload) (removed int) 
 			}
 			kept = append(kept, h)
 		}
-		if len(kept) == len(old) {
-			continue
-		}
-		if len(kept) > 0 {
-			s.history[e.Bucket][e.Key] = kept
-			continue
-		}
-		delete(s.history[e.Bucket], e.Key)
-		if len(s.history[e.Bucket]) == 0 {
-			delete(s.history, e.Bucket)
+		if len(kept) != len(old) {
+			s.histSet(e.Bucket, e.Key, kept)
 		}
 	}
-	return removed
+	return removed, nil
 }
 
 // archiveVersionLocked appends one archived-version payload (decoded from
@@ -8608,10 +10096,11 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 	if err != nil {
 		return err
 	}
-	if s.history[bucket] == nil {
-		s.history[bucket] = map[string][]*historyVersionEntry{}
+	old, err := s.histFind(bucket, key)
+	if err != nil {
+		return err
 	}
-	s.history[bucket][key] = append(s.history[bucket][key], &historyVersionEntry{
+	s.histSet(bucket, key, append(old, &historyVersionEntry{
 		versionID:      p.VersionID,
 		manifestUUID:   p.ManifestUUID,
 		manifestSHA256: sum,
@@ -8621,7 +10110,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 		archivedAt:     p.ArchivedAt,
 		reason:         p.Reason,
 		seq:            seq,
-	})
+	}))
 	return nil
 }
 
@@ -8657,7 +10146,7 @@ func (s *Store) CreateBucket(name string) error {
 	if _, err := s.journal.appendFrame(recordTypeCreateBucket, payload); err != nil {
 		return err
 	}
-	s.buckets[name] = &bucketEntry{name: name, createdAt: createdAt, objects: map[string]*objectEntry{}}
+	s.buckets[name] = &bucketEntry{name: name, createdAt: createdAt}
 	return nil
 }
 
@@ -8700,7 +10189,7 @@ func (s *Store) DeleteBucket(name string) error {
 	if !ok {
 		return errNoSuchBucket
 	}
-	if len(b.objects) > 0 {
+	if b.count > 0 {
 		return errBucketNotEmpty
 	}
 	// An in-progress multipart upload targeting this bucket is not yet an
@@ -8738,12 +10227,14 @@ func (s *Store) DeleteObject(bucket, key string) error {
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, ok := s.buckets[bucket]
-	if !ok {
+	if _, ok := s.buckets[bucket]; !ok {
 		return errNoSuchBucket
 	}
-	cur, exists := b.objects[key]
-	if !exists {
+	cur, err := s.objFind(bucket, key)
+	if err != nil {
+		return err
+	}
+	if cur == nil {
 		return nil
 	}
 	archived := archivedVersionPayload(cur, historyReasonDeleted) // non-nil: cur is non-nil here
@@ -8755,7 +10246,7 @@ func (s *Store) DeleteObject(bucket, key string) error {
 	if err != nil {
 		return err
 	}
-	delete(b.objects, key)
+	s.objSet(bucket, key, nil, true)
 	if err := s.archiveVersionLocked(bucket, key, seq, *archived); err != nil {
 		// archivedVersionPayload always produces a valid hex sha256 from an
 		// already-valid in-memory objectEntry, so this cannot happen in
@@ -8948,8 +10439,9 @@ func (s *Store) submitRootCommit(r *rootCommitReq) {
 func (s *Store) runRootCommits(batch []*rootCommitReq) {
 	type viewKey struct{ bucket, key string }
 	type item struct {
-		r    *rootCommitReq
-		prev *journalArchivedVersionPayload
+		r       *rootCommitReq
+		prev    *journalArchivedVersionPayload
+		existed bool
 	}
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
@@ -8960,12 +10452,16 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for _, r := range batch {
-			b, ok := s.buckets[r.bucket]
-			if !ok {
+			if _, ok := s.buckets[r.bucket]; !ok {
 				r.err = errNoSuchBucket
 				continue
 			}
-			cur, exists := b.objects[r.key]
+			cur, err := s.objFind(r.bucket, r.key)
+			if err != nil {
+				r.err = err
+				continue
+			}
+			exists := cur != nil
 			if v, ok := view[viewKey{r.bucket, r.key}]; ok {
 				cur, exists = v, true
 			}
@@ -9002,7 +10498,7 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 				contentType:    r.man.ContentType,
 			}
 			view[viewKey{r.bucket, r.key}] = r.entry
-			items = append(items, item{r, prev})
+			items = append(items, item{r, prev, exists})
 			recs = append(recs, journalFrameIn{recType: recordTypePutObjectRootV2, payload: payload})
 		}
 	}()
@@ -9031,7 +10527,7 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 	for i, it := range items {
 		r := it.r
 		r.entry.seq = first + uint64(i)
-		s.buckets[r.bucket].objects[r.key] = r.entry
+		s.objSet(r.bucket, r.key, r.entry, it.existed)
 		if it.prev != nil {
 			if err := s.archiveVersionLocked(r.bucket, r.key, r.entry.seq, *it.prev); err != nil {
 				r.err = fmt.Errorf("commit: recording history: %w", err)
@@ -9060,7 +10556,12 @@ func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]b
 		s.mu.Unlock()
 		return nil, errNoSuchBucket
 	}
-	cur, exists := s.buckets[bucket].objects[key]
+	cur, err := s.objFind(bucket, key)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	exists := cur != nil
 	if check != nil {
 		if err := check(cur, exists); err != nil {
 			s.mu.Unlock()
@@ -9099,7 +10600,7 @@ func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]b
 		contentType:    man.ContentType,
 		seq:            seq,
 	}
-	s.buckets[bucket].objects[key] = entry
+	s.objSet(bucket, key, entry, exists)
 	if prevPayload != nil {
 		if err := s.archiveVersionLocked(bucket, key, seq, *prevPayload); err != nil {
 			s.mu.Unlock()
@@ -9115,15 +10616,41 @@ func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]b
 // lookupObject resolves bucket/key against the journal-derived namespace
 // without reading the manifest or any chunk data.
 func (s *Store) lookupObject(bucket, key string) (*objectEntry, error) {
+	ck := nsKey(bucket, key)
 	s.mu.Lock()
-	b, ok := s.buckets[bucket]
-	if !ok {
+	ns := &s.ns
+	if _, ok := s.buckets[bucket]; !ok {
 		s.mu.Unlock()
 		return nil, errNoSuchBucket
 	}
-	obj, ok := b.objects[key]
+	if ns.damaged != nil {
+		err := ns.damaged
+		s.mu.Unlock()
+		return nil, err
+	}
+	obj, ok := ns.objMut.find(ck)
+	if !ok && ns.objFrozen != nil {
+		obj, ok = ns.objFrozen.find(ck)
+	}
+	// The table is immutable: read it after dropping mu, pinned against retirement.
+	var base *nsTable
+	if !ok && ns.gen != nil {
+		base = ns.obj
+		ns.gen.acquire()
+	}
 	s.mu.Unlock()
-	if !ok {
+	if base != nil {
+		var err error
+		obj, err = objFromBase(base, ck)
+		base.g.release()
+		if err != nil {
+			s.mu.Lock()
+			s.ns.fail(err)
+			s.mu.Unlock()
+			return nil, err
+		}
+	}
+	if obj == nil {
 		return nil, errNoSuchKey
 	}
 	return obj, nil
@@ -9215,18 +10742,70 @@ type historyNamespaceObject struct {
 // walk without holding the lock -- the same policy snapshotNamespace
 // already uses, and safe for the same reason: historyVersionEntry values
 // are never mutated in place after archiveVersionLocked appends them.
-func (s *Store) snapshotHistory() []historyNamespaceObject {
+func (s *Store) snapshotHistory() ([]historyNamespaceObject, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	v, release, err := s.nsHistoryView("", "")
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	var out []historyNamespaceObject
-	for bucket, keys := range s.history {
-		for key, entries := range keys {
-			for _, e := range entries {
-				out = append(out, historyNamespaceObject{bucket: bucket, key: key, entry: e})
-			}
+	for v.next() {
+		list, err := v.value()
+		if err != nil {
+			return nil, s.nsFailed(err)
+		}
+		bucket, key, _ := strings.Cut(string(v.key), "\x00")
+		for _, e := range list {
+			out = append(out, historyNamespaceObject{bucket: bucket, key: key, entry: e})
 		}
 	}
-	return out
+	return out, s.nsFailed(v.err)
+}
+
+// nsFailed records err as damage when it is one, and returns it.
+func (s *Store) nsFailed(err error) error {
+	if err != nil {
+		s.mu.Lock()
+		s.ns.fail(err)
+		s.mu.Unlock()
+	}
+	return err
+}
+
+// historyRows is a consistent copy of the retained versions of every key in
+// bucket with the prefix (only key itself when it is non-empty).
+func (s *Store) historyRows(bucket, prefix, only string) (map[string][]*historyVersionEntry, error) {
+	out := map[string][]*historyVersionEntry{}
+	if only != "" {
+		if !strings.HasPrefix(only, prefix) {
+			return out, nil
+		}
+		s.mu.Lock()
+		l, err := s.histFind(bucket, only)
+		s.mu.Unlock()
+		if len(l) > 0 {
+			out[only] = l
+		}
+		return out, err
+	}
+	lo := nsKey(bucket, prefix)
+	s.mu.Lock()
+	v, release, err := s.nsHistoryView(lo, nsPrefixEnd(lo))
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	for v.next() && bytes.HasPrefix(v.key, []byte(lo)) {
+		l, err := v.value()
+		if err != nil {
+			return nil, s.nsFailed(err)
+		}
+		out[string(v.key[len(bucket)+1:])] = l
+	}
+	return out, s.nsFailed(v.err)
 }
 
 // ListVersions returns every retained historical version of bucket/key,
@@ -9236,12 +10815,19 @@ func (s *Store) snapshotHistory() []historyNamespaceObject {
 // keys' history addressable, per the package doc above.
 func (s *Store) ListVersions(bucket, key string) ([]*historyVersionEntry, *objectEntry, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	var cur *objectEntry
-	if b, ok := s.buckets[bucket]; ok {
-		cur = b.objects[key]
+	var err error
+	if _, ok := s.buckets[bucket]; ok {
+		if cur, err = s.objFind(bucket, key); err != nil {
+			return nil, nil, err
+		}
 	}
-	entries := append([]*historyVersionEntry(nil), s.history[bucket][key]...)
-	s.mu.Unlock()
+	list, err := s.histFind(bucket, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	entries := append([]*historyVersionEntry(nil), list...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].seq < entries[j].seq })
 	return entries, cur, nil
 }
@@ -9252,7 +10838,11 @@ func (s *Store) findHistoryVersion(bucket, key, version string) (*historyVersion
 	if _, exists := s.buckets[bucket]; !exists {
 		return nil, errNoSuchBucket
 	}
-	for _, e := range s.history[bucket][key] {
+	list, err := s.histFind(bucket, key)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range list {
 		if e.versionID == version {
 			return e, nil
 		}
@@ -9432,21 +11022,11 @@ func (s *Store) PlanHistoryPrune(opt historyPruneOptions) (HistoryPruneResult, e
 		res.Cutoff = c.Format(time.RFC3339Nano)
 	}
 
-	snap := map[string][]*historyVersionEntry{}
-	s.mu.Lock()
-	for key, entries := range s.history[opt.Bucket] {
-		if (opt.Key != "" && key != opt.Key) || !strings.HasPrefix(key, opt.Prefix) {
-			continue
-		}
-		snap[key] = entries
+	snap, err := s.historyRows(opt.Bucket, opt.Prefix, opt.Key)
+	if err != nil {
+		return res, err
 	}
-	s.mu.Unlock()
-
-	keys := make([]string, 0, len(snap))
-	for k := range snap {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(snap))
 	for _, key := range keys {
 		entries := snap[key]
 		res.KeysMatched++
@@ -9539,9 +11119,13 @@ func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) erro
 			s.commitMu.Unlock()
 			return err
 		}
-		res.VersionsPruned += s.removeHistoryLocked(p)
+		removed, err := s.removeHistoryLocked(p)
+		res.VersionsPruned += removed
 		s.mu.Unlock()
 		s.commitMu.Unlock()
+		if err != nil {
+			return err
+		}
 		res.JournalFrames++
 		fireTestHook(hookPruneAfterFrame)
 	}
@@ -9620,54 +11204,55 @@ type listObjectsV2Page struct {
 // ordered by plain Go string comparison, which is exactly UTF-8 byte
 // lexical order since Go strings are byte sequences.
 func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, maxKeys int) (listObjectsV2Page, error) {
-	s.mu.Lock()
-	b, ok := s.buckets[bucket]
-	if !ok {
-		s.mu.Unlock()
-		return listObjectsV2Page{}, errNoSuchBucket
-	}
-	keys := make([]string, 0, len(b.objects))
-	entries := make(map[string]*objectEntry, len(b.objects))
-	for k, e := range b.objects {
-		if !strings.HasPrefix(k, prefix) {
-			continue
-		}
-		keys = append(keys, k)
-		entries[k] = e
-	}
-	s.mu.Unlock()
-	sort.Strings(keys)
-
 	var page listObjectsV2Page
+	lo := nsKey(bucket, prefix)
+	from := lo
+	if sk := nsKey(bucket, startAfterKey); startAfterKey != "" && sk > lo {
+		from = sk
+	}
+	s.mu.Lock()
+	if _, ok := s.buckets[bucket]; !ok {
+		s.mu.Unlock()
+		return page, errNoSuchBucket
+	}
+	view, release, err := s.nsObjectView(from, nsPrefixEnd(lo))
+	s.mu.Unlock()
+	if err != nil {
+		return page, err
+	}
+	defer release()
 	if maxKeys <= 0 {
 		return page, nil
 	}
 
-	var lastGroupPrefix string
+	var lastGroup, last []byte
 	haveGroup := false
-	for _, k := range keys {
-		if startAfterKey != "" && k <= startAfterKey {
+	for view.next() {
+		ck := view.key
+		if !bytes.HasPrefix(ck, []byte(lo)) {
+			break
+		}
+		key := ck[len(bucket)+1:]
+		if startAfterKey != "" && nsCmpBS(key, startAfterKey) <= 0 {
 			continue
 		}
-		remainder := k[len(prefix):]
 		if delimiter != "" {
-			if idx := strings.Index(remainder, delimiter); idx >= 0 {
-				cp := prefix + remainder[:idx+len(delimiter)]
-				if haveGroup && cp == lastGroupPrefix {
-					// Another key folding into the common prefix group
-					// we already emitted: it doesn't add a new result
-					// unit, but it does advance how far this page reaches.
-					page.lastConsumedKey = k
+			if idx := bytes.Index(key[len(prefix):], []byte(delimiter)); idx >= 0 {
+				cp := key[:len(prefix)+idx+len(delimiter)]
+				if haveGroup && bytes.Equal(cp, lastGroup) {
+					// Another key folding into the common prefix group already
+					// emitted: it adds no result unit but advances the page.
+					last = append(last[:0], key...)
 					continue
 				}
 				if len(page.contents)+len(page.commonPrefixes) >= maxKeys {
 					page.truncated = true
 					break
 				}
-				page.commonPrefixes = append(page.commonPrefixes, cp)
-				lastGroupPrefix = cp
+				page.commonPrefixes = append(page.commonPrefixes, string(cp))
+				lastGroup = append(lastGroup[:0], cp...)
 				haveGroup = true
-				page.lastConsumedKey = k
+				last = append(last[:0], key...)
 				continue
 			}
 		}
@@ -9675,9 +11260,18 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 			page.truncated = true
 			break
 		}
-		page.contents = append(page.contents, listedObject{key: k, entry: entries[k]})
-		page.lastConsumedKey = k
+		entry, err := view.value()
+		if err != nil {
+			return listObjectsV2Page{}, s.nsFailed(err)
+		}
+		k := string(key)
+		page.contents = append(page.contents, listedObject{key: k, entry: entry})
+		last = append(last[:0], key...)
 	}
+	if err := s.nsFailed(view.err); err != nil {
+		return listObjectsV2Page{}, err
+	}
+	page.lastConsumedKey = string(last)
 	return page, nil
 }
 
@@ -12854,7 +14448,11 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	// is archived into history in this same journal frame, via the same
 	// archivedVersionPayload helper commitObjectRoot uses -- see section 7c.
 	var prevPayload *journalArchivedVersionPayload
-	if prev, exists := s.buckets[bucket].objects[key]; exists {
+	prev, err := s.objFind(bucket, key)
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	if prev != nil {
 		prevPayload = archivedVersionPayload(prev, historyReasonOverwritten)
 	}
 	payload, err := json.Marshal(journalCompleteMultipartPayloadV2{
@@ -12874,7 +14472,7 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 		manifestUUID: manUUID, manifestSHA256: manSHA,
 		size: man.TotalLength, etag: man.ETag, contentType: man.ContentType, seq: seq,
 	}
-	s.buckets[bucket].objects[key] = entry
+	s.objSet(bucket, key, entry, prev != nil)
 	delete(s.uploads, uploadID)
 	if prevPayload != nil {
 		if err := s.archiveVersionLocked(bucket, key, seq, *prevPayload); err != nil {
@@ -13299,15 +14897,35 @@ type namespaceObject struct {
 // concurrent write can only ever add a new entry or swap/remove one this
 // snapshot already captured, never rewrite the fields this snapshot is
 // currently reading.
-func (s *Store) snapshotNamespace() []namespaceObject {
+func (s *Store) snapshotNamespace() ([]namespaceObject, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []namespaceObject
-	for bname, b := range s.buckets {
-		for key, e := range b.objects {
-			out = append(out, namespaceObject{bucket: bname, key: key, entry: e})
-		}
+	v, release, err := s.nsObjectView("", "")
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
+	defer release()
+	var out []namespaceObject
+	for v.next() {
+		e, err := v.value()
+		if err != nil {
+			return nil, s.nsFailed(err)
+		}
+		bucket, key, _ := strings.Cut(string(v.key), "\x00")
+		out = append(out, namespaceObject{bucket: bucket, key: key, entry: e})
+	}
+	return out, s.nsFailed(v.err)
+}
+
+// snapshotNamespaceBestEffort serves derived accelerators and annotations: a
+// damaged generation yields an empty view, never an authoritative decision.
+func (s *Store) snapshotNamespaceBestEffort() []namespaceObject {
+	out, _ := s.snapshotNamespace()
+	return out
+}
+
+func (s *Store) snapshotHistoryBestEffort() []historyNamespaceObject {
+	out, _ := s.snapshotHistory()
 	return out
 }
 
@@ -13831,7 +15449,10 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 	var steps []reachStep
 	var ups []*multipartUpload // multipart steps point here
 	var issues []VerifyIssue   // so do issue steps
-	curObjs := s.snapshotNamespace()
+	curObjs, err := s.snapshotNamespace()
+	if err != nil {
+		return reachabilityResult{}, err
+	}
 	if obs != nil {
 		sort.Slice(curObjs, func(i, j int) bool {
 			return cmp.Or(cmp.Compare(curObjs[i].bucket, curObjs[j].bucket), cmp.Compare(curObjs[i].key, curObjs[j].key)) < 0
@@ -13875,7 +15496,10 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 			steps = append(steps, reachStep{kind: stepManifest, scope: scopeSnapshot, bucket: snap.SourceBucket, key: se.Key, key2: snap.SnapshotID, uuid: se.ManifestUUID, sha: sum})
 		}
 	}
-	histObjs := s.snapshotHistory()
+	histObjs, err := s.snapshotHistory()
+	if err != nil {
+		return reachabilityResult{}, err
+	}
 	if obs != nil { // newest retained version first
 		sort.Slice(histObjs, func(i, j int) bool {
 			a, b := histObjs[i], histObjs[j]
@@ -14566,7 +16190,10 @@ type StatsResult struct {
 // milestone's Phase F/O requires: a chunk kept alive only by history or an
 // in-progress multipart upload is no longer misreported as reclaimable.
 func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
-	all := s.snapshotNamespace()
+	all, err := s.snapshotNamespace()
+	if err != nil {
+		return StatsResult{}, err
+	}
 	bucketSet := map[string]bool{}
 	for _, o := range all {
 		bucketSet[o.bucket] = true
@@ -14629,7 +16256,11 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 		return StatsResult{}, scanErr
 	}
 
-	for _, o := range s.snapshotHistory() {
+	hist, err := s.snapshotHistory()
+	if err != nil {
+		return StatsResult{}, err
+	}
+	for _, o := range hist {
 		if sel.matches(o.bucket, o.key) {
 			res.HistoricalVersionCount++
 			res.HistoricalVersionLogicalBytes += o.entry.size
@@ -19654,7 +21285,7 @@ func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
 		m[root] = true
 	}
 
-	for _, o := range s.snapshotNamespace() {
+	for _, o := range s.snapshotNamespaceBestEffort() {
 		root := rootRef{"current", o.bucket + "/" + o.key}
 		man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
 		if err != nil {
@@ -19664,7 +21295,7 @@ func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
 			add(root, c.SHA256)
 		}
 	}
-	for _, o := range s.snapshotHistory() {
+	for _, o := range s.snapshotHistoryBestEffort() {
 		root := rootRef{"historical", fmt.Sprintf("%s/%s@%s", o.bucket, o.key, o.entry.versionID)}
 		man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
 		if err != nil {
@@ -23760,12 +25391,12 @@ func (s *Store) annotateAffectedObjects(findings []RepairFinding) {
 			}
 		}
 	}
-	for _, o := range s.snapshotNamespace() {
+	for _, o := range s.snapshotNamespaceBestEffort() {
 		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
 			note(o.bucket+"/"+o.key, s.rootDependencyChunks(man))
 		}
 	}
-	for _, o := range s.snapshotHistory() {
+	for _, o := range s.snapshotHistoryBestEffort() {
 		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
 			note(fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID), s.rootDependencyChunks(man))
 		}
@@ -25056,24 +26687,26 @@ func (s *Store) captureSnapshotEntries(bucket, prefix string) ([]snapshotEntryV1
 	if listPrefix != "" {
 		listPrefix += "/"
 	}
+	lo := nsKey(bucket, listPrefix)
 	s.mu.Lock()
-	b, ok := s.buckets[bucket]
-	if !ok {
+	if _, ok := s.buckets[bucket]; !ok {
 		s.mu.Unlock()
 		return nil, errNoSuchBucket
 	}
-	keys := make([]string, 0, len(b.objects))
-	for k := range b.objects {
-		if strings.HasPrefix(k, listPrefix) {
-			keys = append(keys, k)
-		}
+	v, release, err := s.nsObjectView(lo, nsPrefixEnd(lo))
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(keys)
-	entries := make([]snapshotEntryV1, 0, len(keys))
-	for _, k := range keys {
-		e := b.objects[k]
+	defer release()
+	var entries []snapshotEntryV1
+	for v.next() && bytes.HasPrefix(v.key, []byte(lo)) {
+		e, err := v.value()
+		if err != nil {
+			return nil, s.nsFailed(err)
+		}
 		entries = append(entries, snapshotEntryV1{
-			Key:            k,
+			Key:            string(v.key[len(bucket)+1:]),
 			ManifestUUID:   e.manifestUUID,
 			ManifestSHA256: hex.EncodeToString(e.manifestSHA256[:]),
 			Size:           e.size,
@@ -25081,8 +26714,7 @@ func (s *Store) captureSnapshotEntries(bucket, prefix string) ([]snapshotEntryV1
 			ContentType:    e.contentType,
 		})
 	}
-	s.mu.Unlock()
-	return entries, nil
+	return entries, s.nsFailed(v.err)
 }
 
 // publishSnapshot durably writes d's encoding to store/snapshots/, using
@@ -26542,7 +28174,7 @@ func newHardenedHTTPServer(addr string, handler http.Handler) *http.Server {
 func runNamespaceCheckpoint(args []string) {
 	fs := flag.NewFlagSet("namespace-checkpoint", flag.ExitOnError)
 	root := fs.String("store", "./zeros3-data", "path to an existing offline store")
-	compactHistory := fs.Bool("compact-history", false, "write a V3 checkpoint with compact retained-history rows")
+	fs.Bool("compact-history", false, "accepted for compatibility; the checkpoint is always the compact paged layout")
 	fs.Parse(args)
 	if _, err := os.Stat(filepath.Join(*root, "FORMAT.json")); err != nil {
 		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
@@ -26552,12 +28184,12 @@ func runNamespaceCheckpoint(args []string) {
 		log.Fatalf("zeros3: namespace-checkpoint needs exclusive access: %v", err)
 	}
 	defer lock.release()
-	s, err := OpenStoreShared(*root)
+	s, err := openStore(*root, false, true)
 	if err != nil {
 		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
 	}
 	defer s.Close()
-	if err := s.writeNamespaceCheckpointLayout(*compactHistory); err != nil {
+	if err := s.nsConsolidate(true); err != nil {
 		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
 	}
 }
@@ -34942,10 +36574,10 @@ func (s *Store) repDescLookup(id [32]byte) *repDesc {
 // retained history, snapshot) names.
 func (s *Store) liveManifestUUIDs() map[string]bool {
 	live := map[string]bool{}
-	for _, o := range s.snapshotNamespace() {
+	for _, o := range s.snapshotNamespaceBestEffort() {
 		live[o.entry.manifestUUID] = true
 	}
-	for _, o := range s.snapshotHistory() {
+	for _, o := range s.snapshotHistoryBestEffort() {
 		live[o.entry.manifestUUID] = true
 	}
 	snaps, _ := s.scanSnapshots()
@@ -35503,12 +37135,17 @@ func (s *Store) repQueueStop(grace time.Duration) bool {
 func (s *Store) repManifestLive(bucket, key, uuid string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if b := s.buckets[bucket]; b != nil {
-		if e := b.objects[key]; e != nil && e.manifestUUID == uuid {
-			return true
+	if s.buckets[bucket] != nil {
+		e, err := s.objFind(bucket, key)
+		if err != nil || (e != nil && e.manifestUUID == uuid) {
+			return true // unreadable counts as live
 		}
 	}
-	for _, h := range s.history[bucket][key] {
+	list, err := s.histFind(bucket, key)
+	if err != nil {
+		return true
+	}
+	for _, h := range list {
 		if h.manifestUUID == uuid {
 			return true
 		}
@@ -49938,10 +51575,10 @@ func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liv
 		seen[uuid] = true
 		fn(liveMan{bucket, key, man})
 	}
-	for _, o := range s.snapshotNamespace() {
+	for _, o := range s.snapshotNamespaceBestEffort() {
 		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
 	}
-	for _, o := range s.snapshotHistory() {
+	for _, o := range s.snapshotHistoryBestEffort() {
 		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
 	}
 	snaps, _ := s.scanSnapshots()
@@ -53412,33 +55049,25 @@ func (s *Store) buildAuthSimilarityStage() (authSimilarityStageReport, error) {
 }
 
 func (s *Store) authSimilarityRoots(snapshots []snapshotDescriptorV1) ([]authSimilarityRoot, error) {
-	s.mu.Lock()
-	count := 0
-	for _, bucket := range s.buckets {
-		count += len(bucket.objects)
+	objs, err := s.snapshotNamespace()
+	if err != nil {
+		return nil, err
 	}
-	for _, keys := range s.history {
-		for _, entries := range keys {
-			count += len(entries)
-		}
+	hist, err := s.snapshotHistory()
+	if err != nil {
+		return nil, err
 	}
+	count := len(objs) + len(hist)
 	for _, snap := range snapshots {
 		count += len(snap.Entries)
 	}
 	roots := make([]authSimilarityRoot, 0, count)
-	for _, bucket := range s.buckets {
-		for _, obj := range bucket.objects {
-			roots = append(roots, authSimilarityRoot{obj.manifestUUID, obj.manifestSHA256})
-		}
+	for _, o := range objs {
+		roots = append(roots, authSimilarityRoot{o.entry.manifestUUID, o.entry.manifestSHA256})
 	}
-	for _, keys := range s.history {
-		for _, entries := range keys {
-			for _, obj := range entries {
-				roots = append(roots, authSimilarityRoot{obj.manifestUUID, obj.manifestSHA256})
-			}
-		}
+	for _, o := range hist {
+		roots = append(roots, authSimilarityRoot{o.entry.manifestUUID, o.entry.manifestSHA256})
 	}
-	s.mu.Unlock()
 	for _, snap := range snapshots {
 		for _, entry := range snap.Entries {
 			sum, err := decodeHexSHA256(entry.ManifestSHA256)

@@ -3,21 +3,25 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"crypto/sha256"
+	"encoding/binary"
+	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"runtime/pprof"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func checkpointTestOpen(t *testing.T, dir string, useCheckpoint bool) *Store {
@@ -43,7 +47,7 @@ func checkpointTestSeed(t *testing.T) (dir, upload string) {
 	mustOK(t, err)
 	_, err = s.UploadPart("pilot", "active", upload, 2, []byte("checkpoint part"))
 	mustOK(t, err)
-	mustOK(t, s.writeNamespaceCheckpoint())
+	mustOK(t, s.nsConsolidate(true))
 	return dir, upload
 }
 
@@ -51,9 +55,7 @@ func assertCheckpointState(t *testing.T, dir string) {
 	t.Helper()
 	normal := checkpointTestOpen(t, dir, false)
 	accelerated := checkpointTestOpen(t, dir, true)
-	if !reflect.DeepEqual(normal.buckets, accelerated.buckets) ||
-		!reflect.DeepEqual(normal.uploads, accelerated.uploads) ||
-		!reflect.DeepEqual(normal.history, accelerated.history) ||
+	if nsDump(t, normal) != nsDump(t, accelerated) ||
 		normal.journal.writeOffset != accelerated.journal.writeOffset ||
 		normal.journal.nextSeq != accelerated.journal.nextSeq {
 		t.Fatal("checkpoint replay did not match a fresh full replay")
@@ -95,17 +97,20 @@ func TestNamespaceCheckpointMatchesHistoryMultipartAndTail(t *testing.T) {
 func TestNamespaceCheckpointCompactHistoryAndLegacyFallback(t *testing.T) {
 	dir, _ := checkpointTestSeed(t)
 	legacyPath := filepath.Join(dir, "journal", namespaceCheckpointName)
-	legacy, err := os.ReadFile(legacyPath)
-	mustOK(t, err)
 	s, err := openStore(dir, true, false)
 	mustOK(t, err)
-	mustOK(t, s.writeNamespaceCheckpointLayout(true))
+	mustOK(t, s.writeLegacyCheckpoint(false))
+	legacy, err := os.ReadFile(legacyPath)
+	mustOK(t, err)
+	mustOK(t, os.Remove(filepath.Join(dir, "journal", nsGenName)))
+	mustOK(t, s.writeLegacyCheckpoint(true))
 	unchanged, err := os.ReadFile(legacyPath)
 	mustOK(t, err)
 	if !bytes.Equal(legacy, unchanged) {
 		t.Fatal("compact writer changed the existing V2 checkpoint")
 	}
-	history := s.history["pilot"]["retained"]
+	history, err := s.histFind("pilot", "retained")
+	mustOK(t, err)
 	if len(history) == 0 {
 		t.Fatal("fixture has no retained history")
 	}
@@ -145,7 +150,7 @@ func TestNamespaceCheckpointCompactHistoryAndLegacyFallback(t *testing.T) {
 
 func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	dir, _ := checkpointTestSeed(t)
-	ck := filepath.Join(dir, "journal", namespaceCheckpointName)
+	ck := filepath.Join(dir, "journal", nsGenName)
 	journal := filepath.Join(dir, "journal", "visibility.log")
 	good, err := os.ReadFile(ck)
 	mustOK(t, err)
@@ -174,7 +179,7 @@ func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	mustOK(t, os.WriteFile(ck, good, 0o600))
 	other := checkpointTestOpen(t, foreign, false)
 	other.replayIn = &strIntern{m: map[string]string{}}
-	mustOK(t, os.WriteFile(filepath.Join(foreign, "journal", namespaceCheckpointName), good, 0o600))
+	mustOK(t, os.WriteFile(filepath.Join(foreign, "journal", nsGenName), good, 0o600))
 	if _, _, err := other.loadNamespaceCheckpoint(other.journal.f); err == nil {
 		t.Fatal("foreign store checkpoint was accepted")
 	}
@@ -270,7 +275,7 @@ func TestNamespaceCheckpointPublicationCuts(t *testing.T) {
 	for _, cut := range []string{hookNamespaceCheckpointSynced, hookNamespaceCheckpointRenamed} {
 		t.Run(cut, func(t *testing.T) {
 			dir, _ := checkpointTestSeed(t)
-			ck := filepath.Join(dir, "journal", namespaceCheckpointName)
+			ck := filepath.Join(dir, "journal", nsGenName)
 			before, err := os.ReadFile(ck)
 			mustOK(t, err)
 			s, err := OpenStore(dir)
@@ -311,26 +316,8 @@ func TestNamespaceCheckpointScaleState(t *testing.T) {
 		defer s.Close()
 		h := sha256.New()
 		var answer result
-		for _, bucket := range slices.Sorted(maps.Keys(s.buckets)) {
-			b := s.buckets[bucket]
-			fmt.Fprintf(h, "%q %q\n", b.name, b.createdAt.UTC())
-			for _, key := range slices.Sorted(maps.Keys(b.objects)) {
-				o := b.objects[key]
-				fmt.Fprintf(h, "%q %q %x %d %q %q %d\n", key, o.manifestUUID, o.manifestSHA256,
-					o.size, o.etag, o.contentType, o.seq)
-				answer.current++
-			}
-		}
-		for _, bucket := range slices.Sorted(maps.Keys(s.history)) {
-			fmt.Fprintf(h, "history %q\n", bucket)
-			for _, key := range slices.Sorted(maps.Keys(s.history[bucket])) {
-				for _, row := range s.history[bucket][key] {
-					fmt.Fprintf(h, "%q %q %q %x %d %q %q %q %q %d\n", key, row.versionID, row.manifestUUID,
-						row.manifestSHA256, row.size, row.etag, row.contentType, row.archivedAt.UTC(), row.reason, row.seq)
-					answer.historical++
-				}
-			}
-		}
+		answer.current, answer.historical = nsCounts(t, s)
+		io.WriteString(h, nsDump(t, s))
 		answer.sha = hex.EncodeToString(h.Sum(nil))
 		if !use {
 			return answer
@@ -439,4 +426,276 @@ func TestNamespaceOpenLiveHeap(t *testing.T) {
 	t.Logf("%s heap live %d bytes in %d objects, allocation total %d bytes", mode,
 		stats.HeapAlloc, stats.HeapObjects, stats.TotalAlloc)
 	runtime.KeepAlive(s)
+}
+
+type legacyHistKey struct{ bucket, key string }
+
+// The legacy V2/V3 checkpoint writers are kept for compatibility tests only:
+// production reads those layouts but publishes the paged V4 generation.
+func (s *Store) writeLegacyCheckpoint(compactHistory bool) error {
+	end := s.journal.writeOffset
+	sum, crc, err := journalCheckpointDigest(s.journal.f, end)
+	if err != nil {
+		return err
+	}
+	objs, err := s.snapshotNamespace()
+	if err != nil {
+		return err
+	}
+	hist, err := s.snapshotHistory()
+	if err != nil {
+		return err
+	}
+	byBucket := map[string][]namespaceObject{}
+	for _, o := range objs {
+		byBucket[o.bucket] = append(byBucket[o.bucket], o)
+	}
+	byKey := map[legacyHistKey][]*historyVersionEntry{}
+	for _, h := range hist {
+		k := legacyHistKey{h.bucket, h.key}
+		byKey[k] = append(byKey[k], h.entry)
+	}
+	header := namespaceCheckpointHeader{
+		StoreID: s.format.StoreID, Offset: end, Sequence: s.journal.nextSeq - 1, LastCRC: crc, PrefixSHA: sum,
+		Buckets: len(s.buckets), Uploads: len(s.uploads), Histories: len(byKey),
+	}
+	dir := filepath.Join(s.root, "journal")
+	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "namespace-*.zck")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	out := bufio.NewWriterSize(f, journalReadBuffer)
+	hash := sha256.New()
+	body := io.MultiWriter(out, hash)
+	name, magic := namespaceCheckpointName, namespaceCheckpointMagic
+	if compactHistory {
+		name, magic = namespaceCompactCheckpointName, namespaceCompactCheckpointMagic
+	}
+	if _, err := io.WriteString(body, magic); err != nil {
+		return err
+	}
+	enc := gob.NewEncoder(body)
+	if err := enc.Encode(header); err != nil {
+		return err
+	}
+	if err := s.encodeLegacyCheckpoint(enc, body, compactHistory, byBucket, byKey); err != nil {
+		return err
+	}
+	if _, err := out.Write(hash.Sum(nil)); err != nil {
+		return err
+	}
+	if err := out.Flush(); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fireTestHook(hookNamespaceCheckpointSynced)
+	if err := os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
+		return err
+	}
+	fireTestHook(hookNamespaceCheckpointRenamed)
+	return syncDir(dir)
+}
+
+func (s *Store) encodeLegacyCheckpoint(enc *gob.Encoder, output io.Writer, compactHistory bool, byBucket map[string][]namespaceObject, byKey map[legacyHistKey][]*historyVersionEntry) error {
+	var row []byte
+	var prefix [4]byte
+	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
+		b := s.buckets[name]
+		rows := byBucket[name]
+		slices.SortFunc(rows, func(a, b namespaceObject) int { return strings.Compare(a.key, b.key) })
+		if err := enc.Encode(namespaceCheckpointBucket{Name: name, Created: b.createdAt, Objects: len(rows)}); err != nil {
+			return err
+		}
+		for _, o := range rows {
+			row = appendCheckpointObject(row[:0], o.key, o.entry)
+			if err := writeCheckpointRow(output, row, &prefix); err != nil {
+				return err
+			}
+		}
+	}
+	keys := slices.SortedFunc(maps.Keys(byKey), func(a, b legacyHistKey) int {
+		return cmp.Or(strings.Compare(a.bucket, b.bucket), strings.Compare(a.key, b.key))
+	})
+	for _, hk := range keys {
+		rows := byKey[hk]
+		slices.SortFunc(rows, func(a, b *historyVersionEntry) int { return cmp.Compare(a.seq, b.seq) })
+		{
+			if err := enc.Encode(namespaceCheckpointHistory{Bucket: hk.bucket, Key: hk.key, Count: len(rows)}); err != nil {
+				return err
+			}
+			for _, v := range rows {
+				if compactHistory {
+					var err error
+					row, err = appendCheckpointHistory(row[:0], v)
+					if err != nil {
+						return err
+					}
+					if err := writeCheckpointRow(output, row, &prefix); err != nil {
+						return err
+					}
+					continue
+				}
+				row := namespaceCheckpointVersion{
+					Root: namespaceCheckpointRoot{Manifest: v.manifestUUID, Digest: v.manifestSHA256, Size: v.size,
+						ETag: v.etag, ContentType: v.contentType, Sequence: v.seq},
+					ID: v.versionID, Archive: v.archivedAt, Reason: v.reason,
+				}
+				if err := enc.Encode(row); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(s.uploads)) {
+		u := s.uploads[id]
+		row := namespaceCheckpointUpload{id, u.bucket, u.key, u.contentType, u.metadata, u.createdAt, len(u.parts)}
+		if err := enc.Encode(row); err != nil {
+			return err
+		}
+		for _, number := range slices.Sorted(maps.Keys(u.parts)) {
+			p := u.parts[number]
+			if err := enc.Encode(namespaceCheckpointPart{number, p.size, p.etag, p.chunks, p.uploadedAt}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeCheckpointRow(output io.Writer, row []byte, prefix *[4]byte) error {
+	if len(row) > maxNamespaceCheckpointRow {
+		return errors.New("checkpoint: root exceeds row size limit")
+	}
+	binary.LittleEndian.PutUint32(prefix[:], uint32(len(row)))
+	if _, err := output.Write(prefix[:]); err != nil {
+		return err
+	}
+	_, err := output.Write(row)
+	return err
+}
+
+func appendCheckpointHistory(buf []byte, v *historyVersionEntry) ([]byte, error) {
+	when, err := v.archivedAt.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	id := v.versionID
+	if id == v.manifestUUID {
+		buf, id = append(buf, 1), ""
+	} else {
+		buf = append(buf, 0)
+	}
+	buf = binary.AppendUvarint(buf, uint64(len(when)))
+	buf = append(buf, when...)
+	buf = binary.AppendUvarint(buf, uint64(len(v.reason)))
+	buf = append(buf, v.reason...)
+	root := objectEntry{manifestUUID: v.manifestUUID, manifestSHA256: v.manifestSHA256, size: v.size,
+		etag: v.etag, contentType: v.contentType, seq: v.seq}
+	return appendCheckpointObject(buf, id, &root), nil
+}
+
+func appendCheckpointObject(buf []byte, key string, root *objectEntry) []byte {
+	buf = append(buf, root.manifestSHA256[:]...)
+	buf = binary.AppendUvarint(buf, uint64(root.size))
+	buf = binary.AppendUvarint(buf, root.seq)
+	for _, value := range [...]string{key, root.manifestUUID, root.etag, root.contentType} {
+		buf = binary.AppendUvarint(buf, uint64(len(value)))
+		buf = append(buf, value...)
+	}
+	return buf
+}
+
+// nsDump is a canonical rendering of the whole namespace: buckets, visible
+// rows, retained history and incomplete uploads.
+func nsDump(t *testing.T, s *Store) string {
+	t.Helper()
+	var b strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
+		fmt.Fprintf(&b, "bucket %q %q %d\n", name, s.buckets[name].createdAt.UTC(), s.buckets[name].count)
+	}
+	objs, err := s.snapshotNamespace()
+	mustOK(t, err)
+	for _, o := range objs {
+		e := o.entry
+		fmt.Fprintf(&b, "%q %q %q %x %d %q %q %d\n", o.bucket, o.key, e.manifestUUID, e.manifestSHA256, e.size, e.etag, e.contentType, e.seq)
+	}
+	hist, err := s.snapshotHistory()
+	mustOK(t, err)
+	for _, h := range hist {
+		e := h.entry
+		fmt.Fprintf(&b, "history %q %q %q %q %x %d %q %q %s %q %d\n", h.bucket, h.key, e.versionID, e.manifestUUID, e.manifestSHA256,
+			e.size, e.etag, e.contentType, e.archivedAt.Format(time.RFC3339Nano), e.reason, e.seq)
+	}
+	for _, id := range slices.Sorted(maps.Keys(s.uploads)) {
+		u := s.uploads[id]
+		fmt.Fprintf(&b, "upload %q %q %q %q %v %s\n", id, u.bucket, u.key, u.contentType, u.metadata, u.createdAt.UTC().Format(time.RFC3339Nano))
+		for _, n := range slices.Sorted(maps.Keys(u.parts)) {
+			p := u.parts[n]
+			fmt.Fprintf(&b, "part %d %d %q %v %s\n", n, p.size, p.etag, p.chunks, p.uploadedAt.UTC().Format(time.RFC3339Nano))
+		}
+	}
+	return b.String()
+}
+
+func nsCounts(t *testing.T, s *Store) (current, historical int) {
+	t.Helper()
+	objs, err := s.snapshotNamespace()
+	mustOK(t, err)
+	hist, err := s.snapshotHistory()
+	mustOK(t, err)
+	return len(objs), len(hist)
+}
+
+// Test accessors for the compact namespace; they bypass the journal.
+func (s *Store) tObj(bucket, key string) *objectEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, err := s.objFind(bucket, key)
+	if err != nil {
+		panic(err)
+	}
+	return e
+}
+
+func (s *Store) tSetObj(bucket, key string, e *objectEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, err := s.objFind(bucket, key)
+	if err != nil {
+		panic(err)
+	}
+	s.objSet(bucket, key, e, old != nil)
+}
+
+func (s *Store) tDelObj(bucket, key string) { s.tSetObj(bucket, key, nil) }
+
+func (s *Store) tHist(bucket, key string) []*historyVersionEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, err := s.histFind(bucket, key)
+	if err != nil {
+		panic(err)
+	}
+	return l
+}
+
+func (s *Store) tClearHistory(bucket string) {
+	hist, err := s.snapshotHistory()
+	if err != nil {
+		panic(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, h := range hist {
+		if h.bucket == bucket {
+			s.histSet(bucket, h.key, nil)
+		}
+	}
 }

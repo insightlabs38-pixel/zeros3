@@ -427,9 +427,7 @@ func TestP3_ReachabilityMatchesReference_Damage(t *testing.T) {
 	}
 	pick := func(t *testing.T, s *Store, key string) (string, [32]byte, manifestV1) {
 		t.Helper()
-		s.mu.Lock()
-		e := s.buckets["b"].objects[key]
-		s.mu.Unlock()
+		e := s.tObj("b", key)
 		man, _, err := s.readManifestAny(e.manifestUUID)
 		if err != nil {
 			t.Fatal(err)
@@ -458,9 +456,7 @@ func TestP3_ReachabilityMatchesReference_Damage(t *testing.T) {
 			tamperManifest(t, s, id, []byte("{not json"))
 		}},
 		{"deleted shared manifest of history", func(t *testing.T, s *Store) {
-			s.mu.Lock()
-			h := s.history["b"]["rev"][0]
-			s.mu.Unlock()
+			h := s.tHist("b", "rev")[0]
 			deleteManifest2(t, s, h.manifestUUID, h.manifestSHA256)
 		}},
 	}
@@ -539,17 +535,13 @@ func TestP3_ManifestJudgementMatchesReference(t *testing.T) {
 			defer s.Close()
 			s.CreateBucket("b")
 			mustPutObject(t, s, "b", "k", []byte("hello"), "text/plain", nil)
-			s.mu.Lock()
-			e := s.buckets["b"].objects["k"]
-			s.mu.Unlock()
+			e := s.tObj("b", "k")
 			// swap the stored manifest for the case's bytes and re-point the root at their digest
 			sum := sha256.Sum256(data)
 			if err := os.WriteFile(filepath.Join(s.root, "manifests", e.manifestUUID+".json"), data, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			s.mu.Lock()
-			s.buckets["b"].objects["k"] = &objectEntry{manifestUUID: e.manifestUUID, manifestSHA256: sum, size: e.size, seq: e.seq}
-			s.mu.Unlock()
+			s.tSetObj("b", "k", &objectEntry{manifestUUID: e.manifestUUID, manifestSHA256: sum, size: e.size, seq: e.seq})
 			os.Remove(filepath.Join(s.root, "manifests", "x")) // no-op, keeps the intent obvious
 			// the chunk store may still hold the original chunk of "hello"; the digests in
 			// the hand-written manifest do not exist, so chunk issues are part of the comparison
@@ -741,9 +733,7 @@ func TestP3_DeepVerifyFindsCorruptionBetweenPasses(t *testing.T) {
 	forEachLayout(t, func(t *testing.T) {
 		t.Setenv("ZEROS3_MAINT_WORKERS", "1")
 		s := p3Fixture(t)
-		s.mu.Lock()
-		e := s.buckets["b"].objects["dup/a"]
-		s.mu.Unlock()
+		e := s.tObj("b", "dup/a")
 		man, _, err := s.readManifestAny(e.manifestUUID)
 		if err != nil || len(man.Chunks) < 2 {
 			t.Fatalf("fixture needs a multi-chunk object: %v %d", err, len(man.Chunks))
@@ -776,9 +766,7 @@ func TestP3_GCFailsClosedOnCorruptManifest(t *testing.T) {
 			forEachLayout(t, func(t *testing.T) {
 				t.Setenv("ZEROS3_MAINT_WORKERS", workers)
 				s := p3Fixture(t)
-				s.mu.Lock()
-				e := s.buckets["b"].objects["small/07"]
-				s.mu.Unlock()
+				e := s.tObj("b", "small/07")
 				tamperManifest(t, s, e.manifestUUID, []byte("{broken"))
 				dir := s.root
 				s.Close()

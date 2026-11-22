@@ -115,7 +115,7 @@ func TestP3_ChurnFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs := s.snapshotNamespace()
+	objs := s.snapshotNamespaceBestEffort()
 	sort.Slice(objs, func(i, j int) bool { return objs[i].entry.seq < objs[j].entry.seq }) // insertion order
 	n := int(float64(len(objs)) * frac)
 	var victims []namespaceObject
