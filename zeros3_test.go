@@ -74,39 +74,39 @@ import (
 //     2184    End-to-end HTTP and crash/recovery tests
 //     2859    M2: bucket/object/listing/journal protocol compatibility
 //     4083    M3: CDC/dedup evidence, stats, verify
-//     5215    M3: CopyObject
-//     5763    M3: single-range GET
-//     5964    M5-B: multipart upload
-//     7242    Presigned URLs and virtual-hosted-style addressing
-//     8271    M5-C: version history, restore, GC, storage-efficiency proof
-//     9732    Z2-08: history retention (prune)
-//    10836    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    12555    M6: delta sync (`zeros3 sync`)
-//    14297    M6C: recursive directory sync
-//    15357    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    16723    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    18082    M8C: namespace (prefix/bucket) replication
-//    19123    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    20218    M8E: durable namespace snapshots and restore
-//    22297    M8F: conditional operations (Put/Get/Copy preconditions)
-//    23703    M8G: introspection (dry-run planning, diff, inspect)
-//    25655    M8H: bounded parallel chunk transfer
-//    27066    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    28382    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    29319    Streaming reads and aws-chunked SigV4
-//    30176    Packed CAS: pack format, mixed reads, compaction, crash points
-//    31298    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32500    Adaptive pack compression (codec 1, DEFLATE)
-//    33552    Scalable packed-chunk locator (sorted immutable levels)
-//    34038    Z2-07: bulk logical-chunk transport (v2)
-//    35480    Hot/warm/cold physical pack tiers
-//    36266    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    37021    Z2-10: content-aware tier policy and rebalance
-//    38067    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38754    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40203    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41557    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42980    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//     5213    M3: CopyObject
+//     5761    M3: single-range GET
+//     5962    M5-B: multipart upload
+//     7240    Presigned URLs and virtual-hosted-style addressing
+//     8269    M5-C: version history, restore, GC, storage-efficiency proof
+//     9730    Z2-08: history retention (prune)
+//    10834    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    12553    M6: delta sync (`zeros3 sync`)
+//    14295    M6C: recursive directory sync
+//    15355    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    16721    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    18080    M8C: namespace (prefix/bucket) replication
+//    19121    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    20216    M8E: durable namespace snapshots and restore
+//    22295    M8F: conditional operations (Put/Get/Copy preconditions)
+//    23701    M8G: introspection (dry-run planning, diff, inspect)
+//    25653    M8H: bounded parallel chunk transfer
+//    27064    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    28380    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    29317    Streaming reads and aws-chunked SigV4
+//    30174    Packed CAS: pack format, mixed reads, compaction, crash points
+//    31296    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    32498    Adaptive pack compression (codec 1, DEFLATE)
+//    33550    Scalable packed-chunk locator (sorted immutable levels)
+//    34036    Z2-07: bulk logical-chunk transport (v2)
+//    35478    Hot/warm/cold physical pack tiers
+//    36264    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    37019    Z2-10: content-aware tier policy and rebalance
+//    38065    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38752    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40201    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41555    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42978    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the

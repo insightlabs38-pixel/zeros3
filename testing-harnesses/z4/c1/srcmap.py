@@ -24,6 +24,7 @@ ents = [
  ("Manifests (immutable, JSON)", "// 5. Manifests"),
  ("Visibility journal (append-only, checksummed)", "// 6. Visibility journal"),
  ("Store: format, namespace, and object CRUD", "// 7. Store: format metadata"),
+ ("Compact namespace generations: paged tables, sorted overlays, consolidation (B3)", "// 7a. Compact namespace"),
  ("Version history/restore, history pruning, ListObjectsV2", "// 7c. Internal object version history"),
  ("SigV4 authentication (header and presigned-URL)", "// 8. AWS SigV4"),
  ("Request payload checksums and S3-shaped XML error/response types", "// 9. Request payload checksums"),
