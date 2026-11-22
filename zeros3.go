@@ -93,40 +93,40 @@ import (
 //     5957    Manifests (immutable, JSON)
 //     6755    Visibility journal (append-only, checksummed)
 //     7277    Store: format, namespace, and object CRUD
-//     7784    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    11436    Version history/restore, history pruning, ListObjectsV2
-//    12042    SigV4 authentication (header and presigned-URL)
-//    13019    Request payload checksums and S3-shaped XML error/response types
-//    13236    HTTP routing and S3 operation handlers
-//    13668    Conditional operations (PUT/GET/HEAD preconditions)
-//    14363    CopyObject
-//    14668    Multipart upload
-//    15612    Stats and reachability scanning
-//    17193    Verify
-//    17408    Store locking and safe offline GC
-//    17711    Offline compaction (`zeros3 compact`)
-//    18778    Pack reclamation and repacking (`zeros3 repack`)
-//    19302    Online maintenance: epochs, pins, live GC and repack (B4)
-//    20540    Physical tiers: status and pack movement (`zeros3 tier`)
-//    21053    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    22118    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    22922    Delta sync client, credentials, and parallel transfer
-//    25226    Bulk logical-chunk transport (v2)
-//    26137    Recursive directory sync
-//    26442    Remote replication (`zeros3 replicate`)
-//    27355    Peer-assisted corruption repair (`zeros3 repair`)
-//    27927    Namespace (prefix/bucket) replication
-//    28243    Copy-on-write namespace fork (`zeros3 fork`)
-//    28451    Snapshots and restore
-//    29613    Structural diff and inspect (introspection)
-//    31013    Portable snapshot bundles (`zeros3 bundle`)
-//    32210    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    32845    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    51233    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    58838    Windowed and estimated similarity deltas (extracted dcore)
-//    60585    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    68350    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    74622    CLI dispatch, HTTP server/startup, and main
+//     7785    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    11437    Version history/restore, history pruning, ListObjectsV2
+//    12043    SigV4 authentication (header and presigned-URL)
+//    13020    Request payload checksums and S3-shaped XML error/response types
+//    13237    HTTP routing and S3 operation handlers
+//    13669    Conditional operations (PUT/GET/HEAD preconditions)
+//    14364    CopyObject
+//    14669    Multipart upload
+//    15613    Stats and reachability scanning
+//    17201    Verify
+//    17416    Store locking and safe offline GC
+//    17719    Offline compaction (`zeros3 compact`)
+//    18786    Pack reclamation and repacking (`zeros3 repack`)
+//    19310    Online maintenance: epochs, pins, live GC and repack (B4)
+//    20565    Physical tiers: status and pack movement (`zeros3 tier`)
+//    21078    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    22143    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    22947    Delta sync client, credentials, and parallel transfer
+//    25252    Bulk logical-chunk transport (v2)
+//    26163    Recursive directory sync
+//    26468    Remote replication (`zeros3 replicate`)
+//    27381    Peer-assisted corruption repair (`zeros3 repair`)
+//    27953    Namespace (prefix/bucket) replication
+//    28269    Copy-on-write namespace fork (`zeros3 fork`)
+//    28477    Snapshots and restore
+//    29639    Structural diff and inspect (introspection)
+//    31041    Portable snapshot bundles (`zeros3 bundle`)
+//    32238    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    32873    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    51261    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    58847    Windowed and estimated similarity deltas (extracted dcore)
+//    60594    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    68447    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    74719    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -4054,7 +4054,7 @@ func (s *Store) reloadPacks() error {
 	if err != nil {
 		return err
 	}
-	s.packSt.Store(st)
+	s.packSt.Store(s.retire.hide(st))
 	return nil
 }
 
@@ -16832,8 +16832,15 @@ func maintWorkers() int {
 	if v, err := strconv.Atoi(os.Getenv("ZEROS3_MAINT_WORKERS")); err == nil && v >= 1 {
 		return min(v, 64)
 	}
+	if v := maintWorkerCap.Load(); v > 0 {
+		return int(v)
+	}
 	return max(1, min(runtime.GOMAXPROCS(0), 8))
 }
+
+// maintWorkerCap, when set, bounds the fan-out of a serving process's online
+// maintenance so requests keep CPU headroom (serve -maintenance-workers).
+var maintWorkerCap atomic.Int32
 
 // parallelForState is parallelFor with per-worker state: newState is called once
 // on each goroutine that runs (including the caller when the input is small),
@@ -19826,6 +19833,23 @@ func (r *retireSet) unlinkSwapped(rep *MaintReport) error {
 	return nil
 }
 
+// hide retires, in a locator rebuilt from disk, the packs already taken out
+// of the previous one.
+func (r *retireSet) hide(st *packState) *packState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var idx []int32
+	for i, p := range st.packs {
+		if e := r.m[[2]string{p.tier.String(), p.id}]; e != nil && e.swapped {
+			idx = append(idx, int32(i))
+		}
+	}
+	if len(idx) == 0 {
+		return st
+	}
+	return st.withoutPacks(idx)
+}
+
 func (r *retireSet) pending() (n int, bytes int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -20035,6 +20059,7 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	}
 	files = kept
 	var condemned [][32]byte
+	tierOf := map[[32]byte]tier{} // the hottest doomed pack holding each condemned record
 	var late []tieredChunk
 	if carry != nil {
 		for _, u := range carry.doomed {
@@ -20046,8 +20071,12 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 				if live.has(e.sha) {
 					continue
 				}
+				if _, dup := tierOf[e.sha]; dup {
+					continue
+				}
 				if ep.pins.condemn(e.sha) {
 					condemned = append(condemned, e.sha)
+					tierOf[e.sha] = u.tier
 				} else {
 					late = append(late, tieredChunk{compactCandidate{sum: e.sha, size: int64(e.logical)}, u.tier})
 				}
@@ -20062,7 +20091,7 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	}
 
 	if carry != nil {
-		if err := s.maintSwap(ep, carry, condemned, opt, &rep); err != nil {
+		if err := s.maintSwap(ep, carry, condemned, tierOf, opt, &rep); err != nil {
 			return rep, err
 		}
 	}
@@ -20266,7 +20295,7 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 // are held for the moment it takes: a record revived before the hold may have
 // been found in a doomed pack by a writer, so it is carried first; a pin after
 // the release finds the record absent and writes its own copy.
-func (s *Store) maintSwap(ep *maintEpoch, carry *packCarry, condemned [][32]byte, opt MaintOptions, rep *MaintReport) error {
+func (s *Store) maintSwap(ep *maintEpoch, carry *packCarry, condemned [][32]byte, tierOf map[[32]byte]tier, opt MaintOptions, rep *MaintReport) error {
 	t := time.Now()
 	ch := make(chan struct{})
 	revived := ep.pins.hold(condemned, ch)
@@ -20281,18 +20310,6 @@ func (s *Store) maintSwap(ep *maintEpoch, carry *packCarry, condemned [][32]byte
 	defer thaw()
 	fireTestHook(hookMaintFrozen)
 	var need []tieredChunk
-	tierOf := map[[32]byte]tier{}
-	for _, u := range carry.doomed {
-		_, entries, err := loadPackFile(carry.paths[u.idx])
-		if err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if _, ok := tierOf[e.sha]; !ok {
-				tierOf[e.sha] = u.tier
-			}
-		}
-	}
 	for _, k := range revived {
 		need = append(need, tieredChunk{compactCandidate{sum: k}, tierOf[k]})
 	}
@@ -23831,6 +23848,7 @@ func (srv *Server) handleSyncNegotiate(w http.ResponseWriter, body []byte) {
 			continue
 		}
 		seen[norm] = true
+		srv.store.mpin(sum) // "present" holds for the rest of a running maintenance pass
 		if _, err := srv.store.casStat(sum); err != nil && !srv.store.authHasVirtualChunk(sum) {
 			missing = append(missing, norm)
 		}
@@ -30330,6 +30348,7 @@ func runServe(args []string) {
 	maintDeletes := fs.Int("maintenance-max-deletes", 1<<18, "online gc: most loose files and roots removed per pass")
 	maintWait := fs.Duration("maintenance-wait", 10*time.Minute, "online maintenance: longest wait for in-flight requests at each grace period before a pass defers")
 	maintKeep := fs.Int("maintenance-keep-versions", -1, "online maintenance: before each pass, prune history to this many versions per key in every bucket (-1: never prune)")
+	maintWorkersN := fs.Int("maintenance-workers", max(1, runtime.GOMAXPROCS(0)/2), "online maintenance: parallel workers of a pass (ZEROS3_MAINT_WORKERS overrides)")
 	fs.Parse(args)
 	maintOpt := defaultMaintOptions()
 	switch *maintMode {
@@ -30378,6 +30397,7 @@ func runServe(args []string) {
 	}
 	defer store.Close()
 	if *maintMode != "off" {
+		maintWorkerCap.Store(int32(min(max(*maintWorkersN, 1), 64)))
 		if err := store.startMaintenance(maintOpt, *maintEvery, *maintKeep); err != nil {
 			log.Fatalf("zeros3: maintenance: %v", err)
 		}
@@ -52047,38 +52067,13 @@ func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 	if err := s.ensureAuthFormat(); err != nil {
 		return err
 	}
-	if rec.Form == authFormDelta && len(rec.Pieces) > 0 {
-		first, err := s.casRead(rec.Pieces[0].SHA)
-		if err == nil && len(first) >= 4 && string(first[:4]) == wMagicZW2 {
-			if err := s.ensureFeature(authZW2Feature); err != nil {
-				return err
-			}
-		}
-		if err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
-			if err := s.ensureFeature(authZN7Feature); err != nil {
-				return err
-			}
-			if iq3, _ := zn7DerivesIQ3(newPieceSeq(s.newAuthCtx(), rec.Pieces)); iq3 {
-				if err := s.ensureFeature(authIQ3Feature); err != nil {
-					return err
-				}
-			}
-		}
+	feats, err := s.authRecordFeatures(rec)
+	if err != nil {
+		return err
 	}
-	if rec.Form == authFormRep && rec.Root != nil {
-		need, err := s.repRootReplay(rec.Root)
-		if err != nil {
+	for _, f := range feats {
+		if err := s.ensureFeature(f); err != nil {
 			return err
-		}
-		for _, f := range []struct {
-			on   bool
-			name string
-		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}} {
-			if f.on {
-				if err := s.ensureFeature(f.name); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	fireTestHook(hookAuthAfterFormat)
@@ -58583,7 +58578,7 @@ func (q *authSimilarityQuery) postingWindow(feature uint64, limit int) ([]uint32
 // runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, features, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -58791,6 +58786,12 @@ func runAuthority(args []string) {
 		}
 		rep.SimilarityOpenNanos = similarityOpenNanos
 		rep.SimilarityFallback = *indexedDiscovery && pol.AllowDelta && (pol.similarity == nil || pol.similarity.failed)
+		enc.Encode(rep)
+	case "features":
+		rep, err := store.authorityFeatureUpgrade(*apply)
+		if err != nil {
+			log.Fatalf("zeros3: authority features: %v", err)
+		}
 		enc.Encode(rep)
 	case "status":
 		st, err := store.AuthorityStatus()
@@ -68332,6 +68333,94 @@ func (f storeFormat) unknownFeature() string {
 }
 
 // ensureFeature durably records a store feature before the first record that needs it is published.
+// authRecordFeatures names the store features a body record needs readers to
+// know (section 16e): a feature is raised before the first record needing it.
+func (s *Store) authRecordFeatures(rec *authRecord) ([]string, error) {
+	var out []string
+	if rec.Form == authFormDelta && len(rec.Pieces) > 0 {
+		first, err := s.casRead(rec.Pieces[0].SHA)
+		if err == nil && len(first) >= 4 && string(first[:4]) == wMagicZW2 {
+			out = append(out, authZW2Feature)
+		}
+		if err == nil && len(first) >= 4 && string(first[:4]) == ncNumcore_zMagic {
+			out = append(out, authZN7Feature)
+			if iq3, _ := zn7DerivesIQ3(newPieceSeq(s.newAuthCtx(), rec.Pieces)); iq3 {
+				out = append(out, authIQ3Feature)
+			}
+		}
+	}
+	if rec.Form == authFormRep && rec.Root != nil {
+		need, err := s.repRootReplay(rec.Root)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range []struct {
+			on   bool
+			name string
+		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}} {
+			if f.on {
+				out = append(out, f.name)
+			}
+		}
+	}
+	return out, nil
+}
+
+// AuthFeatureReport is the outcome of `zeros3 authority features`.
+type AuthFeatureReport struct {
+	Bodies   int      `json:"bodies"`
+	Required []string `json:"required"`
+	Missing  []string `json:"missing"`
+	Applied  bool     `json:"applied"`
+}
+
+// authorityFeatureUpgrade derives the features every committed body needs and,
+// with apply, raises those FORMAT.json does not list. It corrects stores whose
+// records predate a marker (B3 wrote zstd reach without "cxreach"); only
+// FORMAT.json changes, and a build that predates the marker then refuses the
+// store at open instead of failing its reads.
+func (s *Store) authorityFeatureUpgrade(apply bool) (AuthFeatureReport, error) {
+	var rep AuthFeatureReport
+	files, err := s.authFiles()
+	if err != nil {
+		return rep, err
+	}
+	need := map[string]bool{}
+	for _, sha := range files {
+		rec, err := s.authLoad(sha)
+		if err != nil {
+			return rep, fmt.Errorf("authority %x: %w", sha[:6], err)
+		}
+		if rec == nil {
+			continue
+		}
+		rep.Bodies++
+		feats, err := s.authRecordFeatures(rec)
+		if err != nil {
+			return rep, fmt.Errorf("authority %x: %w", sha[:6], err)
+		}
+		for _, f := range feats {
+			need[f] = true
+		}
+	}
+	rep.Required = slices.Sorted(maps.Keys(need))
+	have := s.formatSnapshot().Features
+	for _, f := range rep.Required {
+		if !slices.Contains(have, f) {
+			rep.Missing = append(rep.Missing, f)
+		}
+	}
+	if apply {
+		for _, f := range rep.Missing {
+			if err := s.ensureFeature(f); err != nil {
+				return rep, err
+			}
+		}
+		rep.Applied = true
+	}
+	return rep, nil
+}
+
 func (s *Store) ensureFeature(name string) error {
 	s.formatMu.Lock()
 	defer s.formatMu.Unlock()

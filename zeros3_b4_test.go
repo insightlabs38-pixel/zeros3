@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1034,4 +1037,217 @@ func TestB4AuthorityClosuresSurvivePasses(t *testing.T) {
 	l.open()
 	l.exact("reopened")
 	l.verifyOK("reopened")
+}
+
+// ---- Milestone C: matched latency under maintenance -----------------------
+
+// TestB4LatencyUnderMaintenance measures a real server process under a closed
+// loop of signed GET/HEAD/PUT/overwrite requests, from identical copies of one
+// fixture, with maintenance off, with back-to-back online passes and with a
+// pass started at most every 2 s. Run with
+// ZEROS3_B4_BENCH=<output.json> (ZEROS3_B4_BENCH_SECONDS, _OBJECTS optional).
+func TestB4LatencyUnderMaintenance(t *testing.T) {
+	out := os.Getenv("ZEROS3_B4_BENCH")
+	if out == "" {
+		t.Skip("set ZEROS3_B4_BENCH to the output file")
+	}
+	secs, _ := strconv.Atoi(cmp.Or(os.Getenv("ZEROS3_B4_BENCH_SECONDS"), "30"))
+	nobj, _ := strconv.Atoi(cmp.Or(os.Getenv("ZEROS3_B4_BENCH_OBJECTS"), "3000"))
+	bin := buildZeros3Binary(t)
+	work := t.TempDir()
+	fixture := filepath.Join(work, "fixture")
+	sizeOf := func(i int) int { return 4<<10 + int(uint64(i)*2654435761%uint64(380<<10)) }
+	func() {
+		old := smallObjectSegments
+		smallObjectSegments = false
+		defer func() { smallObjectSegments = old }()
+		s, err := OpenStore(fixture)
+		mustOK(t, err)
+		mustOK(t, s.CreateBucket("b"))
+		for i := range nobj {
+			_, err := s.PutObject("b", fmt.Sprintf("o%05d", i), b4Body(i, sizeOf(i)), "application/octet-stream", nil)
+			mustOK(t, err)
+		}
+		// Half of the objects get a second version: after the first prune the
+		// fixture is about one third garbage, spread over every pack.
+		for i := 0; i < nobj; i += 2 {
+			_, err := s.PutObject("b", fmt.Sprintf("o%05d", i), b4Body(1_000_000+i, sizeOf(i)), "application/octet-stream", nil)
+			mustOK(t, err)
+		}
+		mustOK(t, s.Close())
+		opt := defaultCompactOptions()
+		opt.TargetBytes = 16 << 20
+		_, err = compactStore(fixture, opt)
+		mustOK(t, err)
+	}()
+	signer := testSigner{accessKey: defaultAccessKeyID, secretKey: defaultSecretAccessKey, region: defaultRegion}
+	type phase struct {
+		Mode          string                `json:"mode"`
+		Seconds       int                   `json:"seconds"`
+		Ops           map[string]int        `json:"ops"`
+		LatencyMS     map[string][4]float64 `json:"latency_ms_p50_p95_p99_max"`
+		ServerCPUSec  float64               `json:"server_cpu_seconds"`
+		ServerPeakRSS int64                 `json:"server_peak_rss_bytes"`
+		StoreBefore   int64                 `json:"store_bytes_before"`
+		StoreAfter    int64                 `json:"store_bytes_after"`
+		StorePeak     int64                 `json:"store_bytes_peak"`
+		ReadyMS       float64               `json:"restart_ready_ms"`
+		Passes        []MaintReport         `json:"passes,omitempty"`
+		Errors        int                   `json:"errors"`
+	}
+	run := func(mode string) phase {
+		dir := filepath.Join(work, mode)
+		os.RemoveAll(dir)
+		mustOK(t, exec.Command("cp", "-a", fixture, dir).Run())
+		p := phase{Mode: mode, Seconds: secs, Ops: map[string]int{}, LatencyMS: map[string][4]float64{}, StoreBefore: dirBytes(t, dir)}
+		addr := freeTCPAddr(t)
+		args := []string{"serve", "-store", dir, "-addr", addr}
+		if mode != "idle" {
+			args = append(args, "-maintenance", "all", "-maintenance-interval", "0", "-maintenance-keep-versions", "1", "-maintenance-max-source-packs", "4")
+		}
+		srv := exec.Command(bin, args...)
+		srv.Stderr = io.Discard
+		mustOK(t, srv.Start())
+		defer srv.Process.Kill()
+		waitForZeros3Serve(t, addr)
+		base := "http://" + addr
+		client := &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}
+		var mu sync.Mutex
+		lat := map[string][]float64{}
+		var errs atomic.Int64
+		deadline := time.Now().Add(time.Duration(secs) * time.Second)
+		var wg sync.WaitGroup
+		var newKeys atomic.Int64
+		for c := range 12 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rng := rand.New(rand.NewPCG(uint64(c), 77))
+				for i := 0; time.Now().Before(deadline); i++ {
+					var op, path string
+					var body []byte
+					method := http.MethodGet
+					switch x := rng.IntN(100); {
+					case x < 70:
+						op, path = "get", fmt.Sprintf("/b/o%05d", rng.IntN(nobj))
+					case x < 80:
+						op, path, method = "head", fmt.Sprintf("/b/o%05d", rng.IntN(nobj)), http.MethodHead
+					case x < 95:
+						k := rng.IntN(nobj)
+						op, path, method = "overwrite", fmt.Sprintf("/b/o%05d", k), http.MethodPut
+						body = b4Body(2_000_000+c*1_000_000+i, sizeOf(k))
+					default:
+						n := newKeys.Add(1)
+						op, path, method = "put", fmt.Sprintf("/b/new%06d", n), http.MethodPut
+						body = b4Body(9_000_000+int(n), sizeOf(int(n)))
+					}
+					t0 := time.Now()
+					resp := doSignedRequest(t, client, base, signer, method, path, body, nil)
+					_, err := io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+					d := float64(time.Since(t0).Microseconds()) / 1000
+					if err != nil || resp.StatusCode != http.StatusOK {
+						errs.Add(1)
+					}
+					mu.Lock()
+					lat[op] = append(lat[op], d)
+					mu.Unlock()
+				}
+			}()
+		}
+		stop := make(chan struct{})
+		peakDisk := p.StoreBefore
+		var driver sync.WaitGroup
+		driver.Add(1)
+		go func() { // keeps a pass running (paced: one start per 2 s at most), records reports, samples disk use
+			defer driver.Done()
+			seen := uint64(0)
+			var lastKick time.Time
+			for {
+				select {
+				case <-stop:
+					return
+				case <-time.After(200 * time.Millisecond):
+				}
+				peakDisk = max(peakDisk, dirBytes(t, dir))
+				if mode == "idle" {
+					continue
+				}
+				resp := doSignedRequest(t, client, base, signer, http.MethodGet, zeros3MaintenancePath, nil, nil)
+				var st MaintStatus
+				json.NewDecoder(resp.Body).Decode(&st)
+				resp.Body.Close()
+				if st.Passes > seen && st.Last != nil {
+					seen = st.Passes
+					p.Passes = append(p.Passes, *st.Last)
+				}
+				if !st.Running && (mode == "continuous" || time.Since(lastKick) >= 2*time.Second) {
+					lastKick = time.Now()
+					r := doSignedRequest(t, client, base, signer, http.MethodPost, zeros3MaintenancePath, nil, nil)
+					r.Body.Close()
+				}
+			}
+		}()
+		wg.Wait()
+		close(stop)
+		driver.Wait()
+		p.ServerCPUSec, p.ServerPeakRSS = b4ProcStats(srv.Process.Pid)
+		srv.Process.Signal(syscall.SIGTERM)
+		srv.Wait()
+		p.Errors = int(errs.Load())
+		for op, v := range lat {
+			slices.Sort(v)
+			q := func(f float64) float64 { return v[min(len(v)-1, int(f*float64(len(v))))] }
+			p.Ops[op] = len(v)
+			p.LatencyMS[op] = [4]float64{q(0.50), q(0.95), q(0.99), v[len(v)-1]}
+		}
+		p.StoreAfter, p.StorePeak = dirBytes(t, dir), peakDisk
+		// Restart: time until a fresh server answers.
+		t0 := time.Now()
+		addr2 := freeTCPAddr(t)
+		again := exec.Command(bin, "serve", "-store", dir, "-addr", addr2)
+		mustOK(t, again.Start())
+		waitForZeros3Serve(t, addr2)
+		p.ReadyMS = float64(time.Since(t0).Microseconds()) / 1000
+		again.Process.Signal(syscall.SIGTERM)
+		again.Wait()
+		s, err := OpenStore(dir)
+		mustOK(t, err)
+		res, err := s.Verify(true)
+		mustOK(t, err)
+		s.Close()
+		if !res.OK() {
+			t.Fatalf("%s: verify after the run: %v", mode, res.Issues)
+		}
+		os.RemoveAll(dir)
+		return p
+	}
+	var phases []phase
+	for _, m := range []string{"idle", "continuous", "paced", "idle-repeat", "continuous-repeat", "paced-repeat"} {
+		phases = append(phases, run(strings.TrimSuffix(m, "-repeat")))
+		phases[len(phases)-1].Mode = m
+		t.Logf("%s: %v ops %v", m, phases[len(phases)-1].LatencyMS, phases[len(phases)-1].Ops)
+	}
+	data, err := json.MarshalIndent(map[string]any{"objects": nobj, "clients": 12, "cpus": runtime.NumCPU(), "fixture_bytes": dirBytes(t, fixture), "phases": phases}, "", " ")
+	mustOK(t, err)
+	mustOK(t, os.WriteFile(out, data, 0o644))
+}
+
+// b4ProcStats reads a process's CPU seconds and peak resident set.
+func b4ProcStats(pid int) (cpu float64, peak int64) {
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		f := strings.Fields(string(b[bytes.LastIndexByte(b, ')')+2:]))
+		ut, _ := strconv.ParseFloat(f[11], 64)
+		st, _ := strconv.ParseFloat(f[12], 64)
+		cpu = (ut + st) / 100
+	}
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if v, ok := strings.CutPrefix(line, "VmHWM:"); ok {
+				kb, _ := strconv.ParseInt(strings.Fields(v)[0], 10, 64)
+				peak = kb << 10
+			}
+		}
+	}
+	return cpu, peak
 }

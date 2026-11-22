@@ -2246,3 +2246,42 @@ func TestZstdReachIsAStoreFeature(t *testing.T) {
 		t.Fatal("transfer capabilities omit cxreach")
 	}
 }
+
+// A store B3 wrote holds reach-bearing bodies without "cxreach". `authority
+// features` names the missing feature and, with -apply, raises it in
+// FORMAT.json only; a second run finds nothing to add.
+func TestAuthorityFeatureUpgradeMarksReach(t *testing.T) {
+	l := newAuthLab(t)
+	files := seekFixtures(t)
+	l.put("reach.zst", files["reach.l9w23.zst"])
+	man := l.man("reach.zst")
+	root, _ := reachRoot(t, l, "reach.zst")
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	mustOK(t, err)
+	// Published without raising its features, as B3 left reach-bearing bodies.
+	rawPublish(t, l.s, &authRecord{SHA: sha, Size: man.TotalLength, Gen: 1, Form: authFormRep, Root: root, Sketch: make([]uint64, 16)})
+	mustOK(t, l.s.ensureFeature(authSeekFeature)) // B3 raised cxseek
+	if slices.Contains(l.s.formatSnapshot().Features, authReachFeature) {
+		t.Fatal("the fixture already carries cxreach")
+	}
+	before := treeDigest(t, filepath.Join(l.dir, "bodies"))
+	rep, err := l.s.authorityFeatureUpgrade(false)
+	mustOK(t, err)
+	if rep.Bodies == 0 || !slices.Equal(rep.Missing, []string{authReachFeature}) || rep.Applied {
+		t.Fatalf("dry run: %+v", rep)
+	}
+	rep, err = l.s.authorityFeatureUpgrade(true)
+	mustOK(t, err)
+	if !rep.Applied || !slices.Contains(l.s.formatSnapshot().Features, authReachFeature) {
+		t.Fatalf("apply: %+v", rep)
+	}
+	l.close()
+	l.open()
+	if rep, err = l.s.authorityFeatureUpgrade(false); err != nil || len(rep.Missing) != 0 {
+		t.Fatalf("after apply: %+v %v", rep, err)
+	}
+	if treeDigest(t, filepath.Join(l.dir, "bodies")) != before {
+		t.Fatal("the upgrade rewrote body records")
+	}
+	l.exact("upgraded")
+}

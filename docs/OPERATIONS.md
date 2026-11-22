@@ -248,6 +248,13 @@ or:
 
 Only after that should you enable features that may raise `FORMAT.json`.
 
+Stores whose authority bodies were written by B3 can hold zstd recipes with a
+reach table without the `cxreach` feature, so a build that knows only `cxseek`
+opens them and then fails those reads. With the server stopped, run
+`zeros3 authority features -store DIR` to list the features the committed bodies
+need but `FORMAT.json` lacks, and add `-apply` to record them (only `FORMAT.json`
+changes). Builds that predate a recorded feature then refuse the store at open.
+
 Opening an older store with a newer binary does not upgrade it. Enabling optional
 representations (`zeros3 serve -representations shadow|prefer`) raises the store to
 format 6 only when the first representation root is published (a store still below

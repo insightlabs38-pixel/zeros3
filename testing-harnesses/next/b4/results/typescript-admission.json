@@ -1,0 +1,40 @@
+{
+ "actual_saving": 0.233621916216036,
+ "cdc_physical": 12609549,
+ "forced_physical": 9663682,
+ "forced_plan_added": 9653278,
+ "forced_plan_cdc": 12599204,
+ "forced_plan_saving": 0.23381842217968696,
+ "logical": 12581156,
+ "ordinary_added": 9653278,
+ "ordinary_cdc": 12599204,
+ "ordinary_forms": [
+  "rep?",
+  "rep?",
+  "rep?"
+ ],
+ "ordinary_reasons": [
+  "plan only",
+  "plan only",
+  "plan only"
+ ],
+ "inputs": [
+  {
+   "name": "typescript-5.6.2.tgz",
+   "bytes": 4174769,
+   "npm_shasum": "d1de67b6bef77c41823f822df8f0b3bcff60a5a0"
+  },
+  {
+   "name": "typescript-5.6.3.tgz",
+   "bytes": 4174590,
+   "npm_shasum": "5f3449e31c9d94febb17de03cc081dd56d81db5b"
+  },
+  {
+   "name": "typescript-5.7.2.tgz",
+   "bytes": 4231797,
+   "npm_shasum": "3169cf8c4c8a828cde53ba9ecb3d2b1d5dd67be6"
+  }
+ ],
+ "identity": "registry.npmjs.org tarballs; sha1 shasum and sha512 integrity matched the registry metadata",
+ "probe": "ZEROS3_B3_TGZ=... go test -run '^TestB3AdmissionProbe$' -v ."
+}
