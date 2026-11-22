@@ -18,7 +18,7 @@ for fam in coreutils-zw-mixed coreutils-xd-multi coreutils-cdc sqlite ts git gz 
   F=$W/fx/$fam; cfg="base=$F/base:p0,baseP=$F/base,blk=$F/blk:p0,blkP=$F/blk"
   [ "$fam" = coreutils-zw-mixed ] && cfg="$cfg,rbP=$F/rb"
   ZEROS3_B5_CONFIGS=$cfg ZEROS3_B5_N=32 ZEROS3_B5_COLD=1 ZEROS3_B5_LABEL=$fam ZEROS3_B5_OUT=$R/reads-$fam.jsonl go test $T -run '^TestB5ReadBench$' .
-  ZEROS3_B5_CONFIGS="base=$F/base:p0,blkP=$F/blk" ZEROS3_B5_LABEL=$fam ZEROS3_B5_OUT=$R/concurrent.jsonl go test $T -run '^TestB5ConcurrentBench$' .
+  ZEROS3_B5_CONFIGS="base=$F/base:p0,blkP=$F/blk" ZEROS3_B5_COLD=1 ZEROS3_B5_LABEL=$fam ZEROS3_B5_OUT=$R/concurrent.jsonl go test $T -run '^TestB5ConcurrentBench$' .
 done
 ZEROS3_B5_MAINTSTORE=$W/fx/coreutils-zw-mixed/base ZEROS3_B5_OUT=$R/maint-under-load.jsonl go test $T -run '^TestB5MaintUnderLoad$' .
 # old binary: git worktree add $W/old b169eda; cp testing-harnesses/next/b5/baseline_probe_test.go.txt $W/old/zeros3_b5_baseline_test.go

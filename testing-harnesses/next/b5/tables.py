@@ -3,11 +3,13 @@
 usage: tables.py RESULTS_DIR [--detail]
 Paired ratio: for every (object, mode, offset) the configuration's wall time over the baseline's ("base",
 old layout, prefetch off) on the same read; the geometric mean of those ratios is reported."""
-import json, sys, glob, os, math, statistics as S, collections
+import json, sys, glob, os, math, gzip, statistics as S, collections
 R = sys.argv[1]
 detail = '--detail' in sys.argv
+def lines(f):
+    return gzip.open(f, 'rt') if f.endswith('.gz') else open(f)
 def rows(p):
-    return [json.loads(l) for f in sorted(glob.glob(os.path.join(R, p))) for l in open(f)]
+    return [json.loads(l) for f in sorted(glob.glob(os.path.join(R, p)) + glob.glob(os.path.join(R, p + '.gz'))) for l in lines(f)]
 def q(v, p):
     v = sorted(v); return v[min(len(v) - 1, int(p * len(v)))] if v else 0
 def gm(v):
@@ -17,8 +19,10 @@ print('## Reads (wall µs; ratio = paired geometric mean vs base)\n')
 print('| family | mode | ' + ' | '.join(f'{c} p50 / p95 / ratio' for c in order) + ' |')
 print('|---|---|' + '---|' * len(order))
 phys = []
-for f in sorted(glob.glob(os.path.join(R, 'reads-*.jsonl'))):
-    rs = [json.loads(l) for l in open(f)]
+for f in sorted(glob.glob(os.path.join(R, 'reads-*.jsonl.gz'))):
+    if 'oldbinary' in f:
+        continue
+    rs = [json.loads(l) for l in lines(f)]
     fam = rs[0]['Label']
     by = collections.defaultdict(lambda: collections.defaultdict(list))
     for r in rs:

@@ -575,6 +575,9 @@ func TestB5OnlineRelayoutUnderLoad(t *testing.T) {
 		t.Fatalf("a relaid family was relaid again: %+v", rep.Recon)
 	}
 	l.exact("converged")
+	if n := s.auth.active.Load(); n != 0 {
+		t.Fatalf("%d served authority reads still counted after every reader closed", n)
+	}
 	l.verifyOK("online")
 	l.close()
 	l.open()
@@ -779,6 +782,9 @@ func TestB5RepeatedSpanAdmitsAuthority(t *testing.T) {
 		_, _, got, err := l.s.GetObjectRange("b", "k/v0", byteRange{900_000, 900_000 + 4095})
 		if err != nil || !bytes.Equal(got, want[900_000:900_000+4096]) {
 			t.Fatalf("read %d: %v", i, err)
+		}
+		if a := l.s.auth.active.Load(); a != 0 {
+			t.Fatalf("active count %d after a closed read", a)
 		}
 		mu.Lock()
 		if i == 2 && n != 0 {

@@ -6,7 +6,7 @@ package main
 // It uses only APIs that commit has. Offsets are drawn exactly as TestB5ReadBench draws them.
 //
 //	ZEROS3_B5_STORES=name=dir,...  ZEROS3_B5_N  ZEROS3_B5_OUT  ZEROS3_B5_LABEL   (cold reads, page cache dropped)
-//	ZEROS3_B5_MIGRATE=dir          migrate a copy as the B1 fixtures were built (timing, peak RSS)
+//	ZEROS3_B5_MIGRATE=dir          migrate a copy as the B1 fixtures were built (timing, peak RSS; ZEROS3_B5_KEEP=dir keeps it)
 
 import (
 	"bytes"
@@ -94,5 +94,8 @@ func TestB5BaselineMigrate(t *testing.T) {
 	resetRSSPeak()
 	cpu0, t0 := procCPUSeconds(), time.Now()
 	rep := b1Migrate(t, dir, b1Layout{"zw-mixed", 1 << 20, 256 << 10, 1}, 1<<20, false)
+	if k := os.Getenv("ZEROS3_B5_KEEP"); k != "" { // keep the migrated store to compare its bodies/
+		os.CopyFS(k, os.DirFS(dir))
+	}
 	t.Logf("migrate: wall_s=%.2f cpu_s=%.2f peak_rss_mib=%.0f admitted=%d", time.Since(t0).Seconds(), procCPUSeconds()-cpu0, rssPeakMiB(), rep.Admitted)
 }

@@ -1,0 +1,7 @@
+{"kind":"maint-phase","max_us":12917,"p50_us":781,"p95_us":2316,"p99_us":3558,"phase":"idle","reads":41560}
+{"bytes_reclaimed":47539112,"bytes_written":22776077,"kind":"maint-pass","packs_retired":26,"packs_written":1,"pass":0,"process_cpu_s":19.639708999999996,"recon":{"families":1,"families_relaid":1,"probes":1024,"records_planned":1086,"header_records":3,"cross_cluster_share":0.568793235972329,"windows_per_probe_now":7.056640625,"windows_per_probe_planned":5.736328125,"families_skipped":0},"scan_ms":3,"wall_ms":5084}
+{"bytes_reclaimed":0,"bytes_written":0,"kind":"maint-pass","packs_retired":0,"packs_written":0,"pass":1,"process_cpu_s":5.230709999999995,"recon":{"families":1,"families_relaid":0,"probes":1024,"records_planned":0,"header_records":0,"cross_cluster_share":0.5603829160530192,"windows_per_probe_now":5.677734375,"windows_per_probe_planned":5.71484375,"families_skipped":0},"scan_ms":2,"wall_ms":1342}
+{"kind":"maint-idle-passes","passes":406}
+{"kind":"maint-phase","max_us":65223,"p50_us":798,"p95_us":3204,"p99_us":6165,"phase":"passes","reads":34415}
+{"kind":"maint-phase","max_us":12401,"p50_us":697,"p95_us":2117,"p99_us":3214,"phase":"after","reads":45870}
+{"allocated_after":23199744,"allocated_before":48025600,"kind":"maint-store"}

@@ -88,46 +88,46 @@ import (
 //        1    Package overview, imports, constants, and shared utilities
 //      542    Content-defined chunking (CDC)
 //      729    Content-addressed chunk storage (CAS)
-//     2526    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5319    Small-object segments (inline manifests, store level 11)
-//     6569    Manifests (immutable, JSON)
-//     7367    Visibility journal (append-only, checksummed)
-//     7889    Store: format, namespace, and object CRUD
-//     8401    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12053    Version history/restore, history pruning, ListObjectsV2
-//    12659    SigV4 authentication (header and presigned-URL)
-//    13636    Request payload checksums and S3-shaped XML error/response types
-//    13853    HTTP routing and S3 operation handlers
-//    14285    Conditional operations (PUT/GET/HEAD preconditions)
-//    14980    CopyObject
-//    15285    Multipart upload
-//    16229    Stats and reachability scanning
-//    17817    Verify
-//    18032    Store locking and safe offline GC
-//    18335    Offline compaction (`zeros3 compact`)
-//    19520    Pack reclamation and repacking (`zeros3 repack`)
-//    20108    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20570    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21876    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22389    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23454    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24305    Delta sync client, credentials, and parallel transfer
-//    26610    Bulk logical-chunk transport (v2)
-//    27521    Recursive directory sync
-//    27826    Remote replication (`zeros3 replicate`)
-//    28739    Peer-assisted corruption repair (`zeros3 repair`)
-//    29311    Namespace (prefix/bucket) replication
-//    29627    Copy-on-write namespace fork (`zeros3 fork`)
-//    29835    Snapshots and restore
-//    30997    Structural diff and inspect (introspection)
-//    32409    Portable snapshot bundles (`zeros3 bundle`)
-//    33606    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34241    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52629    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60467    Windowed and estimated similarity deltas (extracted dcore)
-//    62214    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    70067    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    76339    CLI dispatch, HTTP server/startup, and main
+//     2524    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5312    Small-object segments (inline manifests, store level 11)
+//     6562    Manifests (immutable, JSON)
+//     7360    Visibility journal (append-only, checksummed)
+//     7882    Store: format, namespace, and object CRUD
+//     8394    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12046    Version history/restore, history pruning, ListObjectsV2
+//    12652    SigV4 authentication (header and presigned-URL)
+//    13629    Request payload checksums and S3-shaped XML error/response types
+//    13846    HTTP routing and S3 operation handlers
+//    14278    Conditional operations (PUT/GET/HEAD preconditions)
+//    14973    CopyObject
+//    15278    Multipart upload
+//    16222    Stats and reachability scanning
+//    17810    Verify
+//    18025    Store locking and safe offline GC
+//    18328    Offline compaction (`zeros3 compact`)
+//    19511    Pack reclamation and repacking (`zeros3 repack`)
+//    20099    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20559    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21863    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22376    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23441    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24292    Delta sync client, credentials, and parallel transfer
+//    26597    Bulk logical-chunk transport (v2)
+//    27508    Recursive directory sync
+//    27813    Remote replication (`zeros3 replicate`)
+//    28726    Peer-assisted corruption repair (`zeros3 repair`)
+//    29298    Namespace (prefix/bucket) replication
+//    29614    Copy-on-write namespace fork (`zeros3 fork`)
+//    29822    Snapshots and restore
+//    30984    Structural diff and inspect (introspection)
+//    32396    Portable snapshot bundles (`zeros3 bundle`)
+//    33593    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34228    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52616    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    60464    Windowed and estimated similarity deltas (extracted dcore)
+//    62211    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    70064    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    76336    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -1686,10 +1686,8 @@ func (s *Store) casReadH(sum [32]byte, skip map[int32]bool, h *packHandles) ([]b
 	return nil, looseErr
 }
 
-// casReadSpan returns verified bytes of chunk sum (logical bytes) covering
-// [off, off+n) and their offset in the chunk. Only a hot packed copy stored as a
-// restartable record is read in part; otherwise, or if that copy fails its block
-// digests, the chunk is read whole by casRead (whole is then true).
+// casReadSpan returns verified bytes of chunk sum covering [off, off+n) and their offset in it: a
+// hot restartable copy is read in part, anything else (or a failed block) whole by casRead.
 func (s *Store) casReadSpan(sum [32]byte, logical, off, n int64, w *packWindows) (data []byte, at int64, whole bool, err error) {
 	if !s.chunkRetired(sum) {
 		st := s.packSnap()
@@ -4744,10 +4742,8 @@ func fileDictFunc(f io.ReaderAt, entries []packEntry) packDictFunc {
 	}
 }
 
-// readPackedSpan returns verified logical bytes covering [off, off+n) of the
-// record at loc and the logical offset of their first byte. A blocked record
-// reads its table and then only the covered blocks; any other record is read
-// and verified whole.
+// readPackedSpan returns verified bytes covering [off, off+n) of the record at loc and their offset:
+// a blocked record reads its table, then only the covered blocks; others are read whole.
 func (st *packState) readPackedSpan(sum [32]byte, loc packLoc, off, n int64, tr *packTrace, w *packWindows) ([]byte, int64, error) {
 	if loc.codec != packCodecBlocked || int(loc.pack) >= len(st.packs) {
 		data, err := st.readPackedT(sum, loc, nil, tr)
@@ -4806,11 +4802,8 @@ func (st *packState) readPackedSpan(sum [32]byte, loc packLoc, off, n int64, tr 
 	return out, int64(lo), nil
 }
 
-// packWindows is one sparse request's cache of raw pack-file windows: a record
-// miss reads the aligned packWindowBytes around it, so records a reconstruction-
-// ordered layout placed beside it cost no further read. The bytes are only bytes:
-// every record served from a window is checked against its header and decoded and
-// hashed like any other read.
+// packWindows caches the raw aligned pack windows around one sparse request's record misses (opt-in);
+// records served from them are still header-checked, decoded and hashed.
 type packWindows struct {
 	mu   sync.Mutex
 	tr   *packTrace
@@ -19133,10 +19126,8 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 	return b.Finish()
 }
 
-// stagePackDict trains the dictionary of a pack about to hold batch from
-// packDictRecords records spread over it and appends it as the pack's first
-// record (raw: its digest is its name). Unreadable samples are passed over; the
-// records themselves are read again, and judged, when they are staged.
+// stagePackDict trains the dictionary of the pack about to hold batch from records spread over it and
+// appends it as the pack's first record; unreadable samples are skipped (staging judges them later).
 func stagePackDict(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error)) *packDict {
 	// Probe twice as many records as the dictionary samples and keep the compressible
 	// ones: incompressible records (delta programs, media) never use a dictionary.
@@ -20114,9 +20105,11 @@ func runRepack(args []string) {
 // sparse probe reads through the production resolver (a fresh ranged context
 // per probe, so every piece a reconstruction requests is observed) and gives
 // every piece an anchor in the coordinates of the family's pin bases -- the
-// median base offset of the probes that read it. Records are then placed by
-// anchor cluster, base before dependents, with the pieces nearly every probe of
-// a body reads (envelope headers, frame tables) together at the family's head.
+// median base offset of the probes that read it. The family is written with the
+// pieces nearly every probe of a body reads (envelope headers, frame tables) at
+// its head, then its pins in base order, then the dependents in anchor order
+// (interleaving pins and dependents per cluster priced 9% fewer windows, but it
+// breaks the pins' sequential reads, and neither variant lowered latency: B5).
 //
 // Physical order changes nothing logical: placement only happens through the
 // B4 carry/publish/retire path, and a family is relaid out only when the
@@ -20168,10 +20161,8 @@ type reconPiece struct {
 	probesOfBody int // probes of the body it belongs to
 }
 
-// planRecon builds the reconstruction layout of every authority family whose
-// pieces are all live, reading at most reconMaxProbes probes. It ranks the
-// families the estimator admits, or every family when all is set (compaction,
-// which writes new packs anyway).
+// planRecon plans every authority family whose pieces are all live (at most reconMaxProbes probes),
+// ranking those the estimator admits, or all of them for compaction (all).
 func (s *Store) planRecon(live *liveSet, all bool) (*reconPlan, error) {
 	plan := &reconPlan{rank: map[[32]byte]int{}, packs: map[int32]bool{}}
 	files, err := s.authFiles()
@@ -20392,10 +20383,8 @@ func (p *reconPiece) anchorOf() int64 {
 	return a[len(a)/2]
 }
 
-// layout returns the family's pieces in planned order: headers (by depth, then
-// record order), then for each anchor cluster its pin pieces followed by the
-// dependents anchored there, shallow before deep. A piece no probe read takes the
-// anchor of the piece before it in its record.
+// layout orders the family: headers first, then by anchor cluster (pins ahead of their dependents, or
+// all pins first), shallow before deep; an unprobed piece takes its predecessor's anchor.
 func (f *reconFamily) layout() [][32]byte { return f.layoutAs(reconLayoutMode, reconCluster) }
 
 // reconLayoutMode is the production variant (a variable so the research harness can compare).
@@ -21508,10 +21497,8 @@ func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, opt MaintOptions
 	return sel
 }
 
-// maintRelayout adds the packs of authority families the reconstruction planner
-// would relay out (section 13d1), within the pass's pack budget, and orders the
-// carry accordingly. Planning reads only live records, unlocked; a plan is not
-// recomputed while the records and the pack set are those it last judged.
+// maintRelayout adds the packs of families the planner would relay out (within the pass budget) and
+// orders the carry; a plan is memoized until the records or the pack set change.
 func (s *Store) maintRelayout(ep *maintEpoch, live *liveSet, opt MaintOptions, doomed []packUsage, enc *packEncoding, rep *MaintReport) ([]packUsage, error) {
 	st := s.packSnap()
 	h := sha256.New()
@@ -53285,6 +53272,8 @@ type authState struct {
 	cache       map[string][]byte
 
 	reads, rangeReads, fallbacks, cacheHits, cacheMisses atomic.Int64
+	// active counts served authority reads in flight: prefetch only runs while the CPU has room for it.
+	active atomic.Int64
 
 	vmu  sync.Mutex
 	vidx map[[32]byte]authVLoc
@@ -53595,6 +53584,7 @@ type authCtx struct {
 	// prefetch lets bodies read the pieces a read will need on up to authPrefetchWorkers
 	// goroutines ahead of it (served reads); fly single-flights a piece being read.
 	prefetch  bool
+	release   func() // leaves Store.auth.active (served reads)
 	pf        chan struct{}
 	pfwg      sync.WaitGroup
 	fly       map[[32]byte]chan struct{}
@@ -53657,8 +53647,14 @@ func (s *Store) newAuthScanCtx() *authCtx {
 	return c
 }
 
-// close waits for the context's prefetches, which may still be reading.
-func (c *authCtx) close() { c.pfwg.Wait() }
+// close waits for the context's prefetches, which may still be reading, and leaves the active count.
+func (c *authCtx) close() {
+	c.pfwg.Wait()
+	if c.release != nil {
+		c.release()
+		c.release = nil
+	}
+}
 
 // flight, called with pmu held after a cache miss, returns the channel of the
 // goroutine already reading sha, or registers this one as its reader (mine).
@@ -53865,10 +53861,8 @@ func (c *authCtx) keepPiece(p authPiece, data []byte, shared bool) []byte {
 	return data
 }
 
-// readPieceSpan returns verified bytes of piece p covering [lo, lo+n) and the
-// piece offset of their first byte. A restartable record (codec 2) yields only the
-// blocks the span covers, kept in a request-local FIFO beside whole pieces; any
-// other record is read whole, as readPiece does.
+// readPieceSpan returns verified bytes of piece p covering [lo, lo+n) and their offset: only the
+// covered blocks of a restartable record (kept in a request FIFO), any other record whole.
 func (c *authCtx) readPieceSpan(p authPiece, lo, n int64) ([]byte, int64, error) {
 	if c.trace != nil {
 		c.trace('r', p.SHA, lo, n)
@@ -54947,7 +54941,10 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 		}
 	}
 	ctx := s.newAuthCtx()
-	ctx.prefetch = authPrefetch
+	ctx.prefetch = authPrefetch && s.auth.active.Add(1) <= int64(max(1, runtime.GOMAXPROCS(0)/2))
+	if authPrefetch {
+		ctx.release = func() { s.auth.active.Add(-1) }
+	}
 	if ctx.sparse = rng.end-rng.start+1 <= authSpanReadMax; ctx.sparse && authPackWindows {
 		ctx.win = &packWindows{tr: s.packTrace}
 	}
