@@ -328,14 +328,15 @@ func TestAuthoritySimilarityRefresh(t *testing.T) {
 	var copied bytes.Buffer
 	var retired []uint32
 	digest := sha256.Sum256(b)
-	remembered := make(map[[32]byte]int64)
-	if err := reuseAuthSimilarityCatalog(next, t.TempDir(), &copied, remembered, map[[32]byte]struct{}{digest: {}}, false, &retired); err != nil {
+	remembered, only := newAuthDigestTable(4), newAuthDigestTable(4)
+	only.put(digest, 0)
+	if err := reuseAuthSimilarityCatalog(next, t.TempDir(), &copied, remembered, only, false, &retired); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := os.ReadFile(filepath.Join(next.Directory, "catalog.zsc"))
 	if err != nil || len(catalog) < 12 || !bytes.Equal(copied.Bytes(), catalog[12:]) || len(retired) != 0 ||
-		len(remembered) != 1 || remembered[digest] != int64(len(b)) {
-		t.Fatalf("filtered catalog reuse changed rows or retained unrelated identities: %v, %v", remembered, err)
+		len(remembered.keys) != 1 || remembered.vals[0] != int64(len(b)) || remembered.keys[0] != digest {
+		t.Fatalf("filtered catalog reuse changed rows or retained unrelated identities: %v, %v", remembered.keys, err)
 	}
 	mustPutObject(t, s, "similar", "reused", b, "", nil)
 	reused, err := s.refreshAuthSimilarityStage()

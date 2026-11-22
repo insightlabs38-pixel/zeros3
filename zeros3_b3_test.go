@@ -647,3 +647,95 @@ func TestNamespaceReplaySpills(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthDigestTable(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	tab := newAuthDigestTable(2) // forces several rehashes
+	model := map[[32]byte]int64{}
+	for i := range 20000 {
+		var k [32]byte
+		for j := range k {
+			k[j] = byte(rng.Uint32())
+		}
+		if i%3 == 0 && len(model) > 0 {
+			for old := range model {
+				k = old
+				break
+			}
+		}
+		tab.put(k, int64(i))
+		model[k] = int64(i)
+	}
+	if len(tab.keys) != len(model) {
+		t.Fatalf("%d entries, want %d", len(tab.keys), len(model))
+	}
+	for k, v := range model {
+		if got, ok := tab.get(k); !ok || got != v {
+			t.Fatalf("get = %d,%v want %d", got, ok, v)
+		}
+	}
+	if _, ok := tab.get([32]byte{1, 2, 3}); ok {
+		t.Fatal("absent digest found")
+	}
+}
+
+func TestAuthRootsSortAndStream(t *testing.T) {
+	s := b3Store(t, t.TempDir(), false)
+	mustOK(t, s.CreateBucket("b"))
+	want := map[string]bool{}
+	for i := range 30 {
+		e := mustPutObject(t, s, "b", fmt.Sprintf("k%d", i%7), []byte(fmt.Sprint("body", i)), "text/plain", nil)
+		want[e.manifestUUID] = true
+	}
+	mustOK(t, s.nsConsolidate(false))
+	mustPutObject(t, s, "b", "late", []byte("late"), "text/plain", nil) // still in the overlay
+	// Rows whose manifest names are not canonical UUIDs take the inline encoding.
+	odd := &objectEntry{manifestUUID: "not-a-uuid", etag: "3-parts", contentType: "x/y"}
+	odd.manifestSHA256[5] = 9
+	s.tSetObj("b", "odd", odd)
+	s.mu.Lock()
+	s.histSet("b", "odd", []*historyVersionEntry{{versionID: "v", manifestUUID: "odd-hist", etag: "e", archivedAt: time.Unix(5, 0).UTC(), reason: "r", seq: 99}})
+	s.mu.Unlock()
+	mustOK(t, s.nsConsolidate(false))
+	s.tSetObj("b", "odd2", odd)
+	roots, err := s.authSimilarityRoots(nil)
+	mustOK(t, err)
+	objs, err := s.snapshotNamespace()
+	mustOK(t, err)
+	hist, err := s.snapshotHistory()
+	mustOK(t, err)
+	var wantRoots []string
+	for _, o := range objs {
+		wantRoots = append(wantRoots, fmt.Sprintf("%s/%x", o.entry.manifestUUID, o.entry.manifestSHA256))
+	}
+	for _, h := range hist {
+		wantRoots = append(wantRoots, fmt.Sprintf("%s/%x", h.entry.manifestUUID, h.entry.manifestSHA256))
+	}
+	var gotRoots []string
+	for i := range roots.len() {
+		gotRoots = append(gotRoots, fmt.Sprintf("%s/%x", roots.uuid(i), roots.refs[i].sha))
+	}
+	slices.Sort(wantRoots)
+	slices.Sort(gotRoots)
+	if !slices.Equal(wantRoots, gotRoots) {
+		t.Fatalf("streamed roots differ from the decoded namespace: %d vs %d", len(gotRoots), len(wantRoots))
+	}
+	got := map[string]bool{}
+	prev := ""
+	for i := range roots.len() {
+		u := roots.uuid(i)
+		if u < prev {
+			t.Fatalf("roots unsorted at %d", i)
+		}
+		prev = u
+		got[u] = true
+	}
+	if roots.len() != 7+23+1+3 || len(got) != roots.len()-1 {
+		t.Fatalf("%d roots (%d distinct), want 34 with one shared", roots.len(), len(got))
+	}
+	for u := range want {
+		if !got[u] {
+			t.Fatalf("manifest %s missing from the roots", u)
+		}
+	}
+}

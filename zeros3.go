@@ -8463,6 +8463,90 @@ func (g *nsGen) decodeHistory(payload []byte) ([]*historyVersionEntry, error) {
 	return out, nil
 }
 
+// skipRef skips a dictionary reference or an inline string.
+func (r *nsReader) skipRef() {
+	if r.uv() == 0 {
+		r.lenBytes()
+	}
+}
+
+// identityUUID reads the manifest UUID into dst and skips the ETag.
+func (r *nsReader) identityUUID(flags byte, dst []byte) []byte {
+	if flags&nsFlagUUID != 0 {
+		if raw := r.take(16); r.err == nil {
+			dst = nsAppendUUID(dst, raw)
+		}
+	} else {
+		dst = append(dst, r.lenBytes()...)
+	}
+	if flags&nsFlagETag != 0 {
+		r.take(16)
+	} else {
+		r.lenBytes()
+	}
+	return dst
+}
+
+// objectRoot extracts the manifest UUID and digest of an object row without
+// decoding the rest. The UUID is appended to dst.
+func objectRoot(payload, dst []byte) (uuid []byte, sha [32]byte, err error) {
+	r := nsReader{b: payload}
+	r.skipRef()
+	flags := r.take(1)
+	if r.err != nil {
+		return dst, sha, r.err
+	}
+	copy(sha[:], r.take(sha256.Size))
+	r.uv()
+	r.uv()
+	dst = r.identityUUID(flags[0], dst)
+	return dst, sha, r.err
+}
+
+// historyRoots calls fn with the manifest UUID and digest of every version of a history row.
+func historyRoots(payload []byte, scratch []byte, fn func(uuid []byte, sha [32]byte)) ([]byte, error) {
+	r := nsReader{b: payload}
+	n := r.uv()
+	if r.err != nil || n > uint64(len(payload)) {
+		return scratch, errNSCorrupt
+	}
+	for range n {
+		fl := r.take(1)
+		if r.err != nil {
+			return scratch, r.err
+		}
+		flags := fl[0]
+		r.uv()
+		if flags&nsFlagUTC != 0 {
+			r.uv() // seconds, zigzag varint
+			r.uv()
+		} else {
+			r.lenBytes()
+		}
+		r.skipRef()
+		r.skipRef()
+		var sha [32]byte
+		copy(sha[:], r.take(sha256.Size))
+		r.uv()
+		scratch = r.identityUUID(flags, scratch[:0])
+		if flags&nsFlagVersionID != 0 {
+			if flags&nsFlagIDUUID != 0 {
+				r.take(16)
+			} else {
+				r.lenBytes()
+			}
+		}
+		if r.err != nil {
+			return scratch, r.err
+		}
+		fn(scratch, sha)
+	}
+	if len(r.b) != 0 {
+		return scratch, errNSCorrupt
+	}
+	return scratch, nil
+}
+
 // ---- page cache ----
 
 type nsPageKey struct {
@@ -8934,7 +9018,9 @@ func (ns *nsState) fail(err error) error {
 func (ns *nsState) overlayLen() int { return ns.objMut.n + ns.histMut.n }
 
 // objFind resolves a visible object; nil with a nil error means absent. Held: mu.
-func (s *Store) objFind(bucket, key string) (*objectEntry, error) { return s.objFindCK(nsKey(bucket, key)) }
+func (s *Store) objFind(bucket, key string) (*objectEntry, error) {
+	return s.objFindCK(nsKey(bucket, key))
+}
 
 func (s *Store) objFindCK(ck string) (*objectEntry, error) {
 	ns := &s.ns
@@ -55100,9 +55186,93 @@ type authSimilarityStageRun struct {
 	SHA256   string `json:"sha256"`
 }
 
-type authSimilarityRoot struct {
-	uuid string
-	sha  [32]byte
+// authRoots is a compact list of manifest roots: the UUIDs share one arena and
+// each root costs 40 bytes beyond its UUID, with nothing for the GC to scan.
+type authRoots struct {
+	arena []byte
+	refs  []authRootRef
+}
+
+type authRootRef struct {
+	sha [32]byte
+	off uint32
+	n   uint16
+}
+
+func (r *authRoots) add(uuid string, sha [32]byte) {
+	r.refs = append(r.refs, authRootRef{sha: sha, off: uint32(len(r.arena)), n: uint16(len(uuid))})
+	r.arena = append(r.arena, uuid...)
+}
+
+func (r *authRoots) addBytes(uuid []byte, sha [32]byte) {
+	r.refs = append(r.refs, authRootRef{sha: sha, off: uint32(len(r.arena)), n: uint16(len(uuid))})
+	r.arena = append(r.arena, uuid...)
+}
+
+func (r *authRoots) len() int { return len(r.refs) }
+
+func (r *authRoots) uuid(i int) string {
+	return string(r.arena[r.refs[i].off : r.refs[i].off+uint32(r.refs[i].n)])
+}
+
+// sort orders the roots by manifest UUID, which fixes catalog ID assignment.
+func (r *authRoots) sort() {
+	slices.SortStableFunc(r.refs, func(a, b authRootRef) int {
+		return bytes.Compare(r.arena[a.off:a.off+uint32(a.n)], r.arena[b.off:b.off+uint32(b.n)])
+	})
+}
+
+// authDigestTable maps 32-byte content digests to a length without a Go map's
+// per-slot overhead: dense key and value arrays indexed by an open-addressing
+// table of half-full uint32 slots. Digests are uniform, so their first bytes hash.
+type authDigestTable struct {
+	keys  [][32]byte
+	vals  []int64
+	slots []uint32 // index+1 into keys; 0 is empty
+}
+
+func newAuthDigestTable(n int) *authDigestTable {
+	t := &authDigestTable{keys: make([][32]byte, 0, n), vals: make([]int64, 0, n)}
+	t.slots = make([]uint32, 1<<bits.Len(uint(max(2*n, 8))))
+	return t
+}
+
+func (t *authDigestTable) probe(k [32]byte) (slot int, found bool) {
+	mask := len(t.slots) - 1
+	for i := int(binary.LittleEndian.Uint64(k[:])) & mask; ; i = (i + 1) & mask {
+		switch idx := t.slots[i]; {
+		case idx == 0:
+			return i, false
+		case t.keys[idx-1] == k:
+			return i, true
+		}
+	}
+}
+
+func (t *authDigestTable) get(k [32]byte) (int64, bool) {
+	if i, ok := t.probe(k); ok {
+		return t.vals[t.slots[i]-1], true
+	}
+	return 0, false
+}
+
+func (t *authDigestTable) put(k [32]byte, v int64) {
+	i, ok := t.probe(k)
+	if ok {
+		t.vals[t.slots[i]-1] = v
+		return
+	}
+	if 2*(len(t.keys)+1) > len(t.slots) {
+		t.slots = make([]uint32, 2*len(t.slots))
+		for j, key := range t.keys {
+			s, _ := t.probe(key)
+			t.slots[s] = uint32(j + 1)
+		}
+		i, _ = t.probe(k)
+	}
+	t.keys = append(t.keys, k)
+	t.vals = append(t.vals, v)
+	t.slots[i] = uint32(len(t.keys))
 }
 
 type authSimilaritySketchReader struct {
@@ -55189,25 +55359,67 @@ func (s *Store) buildAuthSimilarityStage() (authSimilarityStageReport, error) {
 	return s.writeAuthSimilarityStage(report, roots, nil, nil, false)
 }
 
-func (s *Store) authSimilarityRoots(snapshots []snapshotDescriptorV1) ([]authSimilarityRoot, error) {
-	objs, err := s.snapshotNamespace()
+// addNamespaceRoots streams the manifest roots of every visible row and retained
+// version, in key order, from a consistent snapshot. Table rows are read in
+// place: nothing is decoded beyond the UUID and digest.
+func (s *Store) addNamespaceRoots(roots *authRoots) error {
+	s.mu.Lock()
+	objs, relObjs, err := s.nsObjectView("", "")
+	var hist *nsView[[]*historyVersionEntry]
+	var relHist func()
+	if err == nil {
+		hist, relHist, err = s.nsHistoryView("", "")
+		roots.refs = slices.Grow(roots.refs, s.ns.rowEstimate())
+		roots.arena = slices.Grow(roots.arena, 36*s.ns.rowEstimate())
+	}
+	s.mu.Unlock()
 	if err != nil {
+		return err
+	}
+	defer relObjs()
+	defer relHist()
+	var scratch []byte
+	for objs.next() {
+		if objs.from >= 0 {
+			roots.add(objs.val.manifestUUID, objs.val.manifestSHA256)
+			continue
+		}
+		var sha [32]byte
+		if scratch, sha, err = objectRoot(objs.payload, scratch[:0]); err != nil {
+			return s.nsFailed(err)
+		}
+		roots.addBytes(scratch, sha)
+	}
+	if err := s.nsFailed(objs.err); err != nil {
+		return err
+	}
+	for hist.next() {
+		if hist.from >= 0 {
+			for _, h := range hist.val {
+				roots.add(h.manifestUUID, h.manifestSHA256)
+			}
+			continue
+		}
+		if scratch, err = historyRoots(hist.payload, scratch, roots.addBytes); err != nil {
+			return s.nsFailed(err)
+		}
+	}
+	return s.nsFailed(hist.err)
+}
+
+// rowEstimate is a capacity hint for the rows a full scan will return. Held: mu.
+func (ns *nsState) rowEstimate() int {
+	n := ns.objMut.n + ns.histMut.n
+	if ns.obj != nil {
+		n += ns.obj.dir.Rows + ns.hist.dir.Rows
+	}
+	return n
+}
+
+func (s *Store) authSimilarityRoots(snapshots []snapshotDescriptorV1) (*authRoots, error) {
+	roots := &authRoots{}
+	if err := s.addNamespaceRoots(roots); err != nil {
 		return nil, err
-	}
-	hist, err := s.snapshotHistory()
-	if err != nil {
-		return nil, err
-	}
-	count := len(objs) + len(hist)
-	for _, snap := range snapshots {
-		count += len(snap.Entries)
-	}
-	roots := make([]authSimilarityRoot, 0, count)
-	for _, o := range objs {
-		roots = append(roots, authSimilarityRoot{o.entry.manifestUUID, o.entry.manifestSHA256})
-	}
-	for _, o := range hist {
-		roots = append(roots, authSimilarityRoot{o.entry.manifestUUID, o.entry.manifestSHA256})
 	}
 	for _, snap := range snapshots {
 		for _, entry := range snap.Entries {
@@ -55215,14 +55427,14 @@ func (s *Store) authSimilarityRoots(snapshots []snapshotDescriptorV1) ([]authSim
 			if err != nil {
 				return nil, err
 			}
-			roots = append(roots, authSimilarityRoot{entry.ManifestUUID, sum})
+			roots.add(entry.ManifestUUID, sum)
 		}
 	}
-	slices.SortFunc(roots, func(a, b authSimilarityRoot) int { return cmp.Compare(a.uuid, b.uuid) })
+	roots.sort()
 	return roots, nil
 }
 
-func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots []authSimilarityRoot, prior *authSimilarityStageReport, live map[[32]byte]struct{}, reconcile bool) (authSimilarityStageReport, error) {
+func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots *authRoots, prior *authSimilarityStageReport, live *authDigestTable, reconcile bool) (authSimilarityStageReport, error) {
 	parent := filepath.Join(s.root, "similarity-index")
 	if err := os.Mkdir(parent, 0o700); err != nil && !os.IsExist(err) {
 		return report, err
@@ -55257,8 +55469,12 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 	}
 
 	const limit = authSimilarityPostingBatch
-	batch := make([]authSimilarityEntry, 0, min(len(roots), limit/16)*16)
-	contents := make(map[[32]byte]int64)
+	batch := make([]authSimilarityEntry, 0, min(roots.len(), limit/16)*16)
+	known := roots.len()
+	if prior != nil {
+		known += int(prior.Objects)
+	}
+	contents := newAuthDigestTable(known)
 	if prior != nil {
 		if err := reuseAuthSimilarityCatalog(*prior, stage, out, contents, live, reconcile, &report.retired); err != nil {
 			return report, err
@@ -55280,16 +55496,17 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 		batch = batch[:0]
 		return nil
 	}
-	for _, root := range roots {
-		man, err := s.readVerifiedManifest(root.uuid, root.sha)
+	for i := range roots.len() {
+		root, sha := roots.uuid(i), roots.refs[i].sha
+		man, err := s.readVerifiedManifest(root, sha)
 		if err != nil {
 			return report, err
 		}
 		sum, err := decodeHexSHA256(man.ObjectSHA256)
 		if err != nil || man.TotalLength < 0 {
-			return report, fmt.Errorf("invalid similarity object identity for manifest %s", root.uuid)
+			return report, fmt.Errorf("invalid similarity object identity for manifest %s", root)
 		}
-		if size, ok := contents[sum]; ok {
+		if size, ok := contents.get(sum); ok {
 			if size != man.TotalLength {
 				return report, fmt.Errorf("inconsistent similarity object length for %x", sum)
 			}
@@ -55314,7 +55531,7 @@ func (s *Store) writeAuthSimilarityStage(report authSimilarityStageReport, roots
 			}
 		}
 		report.Objects++
-		contents[sum] = man.TotalLength
+		contents.put(sum, man.TotalLength)
 		var item [44]byte
 		binary.LittleEndian.PutUint32(item[:], report.Objects)
 		copy(item[4:36], sum[:])
@@ -55515,13 +55732,13 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 			return report, err
 		}
 	}
-	var live map[[32]byte]struct{}
+	var live *authDigestTable
 	// Small journal suffixes need only the catalog identities they mention.
 	// Large catch-ups can bulk-load the old catalog and read each new manifest once.
-	if pruned || len(prior.retired) > 0 || uint64(len(roots)) <= uint64(prior.Objects)/2 {
-		live = make(map[[32]byte]struct{})
-		for _, root := range roots {
-			man, err := s.readVerifiedManifest(root.uuid, root.sha)
+	if pruned || len(prior.retired) > 0 || uint64(roots.len()) <= uint64(prior.Objects)/2 {
+		live = newAuthDigestTable(roots.len())
+		for i := range roots.len() {
+			man, err := s.readVerifiedManifest(roots.uuid(i), roots.refs[i].sha)
 			if err != nil {
 				return report, err
 			}
@@ -55529,7 +55746,7 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 			if err != nil {
 				return report, err
 			}
-			live[sum] = struct{}{}
+			live.put(sum, 0)
 		}
 	}
 	result, err := s.writeAuthSimilarityStage(report, roots, &prior, live, pruned)
@@ -55539,9 +55756,9 @@ func (s *Store) refreshAuthSimilarityStage() (authSimilarityStageReport, error) 
 	return result, err
 }
 
-func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStageReport) ([]authSimilarityRoot, bool, bool) {
+func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStageReport) (*authRoots, bool, bool) {
 	rebuild := errors.New("visibility transition requires a similarity rebuild")
-	var roots []authSimilarityRoot
+	roots := &authRoots{}
 	var pruned bool
 	end, seq, _, applyErr, err := replayJournalRange(f, prior.JournalEnd, current.JournalEnd, prior.JournalSeq, false, func(r journalRecord) error {
 		var uuid, digest string
@@ -55571,7 +55788,7 @@ func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStag
 		if err != nil {
 			return err
 		}
-		roots = append(roots, authSimilarityRoot{uuid, sum})
+		roots.add(uuid, sum)
 		return nil
 	})
 	return roots, pruned, err == nil && applyErr == nil && end == current.JournalEnd && seq == current.JournalSeq
@@ -55635,7 +55852,7 @@ func readAuthSimilarityTombstones(dir string, report *authSimilarityStageReport)
 	return nil
 }
 
-func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, out io.Writer, contents map[[32]byte]int64, live map[[32]byte]struct{}, reconcile bool, retired *[]uint32) error {
+func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, out io.Writer, contents, live *authDigestTable, reconcile bool, retired *[]uint32) error {
 	f, err := os.Open(filepath.Join(prior.Directory, "catalog.zsc"))
 	if err != nil {
 		return err
@@ -55653,14 +55870,17 @@ func reuseAuthSimilarityCatalog(prior authSimilarityStageReport, stage string, o
 		var sum [32]byte
 		copy(sum[:], row[4:36])
 		_, wasRetired := slices.BinarySearch(prior.retired, i+1)
-		_, isLive := live[sum]
+		isLive := false
+		if live != nil {
+			_, isLive = live.get(sum)
+		}
 		if (wasRetired || reconcile) && !isLive {
 			*retired = append(*retired, i+1)
 			if len(*retired) > authSimilarityMaxTombstones {
 				return errAuthSimilarityNeedsRebuild
 			}
 		} else if live == nil || isLive {
-			contents[sum] = int64(binary.LittleEndian.Uint64(row[36:]))
+			contents.put(sum, int64(binary.LittleEndian.Uint64(row[36:])))
 		}
 		if _, err := out.Write(row[:]); err != nil {
 			return err
