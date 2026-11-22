@@ -181,6 +181,7 @@ func (s *Store) PutObject(bucket, key string, body []byte, contentType string, m
 }
 
 func (s *Store) PutObjectChecked(bucket, key string, body []byte, contentType string, metadata map[string]string, cond putCondition) (*objectEntry, error) {
+	defer s.beginOp()()
 	if err := s.HeadBucket(bucket); err != nil {
 		return nil, err
 	}
@@ -192,6 +193,7 @@ func (s *Store) PutObjectChecked(bucket, key string, body []byte, contentType st
 }
 
 func (s *Store) UploadPart(bucket, key, uploadID string, partNumber int, body []byte) (string, error) {
+	defer s.beginOp()()
 	if err := s.requireUpload(bucket, key, uploadID); err != nil {
 		return "", err
 	}
@@ -221,6 +223,7 @@ func (s *Store) readManifestRange(man manifestV1, rng byteRange) ([]byte, error)
 }
 
 func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
+	defer s.beginRead()()
 	entry, man, err := s.HeadObject(bucket, key)
 	if err != nil {
 		return nil, nil, err
@@ -233,6 +236,7 @@ func (s *Store) GetObject(bucket, key string) (*objectEntry, []byte, error) {
 }
 
 func (s *Store) GetObjectRange(bucket, key string, rng byteRange) (*objectEntry, manifestV1, []byte, error) {
+	defer s.beginRead()()
 	entry, man, err := s.HeadObject(bucket, key)
 	if err != nil {
 		return nil, manifestV1{}, nil, err

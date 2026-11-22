@@ -37,6 +37,7 @@ ents = [
  ("Store locking and safe offline GC", "// 13b. Store locking"),
  ("Offline compaction (`zeros3 compact`)", "// 13c. Offline compaction"),
  ("Pack reclamation and repacking (`zeros3 repack`)", "// 13d. Pack reclamation"),
+ ("Online maintenance: epochs, pins, live GC and repack (B4)", "// 13d2. Online maintenance"),
  ("Physical tiers: status and pack movement (`zeros3 tier`)", "// 13e. Physical tiers"),
  ("Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)", "// 13f. Content-aware tier policy"),
  ("Streaming object reads (full and ranged GET), verified chunk cache, pipelining", "// 14. Streaming object reads"),

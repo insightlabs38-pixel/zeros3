@@ -86,46 +86,47 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      540    Content-defined chunking (CDC)
-//      727    Content-addressed chunk storage (CAS)
-//     2470    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4649    Small-object segments (inline manifests, store level 11)
-//     5898    Manifests (immutable, JSON)
-//     6694    Visibility journal (append-only, checksummed)
-//     7216    Store: format, namespace, and object CRUD
-//     7664    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    11308    Version history/restore, history pruning, ListObjectsV2
-//    11909    SigV4 authentication (header and presigned-URL)
-//    12886    Request payload checksums and S3-shaped XML error/response types
-//    13103    HTTP routing and S3 operation handlers
-//    13529    Conditional operations (PUT/GET/HEAD preconditions)
-//    14224    CopyObject
-//    14529    Multipart upload
-//    15473    Stats and reachability scanning
-//    16998    Verify
-//    17213    Store locking and safe offline GC
-//    17516    Offline compaction (`zeros3 compact`)
-//    18582    Pack reclamation and repacking (`zeros3 repack`)
-//    19085    Physical tiers: status and pack movement (`zeros3 tier`)
-//    19598    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    20663    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    21467    Delta sync client, credentials, and parallel transfer
-//    23759    Bulk logical-chunk transport (v2)
-//    24670    Recursive directory sync
-//    24975    Remote replication (`zeros3 replicate`)
-//    25888    Peer-assisted corruption repair (`zeros3 repair`)
-//    26460    Namespace (prefix/bucket) replication
-//    26776    Copy-on-write namespace fork (`zeros3 fork`)
-//    26984    Snapshots and restore
-//    28146    Structural diff and inspect (introspection)
-//    29522    Portable snapshot bundles (`zeros3 bundle`)
-//    30719    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    31354    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    49737    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    57333    Windowed and estimated similarity deltas (extracted dcore)
-//    59080    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    66845    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    73117    CLI dispatch, HTTP server/startup, and main
+//      541    Content-defined chunking (CDC)
+//      728    Content-addressed chunk storage (CAS)
+//     2473    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
+//     4707    Small-object segments (inline manifests, store level 11)
+//     5957    Manifests (immutable, JSON)
+//     6755    Visibility journal (append-only, checksummed)
+//     7277    Store: format, namespace, and object CRUD
+//     7784    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    11436    Version history/restore, history pruning, ListObjectsV2
+//    12042    SigV4 authentication (header and presigned-URL)
+//    13019    Request payload checksums and S3-shaped XML error/response types
+//    13236    HTTP routing and S3 operation handlers
+//    13668    Conditional operations (PUT/GET/HEAD preconditions)
+//    14363    CopyObject
+//    14668    Multipart upload
+//    15612    Stats and reachability scanning
+//    17193    Verify
+//    17408    Store locking and safe offline GC
+//    17711    Offline compaction (`zeros3 compact`)
+//    18778    Pack reclamation and repacking (`zeros3 repack`)
+//    19302    Online maintenance: epochs, pins, live GC and repack (B4)
+//    20540    Physical tiers: status and pack movement (`zeros3 tier`)
+//    21053    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    22118    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    22922    Delta sync client, credentials, and parallel transfer
+//    25226    Bulk logical-chunk transport (v2)
+//    26137    Recursive directory sync
+//    26442    Remote replication (`zeros3 replicate`)
+//    27355    Peer-assisted corruption repair (`zeros3 repair`)
+//    27927    Namespace (prefix/bucket) replication
+//    28243    Copy-on-write namespace fork (`zeros3 fork`)
+//    28451    Snapshots and restore
+//    29613    Structural diff and inspect (introspection)
+//    31013    Portable snapshot bundles (`zeros3 bundle`)
+//    32210    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    32845    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    51233    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    58838    Windowed and estimated similarity deltas (extracted dcore)
+//    60585    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    68350    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    74622    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -1376,6 +1377,7 @@ func (b *casBatch) add(sum [32]byte, data []byte) ([32]byte, error) {
 		b.seen = map[[32]byte]struct{}{}
 	}
 	b.seen[sum] = struct{}{}
+	b.s.mpin(sum) // before the presence check (section 13d2)
 	if _, err := b.s.casStat(sum); err == nil {
 		return sum, nil
 	} else if !os.IsNotExist(err) {
@@ -1888,6 +1890,7 @@ func (p *packSink) Put(sum [32]byte, chunk []byte) error {
 			return nil
 		}
 	}
+	p.s.mpin(sum)
 	if _, err := p.s.casStat(sum); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -3701,6 +3704,42 @@ type packState struct {
 	// publication instead of copying every pack); any other successor of the
 	// same snapshot copies.
 	extended atomic.Bool
+	// gone marks packs retired by online maintenance (section 13d2): their
+	// records stay in the levels but are never returned, and pack numbers stay
+	// stable, so a retirement is O(packs) and old snapshots keep their meaning.
+	gone []uint64
+}
+
+func (st *packState) isGone(i uint32) bool {
+	return int(i>>6) < len(st.gone) && st.gone[i>>6]&(1<<(i&63)) != 0
+}
+
+// live reports whether r belongs to a pack that has not been retired.
+func (st *packState) recLive(r *locRec) bool { return st.gone == nil || !st.isGone(r.packIdx()) }
+
+// find is a level lookup that skips the records of retired packs.
+func (st *packState) find(ix *locIndex, sum *[32]byte) *locRec {
+	r := ix.find(sum)
+	if r == nil || st.recLive(r) {
+		return r
+	}
+	ds := ix.dupsOf(sum)
+	for i := range ds {
+		if st.recLive(&ds[i]) {
+			return &ds[i]
+		}
+	}
+	return nil
+}
+
+// withoutPacks returns a snapshot in which the packs numbered in idx are retired.
+func (st *packState) withoutPacks(idx []int32) *packState {
+	gone := make([]uint64, (len(st.packs)+63)/64)
+	copy(gone, st.gone)
+	for _, i := range idx {
+		gone[i>>6] |= 1 << (uint32(i) & 63)
+	}
+	return &packState{packs: slices.Clip(st.packs), levels: st.levels, bad: st.bad, clash: st.clash, gone: gone}
 }
 
 // best returns a digest's primary record: the hottest copy, the oldest
@@ -3708,7 +3747,7 @@ type packState struct {
 func (st *packState) best(sum *[32]byte) *locRec {
 	var best *locRec
 	for _, ix := range st.levels {
-		if r := ix.find(sum); r != nil && (best == nil || r.tier() < best.tier()) {
+		if r := st.find(ix, sum); r != nil && (best == nil || r.tier() < best.tier()) {
 			if best = r; r.tier() == tierHot {
 				break
 			}
@@ -3730,9 +3769,13 @@ func (st *packState) appendLocs(dst []packLoc, sum [32]byte) []packLoc {
 	n := len(dst)
 	for _, ix := range st.levels {
 		if r := ix.find(&sum); r != nil {
-			dst = append(dst, r.loc())
+			if st.recLive(r) {
+				dst = append(dst, r.loc())
+			}
 			for _, d := range ix.dupsOf(&sum) {
-				dst = append(dst, d.loc())
+				if st.recLive(&d) {
+					dst = append(dst, d.loc())
+				}
 			}
 		}
 	}
@@ -3749,8 +3792,13 @@ func (st *packState) primaries() iter.Seq2[*[32]byte, packLoc] {
 		for _, ix := range st.levels {
 			for j := range ix.recs {
 				r := &ix.recs[j]
-				if len(st.levels) > 1 && st.best(&r.sum) != r {
-					continue
+				if len(st.levels) > 1 || st.gone != nil {
+					if b := st.best(&r.sum); b != r {
+						if b == nil || st.find(ix, &r.sum) != b {
+							continue // retired, or the primary is in another level
+						}
+						r = b // a retired primary's surviving copy in this level
+					}
 				}
 				if !yield(&r.sum, r.loc()) {
 					return
@@ -3762,7 +3810,7 @@ func (st *packState) primaries() iter.Seq2[*[32]byte, packLoc] {
 
 // distinct counts the digests that have a primary location.
 func (st *packState) distinct() int {
-	if len(st.levels) == 1 {
+	if len(st.levels) == 1 && st.gone == nil {
 		return len(st.levels[0].recs)
 	}
 	n := 0
@@ -3791,8 +3839,8 @@ func (p packInfo) label() string {
 // the new copy becomes a fallback; one whose logical length contradicts the
 // indexed copy is reported rather than indexed.
 func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, error) {
-	for _, p := range st.packs {
-		if p.id == info.id && p.tier == info.tier {
+	for i, p := range st.packs {
+		if p.id == info.id && p.tier == info.tier && !st.isGone(uint32(i)) {
 			return st, nil
 		}
 	}
@@ -3803,7 +3851,7 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 	if !st.extended.CompareAndSwap(false, true) {
 		packs = slices.Clip(packs)
 	}
-	next := &packState{packs: append(packs, info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
+	next := &packState{packs: append(packs, info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash), gone: st.gone}
 	return st.addRecords(next, uint32(len(st.packs)), info.tier, entries)
 }
 
@@ -3812,7 +3860,7 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 // a growing segment costs one new locator level per commit group and nothing
 // proportional to the number of packs.
 func (st *packState) withRecords(idx uint32, t tier, entries []packEntry) (*packState, error) {
-	next := &packState{packs: st.packs, levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash)}
+	next := &packState{packs: st.packs, levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash), gone: st.gone}
 	return st.addRecords(next, idx, t, entries)
 }
 
@@ -4022,9 +4070,10 @@ func (s *Store) packLookup(sum [32]byte) (packLoc, bool) {
 // packTotals returns published pack count, packed record count, and pack
 // file bytes for stats.
 func (s *Store) packTotals() (packs, records int, bytes int64) {
-	for _, p := range s.packSnap().packs {
-		if p.open {
-			continue // an open segment: counted by segmentStats
+	st := s.packSnap()
+	for i, p := range st.packs {
+		if p.open || st.isGone(uint32(i)) {
+			continue // an open segment (counted by segmentStats), or retired
 		}
 		packs++
 		records += p.records
@@ -4126,6 +4175,9 @@ func (s *Store) packUsagesLive(live *liveSet) []packUsage {
 			u.Utilization = float64(u.livePhysical()) / float64(u.Size)
 		}
 		u.Reclaimable = u.Size - u.livePhysical()
+	}
+	if st.gone != nil {
+		us = slices.DeleteFunc(us, func(u packUsage) bool { return st.isGone(uint32(u.idx)) })
 	}
 	return us
 }
@@ -4617,6 +4669,9 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 	errs := make([]error, len(st.packs))
 	parallelFor(len(st.packs), min(maintWorkers(), 4), 1, func(i int) {
 		p := st.packs[i]
+		if st.isGone(uint32(i)) {
+			return
+		}
 		check := func(p packInfo) (err error) {
 			if p.open {
 				return checkOpenSegment(p.path, deep)
@@ -4638,6 +4693,9 @@ func (s *Store) verifyPacks(deep bool, res *VerifyResult) {
 		errs[i] = err
 	})
 	for i, p := range st.packs {
+		if st.isGone(uint32(i)) {
+			continue
+		}
 		res.PacksChecked++
 		if errs[i] != nil {
 			res.addIssue("corrupt", "pack "+p.label(), errs[i].Error())
@@ -5255,7 +5313,7 @@ func (s *Store) segReplaceInfo(oldID string, info packInfo) error {
 	}
 	packs := slices.Clone(st.packs)
 	packs[idx] = info
-	s.packSt.Store(&packState{packs: packs, levels: st.levels, bad: st.bad, clash: st.clash})
+	s.packSt.Store(&packState{packs: packs, levels: st.levels, bad: st.bad, clash: st.clash, gone: st.gone})
 	return nil
 }
 
@@ -5863,6 +5921,7 @@ func (k *segSink) Put(sum [32]byte, chunk []byte) error {
 	if _, ok := k.seen[sum]; ok {
 		return nil
 	}
+	k.s.mpin(sum)
 	if _, ok := k.s.packLookup(sum); ok && !k.s.chunkRetired(sum) {
 		return nil
 	}
@@ -5956,8 +6015,9 @@ func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err erro
 	if err != nil {
 		return "", sum, err
 	}
+	sum = sha256.Sum256(data)
+	s.mpinManifest(m.ManifestUUID, sum, m.ObjectSHA256)
 	if s.segmentsEnabled() && len(data) <= segInlineManifestMax {
-		sum = sha256.Sum256(data)
 		if err := s.segs.commit([]segRecord{{sum: sum, data: data}}); err != nil {
 			return "", sum, err
 		}
@@ -5971,7 +6031,7 @@ func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err erro
 	if err := s.syncDirShared(filepath.Join(s.root, "manifests")); err != nil {
 		return "", sum, err
 	}
-	return m.ManifestUUID, sha256.Sum256(data), nil
+	return m.ManifestUUID, sum, nil
 }
 
 // publishManifestJoined publishes man and completes ing's deferred chunk
@@ -5996,6 +6056,7 @@ func (s *Store) publishManifestJoined(man manifestV1, ing *ingestResult) (id str
 			}
 			return
 		}
+		s.mpinManifest(man.ManifestUUID, sum, man.ObjectSHA256)
 		if cerr := ss.commitWith(segRecord{sum: sum, data: data}); cerr != nil {
 			return "", sum, fmt.Errorf("manifest publish failed: %w", cerr)
 		}
@@ -7383,6 +7444,19 @@ type Store struct {
 
 	// auth is the representation-authoritative body state (section 16e).
 	auth authState
+
+	// Online maintenance (section 13d2): the operation gate, the active epoch
+	// (nil between passes), the pass coordinator, the packs a pass retired but
+	// could not unlink yet, and the inter-process leases.
+	ops        opGate // every request and job (G2)
+	wops       opGate // those that may create roots (G1)
+	maint      atomic.Pointer[maintEpoch]
+	maintMu    sync.Mutex
+	maintOwner bool
+	retire     retireSet
+	writerLock *storeLock
+	readerLock *storeLock
+	maintRun   *maintRunner
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -7413,6 +7487,52 @@ func nsCheckpointDefault() bool { return os.Getenv("ZEROS3_NAMESPACE_CHECKPOINT"
 const openGCPercent = 400
 
 func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
+	return openStoreWith(root, ownSegments, useCheckpoint, false)
+}
+
+// openStoreWith is openStore that, with maintain, also makes the store the only
+// writer process so it may run online maintenance (section 13d2).
+func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Store, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fmt.Errorf("store: failed to create the store directory: %w", err)
+	}
+	var lock *storeLock
+	var err error
+	if ownSegments {
+		mode := syscall.LOCK_SH
+		if maintain {
+			mode = syscall.LOCK_EX
+		}
+		if lock, err = flockStore(root, "writers.lock", mode, false); errors.Is(err, syscall.EWOULDBLOCK) {
+			if maintain {
+				return nil, fmt.Errorf("store: online maintenance needs the only writing process: %w", errGCStoreInUse)
+			}
+			return nil, fmt.Errorf("store: %w", errMaintOwned)
+		}
+	} else if lock, err = flockStore(root, "readers.lock", syscall.LOCK_SH, true); err != nil && !os.IsNotExist(err) && !errors.Is(err, fs.ErrPermission) {
+		return nil, fmt.Errorf("store: taking the reader lease: %w", err)
+	} else {
+		err = nil // a read-only store without a lease file has no maintainer
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: taking the writer lock: %w", err)
+	}
+	s, err := openStoreLocked(root, ownSegments, useCheckpoint)
+	if err != nil {
+		if lock != nil {
+			lock.release()
+		}
+		return nil, err
+	}
+	if ownSegments {
+		s.writerLock, s.maintOwner = lock, maintain
+	} else {
+		s.readerLock = lock
+	}
+	return s, nil
+}
+
+func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 	for _, sub := range []string{"", "journal", "chunks", "manifests", "tmp", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("store: failed to create %s: %w", sub, err)
@@ -10687,6 +10807,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	s.stopMaintenance()
 	// Under mu, so no consolidation can start after the wait below begins; a
 	// running one stops at its next check and restores its overlay.
 	s.mu.Lock()
@@ -10708,7 +10829,14 @@ func (s *Store) Close() error {
 	if s.segs != nil {
 		s.segs.close()
 	}
-	return s.journal.f.Close()
+	err := s.journal.f.Close()
+	for _, l := range []*storeLock{s.writerLock, s.readerLock} {
+		if l != nil {
+			l.release()
+		}
+	}
+	s.writerLock, s.readerLock = nil, nil
+	return err
 }
 
 // CreateBucket makes a bucket durably visible. It is idempotent: creating
@@ -11345,6 +11473,11 @@ func (s *Store) snapshotHistory() ([]historyNamespaceObject, error) {
 		return nil, err
 	}
 	defer release()
+	return s.collectHistory(v)
+}
+
+// collectHistory lists every retained version of a history view.
+func (s *Store) collectHistory(v *nsView[[]*historyVersionEntry]) ([]historyNamespaceObject, error) {
 	var out []historyNamespaceObject
 	for v.next() {
 		list, err := v.value()
@@ -13317,6 +13450,12 @@ func writeRequestError(w http.ResponseWriter, err error, resource string) {
 func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	srv.store.fg.enter()
 	defer srv.store.fg.exit()
+	op := srv.store.ops.enter()
+	defer srv.store.ops.exit(op)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		wop := srv.store.wops.enter()
+		defer srv.store.wops.exit(wop)
+	}
 	rawPath, rawQuery := splitRawRequestURI(r.RequestURI)
 
 	payload, err := srv.authenticate(r, rawPath, rawQuery)
@@ -15535,6 +15674,11 @@ func (s *Store) snapshotNamespace() ([]namespaceObject, error) {
 		return nil, err
 	}
 	defer release()
+	return s.collectObjects(v)
+}
+
+// collectObjects lists every row of an object view.
+func (s *Store) collectObjects(v *nsView[*objectEntry]) ([]namespaceObject, error) {
 	var out []namespaceObject
 	for v.next() {
 		e, err := v.value()
@@ -15567,9 +15711,17 @@ func (s *Store) bucketNames() []string {
 func (s *Store) snapshotUploads() []*multipartUpload {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.snapshotUploadsLocked()
+}
+
+// snapshotUploadsLocked copies each upload with its part map: commitPart adds
+// parts to the live map in place. Held: mu.
+func (s *Store) snapshotUploadsLocked() []*multipartUpload {
 	out := make([]*multipartUpload, 0, len(s.uploads))
 	for _, up := range s.uploads {
-		out = append(out, up)
+		c := *up
+		c.parts = maps.Clone(up.parts)
+		out = append(out, &c)
 	}
 	return out
 }
@@ -15747,6 +15899,7 @@ type reachabilityResult struct {
 	HistoricalRootCount int
 	MultipartRootCount  int
 	SnapshotRootCount   int
+	JournalRootCount    int // online maintenance: roots of the reconciled journal frames
 
 	ManifestsChecked int
 	ChunksChecked    int
@@ -15994,6 +16147,7 @@ var reachBlock = 32768 // a variable so tests can shrink it
 type reachStep struct {
 	kind  uint8 // stepManifest, stepMultipart or stepIssue
 	scope rootScope
+	jr    bool  // a root of a reconciled journal frame (online maintenance)
 	aux   int32 // manifest roots: position among the distinct manifests; others: index into the side lists
 	uuid  string
 	sha   [32]byte
@@ -16037,6 +16191,17 @@ type reachOpts struct {
 	// keepManifests retains the decoded manifest of every live root in the result
 	// (deep verification checks whole objects from them).
 	keepManifests bool
+	// mark, for an online pass, supplies the roots captured at T0 plus the
+	// roots of the reconciled journal frames instead of the current namespace.
+	mark *maintMark
+}
+
+// maintMark is the root set of an online pass (section 13d2).
+type maintMark struct {
+	ep    *maintEpoch
+	mans  []journalRoot
+	parts []*multipartUpload
+	jEnd  int64 // the journal is validated up to here: later frames may be in flight
 }
 
 func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
@@ -16050,7 +16215,13 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 	if err != nil {
 		return res, fmt.Errorf("reachability: opening journal: %w", err)
 	}
-	_, _, nFrames, _, jerr := replayJournalFn(jf, false, nil) // validation only: nothing is retained
+	var nFrames int
+	var jerr error
+	if o.mark != nil {
+		_, _, nFrames, _, jerr = replayJournalRange(jf, 0, o.mark.jEnd, 0, false, nil)
+	} else {
+		_, _, nFrames, _, jerr = replayJournalFn(jf, false, nil) // validation only: nothing is retained
+	}
 	jf.Close()
 	res.JournalFramesChecked = nFrames
 	if jerr != nil {
@@ -16067,7 +16238,12 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 	var steps []reachStep
 	var ups []*multipartUpload // multipart steps point here
 	var issues []VerifyIssue   // so do issue steps
-	curObjs, err := s.snapshotNamespace()
+	var curObjs []namespaceObject
+	if o.mark != nil {
+		curObjs, err = s.collectObjects(o.mark.ep.objs)
+	} else {
+		curObjs, err = s.snapshotNamespace()
+	}
 	if err != nil {
 		return reachabilityResult{}, err
 	}
@@ -16081,7 +16257,20 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 		steps = append(steps, reachStep{kind: stepManifest, scope: scopeCurrent, bucket: o.bucket, key: o.key, uuid: o.entry.manifestUUID, sha: o.entry.manifestSHA256, size: o.entry.size})
 	}
 	curObjs = nil
-	uploads := s.snapshotUploads()
+	var uploads []*multipartUpload
+	if o.mark != nil {
+		for _, r := range o.mark.mans {
+			sha, herr := decodeHexSHA256(r.ManifestSHA256)
+			if herr != nil {
+				return reachabilityResult{}, fmt.Errorf("reachability: journal root %s/%s: %w", r.Bucket, r.Key, herr)
+			}
+			res.JournalRootCount++
+			steps = append(steps, reachStep{kind: stepManifest, scope: scopeCurrent, jr: true, bucket: r.Bucket, key: r.Key, uuid: r.ManifestUUID, sha: sha})
+		}
+		uploads = append(slices.Clip(o.mark.ep.uploads), o.mark.parts...)
+	} else {
+		uploads = s.snapshotUploads()
+	}
 	if obs != nil {
 		sort.Slice(uploads, func(i, j int) bool {
 			a, b := uploads[i], uploads[j]
@@ -16114,7 +16303,12 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 			steps = append(steps, reachStep{kind: stepManifest, scope: scopeSnapshot, bucket: snap.SourceBucket, key: se.Key, key2: snap.SnapshotID, uuid: se.ManifestUUID, sha: sum})
 		}
 	}
-	histObjs, err := s.snapshotHistory()
+	var histObjs []historyNamespaceObject
+	if o.mark != nil {
+		histObjs, err = s.collectHistory(o.mark.ep.hist)
+	} else {
+		histObjs, err = s.snapshotHistory()
+	}
 	if err != nil {
 		return reachabilityResult{}, err
 	}
@@ -16240,10 +16434,11 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 					want(scopeMultipart, up.bucket, up.key, nil, valid)
 				}
 			case stepManifest:
-				switch st.scope {
-				case scopeCurrent:
+				switch {
+				case st.jr:
+				case st.scope == scopeCurrent:
 					res.CurrentRootCount++
-				case scopeHistory:
+				case st.scope == scopeHistory:
 					res.HistoricalRootCount++
 				}
 				// A snapshot entry counts as a root where it was enumerated (above).
@@ -18423,6 +18618,7 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 		}
 	}
 	final := filepath.Join(packDir, info.id+packFileSuffix)
+	s.retire.cancel(t, info.id) // an identical file is a live pack again
 	fireTestHook(hookPackBeforePublish)
 	if err := os.Rename(staged, final); err != nil {
 		os.Remove(staged)
@@ -18745,8 +18941,52 @@ func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, d
 
 // replacePacksToLive is replacePacksTo against a binary live set.
 func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, compress bool, res *RepackResult) error {
+	c, err := s.carryLivePacks(doomed, live, dest, target, compress, res)
+	if err != nil || c == nil {
+		return err
+	}
+	doomed, paths := c.doomed, c.paths
+	sort.Slice(doomed, func(i, j int) bool {
+		if doomed[i].tier != doomed[j].tier {
+			return doomed[i].tier < doomed[j].tier
+		}
+		return doomed[i].ID < doomed[j].ID
+	})
+	// Each pack is removed from the directory that physically holds it.
+	removedFrom := map[string]bool{}
+	for _, u := range doomed {
+		fireTestHook(hookBeforePackDelete)
+		if err := os.Remove(paths[u.idx]); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing pack %s: %w", u.label(), err)
+		}
+		removedFrom[filepath.Dir(paths[u.idx])] = true
+		res.PacksDeleted++
+		res.BytesDeleted += u.Size
+	}
+	fireTestHook(hookPackDeleted)
+	for _, dir := range slices.Sorted(maps.Keys(removedFrom)) {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("syncing packs dir: %w", err)
+		}
+	}
+	return s.reloadPacks()
+}
+
+// packCarry is what carryLivePacks leaves to retire: the doomed packs (a
+// replacement identical to one of them is dropped from the list), their
+// numbers in the locator and their paths.
+type packCarry struct {
+	doomed []packUsage
+	skip   map[int32]bool
+	paths  map[int32]string
+}
+
+// carryLivePacks republishes every live record of the doomed packs that lacks
+// a verified copy elsewhere (steps 1-3 of the section comment) and proves each
+// carried chunk readable outside them. Nothing is removed.
+func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, compress bool, res *RepackResult) (*packCarry, error) {
 	if len(doomed) == 0 {
-		return nil
+		return nil, nil
 	}
 	doomed = append([]packUsage(nil), doomed...)
 	// Carried records keep their source physical order -- source tier, then
@@ -18763,7 +19003,7 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 		path := s.packSnap().packs[u.idx].path
 		info, entries, err := loadPackFile(path)
 		if err != nil || info.id != u.ID {
-			return fmt.Errorf("pack %s changed or is unreadable (%v); nothing was removed", u.ID, err)
+			return nil, fmt.Errorf("pack %s changed or is unreadable (%v); nothing was removed", u.ID, err)
 		}
 		skip[u.idx] = true
 		paths[u.idx] = path
@@ -18838,7 +19078,7 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 		for _, batch := range pl.batches {
 			path, entries, err := s.stagePack(pl.t, batch, read, abort, comp)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			staged = append(staged, stagedPack{pl.t, path, entries})
 		}
@@ -18846,7 +19086,7 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 	for _, sp := range staged {
 		info, err := s.publishPack(sp.t, sp.path, sp.entries)
 		if err != nil {
-			return fmt.Errorf("%w; nothing was removed", err)
+			return nil, fmt.Errorf("%w; nothing was removed", err)
 		}
 		res.PacksWritten++
 		res.BytesWritten += info.size
@@ -18882,34 +19122,11 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 		})
 	for i, c := range need {
 		if needErr[i] != nil {
-			return fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, needErr[i])
+			return nil, fmt.Errorf("chunk %x is not readable from the replacement packs: %w; nothing was removed", c.sum, needErr[i])
 		}
 	}
 
-	sort.Slice(doomed, func(i, j int) bool {
-		if doomed[i].tier != doomed[j].tier {
-			return doomed[i].tier < doomed[j].tier
-		}
-		return doomed[i].ID < doomed[j].ID
-	})
-	// Each pack is removed from the directory that physically holds it.
-	removedFrom := map[string]bool{}
-	for _, u := range doomed {
-		fireTestHook(hookBeforePackDelete)
-		if err := os.Remove(paths[u.idx]); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing pack %s: %w", u.label(), err)
-		}
-		removedFrom[filepath.Dir(paths[u.idx])] = true
-		res.PacksDeleted++
-		res.BytesDeleted += u.Size
-	}
-	fireTestHook(hookPackDeleted)
-	for _, dir := range slices.Sorted(maps.Keys(removedFrom)) {
-		if err := syncDir(dir); err != nil {
-			return fmt.Errorf("syncing packs dir: %w", err)
-		}
-	}
-	return s.reloadPacks()
+	return &packCarry{doomed: doomed, skip: skip, paths: paths}, nil
 }
 
 // repackStore opens storeDir under exclusive ownership and repacks it.
@@ -19079,6 +19296,1244 @@ func runRepack(args []string) {
 		return
 	}
 	printRepackHuman(os.Stdout, res)
+}
+
+// =============================================================================
+// 13d2. Online maintenance: epochs, pins and reclamation on a live store (B4)
+//
+// A pass reclaims dead loose files, orphan roots and dead pack space while the
+// server keeps serving. Liveness and physical retirement are separate steps:
+//
+//  1. Mark (T0, under commitMu and mu): the epoch is installed, so every later
+//     reference decision is pinned, and the namespace views, multipart parts,
+//     journal end and pack set are captured. Nothing else is held.
+//  2. G1: a grace period over the writer gate (every operation but plain reads).
+//     Afterwards every writer still running started after T0 and pins what it
+//     references.
+//  3. Reconcile: roots committed by the journal frames between T0 and the end
+//     of G1 (the untracked operations) join the mark; the scan runs unlocked.
+//  4. Carry: live records of selected packs are copied, verified and durably
+//     published before anything is condemned.
+//  5. Condemn: a dead item is condemned only if nothing pinned it. A pin of a
+//     condemned item revives it; a revived pack record is carried before its
+//     pack leaves the locator (under a short freeze), a revived file is kept.
+//  6. Swap: retired packs leave the locator; G2 drains every operation that may
+//     hold an older locator or a reference taken before condemnation.
+//  7. Retire: with the cross-process reader lease, unlink what is still
+//     condemned (pins of an item wait only while it is unlinked).
+//
+// Writers pin before they check presence, so a dedup hit and a reclamation can
+// never both succeed. References derived from the namespace need no pin: every
+// root a tracked operation can see is in the mark, the reconciled frames, or
+// was created by a tracked (pinning) operation. The visibility journal stays
+// the only authority for logical existence; nothing here is persisted, and a
+// crash at any point leaves redundant files that the next pass collects.
+// =============================================================================
+
+// opEpoch counts the operations that entered the gate while it was current.
+type opEpoch struct {
+	n        atomic.Int64
+	draining atomic.Bool
+	once     sync.Once
+	done     chan struct{}
+}
+
+// opGate tracks every request and background job that reads or references
+// store content. wait is a grace period: it returns once every operation that
+// entered before the call has exited.
+type opGate struct{ cur atomic.Pointer[opEpoch] }
+
+func (g *opGate) enter() *opEpoch {
+	for {
+		e := g.cur.Load()
+		if e == nil {
+			g.cur.CompareAndSwap(nil, &opEpoch{done: make(chan struct{})})
+			continue
+		}
+		e.n.Add(1)
+		if g.cur.Load() == e {
+			return e
+		}
+		g.exit(e) // the gate moved on between the load and the count
+	}
+}
+
+func (g *opGate) exit(e *opEpoch) {
+	if e.n.Add(-1) == 0 && e.draining.Load() {
+		e.once.Do(func() { close(e.done) })
+	}
+}
+
+func (g *opGate) wait(ctx context.Context, limit time.Duration) error {
+	old := g.cur.Swap(&opEpoch{done: make(chan struct{})})
+	if old == nil {
+		return nil
+	}
+	old.draining.Store(true)
+	if old.n.Load() == 0 {
+		old.once.Do(func() { close(old.done) })
+	}
+	t := time.NewTimer(limit)
+	defer t.Stop()
+	select {
+	case <-old.done:
+		return nil
+	case <-t.C:
+		return errMaintWait
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// beginOp registers an in-process operation that may reference content in a
+// new root; call the result when it is finished. beginRead registers one that
+// only reads. HTTP requests and background jobs register themselves.
+func (s *Store) beginOp() func() {
+	e, w := s.ops.enter(), s.wops.enter()
+	return func() { s.wops.exit(w); s.ops.exit(e) }
+}
+
+func (s *Store) beginRead() func() {
+	e := s.ops.enter()
+	return func() { s.ops.exit(e) }
+}
+
+var (
+	errMaintWait     = errors.New("maintenance: operations did not drain within the wait limit")
+	errMaintBusy     = errors.New("maintenance: another pass is running")
+	errMaintNotOwner = errors.New("maintenance: the store was not opened for online maintenance")
+	errMaintOwned    = errors.New("store is served by a process running online maintenance")
+)
+
+// ---- pins ----------------------------------------------------------------
+
+const (
+	pinPinned    = 1 << iota // referenced by an operation during the epoch
+	pinCondemned             // chosen for reclamation
+	pinRevived               // pinned after it was condemned
+	pinShards    = 64
+)
+
+type pinEnt struct {
+	flags uint8
+	wait  chan struct{} // non-nil while the item is frozen or being unlinked
+}
+
+type pinShard struct {
+	mu sync.Mutex
+	m  map[[32]byte]pinEnt
+}
+
+// pinTable holds the pins and condemnations of one epoch. Keys are content
+// digests; manifest UUIDs and body records use domain-separated hashes.
+type pinTable struct{ sh [pinShards]pinShard }
+
+func (t *pinTable) shard(k *[32]byte) *pinShard { return &t.sh[k[0]%pinShards] }
+
+func (t *pinTable) pin(k [32]byte) {
+	sh := t.shard(&k)
+	sh.mu.Lock()
+	for {
+		e, ok := sh.m[k]
+		if ok && e.wait != nil {
+			ch := e.wait
+			sh.mu.Unlock()
+			<-ch
+			sh.mu.Lock()
+			continue
+		}
+		if e.flags&pinCondemned != 0 {
+			e.flags |= pinRevived
+		}
+		if !ok || e.flags&pinPinned == 0 {
+			e.flags |= pinPinned
+			if sh.m == nil {
+				sh.m = map[[32]byte]pinEnt{}
+			}
+			sh.m[k] = e
+		}
+		break
+	}
+	sh.mu.Unlock()
+}
+
+// condemn marks k for reclamation unless something pinned it.
+func (t *pinTable) condemn(k [32]byte) bool {
+	sh := t.shard(&k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e := sh.m[k]
+	if e.flags&pinPinned != 0 {
+		return false
+	}
+	if sh.m == nil {
+		sh.m = map[[32]byte]pinEnt{}
+	}
+	e.flags |= pinCondemned
+	sh.m[k] = e
+	return true
+}
+
+// hold makes pins of the condemned keys wait on ch and reports which of them
+// were revived meanwhile (those stay revived).
+func (t *pinTable) hold(keys [][32]byte, ch chan struct{}) (revived [][32]byte) {
+	for _, k := range keys {
+		sh := t.shard(&k)
+		sh.mu.Lock()
+		e := sh.m[k]
+		if e.flags&pinCondemned != 0 {
+			if e.flags&pinRevived != 0 {
+				revived = append(revived, k)
+			}
+			e.wait = ch
+			sh.m[k] = e
+		}
+		sh.mu.Unlock()
+	}
+	return revived
+}
+
+// release ends a hold. With drop the entries go (the items were unlinked);
+// otherwise they return to condemned, revivable state.
+func (t *pinTable) release(keys [][32]byte, ch chan struct{}, drop bool) {
+	for _, k := range keys {
+		sh := t.shard(&k)
+		sh.mu.Lock()
+		if e, ok := sh.m[k]; ok && e.wait == ch {
+			if drop && e.flags&pinRevived == 0 {
+				delete(sh.m, k)
+			} else {
+				e.wait = nil
+				sh.m[k] = e
+			}
+		}
+		sh.mu.Unlock()
+	}
+	close(ch)
+}
+
+// revived reports whether a condemned key was pinned since.
+func (t *pinTable) revived(k [32]byte) bool {
+	sh := t.shard(&k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	return sh.m[k].flags&pinRevived != 0
+}
+
+func uuidPinKey(uuid string) [32]byte { return sha256.Sum256([]byte("zeros3/pin/manifest\x00" + uuid)) }
+func authPinKey(sha [32]byte) [32]byte {
+	return sha256.Sum256(append([]byte("zeros3/pin/body\x00"), sha[:]...))
+}
+
+// maintEpoch is the state of one online pass.
+type maintEpoch struct {
+	pins pinTable
+	// live is published after the scan: a live digest is never condemned, so
+	// its pins need not be recorded.
+	live atomic.Pointer[liveSet]
+	t0   time.Time
+	// The mark, captured at T0.
+	objs     *nsView[*objectEntry]
+	hist     *nsView[[]*historyVersionEntry]
+	release  func()
+	uploads  []*multipartUpload
+	jOff     int64
+	jSeq     uint64 // last sequence covered by the mark
+	packs0   map[[2]string]bool
+	pinCount atomic.Int64
+}
+
+// mpin records that an operation relies on the chunk or inline-manifest
+// record sum. Callers pin before checking that it exists.
+func (s *Store) mpin(sum [32]byte) {
+	ep := s.maint.Load()
+	if ep == nil {
+		return
+	}
+	if l := ep.live.Load(); l != nil && l.has(sum) {
+		return
+	}
+	ep.pinCount.Add(1)
+	ep.pins.pin(sum)
+}
+
+// mpinManifest pins a manifest about to be published: its file (UUID), its
+// inline record (SHA-256) and, if one exists, the authoritative body of its
+// content, which reads may prefer to the CDC chunks.
+func (s *Store) mpinManifest(uuid string, sha [32]byte, objSHA string) {
+	ep := s.maint.Load()
+	if ep == nil {
+		return
+	}
+	ep.pins.pin(uuidPinKey(uuid))
+	s.mpin(sha)
+	if s.auth.mayHave.Load() {
+		if c, err := decodeHexSHA256(objSHA); err == nil {
+			s.mpinAuthClosure(c, nil) // best effort: a body that is gone leaves the chunks as roots
+		}
+	}
+}
+
+// mpinAuthClosure pins a body record and its whole closure (bases and component
+// chunks) and checks that each component is present after it was pinned. A
+// missing record ends the walk without error; a missing component is an error.
+func (s *Store) mpinAuthClosure(sha [32]byte, seen map[[32]byte]bool) error {
+	ep := s.maint.Load()
+	if ep == nil {
+		return nil
+	}
+	if seen == nil {
+		seen = map[[32]byte]bool{}
+	}
+	if seen[sha] {
+		return nil
+	}
+	seen[sha] = true
+	ep.pins.pin(authPinKey(sha))
+	rec, err := s.authLoad(sha)
+	if err != nil || rec == nil {
+		return err
+	}
+	chunks, err := s.authRecordChunks(rec)
+	if err != nil {
+		return err
+	}
+	for _, c := range chunks {
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil {
+			return err
+		}
+		s.mpin(sum)
+		if n, err := s.casStat(sum); err != nil || n != c.Length {
+			return fmt.Errorf("%w: component %s of %x is not held", errAuthMissing, c.SHA256[:12], sha[:6])
+		}
+	}
+	for _, b := range rec.Bases {
+		if err := s.mpinAuthClosure(b.SHA, seen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---- inter-process leases ------------------------------------------------
+//
+// writers.lock: every owner open holds it shared; a store opened for online
+// maintenance holds it exclusively, so no other writing process (this build)
+// can run beside the maintainer. readers.lock: every shared open holds it
+// shared for its lifetime; the maintainer unlinks only while it can take it
+// exclusively, so a reader in another process never loses a pack or file its
+// view of the store names. Binaries older than B4 take neither lock.
+
+func flockStore(root, name string, mode int, block bool) (*storeLock, error) {
+	path := filepath.Join(root, name)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		if f, err = os.Open(path); err != nil {
+			return nil, err
+		}
+	}
+	if !block {
+		mode |= syscall.LOCK_NB
+	}
+	for {
+		err = syscall.Flock(int(f.Fd()), mode)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &storeLock{f: f}, nil
+}
+
+// tryReaderLease takes readers.lock exclusively if no shared opener holds it.
+func (s *Store) tryReaderLease() *storeLock {
+	l, err := flockStore(s.root, "readers.lock", syscall.LOCK_EX, false)
+	if err != nil {
+		return nil
+	}
+	return l
+}
+
+// ---- epoch boundaries -----------------------------------------------------
+
+// maintBegin installs a new epoch and captures its mark. commitMu makes the
+// journal end and the applied namespace agree; neither lock is held beyond the
+// O(1) view acquisition and the copy of the multipart part lists.
+func (s *Store) maintBegin() (*maintEpoch, error) {
+	ep := &maintEpoch{t0: time.Now(), packs0: map[[2]string]bool{}}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	objs, relObjs, err := s.nsObjectView("")
+	if err != nil {
+		return nil, err
+	}
+	hist, relHist, err := s.nsHistoryView("")
+	if err != nil {
+		relObjs()
+		return nil, err
+	}
+	ep.objs, ep.hist, ep.release = objs, hist, func() { relObjs(); relHist() }
+	ep.uploads = s.snapshotUploadsLocked()
+	ep.jOff, ep.jSeq = s.journal.writeOffset, s.journal.nextSeq-1
+	st := s.packSnap()
+	for i, p := range st.packs {
+		if !p.open && !st.isGone(uint32(i)) {
+			ep.packs0[[2]string{p.tier.String(), p.id}] = true
+		}
+	}
+	s.maint.Store(ep)
+	return ep, nil
+}
+
+// maintEnd returns every item still condemned to ordinary state and removes
+// the epoch; pins stop being recorded.
+func (s *Store) maintEnd(ep *maintEpoch) {
+	s.maint.CompareAndSwap(ep, nil)
+	if ep.release != nil {
+		ep.release()
+		ep.release = nil
+	}
+}
+
+// journalEnd is the durable end of the journal and its last sequence.
+func (s *Store) journalEnd() (int64, uint64) {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	return s.journal.writeOffset, s.journal.nextSeq - 1
+}
+
+// journalRoot is a root introduced by a journal frame.
+type journalRoot struct {
+	Bucket         string     `json:"bucket"`
+	Key            string     `json:"key"`
+	ManifestUUID   string     `json:"manifest_uuid"`
+	ManifestSHA256 string     `json:"manifest_sha256"`
+	UploadID       string     `json:"upload_id"`
+	PartNumber     int        `json:"part_number"`
+	Chunks         []chunkRef `json:"chunks"`
+}
+
+// journalRoots decodes the roots the frames in [start, end) introduce: object
+// and multipart-completion roots, and uploaded parts.
+func (s *Store) journalRoots(start, end int64, prev uint64) (mans []journalRoot, parts []*multipartUpload, err error) {
+	if end <= start {
+		return nil, nil, nil
+	}
+	f, err := os.Open(filepath.Join(s.root, "journal", "visibility.log"))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	_, last, _, applyErr, err := replayJournalRange(f, start, end, prev, false, func(rec journalRecord) error {
+		switch rec.recType {
+		case recordTypePutObjectRoot, recordTypePutObjectRootV2, recordTypeCompleteMultipartUpload, recordTypeCompleteMultipartUploadV2, recordTypeUploadPart:
+		default:
+			return nil
+		}
+		var r journalRoot
+		if err := json.Unmarshal(rec.payload, &r); err != nil {
+			return fmt.Errorf("journal frame %d: %w", rec.seq, err)
+		}
+		if rec.recType == recordTypeUploadPart {
+			parts = append(parts, &multipartUpload{uploadID: r.UploadID, parts: map[int]*multipartPart{r.PartNumber: {partNumber: r.PartNumber, chunks: r.Chunks}}})
+		} else {
+			mans = append(mans, r)
+		}
+		return nil
+	})
+	if err == nil && applyErr == nil && last == prev && end > start {
+		err = errors.New("journal reconciliation read no frame")
+	}
+	return mans, parts, cmp.Or(err, applyErr)
+}
+
+// ---- retirement set -------------------------------------------------------
+
+type retireEnt struct {
+	path    string
+	size    int64
+	swapped bool // out of the locator: only an unlink remains
+}
+
+// retireSet holds the packs of the running pass and those a pass took out of
+// the locator but could not unlink yet. Publishing a pack under the same tier
+// and id cancels its retirement, so an identical new file is never removed.
+type retireSet struct {
+	mu sync.Mutex
+	m  map[[2]string]*retireEnt
+}
+
+func (r *retireSet) add(t tier, id, path string, size int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m == nil {
+		r.m = map[[2]string]*retireEnt{}
+	}
+	if _, ok := r.m[[2]string{t.String(), id}]; !ok {
+		r.m[[2]string{t.String(), id}] = &retireEnt{path: path, size: size}
+	}
+}
+
+func (r *retireSet) cancel(t tier, id string) {
+	r.mu.Lock()
+	delete(r.m, [2]string{t.String(), id})
+	r.mu.Unlock()
+}
+
+// dropUnswapped forgets the retirements of a pass that stopped before its swap.
+func (r *retireSet) dropUnswapped() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	maps.DeleteFunc(r.m, func(_ [2]string, e *retireEnt) bool { return !e.swapped })
+}
+
+// unlinkSwapped removes every retired pack file that left the locator. The
+// caller holds the reader lease and has drained the operations that could
+// still name them.
+func (r *retireSet) unlinkSwapped(rep *MaintReport) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dirs := map[string]bool{}
+	for _, k := range slices.SortedFunc(maps.Keys(r.m), func(a, b [2]string) int { return cmp.Compare(a[0]+a[1], b[0]+b[1]) }) {
+		e := r.m[k]
+		if !e.swapped {
+			continue
+		}
+		fireTestHook(hookMaintBeforePackUnlink)
+		if err := os.Remove(e.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing pack %s: %w", k[1], err)
+		}
+		delete(r.m, k)
+		dirs[filepath.Dir(e.path)] = true
+		rep.PacksRetired++
+		rep.BytesReclaimed += e.size
+	}
+	for _, d := range slices.Sorted(maps.Keys(dirs)) {
+		if err := syncDir(d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *retireSet) pending() (n int, bytes int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.m {
+		if e.swapped {
+			n++
+			bytes += e.size
+		}
+	}
+	return n, bytes
+}
+
+// ---- the pass -------------------------------------------------------------
+
+const (
+	hookMaintMarked           = "maint-marked"
+	hookMaintReconciled       = "maint-reconciled"
+	hookMaintCarried          = "maint-carried"
+	hookMaintCondemned        = "maint-condemned"
+	hookMaintFrozen           = "maint-frozen"
+	hookMaintSwapped          = "maint-swapped"
+	hookMaintDrained          = "maint-drained"
+	hookMaintBeforeFileUnlink = "maint-before-file-unlink"
+	hookMaintBeforePackUnlink = "maint-before-pack-unlink"
+	hookMaintRetired          = "maint-retired"
+)
+
+// MaintOptions bounds one online pass.
+type MaintOptions struct {
+	GC             bool          `json:"gc"`     // loose files, orphan roots and packs with no live record
+	Repack         bool          `json:"repack"` // also rewrite mostly dead packs
+	MaxSourcePacks int           `json:"max_source_packs"`
+	MaxLivePercent int           `json:"max_live_percent"`
+	TargetBytes    int64         `json:"target_bytes"`
+	Compress       bool          `json:"compress"`
+	MaxDeletes     int           `json:"max_deletes"` // loose files and roots condemned per pass
+	Wait           time.Duration `json:"wait"`        // bound on each grace period
+}
+
+func defaultMaintOptions() MaintOptions {
+	return MaintOptions{GC: true, Repack: true, MaxSourcePacks: 8, MaxLivePercent: defaultRepackMaxLivePercent,
+		TargetBytes: defaultPackTargetBytes, Compress: true, MaxDeletes: 1 << 18, Wait: 10 * time.Minute}
+}
+
+// MaintReport is the machine-readable outcome of one online pass. Byte figures
+// are physical file bytes.
+type MaintReport struct {
+	Pass          uint64        `json:"pass"`
+	Started       time.Time     `json:"started"`
+	Finished      time.Time     `json:"finished"`
+	MarkSeq       uint64        `json:"mark_seq"`       // last journal frame the T0 mark covers
+	ReconciledSeq uint64        `json:"reconciled_seq"` // last frame whose roots were reconciled
+	JournalRoots  int           `json:"journal_roots"`
+	LiveSetOK     bool          `json:"live_set_ok"`
+	Issues        []VerifyIssue `json:"issues,omitempty"`
+
+	MarkMicros   int64 `json:"mark_us"`   // commitMu + mu hold at T0
+	FreezeMicros int64 `json:"freeze_us"` // pins of condemned pack records waited at most this long
+	SwapMicros   int64 `json:"swap_us"`   // packMu hold for the locator swap
+	WriterWaitMS int64 `json:"writer_wait_ms"`
+	ReaderWaitMS int64 `json:"reader_wait_ms"`
+	ScanMS       int64 `json:"scan_ms"`
+
+	CandidatePacks int   `json:"candidate_packs"`
+	PacksDeferred  int   `json:"packs_deferred,omitempty"`
+	PacksWritten   int   `json:"packs_written"`
+	RecordsCopied  int   `json:"records_copied"`
+	BytesWritten   int64 `json:"bytes_written"`
+	LateRecords    int   `json:"late_records"`    // pinned before condemnation, carried
+	RevivedRecords int   `json:"revived_records"` // pinned while condemned, carried before the swap
+	PacksRetired   int   `json:"packs_retired"`
+
+	ChunksDeleted     int `json:"chunks_deleted"`
+	ManifestsDeleted  int `json:"manifests_deleted"`
+	RepRootsDeleted   int `json:"representation_roots_deleted"`
+	AuthBodiesDeleted int `json:"authority_bodies_deleted"`
+	TmpFilesDeleted   int `json:"tmp_files_deleted"`
+
+	BytesReclaimed      int64  `json:"bytes_reclaimed"`     // unlinked
+	NetBytesReclaimed   int64  `json:"net_bytes_reclaimed"` // unlinked minus written
+	RetainedPinned      int    `json:"retained_pinned"`     // dead at the mark, kept because an operation referenced it
+	RetainedPinnedBytes int64  `json:"retained_pinned_bytes"`
+	DeferredItems       int    `json:"deferred_items,omitempty"`
+	DeferredBytes       int64  `json:"deferred_bytes,omitempty"`
+	PendingPacks        int    `json:"pending_packs,omitempty"` // retired from the locator, unlinked by a later pass
+	PendingBytes        int64  `json:"pending_bytes,omitempty"`
+	Pins                int64  `json:"pins"`
+	Deferred            string `json:"deferred,omitempty"`
+	Canceled            bool   `json:"canceled,omitempty"`
+	Error               string `json:"error,omitempty"`
+}
+
+// doomedFile is a loose file or root a pass condemned.
+type doomedFile struct {
+	key  [32]byte
+	path string
+	size int64
+	kind uint8
+}
+
+const (
+	fileRepRoot uint8 = iota
+	fileAuthBody
+	fileChunk
+	fileManifest
+)
+
+// maintainOnline runs one pass on a live store (see the section comment).
+func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep MaintReport, err error) {
+	if !s.maintOwner {
+		return rep, errMaintNotOwner
+	}
+	if !s.maintMu.TryLock() {
+		return rep, errMaintBusy
+	}
+	defer s.maintMu.Unlock()
+	rep.Started = time.Now().UTC()
+	defer func() {
+		rep.Finished = time.Now().UTC()
+		rep.NetBytesReclaimed = rep.BytesReclaimed - rep.BytesWritten
+		rep.PendingPacks, rep.PendingBytes = s.retire.pending()
+		if err != nil {
+			rep.Error = err.Error()
+			rep.Canceled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		}
+	}()
+	t := time.Now()
+	ep, err := s.maintBegin()
+	if err != nil {
+		return rep, err
+	}
+	rep.MarkMicros = time.Since(t).Microseconds()
+	defer func() { rep.Pins = ep.pinCount.Load() }()
+	defer s.maintEnd(ep)
+	defer s.retire.dropUnswapped()
+	rep.MarkSeq = ep.jSeq
+	fireTestHook(hookMaintMarked)
+
+	t = time.Now()
+	if err := s.wops.wait(ctx, opt.Wait); err != nil {
+		if errors.Is(err, errMaintWait) {
+			rep.Deferred = "writers older than the mark did not finish"
+			return rep, nil
+		}
+		return rep, err
+	}
+	rep.WriterWaitMS = time.Since(t).Milliseconds()
+	jEnd, jSeq := s.journalEnd()
+	mans, parts, err := s.journalRoots(ep.jOff, jEnd, ep.jSeq)
+	if err != nil {
+		return rep, fmt.Errorf("maintenance: reconciling the journal: %w", err)
+	}
+	rep.ReconciledSeq = jSeq
+	fireTestHook(hookMaintReconciled)
+	t = time.Now()
+	rr, err := s.reachabilityScanOpts(reachOpts{mark: &maintMark{ep: ep, mans: mans, parts: parts, jEnd: jEnd}})
+	if err != nil {
+		return rep, err
+	}
+	rep.ScanMS = time.Since(t).Milliseconds()
+	rep.JournalRoots, rep.LiveSetOK, rep.Issues = rr.JournalRootCount, rr.OK(), rr.Issues
+	if !rr.OK() {
+		return rep, errGCUnsafe
+	}
+	live := rr.liveSet()
+	ep.live.Store(live)
+	if err := ctx.Err(); err != nil {
+		return rep, err
+	}
+
+	var files []doomedFile
+	if opt.GC {
+		if files, err = s.maintDeadFiles(ep, &rr, live, opt.MaxDeletes); err != nil {
+			return rep, err
+		}
+	}
+	doomed := s.maintSelectPacks(ep, live, opt, &rep)
+	var carry *packCarry
+	if len(doomed) > 0 {
+		for _, u := range doomed {
+			s.retire.add(u.tier, u.ID, s.packSnap().packs[u.idx].path, u.Size)
+		}
+		var rres RepackResult
+		carry, err = s.carryLivePacks(doomed, live, nil, opt.TargetBytes, opt.Compress, &rres)
+		rep.PacksWritten += rres.PacksWritten
+		rep.RecordsCopied += rres.RecordsCopied
+		rep.BytesWritten += rres.BytesWritten
+		if err != nil {
+			return rep, fmt.Errorf("maintenance: %w", err)
+		}
+		fireTestHook(hookMaintCarried)
+	}
+	if err := ctx.Err(); err != nil {
+		return rep, err
+	}
+
+	// Condemn. A pinned item is live after all: a file is kept, a pack record
+	// is carried before its pack leaves the locator.
+	kept := files[:0]
+	for _, f := range files {
+		if ep.pins.condemn(f.key) {
+			kept = append(kept, f)
+		} else {
+			rep.RetainedPinned++
+			rep.RetainedPinnedBytes += f.size
+		}
+	}
+	files = kept
+	var condemned [][32]byte
+	var late []tieredChunk
+	if carry != nil {
+		for _, u := range carry.doomed {
+			_, entries, err := loadPackFile(carry.paths[u.idx])
+			if err != nil {
+				return rep, fmt.Errorf("maintenance: rereading pack %s: %w", u.label(), err)
+			}
+			for _, e := range entries {
+				if live.has(e.sha) {
+					continue
+				}
+				if ep.pins.condemn(e.sha) {
+					condemned = append(condemned, e.sha)
+				} else {
+					late = append(late, tieredChunk{compactCandidate{sum: e.sha, size: int64(e.logical)}, u.tier})
+				}
+			}
+		}
+	}
+	fireTestHook(hookMaintCondemned)
+	if n, err := s.maintCarryExtra(late, carry, opt, &rep); err != nil {
+		return rep, err
+	} else {
+		rep.LateRecords += n
+	}
+
+	if carry != nil {
+		if err := s.maintSwap(ep, carry, condemned, opt, &rep); err != nil {
+			return rep, err
+		}
+	}
+
+	// G2: every operation that may hold a locator naming a retired pack, or a
+	// reference taken before condemnation, finishes before anything is unlinked.
+	t = time.Now()
+	if err := s.ops.wait(ctx, opt.Wait); err != nil {
+		if !errors.Is(err, errMaintWait) {
+			return rep, err
+		}
+		rep.Deferred = "operations older than the condemnation did not finish"
+		s.maintDefer(files, &rep)
+		return rep, nil
+	}
+	rep.ReaderWaitMS = time.Since(t).Milliseconds()
+	fireTestHook(hookMaintDrained)
+	lease := s.tryReaderLease()
+	if lease == nil {
+		rep.Deferred = "a shared opener holds the reader lease"
+		s.maintDefer(files, &rep)
+		return rep, nil
+	}
+	defer lease.release()
+	if err := s.maintUnlinkFiles(ep, files, &rep); err != nil {
+		return rep, err
+	}
+	if err := s.retire.unlinkSwapped(&rep); err != nil {
+		return rep, err
+	}
+	if opt.GC {
+		rep.TmpFilesDeleted += s.maintSweepTmp(ep.t0)
+	}
+	fireTestHook(hookMaintRetired)
+	return rep, nil
+}
+
+func (s *Store) maintDefer(files []doomedFile, rep *MaintReport) {
+	for _, f := range files {
+		rep.DeferredItems++
+		rep.DeferredBytes += f.size
+	}
+}
+
+// maintDeadFiles lists what GC would remove: orphan representation roots and
+// authority bodies, then loose chunks and manifest files that no root names
+// and that already existed at T0.
+func (s *Store) maintDeadFiles(ep *maintEpoch, rr *reachabilityResult, live *liveSet, budget int) ([]doomedFile, error) {
+	var out []doomedFile
+	add := func(f doomedFile) bool {
+		if len(out) >= budget {
+			return false
+		}
+		out = append(out, f)
+		return true
+	}
+	old := func(fi fs.FileInfo) bool { return fi.ModTime().Before(ep.t0) }
+	for _, u := range rr.RepOrphanRoots {
+		if fi, err := os.Stat(s.repRootPath(u)); err == nil && old(fi) {
+			add(doomedFile{uuidPinKey(u), s.repRootPath(u), fi.Size(), fileRepRoot})
+		}
+	}
+	for _, hx := range rr.AuthOrphans {
+		sha, err := decodeHexSHA256(hx)
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat(s.authPath(sha)); err == nil && old(fi) {
+			add(doomedFile{authPinKey(sha), s.authPath(sha), fi.Size(), fileAuthBody})
+		}
+	}
+	walk := func(dir string, visit func(path string, d fs.DirEntry) bool) error {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !visit(path, d) {
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	err := walk(filepath.Join(s.root, "chunks"), func(path string, d fs.DirEntry) bool {
+		sum, ok := hexDigest(d.Name())
+		if !ok || live.has(sum) {
+			return true
+		}
+		fi, err := d.Info()
+		if err != nil || !old(fi) {
+			return true
+		}
+		return add(doomedFile{sum, path, fi.Size(), fileChunk})
+	})
+	if err != nil {
+		return nil, fmt.Errorf("maintenance: scanning chunks: %w", err)
+	}
+	err = walk(filepath.Join(s.root, "manifests"), func(path string, d fs.DirEntry) bool {
+		uuid, ok := strings.CutSuffix(d.Name(), ".json")
+		if !ok || rr.ReferencedManifests[uuid] {
+			return true
+		}
+		fi, err := d.Info()
+		if err != nil || !old(fi) {
+			return true
+		}
+		return add(doomedFile{uuidPinKey(uuid), path, fi.Size(), fileManifest})
+	})
+	if err != nil {
+		return nil, fmt.Errorf("maintenance: scanning manifests: %w", err)
+	}
+	return out, nil
+}
+
+// maintSelectPacks picks the packs of this pass among those published by T0:
+// with no live record (GC), or mostly dead (repack), most reclaimable first.
+func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, opt MaintOptions, rep *MaintReport) []packUsage {
+	var sel []packUsage
+	for _, u := range s.packUsagesLive(live) {
+		if !ep.packs0[[2]string{u.Tier, u.ID}] || s.packSnap().packs[u.idx].open {
+			continue
+		}
+		if opt.GC && u.fullyDead() || opt.Repack && u.partiallyDead() && u.Utilization*100 < float64(opt.MaxLivePercent) {
+			sel = append(sel, u)
+		}
+	}
+	rep.CandidatePacks = len(sel)
+	if opt.MaxSourcePacks > 0 && len(sel) > opt.MaxSourcePacks {
+		slices.SortStableFunc(sel, func(a, b packUsage) int { return cmp.Compare(b.Reclaimable, a.Reclaimable) })
+		rep.PacksDeferred = len(sel) - opt.MaxSourcePacks
+		sel = sel[:opt.MaxSourcePacks]
+	}
+	return sel
+}
+
+// maintCarryExtra publishes chunks that must survive the doomed packs but were
+// not carried with the live set (pinned or revived after the mark), unless a
+// verified copy already exists outside them.
+func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintOptions, rep *MaintReport) (int, error) {
+	if len(need) == 0 {
+		return 0, nil
+	}
+	var by [numTiers][]compactCandidate
+	h := &packHandles{}
+	defer h.close()
+	seen := map[[32]byte]bool{}
+	n := 0
+	for _, c := range need {
+		if seen[c.sum] {
+			continue
+		}
+		seen[c.sum] = true
+		if _, err := s.casReadH(c.sum, carry.skip, h); err == nil {
+			continue
+		}
+		by[c.t] = append(by[c.t], c.compactCandidate)
+		n++
+	}
+	comp := newCompressor(opt.Compress)
+	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
+	abort := func(c compactCandidate, err error) error {
+		return fmt.Errorf("maintenance: chunk %x has no readable copy to carry: %w", c.sum, err)
+	}
+	for t := range numTiers {
+		if len(by[t]) == 0 {
+			continue
+		}
+		path, entries, err := s.stagePack(t, by[t], read, abort, comp)
+		if err != nil {
+			return n, err
+		}
+		if path == "" {
+			continue
+		}
+		info, err := s.publishPack(t, path, entries)
+		if err != nil {
+			return n, fmt.Errorf("maintenance: %w", err)
+		}
+		rep.PacksWritten++
+		rep.BytesWritten += info.size
+		rep.RecordsCopied += len(entries)
+	}
+	for _, c := range need {
+		if _, err := s.casReadH(c.sum, carry.skip, h); err != nil {
+			return n, fmt.Errorf("maintenance: chunk %x is not readable outside the retired packs: %w", c.sum, err)
+		}
+	}
+	return n, nil
+}
+
+// maintSwap takes the doomed packs out of the locator. Their condemned records
+// are held for the moment it takes: a record revived before the hold may have
+// been found in a doomed pack by a writer, so it is carried first; a pin after
+// the release finds the record absent and writes its own copy.
+func (s *Store) maintSwap(ep *maintEpoch, carry *packCarry, condemned [][32]byte, opt MaintOptions, rep *MaintReport) error {
+	t := time.Now()
+	ch := make(chan struct{})
+	revived := ep.pins.hold(condemned, ch)
+	held := true
+	thaw := func() {
+		if held {
+			held = false
+			ep.pins.release(condemned, ch, false)
+			rep.FreezeMicros = time.Since(t).Microseconds()
+		}
+	}
+	defer thaw()
+	fireTestHook(hookMaintFrozen)
+	var need []tieredChunk
+	tierOf := map[[32]byte]tier{}
+	for _, u := range carry.doomed {
+		_, entries, err := loadPackFile(carry.paths[u.idx])
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if _, ok := tierOf[e.sha]; !ok {
+				tierOf[e.sha] = u.tier
+			}
+		}
+	}
+	for _, k := range revived {
+		need = append(need, tieredChunk{compactCandidate{sum: k}, tierOf[k]})
+	}
+	n, err := s.maintCarryExtra(need, carry, opt, rep)
+	if err != nil {
+		return err
+	}
+	rep.RevivedRecords += n
+	ts := time.Now()
+	s.packMu.Lock()
+	st := s.packSnap()
+	var idx []int32
+	s.retire.mu.Lock()
+	for _, u := range carry.doomed {
+		e := s.retire.m[[2]string{u.Tier, u.ID}]
+		if e == nil {
+			continue // republished meanwhile: the file is a live pack again
+		}
+		for i, p := range st.packs {
+			if p.tier == u.tier && p.id == u.ID && !st.isGone(uint32(i)) {
+				idx = append(idx, int32(i))
+			}
+		}
+		e.swapped = true
+	}
+	s.retire.mu.Unlock()
+	s.packSt.Store(st.withoutPacks(idx))
+	s.packMu.Unlock()
+	rep.SwapMicros = time.Since(ts).Microseconds()
+	thaw()
+	fireTestHook(hookMaintSwapped)
+	return nil
+}
+
+// maintUnlinkFiles removes the condemned files in batches. Pins of a batch
+// wait while it is unlinked; a revived file is kept.
+func (s *Store) maintUnlinkFiles(ep *maintEpoch, files []doomedFile, rep *MaintReport) error {
+	const batch = 256
+	dirs := map[string]bool{}
+	authTouched := false
+	for lo := 0; lo < len(files); lo += batch {
+		part := files[lo:min(lo+batch, len(files))]
+		keys := make([][32]byte, len(part))
+		for i, f := range part {
+			keys[i] = f.key
+		}
+		ch := make(chan struct{})
+		revived := ep.pins.hold(keys, ch)
+		var err error
+		for _, f := range part {
+			if slices.Contains(revived, f.key) {
+				rep.RetainedPinned++
+				rep.RetainedPinnedBytes += f.size
+				continue
+			}
+			fireTestHook(hookMaintBeforeFileUnlink)
+			if f.kind == fileAuthBody {
+				s.auth.pubMu.Lock()
+			}
+			rerr := os.Remove(f.path)
+			if f.kind == fileAuthBody {
+				s.auth.pubMu.Unlock()
+				authTouched = true
+			}
+			if rerr != nil && !os.IsNotExist(rerr) {
+				err = rerr
+				break
+			}
+			rep.BytesReclaimed += f.size
+			switch f.kind {
+			case fileRepRoot:
+				rep.RepRootsDeleted++
+				dirs[filepath.Dir(f.path)] = true
+			case fileAuthBody:
+				rep.AuthBodiesDeleted++
+				dirs[filepath.Dir(f.path)] = true
+			case fileChunk:
+				rep.ChunksDeleted++
+			case fileManifest:
+				rep.ManifestsDeleted++
+			}
+		}
+		ep.pins.release(keys, ch, true)
+		if err != nil {
+			return fmt.Errorf("maintenance: removing: %w", err)
+		}
+	}
+	if authTouched {
+		s.authInvalidate()
+	}
+	for _, d := range slices.Sorted(maps.Keys(dirs)) {
+		if err := syncDir(d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// maintStagingPrefixes are the staging files a live pass may clear once they
+// are older than its epoch by a margin: every operation that could own one has
+// finished (G1). Namespace checkpoint staging belongs to the consolidator.
+var maintStagingPrefixes = []string{"cas-", "zs3-", "pack-", "rep-", "auth-"}
+
+func (s *Store) maintSweepTmp(t0 time.Time) int {
+	n := 0
+	cut := t0.Add(-10 * time.Minute)
+	for _, dir := range s.tmpDirs() {
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".tmp") || !slices.ContainsFunc(maintStagingPrefixes, func(p string) bool { return strings.HasPrefix(name, p) }) {
+				continue
+			}
+			if fi, err := e.Info(); err == nil && fi.ModTime().Before(cut) && os.Remove(filepath.Join(dir, name)) == nil {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// ---- background runner ----------------------------------------------------
+
+// maintRunner runs passes on a live server: every interval, and when kicked
+// through the authenticated maintenance endpoint. Passes never overlap.
+type maintRunner struct {
+	s        *Store
+	opt      MaintOptions
+	every    time.Duration
+	keepLast int // >= 0: prune history to this many versions per key before each pass
+	kick     chan struct{}
+	cancel   context.CancelFunc
+	done     chan struct{}
+
+	mu      sync.Mutex
+	running bool
+	passes  uint64
+	last    *MaintReport
+}
+
+// MaintStatus is what GET /_zeros3/v1/maintenance returns.
+type MaintStatus struct {
+	Enabled  bool         `json:"enabled"`
+	Running  bool         `json:"running"`
+	Passes   uint64       `json:"passes"`
+	Interval string       `json:"interval"`
+	Options  MaintOptions `json:"options"`
+	Last     *MaintReport `json:"last,omitempty"`
+}
+
+// startMaintenance starts the background runner of a store opened with
+// openStoreWith(..., maintain).
+func (s *Store) startMaintenance(opt MaintOptions, every time.Duration, keepLast int) error {
+	if !s.maintOwner {
+		return errMaintNotOwner
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &maintRunner{s: s, opt: opt, every: every, keepLast: keepLast, kick: make(chan struct{}, 1), cancel: cancel, done: make(chan struct{})}
+	s.maintRun = r
+	go r.loop(ctx)
+	return nil
+}
+
+func (s *Store) stopMaintenance() {
+	if r := s.maintRun; r != nil {
+		r.cancel()
+		<-r.done
+	}
+}
+
+// triggerMaintenance asks for a pass now; false when no runner is configured.
+func (s *Store) triggerMaintenance() bool {
+	r := s.maintRun
+	if r == nil {
+		return false
+	}
+	select {
+	case r.kick <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (s *Store) maintenanceStatus() MaintStatus {
+	r := s.maintRun
+	if r == nil {
+		return MaintStatus{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return MaintStatus{Enabled: true, Running: r.running, Passes: r.passes, Interval: r.every.String(), Options: r.opt, Last: r.last}
+}
+
+func (r *maintRunner) loop(ctx context.Context) {
+	defer close(r.done)
+	var tick <-chan time.Time
+	if r.every > 0 {
+		t := time.NewTicker(r.every)
+		defer t.Stop()
+		tick = t.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick:
+		case <-r.kick:
+		}
+		r.mu.Lock()
+		r.running = true
+		r.mu.Unlock()
+		if r.keepLast >= 0 {
+			r.s.maintPruneHistory(r.keepLast)
+		}
+		rep, err := r.s.maintainOnline(ctx, r.opt)
+		r.mu.Lock()
+		r.running = false
+		r.passes++
+		rep.Pass = r.passes
+		r.last = &rep
+		r.mu.Unlock()
+		line, _ := json.Marshal(rep)
+		if err != nil && !rep.Canceled {
+			log.Printf("zeros3: maintenance pass failed: %s", line)
+		} else {
+			log.Printf("zeros3: maintenance pass: %s", line)
+		}
+	}
+}
+
+// maintPruneHistory applies keep-last retention to every visible bucket. Prune
+// only removes roots, which is always safe for a pass (the mark is a superset).
+func (s *Store) maintPruneHistory(keep int) {
+	for _, b := range slices.Sorted(slices.Values(s.bucketNames())) {
+		res, err := s.PlanHistoryPrune(historyPruneOptions{Bucket: b, KeepLast: &keep})
+		if err == nil && len(res.Versions) > 0 {
+			err = s.ApplyHistoryPrune(&res)
+		}
+		if err != nil {
+			log.Printf("zeros3: maintenance: pruning history of %s: %v", b, err)
+		}
+	}
 }
 
 // =============================================================================
@@ -21570,6 +23025,9 @@ const (
 	// object's own manifest). Same query-parameter convention as every
 	// other extension above.
 	zeros3ReachabilityPath = "/_zeros3/v1/reachability"
+	// zeros3MaintenancePath reports (GET) or requests (POST) an online
+	// maintenance pass (section 13d2); authenticated like every request.
+	zeros3MaintenancePath = "/_zeros3/v1/maintenance"
 )
 
 // syncDiscoveryResponse is GET /_zeros3/v1/info's body: the complete
@@ -21771,6 +23229,14 @@ func (srv *Server) handleZeroS3Sync(w http.ResponseWriter, r *http.Request, rawP
 		srv.handleSnapshotDelete(w, r)
 	case rawPath == zeros3SnapshotObjectPath && r.Method == http.MethodGet:
 		srv.handleSnapshotDescribeObject(w, r)
+	case rawPath == zeros3MaintenancePath && r.Method == http.MethodGet:
+		writeSyncJSON(w, http.StatusOK, srv.store.maintenanceStatus())
+	case rawPath == zeros3MaintenancePath && r.Method == http.MethodPost:
+		if !srv.store.triggerMaintenance() {
+			writeSyncError(w, http.StatusConflict, "MaintenanceDisabled", "online maintenance is not enabled on this server")
+			return
+		}
+		writeSyncJSON(w, http.StatusAccepted, srv.store.maintenanceStatus())
 	case rawPath == zeros3ReachabilityPath && r.Method == http.MethodGet:
 		srv.handleReachabilityQuery(w, r)
 	default:
@@ -22438,6 +23904,7 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
 			return
 		}
+		srv.store.mpin(sum) // uploaded or negotiated earlier: pinned before it is read
 		data, virtual, err := srv.store.casReadOrVirtual(sum)
 		if err == nil && virtual { // a chunk served from an authoritative body becomes a physical one
 			_, err = srv.store.casWrite(data)
@@ -28848,7 +30315,25 @@ func runServe(args []string) {
 	repBuild := fs.String("representation-build", "inline", "when representations are built: inline (default; one exists when the PUT is acknowledged) or deferred (built by bounded background workers after the authoritative commit; the object is read through CDC until then, and unfinished work is abandoned at shutdown)")
 	repWorkers := fs.Int("representation-workers", 1, "deferred builds: concurrent background workers")
 	repQueueMax := fs.Int("representation-queue", repDeferMaxJobs, "deferred builds: maximum pending plus running builds; further requests are skipped, never blocked")
+	maintMode := fs.String("maintenance", "off", "online maintenance while serving: off (default), gc (unreachable files, orphan roots, dead packs), or all (gc plus repacking mostly dead packs); needs to be the only writing process")
+	maintEvery := fs.Duration("maintenance-interval", time.Hour, "time between online maintenance passes (0: only when requested via POST /_zeros3/v1/maintenance)")
+	maintPacks := fs.Int("maintenance-max-source-packs", 8, "online maintenance: most packs retired or rewritten per pass")
+	maintLive := fs.Int("maintenance-max-live-percent", defaultRepackMaxLivePercent, "online repack: rewrite packs whose live share is below this percentage")
+	maintDeletes := fs.Int("maintenance-max-deletes", 1<<18, "online gc: most loose files and roots removed per pass")
+	maintWait := fs.Duration("maintenance-wait", 10*time.Minute, "online maintenance: longest wait for in-flight requests at each grace period before a pass defers")
+	maintKeep := fs.Int("maintenance-keep-versions", -1, "online maintenance: before each pass, prune history to this many versions per key in every bucket (-1: never prune)")
 	fs.Parse(args)
+	maintOpt := defaultMaintOptions()
+	switch *maintMode {
+	case "off":
+	case "gc":
+		maintOpt.Repack = false
+	case "all":
+	default:
+		fmt.Fprintf(os.Stderr, "zeros3: serve: -maintenance: unknown mode %q (want off, gc or all)\n", *maintMode)
+		os.Exit(2)
+	}
+	maintOpt.MaxSourcePacks, maintOpt.MaxLivePercent, maintOpt.MaxDeletes, maintOpt.Wait = *maintPacks, *maintLive, *maintDeletes, *maintWait
 	repSel, err := parseRepMode(*repFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: serve: -representations: %v\n", err)
@@ -28879,11 +30364,17 @@ func runServe(args []string) {
 	}
 	defer lock.release()
 
-	store, err := openStore(*storeDir, true, *checkpoint)
+	store, err := openStoreWith(*storeDir, true, *checkpoint, *maintMode != "off")
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	if *maintMode != "off" {
+		if err := store.startMaintenance(maintOpt, *maintEvery, *maintKeep); err != nil {
+			log.Fatalf("zeros3: maintenance: %v", err)
+		}
+		log.Printf("zeros3: online maintenance %s every %s", *maintMode, *maintEvery)
+	}
 	// A long journal suffix (or no checkpoint at all) is folded and published
 	// now rather than at the next write, so the next start is a checkpoint load.
 	store.nsKick()
@@ -33370,6 +34861,9 @@ func (s *Store) publishRepRootAt(r *repRoot, floor int) error {
 		if err := syncDir(s.repDir()); err != nil {
 			return err
 		}
+	}
+	if ep := s.maint.Load(); ep != nil {
+		ep.pins.pin(uuidPinKey(r.ManifestUUID))
 	}
 	fireTestHook(hookRepRootBeforeWrite)
 	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "rep-*.tmp")
@@ -37879,7 +39373,9 @@ func (q *repQueue) worker() {
 			q.yielded.Add(1)
 		}
 		fireTestHook(hookRepDeferredStarted)
+		done := q.s.beginOp()
 		q.run(j)
+		done()
 
 		q.mu.Lock()
 		delete(q.byKey, j.sha)
@@ -50640,6 +52136,14 @@ func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 // already durable: every base needs its own committed record of the declared
 // size and a lower depth, and every component chunk must exist at its length.
 func (s *Store) authCheckClosure(rec *authRecord) error {
+	if ep := s.maint.Load(); ep != nil {
+		ep.pins.pin(authPinKey(rec.SHA))
+		for _, b := range rec.Bases {
+			if err := s.mpinAuthClosure(b.SHA, nil); err != nil {
+				return err
+			}
+		}
+	}
 	for _, b := range rec.Bases {
 		br, err := s.authLoad(b.SHA)
 		if err != nil {
@@ -50658,6 +52162,7 @@ func (s *Store) authCheckClosure(rec *authRecord) error {
 	}
 	for _, c := range chunks {
 		sum, _ := decodeHexSHA256(c.SHA256)
+		s.mpin(sum)
 		if n, err := s.casStat(sum); err != nil || n != c.Length {
 			return fmt.Errorf("%w: component %s is not durable", errAuthMissing, c.SHA256[:12])
 		}
