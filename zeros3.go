@@ -86,47 +86,48 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      541    Content-defined chunking (CDC)
-//      728    Content-addressed chunk storage (CAS)
-//     2473    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4707    Small-object segments (inline manifests, store level 11)
-//     5957    Manifests (immutable, JSON)
-//     6755    Visibility journal (append-only, checksummed)
-//     7277    Store: format, namespace, and object CRUD
-//     7785    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    11437    Version history/restore, history pruning, ListObjectsV2
-//    12043    SigV4 authentication (header and presigned-URL)
-//    13020    Request payload checksums and S3-shaped XML error/response types
-//    13237    HTTP routing and S3 operation handlers
-//    13669    Conditional operations (PUT/GET/HEAD preconditions)
-//    14364    CopyObject
-//    14669    Multipart upload
-//    15613    Stats and reachability scanning
-//    17201    Verify
-//    17416    Store locking and safe offline GC
-//    17719    Offline compaction (`zeros3 compact`)
-//    18786    Pack reclamation and repacking (`zeros3 repack`)
-//    19310    Online maintenance: epochs, pins, live GC and repack (B4)
-//    20564    Physical tiers: status and pack movement (`zeros3 tier`)
-//    21077    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    22142    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    22946    Delta sync client, credentials, and parallel transfer
-//    25251    Bulk logical-chunk transport (v2)
-//    26162    Recursive directory sync
-//    26467    Remote replication (`zeros3 replicate`)
-//    27380    Peer-assisted corruption repair (`zeros3 repair`)
-//    27952    Namespace (prefix/bucket) replication
-//    28268    Copy-on-write namespace fork (`zeros3 fork`)
-//    28476    Snapshots and restore
-//    29638    Structural diff and inspect (introspection)
-//    31040    Portable snapshot bundles (`zeros3 bundle`)
-//    32237    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    32872    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    51260    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    58846    Windowed and estimated similarity deltas (extracted dcore)
-//    60593    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    68446    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    74718    CLI dispatch, HTTP server/startup, and main
+//      542    Content-defined chunking (CDC)
+//      729    Content-addressed chunk storage (CAS)
+//     2526    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5319    Small-object segments (inline manifests, store level 11)
+//     6569    Manifests (immutable, JSON)
+//     7367    Visibility journal (append-only, checksummed)
+//     7889    Store: format, namespace, and object CRUD
+//     8401    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12053    Version history/restore, history pruning, ListObjectsV2
+//    12659    SigV4 authentication (header and presigned-URL)
+//    13636    Request payload checksums and S3-shaped XML error/response types
+//    13853    HTTP routing and S3 operation handlers
+//    14285    Conditional operations (PUT/GET/HEAD preconditions)
+//    14980    CopyObject
+//    15285    Multipart upload
+//    16229    Stats and reachability scanning
+//    17817    Verify
+//    18032    Store locking and safe offline GC
+//    18335    Offline compaction (`zeros3 compact`)
+//    19520    Pack reclamation and repacking (`zeros3 repack`)
+//    20108    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20570    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21876    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22389    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23454    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24258    Delta sync client, credentials, and parallel transfer
+//    26563    Bulk logical-chunk transport (v2)
+//    27474    Recursive directory sync
+//    27779    Remote replication (`zeros3 replicate`)
+//    28692    Peer-assisted corruption repair (`zeros3 repair`)
+//    29264    Namespace (prefix/bucket) replication
+//    29580    Copy-on-write namespace fork (`zeros3 fork`)
+//    29788    Snapshots and restore
+//    30950    Structural diff and inspect (introspection)
+//    32362    Portable snapshot bundles (`zeros3 bundle`)
+//    33559    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34194    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52582    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    60413    Windowed and estimated similarity deltas (extracted dcore)
+//    62160    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    70013    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    76285    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -1652,7 +1653,7 @@ func (s *Store) casReadH(sum [32]byte, skip map[int32]bool, h *packHandles) ([]b
 			if loc.tier != tierHot && loose() {
 				return looseData, nil
 			}
-			data, err := st.readPackedH(sum, loc, h)
+			data, err := st.readPackedT(sum, loc, h, s.packTrace)
 			if err == nil {
 				return data, nil
 			}
@@ -1683,6 +1684,58 @@ func (s *Store) casReadH(sum [32]byte, skip map[int32]bool, h *packHandles) ([]b
 		return nil, fmt.Errorf("%w; loose copy: %v", packErr, looseErr)
 	}
 	return nil, looseErr
+}
+
+// casReadSpan returns verified bytes of chunk sum (logical bytes) covering
+// [off, off+n) and their offset in the chunk. Only a hot packed copy stored as a
+// restartable record is read in part; otherwise, or if that copy fails its block
+// digests, the chunk is read whole by casRead (whole is then true).
+func (s *Store) casReadSpan(sum [32]byte, logical, off, n int64, w *packWindows) (data []byte, at int64, whole bool, err error) {
+	if !s.chunkRetired(sum) {
+		st := s.packSnap()
+		var locs [4]packLoc
+		if l := st.appendLocs(locs[:0], sum); len(l) > 0 && l[0].codec == packCodecBlocked && l[0].tier == tierHot && int64(l[0].logical) == logical {
+			if data, at, err := st.readPackedSpan(sum, l[0], off, n, s.packTrace, w); err == nil {
+				return data, at, false, nil
+			}
+		}
+	}
+	data, err = s.casReadWin(sum, w)
+	return data, 0, true, err
+}
+
+// casReadWin is casRead whose primary hot packed copy is read through the
+// request's window cache w (nil: casRead). Any failure falls back to casRead.
+func (s *Store) casReadWin(sum [32]byte, w *packWindows) ([]byte, error) {
+	if w == nil || s.chunkRetired(sum) {
+		return s.casRead(sum)
+	}
+	st := s.packSnap()
+	var locs [4]packLoc
+	if l := st.appendLocs(locs[:0], sum); len(l) > 0 && l[0].tier == tierHot && int(l[0].pack) < len(st.packs) && !st.packs[l[0].pack].open {
+		loc := l[0]
+		var t0 time.Time
+		if tr := s.packTrace; tr != nil && tr.OnRecord != nil {
+			t0 = time.Now()
+		}
+		if rec, err := w.get(st.packs[loc.pack].path, int64(loc.off)-packRecordHeaderSize, packRecordHeaderSize+int64(loc.stored)); err == nil {
+			var want [packRecordHeaderSize]byte
+			putPackRecordHeader(want[:], packEntry{sha: sum, stored: loc.stored, logical: loc.logical, codec: loc.codec})
+			if [packRecordHeaderSize]byte(rec[:packRecordHeaderSize]) == want {
+				t1 := time.Now()
+				if data, err := decodePackPayloadD(loc.codec, rec[packRecordHeaderSize:], loc.logical, sum, nil, st.dictFor(loc.pack), false); err == nil {
+					if !t0.IsZero() {
+						s.packTrace.OnRecord(&sum, loc.pack, int64(loc.off), loc.stored, loc.logical, loc.codec, int64(t1.Sub(t0)), int64(time.Since(t1)))
+					}
+					if loc.codec == packCodecRaw {
+						data = slices.Clone(data) // a raw record aliases the window
+					}
+					return data, nil
+				}
+			}
+		}
+	}
+	return s.casRead(sum)
 }
 
 // ingestResult is what one streaming pass over an object's bytes yields:
@@ -2501,6 +2554,17 @@ func (s *Store) ingestPipelinedTo(r io.Reader, withMD5 bool, opt ingestOptions, 
 //	codec 1  deflate  payload is one raw DEFLATE stream (RFC 1951) that
 //	                  decodes to exactly logical_len bytes;
 //	                  0 < stored_len < logical_len
+//	codec 2  blocked  restartable record (B5, store feature "packblk"):
+//	                  block_log u8 | reserved u8 (0) | blocks u16 |
+//	                  dict_sha256 [32] | blocks x (len u32 | sha256 [32]) |
+//	                  block payloads; block i holds logical bytes
+//	                  [i<<block_log, (i+1)<<block_log), raw when bit 31 of
+//	                  len is set, else raw DEFLATE primed with the dictionary
+//	                  record dict_sha256 of the same pack (zero: none);
+//	                  0 < stored_len < logical_len
+//	codec 3  dict     a blocked records' dictionary (raw bytes, at most 32 KiB, or
+//	                  "ZSPD" + those bytes for the pack's second copy); overhead,
+//	                  not a chunk: no root names it and usage does not count it
 //
 // Any other codec is rejected, never interpreted. Records tile
 // the file exactly: the first payload follows the header and its record
@@ -2534,6 +2598,8 @@ const (
 	packFooterSize       = 64
 	packCodecRaw         = byte(0)
 	packCodecDeflate     = byte(1)
+	packCodecBlocked     = byte(2)
+	packCodecDict        = byte(3)
 	packFileSuffix       = ".pack"
 	// maxPackedChunkBytes bounds one record's logical length; it matches
 	// the largest chunk CDC v1 can emit, so no valid record is rejected.
@@ -2736,9 +2802,13 @@ type packInfo struct {
 	path     string
 	size     int64
 	records  int
-	deflated int   // records with a non-raw codec
-	logical  int64 // sum of record logical lengths
-	stored   int64 // sum of record stored (payload) lengths
+	deflated int // chunk records with a non-raw codec
+	// dicts are dictionary records (codec 3, dictBytes of payload): counted in records,
+	// stored and logical, but pack overhead to usage and maintenance, never chunks.
+	dicts     int
+	dictBytes int64
+	logical   int64 // sum of record logical lengths
+	stored    int64 // sum of record stored (payload) lengths
 	// open marks a small-object segment still being appended to (section 4d):
 	// not yet a pack-v1 file, so size/records are not tracked here and no pack
 	// maintenance may treat it as one.
@@ -2748,7 +2818,10 @@ type packInfo struct {
 func newPackInfo(id, path string, size int64, entries []packEntry) packInfo {
 	info := packInfo{id: id, path: path, size: size, records: len(entries)}
 	for _, e := range entries {
-		if e.codec != packCodecRaw {
+		if e.codec == packCodecDict {
+			info.dicts++
+			info.dictBytes += int64(e.stored)
+		} else if e.codec != packCodecRaw {
 			info.deflated++
 		}
 		info.logical += int64(e.logical)
@@ -2764,7 +2837,9 @@ func checkPackLengths(codec byte, stored, logical uint32) error {
 	switch codec {
 	case packCodecRaw:
 		ok = stored == logical
-	case packCodecDeflate:
+	case packCodecDict:
+		ok = stored == logical && logical <= packDictMaxBytes+uint32(len(packDictCopyMagic))
+	case packCodecDeflate, packCodecBlocked:
 		ok = stored > 0 && stored < logical
 	default:
 		return fmt.Errorf("unsupported codec %d", codec)
@@ -2998,6 +3073,7 @@ func verifyPackFile(path string) (packInfo, []packEntry, error) {
 	}
 	defer f.Close()
 	body := sha256.New()
+	dicts := fileDictFunc(f, entries)
 	r := bufio.NewReaderSize(io.TeeReader(io.LimitReader(f, info.size-packFooterSize), body), 1<<20)
 	if _, err := io.CopyN(io.Discard, r, packHeaderSize); err != nil {
 		return info, nil, fmt.Errorf("pack: reading header: %w", err)
@@ -3020,7 +3096,7 @@ func verifyPackFile(path string) (packInfo, []packEntry, error) {
 		if e.codec != packCodecRaw && decoded == nil {
 			decoded = make([]byte, maxPackedChunkBytes)
 		}
-		if _, err := decodePackPayload(e.codec, buf, e.logical, e.sha, decoded); err != nil {
+		if _, err := decodePackPayloadD(e.codec, buf, e.logical, e.sha, decoded, dicts, true); err != nil {
 			return info, nil, fmt.Errorf("pack: record %d: %w", i, err)
 		}
 	}
@@ -4094,6 +4170,7 @@ func (s *Store) packTotals() (packs, records int, bytes int64) {
 type packUsage struct {
 	idx              int32
 	tier             tier
+	overhead         int64  // dictionary records (bytes and record overhead), neither live nor dead
 	Tier             string `json:"tier"`
 	ID               string `json:"id"`
 	Size             int64  `json:"size"`
@@ -4124,7 +4201,7 @@ func (u packUsage) livePhysical() int64 {
 	if u.LiveRecords == 0 {
 		return 0
 	}
-	return packFixedBytes + u.LiveBytes + int64(u.LiveRecords)*packRecordBytes
+	return packFixedBytes + u.overhead + u.LiveBytes + int64(u.LiveRecords)*packRecordBytes
 }
 
 // label names the physical pack: its id, prefixed by a non-hot tier.
@@ -4147,11 +4224,12 @@ func (s *Store) packUsagesLive(live *liveSet) []packUsage {
 	st := s.packSnap()
 	us := make([]packUsage, len(st.packs))
 	for i, p := range st.packs {
-		us[i] = packUsage{idx: int32(i), tier: p.tier, Tier: p.tier.String(), ID: p.id, Size: p.size, Records: p.records, CompressedRecs: p.deflated, LogicalBytes: p.logical}
+		us[i] = packUsage{idx: int32(i), tier: p.tier, Tier: p.tier.String(), ID: p.id, Size: p.size, Records: p.records - p.dicts, CompressedRecs: p.deflated, LogicalBytes: p.logical - p.dictBytes,
+			overhead: p.dictBytes + int64(p.dicts)*packRecordBytes}
 	}
 	hasManifests := live.anyManifests()
 	for sum, loc := range st.primaries() {
-		if st.packs[loc.pack].open {
+		if st.packs[loc.pack].open || loc.codec == packCodecDict {
 			continue
 		}
 		if live.has(*sum) {
@@ -4170,7 +4248,7 @@ func (s *Store) packUsagesLive(live *liveSet) []packUsage {
 			continue // never a candidate: maintenance seals open segments first
 		}
 		u.DeadRecords = u.Records - u.LiveRecords
-		u.DeadBytes = u.Size - packFixedBytes - int64(u.Records)*packRecordBytes - u.LiveBytes
+		u.DeadBytes = u.Size - packFixedBytes - int64(u.Records)*packRecordBytes - u.overhead - u.LiveBytes
 		if u.Size > 0 {
 			u.Utilization = float64(u.livePhysical()) / float64(u.Size)
 		}
@@ -4302,6 +4380,11 @@ func (h *packHandles) open(st *packState, pack int32) (*os.File, error) {
 
 // readPackedH is readPacked reading through h (nil: open and close per record).
 func (st *packState) readPackedH(sum [32]byte, loc packLoc, h *packHandles) ([]byte, error) {
+	return st.readPackedT(sum, loc, h, nil)
+}
+
+// readPackedT is readPackedH reporting the read to tr.OnRecord (tests and benchmarks).
+func (st *packState) readPackedT(sum [32]byte, loc packLoc, h *packHandles, tr *packTrace) ([]byte, error) {
 	if int(loc.pack) >= len(st.packs) {
 		return nil, fmt.Errorf("pack: locator for chunk %x is from a replaced pack set", sum)
 	}
@@ -4315,17 +4398,28 @@ func (st *packState) readPackedH(sum [32]byte, loc packLoc, h *packHandles) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("pack: %w", err)
 	}
+	var t0 time.Time
+	if tr != nil && tr.OnRecord != nil {
+		t0 = time.Now()
+	}
 	buf := make([]byte, packRecordHeaderSize+int(loc.stored))
 	if _, err := f.ReadAt(buf, int64(loc.off)-packRecordHeaderSize); err != nil {
 		h.close()
 		return nil, fmt.Errorf("pack: reading chunk %x: %w", sum, err)
+	}
+	if !t0.IsZero() {
+		t1 := time.Now()
+		defer func() {
+			tr.OnRecord(&sum, loc.pack, int64(loc.off), loc.stored, loc.logical, loc.codec, int64(t1.Sub(t0)), int64(time.Since(t1)))
+		}()
 	}
 	var want [packRecordHeaderSize]byte
 	putPackRecordHeader(want[:], packEntry{sha: sum, stored: loc.stored, logical: loc.logical, codec: loc.codec})
 	if [packRecordHeaderSize]byte(buf[:packRecordHeaderSize]) != want {
 		return nil, fmt.Errorf("pack: record header for chunk %x disagrees with the index", sum)
 	}
-	data, err := decodePackPayload(loc.codec, buf[packRecordHeaderSize:], loc.logical, sum, nil)
+	// Maintenance and verification read through handles and also prove a blocked record's table.
+	data, err := decodePackPayloadD(loc.codec, buf[packRecordHeaderSize:], loc.logical, sum, nil, st.dictFor(loc.pack), h != nil)
 	if err != nil {
 		return nil, fmt.Errorf("pack: %w", err)
 	}
@@ -4358,11 +4452,25 @@ func putInflater(fr io.ReadCloser) {
 // SHA-256 of the decoded bytes -- not DEFLATE's own framing -- decides
 // integrity. dst is reused for deflate output when it is large enough.
 func decodePackPayload(codec byte, stored []byte, logical uint32, sum [32]byte, dst []byte) ([]byte, error) {
+	return decodePackPayloadD(codec, stored, logical, sum, dst, nil, false)
+}
+
+// decodePackPayloadD is decodePackPayload resolving a blocked record's dictionary
+// through dict; checkBlocks also proves the record's block table.
+func decodePackPayloadD(codec byte, stored []byte, logical uint32, sum [32]byte, dst []byte, dict packDictFunc, checkBlocks bool) ([]byte, error) {
 	if err := checkPackLengths(codec, uint32(len(stored)), logical); err != nil {
 		return nil, fmt.Errorf("chunk %x: %w", sum, err)
 	}
 	data := stored
-	if codec == packCodecDeflate {
+	if codec == packCodecBlocked {
+		if cap(dst) < int(logical) {
+			dst = make([]byte, logical)
+		}
+		data = dst[:logical]
+		if err := decodeBlockedPayload(stored, logical, data, dict, checkBlocks); err != nil {
+			return nil, fmt.Errorf("chunk %x: %w", sum, err)
+		}
+	} else if codec == packCodecDeflate {
 		if cap(dst) < int(logical) {
 			dst = make([]byte, logical)
 		}
@@ -4382,6 +4490,404 @@ func decodePackPayload(codec byte, stored []byte, logical uint32, sum [32]byte, 
 		return nil, fmt.Errorf("chunk %x is corrupt (%w)", sum, errChunkCorrupt)
 	}
 	return data, nil
+}
+
+// ---- restartable records (codec 2, B5) ------------------------------------
+//
+// A cold range read of a compressed record used to inflate and hash the whole
+// chunk (size-biased, 138-152 KB per touched Coreutils chunk for a 4 KiB range).
+// A blocked record splits the chunk into independently decodable blocks, each
+// with its own SHA-256, so a span read inflates and verifies only the blocks it
+// covers. Blocks are primed with a 32 KiB dictionary sampled from the pack's own
+// records, stored as an ordinary raw record of that pack: it recovers most of the
+// history independent blocks lose (32 KiB blocks: +1.8-2.9% stored, not +5-8%).
+// Whole reads still verify the chunk digest; the block table is trusted for a span
+// only after its own block digest matches, and every whole verification (staging,
+// publication, verify -deep) checks the table against the content.
+
+const (
+	packBlockHeader  = 36 // block_log u8, reserved u8, blocks u16, dict sha256
+	packBlockEntry   = 36 // stored length u32 (raw flag in bit 31), sha256
+	packBlockRaw     = 1 << 31
+	packBlockMinLog  = 12
+	packBlockMaxLog  = 17
+	packDictMaxBytes = 32 << 10 // DEFLATE's window: a longer dictionary is never consulted
+	packDictRecords  = 64       // records a pack dictionary samples
+	// packBlockedFeature is the store feature a pack holding a blocked record needs:
+	// builds without it refuse the store instead of reading its chunks as missing.
+	packBlockedFeature = "packblk"
+)
+
+// packBlocks is the validated table of a blocked payload.
+type packBlocks struct {
+	log  uint8
+	dict [32]byte
+	lens []uint32   // stored length of each block, raw flag included
+	sums [][32]byte // SHA-256 of each block's logical bytes
+	offs []int      // payload offset of each block
+}
+
+func (b *packBlocks) size() int { return 1 << b.log }
+
+// blockSpan is the logical extent of block i of a record of logical bytes.
+func (b *packBlocks) blockSpan(i int, logical uint32) (lo, hi int) {
+	return i << b.log, min(int(logical), (i+1)<<b.log)
+}
+
+// parsePackBlocks validates the header and table of a blocked payload; only the
+// first packBlockHeader+n*packBlockEntry bytes of stored need be present when
+// storedLen gives the full payload length.
+func parsePackBlocks(stored []byte, storedLen int, logical uint32) (packBlocks, error) {
+	var b packBlocks
+	if len(stored) < packBlockHeader {
+		return b, fmt.Errorf("blocked payload header is truncated (%w)", errChunkCorrupt)
+	}
+	b.log, b.dict = stored[0], [32]byte(stored[4:36])
+	n := int(binary.LittleEndian.Uint16(stored[2:4]))
+	if b.log < packBlockMinLog || b.log > packBlockMaxLog || stored[1] != 0 || n < 2 || n != (int(logical)+b.size()-1)>>b.log {
+		return b, fmt.Errorf("blocked payload header is invalid (%w)", errChunkCorrupt)
+	}
+	tbl := packBlockHeader + n*packBlockEntry
+	if len(stored) < tbl {
+		return b, fmt.Errorf("blocked payload table is truncated (%w)", errChunkCorrupt)
+	}
+	b.lens, b.sums, b.offs = make([]uint32, n), make([][32]byte, n), make([]int, n)
+	off := tbl
+	for i := range n {
+		e := stored[packBlockHeader+i*packBlockEntry:]
+		l := binary.LittleEndian.Uint32(e)
+		b.lens[i], b.sums[i], b.offs[i] = l, [32]byte(e[4:36]), off
+		lo, hi := b.blockSpan(i, logical)
+		if k := int(l &^ packBlockRaw); l&packBlockRaw != 0 && k != hi-lo || l&packBlockRaw == 0 && (k == 0 || k >= hi-lo) {
+			return b, fmt.Errorf("blocked payload block %d length is invalid (%w)", i, errChunkCorrupt)
+		}
+		off += int(l &^ packBlockRaw)
+	}
+	if off != storedLen {
+		return b, fmt.Errorf("blocked payload blocks do not tile the record (%w)", errChunkCorrupt)
+	}
+	return b, nil
+}
+
+// decodeBlock inflates block i (payload p, the block's stored bytes) into dst and
+// checks it against the table when check is set.
+func (b *packBlocks) decodeBlock(i int, p, dict, dst []byte, check bool) error {
+	if b.lens[i]&packBlockRaw != 0 {
+		copy(dst, p)
+	} else {
+		br := bytes.NewReader(p)
+		fr := getInflaterDict(br, dict)
+		_, err := io.ReadFull(fr, dst)
+		var probe [1]byte
+		if err == nil {
+			if n, perr := fr.Read(probe[:]); n != 0 || perr != io.EOF || br.Len() != 0 {
+				err = errors.New("does not end at the block length")
+			}
+		}
+		putInflater(fr)
+		if err != nil {
+			return fmt.Errorf("block %d is truncated or malformed: %v (%w)", i, err, errChunkCorrupt)
+		}
+	}
+	if check && sha256.Sum256(dst) != b.sums[i] {
+		return fmt.Errorf("block %d is corrupt (%w)", i, errChunkCorrupt)
+	}
+	return nil
+}
+
+func getInflaterDict(r io.Reader, dict []byte) io.ReadCloser {
+	if v := inflaters.Get(); v != nil {
+		fr := v.(io.ReadCloser)
+		if fr.(flate.Resetter).Reset(r, dict) == nil {
+			return fr
+		}
+	}
+	return flate.NewReaderDict(r, dict)
+}
+
+// packDictFunc returns the verified dictionary record sha of the pack being read.
+type packDictFunc func(sha [32]byte) ([]byte, error)
+
+// decodeBlockedPayload decodes a whole blocked record into dst (length logical),
+// checking every block digest when checkBlocks is set; the caller checks the chunk digest.
+func decodeBlockedPayload(stored []byte, logical uint32, dst []byte, dict packDictFunc, checkBlocks bool) error {
+	b, err := parsePackBlocks(stored, len(stored), logical)
+	if err != nil {
+		return err
+	}
+	d, err := b.dictBytes(dict)
+	if err != nil {
+		return err
+	}
+	for i := range b.lens {
+		lo, hi := b.blockSpan(i, logical)
+		if err := b.decodeBlock(i, stored[b.offs[i]:b.offs[i]+int(b.lens[i]&^packBlockRaw)], d, dst[lo:hi], checkBlocks); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *packBlocks) dictBytes(dict packDictFunc) ([]byte, error) {
+	if b.dict == ([32]byte{}) {
+		return nil, nil
+	}
+	if dict == nil {
+		return nil, fmt.Errorf("blocked record needs dictionary %x, which this reader cannot resolve (%w)", b.dict[:6], errChunkCorrupt)
+	}
+	return dict(b.dict)
+}
+
+// packDicts caches verified pack dictionaries (32 KiB each) by pack file and digest.
+var packDicts = struct {
+	sync.Mutex
+	m     map[packDictKey][]byte
+	order []packDictKey
+}{m: map[packDictKey][]byte{}}
+
+type packDictKey struct {
+	path string
+	sha  [32]byte
+}
+
+const packDictCacheEntries = 64
+
+// dictFor resolves dictionary records of pack i: a raw record of that same pack, verified by its digest.
+func (st *packState) dictFor(i int32) packDictFunc {
+	return func(sha [32]byte) ([]byte, error) {
+		if int(i) >= len(st.packs) {
+			return nil, fmt.Errorf("pack: locator is from a replaced pack set")
+		}
+		k := packDictKey{st.packs[i].path, sha}
+		packDicts.Lock()
+		d, ok := packDicts.m[k]
+		packDicts.Unlock()
+		if ok {
+			return d, nil
+		}
+		var locs [4]packLoc
+		for _, loc := range st.appendLocs(locs[:0], sha) {
+			if loc.pack != i || loc.codec != packCodecDict || loc.logical > packDictMaxBytes {
+				continue
+			}
+			d, err := st.readPackedT(sha, loc, nil, nil)
+			if err != nil {
+				if d, err = packDictCopy(st.packs[i].path, sha); err != nil {
+					return nil, err
+				}
+			}
+			packDicts.Lock()
+			if _, ok := packDicts.m[k]; !ok {
+				if len(packDicts.order) >= packDictCacheEntries {
+					delete(packDicts.m, packDicts.order[0])
+					packDicts.order = packDicts.order[1:]
+				}
+				packDicts.m[k], packDicts.order = d, append(packDicts.order, k)
+			}
+			packDicts.Unlock()
+			return d, nil
+		}
+		return nil, fmt.Errorf("pack: dictionary %x is not a record of %s (%w)", sha[:6], st.packs[i].label(), errChunkCorrupt)
+	}
+}
+
+// packDictCopy finds the second copy of dictionary sha in the pack at path (a rare
+// path: the first copy failed its digest), scanning the pack's index.
+func packDictCopy(path string, sha [32]byte) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	entries, _, err := readPackLayout(f, fi.Size())
+	if err != nil {
+		return nil, err
+	}
+	return fileDictFunc(f, entries)(sha)
+}
+
+// fileDictFunc resolves dictionaries of a pack file being verified from its own index.
+func fileDictFunc(f io.ReaderAt, entries []packEntry) packDictFunc {
+	cache := map[[32]byte][]byte{}
+	return func(sha [32]byte) ([]byte, error) {
+		if d, ok := cache[sha]; ok {
+			return d, nil
+		}
+		// The cited copy is named by sha; the other is any raw record holding the magic and those bytes.
+		for _, e := range entries {
+			if e.codec != packCodecDict {
+				continue
+			}
+			if e.sha != sha && e.logical <= uint32(len(packDictCopyMagic)) {
+				continue
+			}
+			d := make([]byte, e.stored)
+			if _, err := f.ReadAt(d, int64(e.off)); err != nil {
+				continue
+			}
+			if e.sha != sha {
+				if string(d[:len(packDictCopyMagic)]) != packDictCopyMagic || sha256.Sum256(d) != e.sha {
+					continue
+				}
+				d = d[len(packDictCopyMagic):]
+			}
+			if sha256.Sum256(d) == sha {
+				cache[sha] = d
+				return d, nil
+			}
+		}
+		return nil, fmt.Errorf("pack: dictionary %x has no intact copy in the pack (%w)", sha[:6], errChunkCorrupt)
+	}
+}
+
+// readPackedSpan returns verified logical bytes covering [off, off+n) of the
+// record at loc and the logical offset of their first byte. A blocked record
+// reads its table and then only the covered blocks; any other record is read
+// and verified whole.
+func (st *packState) readPackedSpan(sum [32]byte, loc packLoc, off, n int64, tr *packTrace, w *packWindows) ([]byte, int64, error) {
+	if loc.codec != packCodecBlocked || int(loc.pack) >= len(st.packs) {
+		data, err := st.readPackedT(sum, loc, nil, tr)
+		return data, 0, err
+	}
+	path := st.packs[loc.pack].path
+	var t0 time.Time
+	if tr != nil && tr.OnRecord != nil {
+		t0 = time.Now()
+	}
+	// The record header, block header and table come first; the block count follows from the lengths.
+	head := make([]byte, packRecordHeaderSize+packBlockHeader+packBlockEntry*((int(loc.logical)>>packBlockMinLog)+1))
+	head = head[:min(len(head), packRecordHeaderSize+int(loc.stored))]
+	if err := w.readAt(path, head, int64(loc.off)-packRecordHeaderSize); err != nil {
+		return nil, 0, fmt.Errorf("pack: reading chunk %x: %w", sum, err)
+	}
+	var want [packRecordHeaderSize]byte
+	putPackRecordHeader(want[:], packEntry{sha: sum, stored: loc.stored, logical: loc.logical, codec: loc.codec})
+	if [packRecordHeaderSize]byte(head[:packRecordHeaderSize]) != want {
+		return nil, 0, fmt.Errorf("pack: record header for chunk %x disagrees with the index", sum)
+	}
+	b, err := parsePackBlocks(head[packRecordHeaderSize:], int(loc.stored), loc.logical)
+	if err != nil {
+		return nil, 0, fmt.Errorf("pack: chunk %x: %w", sum, err)
+	}
+	first := int(off >> b.log)
+	last := int((min(off+n, int64(loc.logical)) - 1) >> b.log)
+	if off < 0 || n <= 0 || first > last {
+		return nil, 0, fmt.Errorf("pack: span %d+%d outside chunk %x", off, n, sum)
+	}
+	p0, p1 := b.offs[first], b.offs[last]+int(b.lens[last]&^packBlockRaw)
+	payload := make([]byte, p1-p0)
+	if err := w.readAt(path, payload, int64(loc.off)+int64(p0)); err != nil {
+		return nil, 0, fmt.Errorf("pack: reading chunk %x: %w", sum, err)
+	}
+	var t1 time.Time
+	if !t0.IsZero() {
+		t1 = time.Now()
+	}
+	dict, err := b.dictBytes(st.dictFor(loc.pack))
+	if err != nil {
+		return nil, 0, err
+	}
+	lo, _ := b.blockSpan(first, loc.logical)
+	_, hi := b.blockSpan(last, loc.logical)
+	out := make([]byte, hi-lo)
+	for i := first; i <= last; i++ {
+		blo, bhi := b.blockSpan(i, loc.logical)
+		if err := b.decodeBlock(i, payload[b.offs[i]-p0:b.offs[i]-p0+int(b.lens[i]&^packBlockRaw)], dict, out[blo-lo:bhi-lo], true); err != nil {
+			return nil, 0, fmt.Errorf("pack: chunk %x: %w", sum, err)
+		}
+	}
+	if !t0.IsZero() {
+		tr.OnRecord(&sum, loc.pack, int64(loc.off), uint32(len(head)+len(payload)-packRecordHeaderSize), uint32(len(out)), loc.codec, int64(t1.Sub(t0)), int64(time.Since(t1)))
+	}
+	return out, int64(lo), nil
+}
+
+// packWindows is one sparse request's cache of raw pack-file windows: a record
+// miss reads the aligned packWindowBytes around it, so records a reconstruction-
+// ordered layout placed beside it cost no further read. The bytes are only bytes:
+// every record served from a window is checked against its header and decoded and
+// hashed like any other read.
+type packWindows struct {
+	mu   sync.Mutex
+	tr   *packTrace
+	wins []packWin
+	// Reads and Bytes count window reads and the bytes they fetched; Hits counts records served without one.
+	Reads, Bytes, Hits int64
+}
+
+type packWin struct {
+	path string
+	off  int64
+	data []byte
+}
+
+const (
+	packWindowBytes = 128 << 10 // one kernel readahead unit
+	packWindowsMax  = 8         // windows one request keeps (1 MiB)
+)
+
+// get returns n bytes of the pack file at path from off.
+func (w *packWindows) get(path string, off, n int64) ([]byte, error) {
+	w.mu.Lock()
+	for _, x := range w.wins {
+		if x.path == path && off >= x.off && off+n <= x.off+int64(len(x.data)) {
+			w.Hits++
+			w.mu.Unlock()
+			return x.data[off-x.off : off-x.off+n], nil
+		}
+	}
+	w.mu.Unlock()
+	start := off &^ (packWindowBytes - 1)
+	end := max(start+packWindowBytes, off+n)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	buf := make([]byte, end-start)
+	k, err := f.ReadAt(buf, start)
+	if int64(k) < off+n-start {
+		if err == nil || err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	buf = buf[:k]
+	if w.tr != nil {
+		w.tr.WinReads.Add(1)
+		w.tr.WinBytes.Add(int64(k))
+	}
+	w.mu.Lock()
+	w.Reads++
+	w.Bytes += int64(k)
+	if len(w.wins) >= packWindowsMax {
+		w.wins = w.wins[1:]
+	}
+	w.wins = append(w.wins, packWin{path, start, buf})
+	w.mu.Unlock()
+	return buf[off-start : off-start+n], nil
+}
+
+// readAt reads n bytes at off of the pack file at path, through w when it is set.
+func (w *packWindows) readAt(path string, p []byte, off int64) error {
+	if w != nil {
+		b, err := w.get(path, off, int64(len(p)))
+		if err == nil {
+			copy(p, b)
+		}
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.ReadAt(p, off)
+	return err
 }
 
 // =============================================================================
@@ -4416,6 +4922,10 @@ type packTrace struct {
 	Opens, ReadAts, Runs, Chunks, StoredBytes, Failures atomic.Int64
 	// OnRun, if set, sees every run's size as planned.
 	OnRun func(records, storedBytes, logicalBytes int)
+	// WinReads and WinBytes count the pack windows sparse authority reads fetched.
+	WinReads, WinBytes atomic.Int64
+	// OnRecord, if set, sees every single-record read (casRead) with its pread and decode time.
+	OnRecord func(sum *[32]byte, pack int32, off int64, stored, logical uint32, codec byte, readNS, decodeNS int64)
 }
 
 // Run buffers are recycled across requests so concurrent GETs do not each
@@ -4543,7 +5053,7 @@ func (r *packRunReader) read(sums [][32]byte, locs []packLoc) (out [][]byte, err
 	}
 	var inflate int
 	for _, l := range locs {
-		if l.codec == packCodecDeflate {
+		if l.codec != packCodecRaw {
 			inflate += int(l.logical)
 		}
 	}
@@ -4566,10 +5076,10 @@ func (r *packRunReader) read(sums [][32]byte, locs []packLoc) (out [][]byte, err
 			continue
 		}
 		var dst []byte
-		if l.codec == packCodecDeflate {
+		if l.codec != packCodecRaw {
 			dst, arena = arena[:l.logical:l.logical], arena[l.logical:]
 		}
-		data, err := decodePackPayload(l.codec, buf[rec+packRecordHeaderSize:end], l.logical, sums[k], dst)
+		data, err := decodePackPayloadD(l.codec, buf[rec+packRecordHeaderSize:end], l.logical, sums[k], dst, r.st.dictFor(l.pack), false)
 		if err != nil {
 			errs[k] = fmt.Errorf("pack: %w", err)
 			continue
@@ -4607,7 +5117,24 @@ func packPriceLen(data []byte) int64 {
 type packCompressor struct {
 	fw  *flate.Writer
 	out packCompressorBuf
+	// blockLog > 0 writes records longer than one block as restartable records
+	// primed with blk, the dictionary of the pack being staged (nil: none).
+	blockLog uint8
+	blk      *packDict
+	dfw      *flate.Writer // primed with dfor's dictionary
+	dfor     *packDict
+	bbuf     []byte
 }
+
+// packDict is the dictionary of one pack being staged. It is written twice: as
+// the pack's first record (named by its digest, which blocked records cite) and as
+// its last, prefixed with packDictCopyMagic so the two copies have distinct names.
+type packDict struct {
+	sha, copySHA [32]byte
+	data         []byte
+}
+
+const packDictCopyMagic = "ZSPD"
 
 type packCompressorBuf struct {
 	b     []byte
@@ -4639,6 +5166,11 @@ func (c *packCompressor) encode(data []byte) ([]byte, byte) {
 	if c == nil {
 		return data, packCodecRaw
 	}
+	if c.blockLog > 0 && len(data) > 1<<c.blockLog {
+		if out, ok := c.encodeBlocked(data); ok {
+			return out, packCodecBlocked
+		}
+	}
 	c.out.b, c.out.limit = c.out.b[:0], len(data)-max(1, len(data)/16)
 	c.fw.Reset(&c.out)
 	if _, err := c.fw.Write(data); err != nil {
@@ -4648,6 +5180,86 @@ func (c *packCompressor) encode(data []byte) ([]byte, byte) {
 		return data, packCodecRaw
 	}
 	return c.out.b, packCodecDeflate
+}
+
+// encodeBlocked writes data as a restartable record under the compressor rule:
+// it must save 1/16 of the logical size, and a block that does not shrink is raw.
+func (c *packCompressor) encodeBlocked(data []byte) ([]byte, bool) {
+	bs := 1 << c.blockLog
+	n := (len(data) + bs - 1) / bs
+	if n < 2 || n > 0xffff {
+		return nil, false
+	}
+	var dict []byte
+	var dsha [32]byte
+	if c.blk != nil {
+		dict, dsha = c.blk.data, c.blk.sha
+	}
+	if c.dfw == nil || c.dfor != c.blk {
+		fw, err := flate.NewWriterDict(io.Discard, packDeflateLevel, dict)
+		if err != nil {
+			return nil, false
+		}
+		c.dfw, c.dfor = fw, c.blk
+	}
+	limit := len(data) - max(1, len(data)/16)
+	out := slices.Grow(c.bbuf[:0], packBlockHeader+n*packBlockEntry+len(data))[:packBlockHeader+n*packBlockEntry]
+	out[0], out[1] = c.blockLog, 0
+	binary.LittleEndian.PutUint16(out[2:4], uint16(n))
+	copy(out[4:36], dsha[:])
+	for i := range n {
+		blk := data[i*bs : min(len(data), (i+1)*bs)]
+		start := len(out)
+		c.out.b, c.out.limit = out, start+len(blk)-1
+		c.dfw.Reset(&c.out)
+		_, err := c.dfw.Write(blk)
+		if err == nil {
+			err = c.dfw.Close()
+		}
+		var l uint32
+		if err != nil {
+			out = append(c.out.b[:start], blk...)
+			l = uint32(len(blk)) | packBlockRaw
+		} else {
+			out = c.out.b
+			l = uint32(len(out) - start)
+		}
+		e := out[packBlockHeader+i*packBlockEntry:]
+		binary.LittleEndian.PutUint32(e, l)
+		sum := sha256.Sum256(blk)
+		copy(e[4:36], sum[:])
+		if len(out) > limit {
+			c.bbuf = out
+			return nil, false
+		}
+	}
+	c.bbuf = out
+	return out, true
+}
+
+// trainPackDict samples a dictionary from records spread over a pack: four
+// 128-byte samples from each, in pack order, so the most recent strings a
+// block's matcher sees come from the end of the pack (DEFLATE favors short distances).
+func trainPackDict(recs [][]byte) []byte {
+	const sample, per = 128, 4
+	var dict []byte
+	for _, r := range recs {
+		if len(r) <= sample*per {
+			dict = append(dict, r...)
+		} else {
+			for j := range per {
+				o := (2*j+1)*len(r)/(2*per) - sample/2
+				dict = append(dict, r[o:o+sample]...)
+			}
+		}
+	}
+	if len(dict) > packDictMaxBytes {
+		dict = dict[len(dict)-packDictMaxBytes:]
+	}
+	if len(dict) < 1<<10 {
+		return nil
+	}
+	return dict
 }
 
 // verifyPacks adds pack-level findings to a verify result: packs that
@@ -7404,6 +8016,10 @@ type Store struct {
 	// process holding exclusive ownership while compacting.
 	packMu sync.Mutex
 	packSt atomic.Pointer[packState]
+
+	// reconSeen is the (authority generation, pack set) key of the last online
+	// relayout plan that found nothing to move (section 13d1).
+	reconSeen atomic.Pointer[[32]byte]
 
 	// packTrace, when set (tests and benchmarks only), counts coalesced
 	// packed-read activity. Nil in production: no counters, no atomics.
@@ -17706,7 +18322,7 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		}
 	}
 	var packRes RepackResult
-	err = store.replacePacksLive(deadPacks, live, defaultPackTargetBytes, true, &packRes)
+	err = store.replacePacksLive(deadPacks, live, defaultPackTargetBytes, packEncoding{Compress: true}, &packRes)
 	res.PacksDeleted = packRes.PacksDeleted
 	res.BytesDeleted += packRes.BytesDeleted
 	if err != nil {
@@ -17762,9 +18378,14 @@ const (
 	// layoutLocality packs chunks in first-reference manifest order, so
 	// consecutive chunks of an object are physically adjacent in a pack.
 	layoutLocality
+	// layoutRecon is layoutLocality with authority families placed by measured
+	// reconstruction co-access (section 13d1).
+	layoutRecon
 )
 
-func (l packLayout) String() string { return [...]string{"digest", "locality"}[min(l, layoutLocality)] }
+func (l packLayout) String() string {
+	return [...]string{"digest", "locality", "recon"}[min(l, layoutRecon)]
+}
 
 func parseLayoutFlag(v string) (packLayout, error) {
 	switch v {
@@ -17772,8 +18393,10 @@ func parseLayoutFlag(v string) (packLayout, error) {
 		return layoutDigest, nil
 	case "locality":
 		return layoutLocality, nil
+	case "recon":
+		return layoutRecon, nil
 	}
-	return 0, fmt.Errorf("-layout must be locality or digest, not %q", v)
+	return 0, fmt.Errorf("-layout must be locality, recon or digest, not %q", v)
 }
 
 type compactOptions struct {
@@ -17783,6 +18406,7 @@ type compactOptions struct {
 	DryRun      bool
 	Compress    bool
 	Layout      packLayout // chunk order within new packs (zero value: digest)
+	BlockLog    uint8      // > 0: compressible records longer than 1<<BlockLog are restartable (codec 2)
 }
 
 func defaultCompactOptions() compactOptions {
@@ -17807,6 +18431,28 @@ func newCompressor(compress bool) *packCompressor {
 	return newPackCompressor()
 }
 
+// newBlockCompressor is newCompressor writing restartable records of 1<<blockLog byte blocks (0: none).
+func newBlockCompressor(compress bool, blockLog uint8) *packCompressor {
+	c := newCompressor(compress)
+	if c != nil {
+		c.blockLog = blockLog
+	}
+	return c
+}
+
+// parseRecordBlocksFlag maps -record-blocks (off or a block size in KiB) to a block log.
+func parseRecordBlocksFlag(v string) (uint8, error) {
+	if v == "off" {
+		return 0, nil
+	}
+	if k, err := strconv.Atoi(v); err == nil && k > 0 && k&(k-1) == 0 {
+		if l := uint8(bits.TrailingZeros(uint(k)) + 10); l >= packBlockMinLog && l <= packBlockMaxLog {
+			return l, nil
+		}
+	}
+	return 0, fmt.Errorf("-record-blocks must be off or a power of two from 4 to 128 (KiB), not %q", v)
+}
+
 // CompactResult reports one compaction pass. In a dry run the packing
 // counters are what the pass would do.
 type CompactResult struct {
@@ -17816,6 +18462,8 @@ type CompactResult struct {
 	// LocalityRanked is how many candidates a live root referenced and so
 	// received a first-reference rank (locality layout only).
 	LocalityRanked int `json:"locality_ranked,omitempty"`
+	// Recon is the reconstruction plan the recon layout applied (section 13d1).
+	Recon *reconPlan `json:"recon,omitempty"`
 
 	LooseChunks      int `json:"loose_chunks"`
 	UnreachableLoose int `json:"unreachable_loose"`
@@ -17993,7 +18641,7 @@ func (s *Store) compactLive(live *liveSet, opt compactOptions) (CompactResult, e
 	}
 
 	res.Layout = opt.Layout.String()
-	if opt.Layout == layoutLocality && len(cands) > 1 {
+	if opt.Layout >= layoutLocality && len(cands) > 1 {
 		ranked, err := localityOrder(cands, func(obs rootObserver) error {
 			_, err := s.computeReachabilityObserved(false, obs)
 			return err
@@ -18002,6 +18650,14 @@ func (s *Store) compactLive(live *liveSet, opt compactOptions) (CompactResult, e
 			return res, fmt.Errorf("compact: locality ordering: %w", err)
 		}
 		res.LocalityRanked = ranked
+		if opt.Layout == layoutRecon {
+			plan, err := s.planRecon(live, true)
+			if err != nil {
+				return res, fmt.Errorf("compact: reconstruction layout: %w", err)
+			}
+			plan.order(opt.Tier, cands)
+			res.Recon = plan
+		}
 	}
 
 	batches, deferred := planPackBatches(cands, opt.TargetBytes, opt.MinBytes)
@@ -18019,7 +18675,7 @@ func (s *Store) compactLive(live *liveSet, opt compactOptions) (CompactResult, e
 	}
 
 	s.removeStalePackStaging()
-	comp := newCompressor(opt.Compress)
+	comp := newBlockCompressor(opt.Compress, opt.BlockLog)
 
 	for _, c := range redundant {
 		loc, _ := s.packLookup(c.sum)
@@ -18428,7 +19084,7 @@ func (b *packBuilder) readRecord(i int) ([]byte, error) {
 	if [packRecordHeaderSize]byte(buf[:packRecordHeaderSize]) != want {
 		return nil, fmt.Errorf("pack: staged record header for chunk %x is wrong", e.sha)
 	}
-	return decodePackPayload(e.codec, buf[packRecordHeaderSize:], e.logical, e.sha, nil)
+	return decodePackPayloadD(e.codec, buf[packRecordHeaderSize:], e.logical, e.sha, nil, fileDictFunc(b.f, b.entries), true)
 }
 
 // stagePack writes one pack into tier t's staging directory from batch, fetching each record's
@@ -18442,8 +19098,11 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 	if err != nil {
 		return "", nil, err
 	}
+	if comp != nil && comp.blockLog > 0 {
+		comp.blk = stagePackDict(b, batch, read)
+	}
 	if workers := maintWorkers(); workers > 1 && len(batch) >= 2*stageWindowRecords {
-		if err := s.stageRecordsParallel(b, batch, read, skip, comp != nil, workers); err != nil {
+		if err := s.stageRecordsParallel(b, batch, read, skip, comp, workers); err != nil {
 			b.Abort()
 			return "", nil, err
 		}
@@ -18460,11 +19119,71 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 			b.Add(c.sum, data)
 		}
 	}
+	if comp != nil && comp.blk != nil {
+		if b.Records() == 1 {
+			b.Abort() // nothing but the dictionary
+			return "", nil, nil
+		}
+		b.addDictCopy(comp.blk)
+	}
 	if b.Records() == 0 {
 		b.Abort()
 		return "", nil, nil
 	}
 	return b.Finish()
+}
+
+// stagePackDict trains the dictionary of a pack about to hold batch from
+// packDictRecords records spread over it and appends it as the pack's first
+// record (raw: its digest is its name). Unreadable samples are passed over; the
+// records themselves are read again, and judged, when they are staged.
+func stagePackDict(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error)) *packDict {
+	// Probe twice as many records as the dictionary samples and keep the compressible
+	// ones: incompressible records (delta programs, media) never use a dictionary.
+	k := min(2*packDictRecords, len(batch))
+	recs := make([][]byte, 0, k)
+	probe := newPackCompressor()
+	for i := range k {
+		data, err := read(batch[i*len(batch)/k].sum)
+		if err != nil || len(data) <= 1<<packBlockMinLog {
+			continue
+		}
+		if _, codec := probe.encode(data[:min(len(data), 8<<10)]); codec == packCodecDeflate {
+			recs = append(recs, data)
+		}
+	}
+	if len(recs) > packDictRecords {
+		thin := make([][]byte, packDictRecords)
+		for i := range thin {
+			thin[i] = recs[i*len(recs)/packDictRecords]
+		}
+		recs = thin
+	}
+	data := trainPackDict(recs)
+	if data == nil {
+		return nil
+	}
+	d := &packDict{sha: sha256.Sum256(data), copySHA: sha256.Sum256(append([]byte(packDictCopyMagic), data...)), data: data}
+	if slices.ContainsFunc(batch, func(c compactCandidate) bool { return c.sum == d.sha || c.sum == d.copySHA }) {
+		return nil // a pack names each digest once
+	}
+	b.addEncoded(d.sha, len(data), data, packCodecDict)
+	return d
+}
+
+// addDictCopy appends the second dictionary copy as the pack's last record.
+func (b *packBuilder) addDictCopy(d *packDict) {
+	cp := append([]byte(packDictCopyMagic), d.data...)
+	b.addEncoded(d.copySHA, len(cp), cp, packCodecDict)
+}
+
+// packChunkEntries is entries without the pack's dictionary records, which are
+// not chunks any root names (only the pack's blocked records use them).
+func (c *packCompressor) packChunkEntries(entries []packEntry) []packEntry {
+	if !slices.ContainsFunc(entries, func(e packEntry) bool { return e.codec == packCodecDict }) {
+		return entries
+	}
+	return slices.DeleteFunc(slices.Clone(entries), func(e packEntry) bool { return e.codec == packCodecDict })
 }
 
 // stageCompressors recycles DEFLATE encoders (about a megabyte of state each)
@@ -18489,7 +19208,7 @@ type stagedRecord struct {
 // previous window is appended. The appended bytes (and so the pack's digest)
 // are identical to the serial result; at most two windows are in flight, each
 // bounded by stageWindowRecords / stageWindowBytes.
-func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, compress bool, workers int) error {
+func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, tmpl *packCompressor, workers int) error {
 	windowEnd := func(lo int) int {
 		hi, bytes := lo, int64(0)
 		for hi < len(batch) && hi-lo < stageWindowRecords && (hi == lo || bytes+batch[hi].size <= stageWindowBytes) {
@@ -18501,15 +19220,18 @@ func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, r
 	prepare := func(lo, hi int) []stagedRecord {
 		out := make([]stagedRecord, hi-lo)
 		parallelForState(hi-lo, workers, 1, func() *packCompressor {
-			if !compress {
+			if tmpl == nil {
 				return nil
 			}
-			if c, ok := stageCompressors.Get().(*packCompressor); ok {
-				return c
+			c, ok := stageCompressors.Get().(*packCompressor)
+			if !ok {
+				c = newPackCompressor()
 			}
-			return newPackCompressor()
+			c.blockLog, c.blk = tmpl.blockLog, tmpl.blk
+			return c
 		}, func(c *packCompressor) {
 			if c != nil {
+				c.blk, c.dfor = nil, nil
 				stageCompressors.Put(c)
 			}
 		}, func(comp *packCompressor, k int) {
@@ -18613,6 +19335,12 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 		os.Remove(staged)
 		return info, fmt.Errorf("upgrading store format: %w", err)
 	}
+	if slices.ContainsFunc(entries, func(e packEntry) bool { return e.codec == packCodecBlocked }) {
+		if err := s.ensureFeature(packBlockedFeature); err != nil {
+			os.Remove(staged)
+			return info, fmt.Errorf("recording store feature %s: %w", packBlockedFeature, err)
+		}
+	}
 
 	packDir := tierPackDir(s.root, t)
 	if _, err := os.Stat(packDir); os.IsNotExist(err) {
@@ -18681,6 +19409,7 @@ func (s *Store) compactBatch(t tier, batch []compactCandidate, res *CompactResul
 		return fmt.Errorf("compact: %w; loose chunks kept", err)
 	}
 
+	entries = comp.packChunkEntries(entries)
 	res.PacksWritten++
 	res.PackBytes += info.size
 	res.ChunksPacked += len(entries)
@@ -18744,23 +19473,28 @@ func runCompact(args []string) {
 	dryRun := fs.Bool("dry-run", false, "report what would be packed without writing anything")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	tierName := fs.String("tier", "hot", "physical tier the new packs are published into: hot, warm, or cold")
-	layoutName := fs.String("layout", "locality", "chunk order inside new packs: locality (first-reference manifest order) or digest")
+	layoutName := fs.String("layout", "locality", "chunk order inside new packs: locality (first-reference manifest order), recon (reconstruction co-access, research) or digest")
+	blocksFlag := fs.String("record-blocks", "off", "restartable compressed records: off, or the block size in KiB (research; 32 is the measured choice)")
 	fs.Parse(args)
 
 	compress, err := parseCompressionFlag(*compression)
 	var t tier
 	var layout packLayout
+	var blockLog uint8
 	if err == nil {
 		t, err = parseTier(*tierName)
 	}
 	if err == nil {
 		layout, err = parseLayoutFlag(*layoutName)
 	}
+	if err == nil {
+		blockLog, err = parseRecordBlocksFlag(*blocksFlag)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: compact: %v\n", err)
 		os.Exit(2)
 	}
-	opt := compactOptions{Tier: t, TargetBytes: *sizeMiB << 20, DryRun: *dryRun, Compress: compress, Layout: layout}
+	opt := compactOptions{Tier: t, TargetBytes: *sizeMiB << 20, DryRun: *dryRun, Compress: compress, Layout: layout, BlockLog: blockLog}
 	opt.MinBytes = opt.TargetBytes / packMinFraction
 	res, err := compactStore(*storeDir, opt)
 	if err != nil {
@@ -18816,6 +19550,14 @@ func runCompact(args []string) {
 
 const defaultRepackMaxLivePercent = 50
 
+// packEncoding is how replacement packs are written.
+type packEncoding struct {
+	Compress bool
+	BlockLog uint8 // restartable records (codec 2) of 1<<BlockLog byte blocks; 0: none
+	// order, when set, reorders the records carried into tier t (default: their source physical order).
+	order func(t tier, cands []compactCandidate)
+}
+
 type repackOptions struct {
 	Tier           string // "" or "all": every tier; otherwise only packs in that tier
 	TargetBytes    int64
@@ -18829,6 +19571,12 @@ type repackOptions struct {
 	// pack whose raw records are incompressible is selected (and rewritten
 	// identically) by every run: opt-in for cold-tier maintenance.
 	Recompress bool
+	BlockLog   uint8      // restartable records in replacements (0: none)
+	Layout     packLayout // layoutRecon reorders carried records by reconstruction co-access
+}
+
+func (o repackOptions) encoding() packEncoding {
+	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog}
 }
 
 // RepackResult reports one repack pass. In a dry run the write figures are
@@ -18837,6 +19585,7 @@ type RepackResult struct {
 	DryRun    bool          `json:"dry_run"`
 	LiveSetOK bool          `json:"live_set_ok"`
 	Issues    []VerifyIssue `json:"issues,omitempty"`
+	Recon     *reconPlan    `json:"recon,omitempty"` // -layout recon: the plan and its estimate
 
 	PackCount        int   `json:"pack_count"`
 	PackedChunkCount int   `json:"packed_chunk_count"`
@@ -18891,13 +19640,13 @@ func selectRepackPacks(us []packUsage, maxLivePercent int, recompress bool) []pa
 // replacePacks removes the doomed packs after republishing every live chunk
 // that lacks a verified copy elsewhere. See the section comment for the
 // order; doomed must come from packUsages on this store.
-func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, target int64, compress bool, res *RepackResult) error {
-	return s.replacePacksTo(doomed, referenced, nil, target, compress, res)
+func (s *Store) replacePacks(doomed []packUsage, referenced map[string]bool, target int64, enc packEncoding, res *RepackResult) error {
+	return s.replacePacksTo(doomed, referenced, nil, target, enc, res)
 }
 
 // replacePacksLive is replacePacks against a binary live set.
-func (s *Store) replacePacksLive(doomed []packUsage, live *liveSet, target int64, compress bool, res *RepackResult) error {
-	return s.replacePacksToLive(doomed, live, nil, target, compress, res)
+func (s *Store) replacePacksLive(doomed []packUsage, live *liveSet, target int64, enc packEncoding, res *RepackResult) error {
+	return s.replacePacksToLive(doomed, live, nil, target, enc, res)
 }
 
 // tieredChunk is a live chunk a replacement must hold in tier t.
@@ -18940,16 +19689,16 @@ func (s *Store) copyAtTier(sum [32]byte, t tier, skip map[int32]bool) error {
 // the pack carrying it). A live chunk is carried over unless a verified copy
 // already sits at its destination tier outside the doomed packs; chunks the
 // doomed packs hold dead are never copied.
-func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, dest func([32]byte) tier, target int64, compress bool, res *RepackResult) error {
+func (s *Store) replacePacksTo(doomed []packUsage, referenced map[string]bool, dest func([32]byte) tier, target int64, enc packEncoding, res *RepackResult) error {
 	if len(doomed) == 0 {
 		return nil
 	}
-	return s.replacePacksToLive(doomed, liveSetFromMap(referenced), dest, target, compress, res)
+	return s.replacePacksToLive(doomed, liveSetFromMap(referenced), dest, target, enc, res)
 }
 
 // replacePacksToLive is replacePacksTo against a binary live set.
-func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, compress bool, res *RepackResult) error {
-	c, err := s.carryLivePacks(doomed, live, dest, target, compress, res)
+func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, enc packEncoding, res *RepackResult) error {
+	c, err := s.carryLivePacks(doomed, live, dest, target, enc, res)
 	if err != nil || c == nil {
 		return err
 	}
@@ -18992,7 +19741,7 @@ type packCarry struct {
 // carryLivePacks republishes every live record of the doomed packs that lacks
 // a verified copy elsewhere (steps 1-3 of the section comment) and proves each
 // carried chunk readable outside them. Nothing is removed.
-func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, compress bool, res *RepackResult) (*packCarry, error) {
+func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, enc packEncoding, res *RepackResult) (*packCarry, error) {
 	if len(doomed) == 0 {
 		return nil, nil
 	}
@@ -19055,6 +19804,9 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 				need = append(need, tieredChunk{c, t})
 			}
 		}
+		if enc.order != nil {
+			enc.order(t, tneed)
+		}
 		batches, tail := planPackBatches(tneed, target, target/packMinFraction)
 		if len(tail) > 0 {
 			batches = append(batches, tail)
@@ -19071,6 +19823,7 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 		t       tier
 		path    string
 		entries []packEntry
+		dicts   int // dictionary records among entries
 	}
 	var staged []stagedPack
 	defer func() {
@@ -19078,7 +19831,7 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 			os.Remove(sp.path)
 		}
 	}()
-	comp := newCompressor(compress)
+	comp := newBlockCompressor(enc.Compress, enc.BlockLog)
 	if dest != nil {
 		fireTestHook(hookRebalanceBeforeStage)
 	}
@@ -19088,7 +19841,7 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 			if err != nil {
 				return nil, err
 			}
-			staged = append(staged, stagedPack{pl.t, path, entries})
+			staged = append(staged, stagedPack{pl.t, path, entries, len(entries) - len(comp.packChunkEntries(entries))})
 		}
 	}
 	for _, sp := range staged {
@@ -19098,7 +19851,7 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 		}
 		res.PacksWritten++
 		res.BytesWritten += info.size
-		res.RecordsCopied += len(sp.entries)
+		res.RecordsCopied += len(sp.entries) - sp.dicts
 		res.RawRecords += info.records - info.deflated
 		res.CompressedRecords += info.deflated
 		res.LogicalBytes += info.logical
@@ -19174,6 +19927,19 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	sum := summarizePacks(us)
 	res.PackCount, res.PackedChunkCount, res.PackFileBytes = sum.PackCount, sum.PackedChunkCount, sum.PackFileBytes
 	sel := selectRepackPacks(us, opt.MaxLivePercent, opt.Compress && opt.Recompress)
+	if opt.Compress && opt.Recompress && opt.BlockLog > 0 {
+		sel = s.selectReblockable(us, sel, live, opt.BlockLog)
+	}
+	enc := opt.encoding()
+	if opt.Layout == layoutRecon {
+		plan, err := s.planRecon(live, false)
+		if err != nil {
+			return res, fmt.Errorf("repack: reconstruction layout: %w", err)
+		}
+		res.Recon = plan
+		sel = plan.selectPacks(us, sel)
+		enc.order = plan.order
+	}
 	if opt.Tier != "" && opt.Tier != "all" {
 		sel = slices.DeleteFunc(sel, func(u packUsage) bool { return u.Tier != opt.Tier })
 	}
@@ -19220,12 +19986,34 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 		return res, fmt.Errorf("repack: refusing to run: %s", clash[0])
 	}
 	s.removeStalePackStaging()
-	if err := s.replacePacksLive(sel, live, opt.TargetBytes, opt.Compress, &res); err != nil {
+	if err := s.replacePacksLive(sel, live, opt.TargetBytes, enc, &res); err != nil {
 		return res, fmt.Errorf("repack: %w", err)
 	}
 	res.BytesReclaimed = res.BytesDeleted - res.BytesWritten
 	fireTestHook(hookRepackDone)
 	return res, nil
+}
+
+// selectReblockable adds to sel the packs holding a live single-stream DEFLATE
+// record longer than one block: exactly the records -record-blocks would rewrite
+// as restartable, so a converted pack is never selected again for this reason.
+func (s *Store) selectReblockable(us, sel []packUsage, live *liveSet, blockLog uint8) []packUsage {
+	st := s.packSnap()
+	want := map[int32]bool{}
+	for sum, loc := range st.primaries() {
+		if loc.codec == packCodecDeflate && loc.logical > 1<<blockLog && !st.packs[loc.pack].open && live.has(*sum) {
+			want[loc.pack] = true
+		}
+	}
+	for _, u := range sel {
+		delete(want, u.idx)
+	}
+	for _, u := range us {
+		if want[u.idx] {
+			sel = append(sel, u)
+		}
+	}
+	return sel
 }
 
 func (s *Store) packClashes() []string {
@@ -19273,17 +20061,27 @@ func runRepack(args []string) {
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	tierName := fs.String("tier", "all", "only repack packs in this tier: hot, warm, cold, or all (replacements always stay in their tier)")
 	recompress := fs.Bool("recompress", false, "also rewrite fully live packs that hold raw records (compresses direct-ingest packs; needs -compression auto)")
+	blocksFlag := fs.String("record-blocks", "off", "restartable compressed records in rewritten packs: off, or the block size in KiB (research)")
+	layoutName := fs.String("layout", "locality", "record order of rewritten packs: locality (keep the physical order) or recon (also relayout authority families by reconstruction co-access; research)")
 	fs.Parse(args)
 
 	compress, err := parseCompressionFlag(*compression)
 	if err == nil && *tierName != "all" {
 		_, err = parseTier(*tierName)
 	}
+	var blockLog uint8
+	if err == nil {
+		blockLog, err = parseRecordBlocksFlag(*blocksFlag)
+	}
+	var layout packLayout
+	if err == nil {
+		layout, err = parseLayoutFlag(*layoutName)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: repack: %v\n", err)
 		os.Exit(2)
 	}
-	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress})
+	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress, BlockLog: blockLog, Layout: layout})
 	if err != nil {
 		switch {
 		case errors.Is(err, errGCStoreInUse):
@@ -19304,6 +20102,468 @@ func runRepack(args []string) {
 		return
 	}
 	printRepackHuman(os.Stdout, res)
+}
+
+// =============================================================================
+// 13d1. Reconstruction-ordered pack layout (B5, `-layout recon`)
+//
+// First-reference order keeps an object's CDC chunks together, but an
+// authority delta's reconstruction reads its own program pieces and then base
+// chunks wherever its COPY operations point, and those sit in other packs or
+// far apart. The planner measures co-access instead of guessing it: it runs
+// sparse probe reads through the production resolver (a fresh ranged context
+// per probe, so every piece a reconstruction requests is observed) and gives
+// every piece an anchor in the coordinates of the family's pin bases -- the
+// median base offset of the probes that read it. Records are then placed by
+// anchor cluster, base before dependents, with the pieces nearly every probe of
+// a body reads (envelope headers, frame tables) together at the family's head.
+//
+// Physical order changes nothing logical: placement only happens through the
+// B4 carry/publish/retire path, and a family is relaid out only when the
+// estimator -- 128 KiB pack windows a probe touches, now versus as planned --
+// predicts at least reconMinGain, so a laid-out family is not rewritten again.
+// =============================================================================
+
+const (
+	reconProbeSpacing  = 64 << 10  // target bytes between probes of one body
+	reconProbesPerBody = 512       // most probes of one body (sparser above 32 MiB)
+	reconMaxProbes     = 1 << 14   // most probes of one plan
+	reconCluster       = 256 << 10 // base bytes whose dependents are placed together
+	reconHotShare      = 0.5       // a piece read by this share of its body's probes is a header
+	reconWindow        = 17        // log2 of the pack window the estimator counts (kernel readahead)
+)
+
+// reconMinGain is the least predicted window reduction worth a relayout (a variable for tests).
+var reconMinGain = 0.15
+
+// reconPlan orders the live records of the authority families it planned.
+type reconPlan struct {
+	Families        int              `json:"families"`
+	Planned         int              `json:"families_relaid"`
+	Probes          int              `json:"probes"`
+	Records         int              `json:"records_planned"`
+	Headers         int              `json:"header_records"`
+	CrossCluster    float64          `json:"cross_cluster_share"` // probe requests outside the probe's cluster
+	WindowsNow      float64          `json:"windows_per_probe_now"`
+	WindowsPlanned  float64          `json:"windows_per_probe_planned"`
+	SkippedFamilies int              `json:"families_skipped"`
+	rank            map[[32]byte]int // planned position of each record of a relaid family
+	packs           map[int32]bool   // packs holding them
+}
+
+type reconFamily struct {
+	recs   []*authRecord
+	pieces map[[32]byte]*reconPiece
+	order  [][32]byte // pieces in first-seen order (records by sha, pieces in record order)
+	probes [][][32]byte
+}
+
+type reconPiece struct {
+	size         int64
+	depth        int   // record depth (0 for pin pieces)
+	coord        int64 // base coordinate of a pin piece, -1 otherwise
+	anchors      []int64
+	reads        int // probes that requested it
+	of           *authRecord
+	probesOfBody int // probes of the body it belongs to
+}
+
+// planRecon builds the reconstruction layout of every authority family whose
+// pieces are all live, reading at most reconMaxProbes probes. It ranks the
+// families the estimator admits, or every family when all is set (compaction,
+// which writes new packs anyway).
+func (s *Store) planRecon(live *liveSet, all bool) (*reconPlan, error) {
+	plan := &reconPlan{rank: map[[32]byte]int{}, packs: map[int32]bool{}}
+	files, err := s.authFiles()
+	if err != nil {
+		return nil, err
+	}
+	recs := map[[32]byte]*authRecord{}
+	for _, sha := range files {
+		r, err := s.authLoad(sha)
+		if err != nil {
+			return nil, err
+		}
+		if r != nil && (r.Form == authFormPin || r.Form == authFormDelta) {
+			recs[sha] = r
+		}
+	}
+	// Families are the connected components of the base relation.
+	parent := map[[32]byte][32]byte{}
+	var find func(x [32]byte) [32]byte
+	find = func(x [32]byte) [32]byte {
+		if p, ok := parent[x]; ok && p != x {
+			r := find(p)
+			parent[x] = r
+			return r
+		}
+		return x
+	}
+	shas := slices.SortedFunc(maps.Keys(recs), func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) })
+	for _, sha := range shas {
+		parent[sha] = find(sha)
+		for _, b := range recs[sha].Bases {
+			if _, ok := recs[b.SHA]; ok {
+				ra, rb := find(sha), find(b.SHA)
+				if ra != rb {
+					parent[max32(ra, rb)] = min32(ra, rb)
+				}
+			}
+		}
+	}
+	byRoot := map[[32]byte][]*authRecord{}
+	for _, sha := range shas {
+		byRoot[find(sha)] = append(byRoot[find(sha)], recs[sha])
+	}
+	roots := slices.SortedFunc(maps.Keys(byRoot), func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) })
+	pos := 0
+	var crossN, crossD int
+	var winNow, winPlan float64
+	var winProbes int
+	for _, root := range roots {
+		fam := byRoot[root]
+		if len(fam) < 2 {
+			continue // a lone pin is ordinary CDC order already
+		}
+		plan.Families++
+		f, err := s.probeReconFamily(fam, live, reconMaxProbes-plan.Probes)
+		if err != nil || f == nil {
+			plan.SkippedFamilies++
+			continue
+		}
+		plan.Probes += len(f.probes)
+		order := f.layout()
+		cn, cd := f.crossCluster()
+		crossN, crossD = crossN+cn, crossD+cd
+		now, planned := s.reconEstimate(f, order)
+		winNow += now * float64(len(f.probes))
+		winPlan += planned * float64(len(f.probes))
+		winProbes += len(f.probes)
+		if !all && (now == 0 || 1-planned/now < reconMinGain) {
+			continue
+		}
+		plan.Planned++
+		st := s.packSnap()
+		for _, sha := range order {
+			plan.rank[sha] = pos
+			pos++
+			if f.isHeader(sha) {
+				plan.Headers++
+			}
+			if loc, ok := st.lookup(sha); ok {
+				plan.packs[loc.pack] = true
+			}
+		}
+	}
+	plan.Records = len(plan.rank)
+	if crossD > 0 {
+		plan.CrossCluster = float64(crossN) / float64(crossD)
+	}
+	if winProbes > 0 {
+		plan.WindowsNow, plan.WindowsPlanned = winNow/float64(winProbes), winPlan/float64(winProbes)
+	}
+	return plan, nil
+}
+
+func max32(a, b [32]byte) [32]byte {
+	if bytes.Compare(a[:], b[:]) > 0 {
+		return a
+	}
+	return b
+}
+
+func min32(a, b [32]byte) [32]byte {
+	if bytes.Compare(a[:], b[:]) < 0 {
+		return a
+	}
+	return b
+}
+
+// probeReconFamily collects the family's pieces and probe co-access. It returns
+// nil when a piece is not live (the family is mid-migration or mid-revert) or
+// the probe budget is spent.
+func (s *Store) probeReconFamily(fam []*authRecord, live *liveSet, budget int) (*reconFamily, error) {
+	f := &reconFamily{recs: fam, pieces: map[[32]byte]*reconPiece{}}
+	var coord int64
+	for _, r := range fam {
+		var off int64
+		for _, p := range r.Pieces {
+			if !live.has(p.SHA) {
+				return nil, nil
+			}
+			if _, ok := f.pieces[p.SHA]; !ok {
+				rp := &reconPiece{size: p.Len, depth: int(r.Depth), coord: -1, of: r}
+				if r.Form == authFormPin {
+					rp.coord = coord + off
+				}
+				f.pieces[p.SHA] = rp
+				f.order = append(f.order, p.SHA)
+			}
+			off += p.Len
+		}
+		if r.Form == authFormPin {
+			coord += r.Size
+		}
+	}
+	for _, r := range fam {
+		if r.Form != authFormDelta {
+			continue
+		}
+		k := int(min(int64(reconProbesPerBody), max(1, r.Size/reconProbeSpacing)))
+		if budget -= k; budget < 0 {
+			return nil, nil
+		}
+		first := len(f.probes)
+		var prev int64 = -1
+		for i := range k {
+			off := (int64(i)*2 + 1) * r.Size / int64(2*k)
+			n := min(4096, r.Size-off)
+			var got [][32]byte
+			var mu sync.Mutex
+			ctx := s.newAuthCtx()
+			ctx.sparse, ctx.cc = true, nil
+			ctx.trace = func(kind byte, sha [32]byte, _, _ int64) {
+				if kind == 'r' {
+					mu.Lock()
+					got = append(got, sha)
+					mu.Unlock()
+				}
+			}
+			body, _, err := ctx.body(r.SHA, 0, 1)
+			if err == nil {
+				buf := make([]byte, n)
+				_, err = body.ReadAt(buf, off)
+			}
+			ctx.close()
+			if err != nil {
+				return nil, err
+			}
+			f.probes = append(f.probes, got)
+			// The probe's anchor is the median base coordinate it read (else the previous probe's).
+			var cs []int64
+			for _, sha := range got {
+				if p := f.pieces[sha]; p != nil && p.coord >= 0 {
+					cs = append(cs, p.coord)
+				}
+			}
+			a := prev
+			if len(cs) > 0 {
+				slices.Sort(cs)
+				a = cs[len(cs)/2]
+			}
+			prev = a
+			seen := map[[32]byte]bool{}
+			for _, sha := range got {
+				if p := f.pieces[sha]; p != nil && !seen[sha] {
+					seen[sha] = true
+					p.reads++
+					if a >= 0 {
+						p.anchors = append(p.anchors, a)
+					}
+				}
+			}
+		}
+		for _, p := range f.pieces {
+			if p.of == r {
+				p.probesOfBody = len(f.probes) - first
+			}
+		}
+	}
+	return f, nil
+}
+
+// isHeader reports a delta piece that most probes of its body read.
+func (f *reconFamily) isHeader(sha [32]byte) bool {
+	p := f.pieces[sha]
+	return p.coord < 0 && p.probesOfBody >= 4 && float64(p.reads) >= reconHotShare*float64(p.probesOfBody)
+}
+
+// anchorOf is a piece's placement coordinate: its own for a pin piece, else the
+// median of its probes' anchors (-1: never probed).
+func (p *reconPiece) anchorOf() int64 {
+	if p.coord >= 0 {
+		return p.coord
+	}
+	if len(p.anchors) == 0 {
+		return -1
+	}
+	a := slices.Clone(p.anchors)
+	slices.Sort(a)
+	return a[len(a)/2]
+}
+
+// layout returns the family's pieces in planned order: headers (by depth, then
+// record order), then for each anchor cluster its pin pieces followed by the
+// dependents anchored there, shallow before deep. A piece no probe read takes the
+// anchor of the piece before it in its record.
+func (f *reconFamily) layout() [][32]byte { return f.layoutAs(reconLayoutMode, reconCluster) }
+
+// reconLayoutMode is the production variant (a variable so the research harness can compare).
+var reconLayoutMode = reconPinsApart
+
+// Layout variants (research): pins interleaved with their dependents by cluster,
+// or kept in base order ahead of the headers and the anchor-ordered dependents.
+const (
+	reconInterleave = iota
+	reconPinsApart
+)
+
+func (f *reconFamily) layoutAs(mode int, cluster int64) [][32]byte {
+	type key struct {
+		hdr     bool
+		cluster int64
+		depth   int
+		anchor  int64
+		seq     int
+	}
+	keys := map[[32]byte]key{}
+	for _, r := range f.recs {
+		last := int64(0)
+		for _, p := range r.Pieces {
+			rp := f.pieces[p.SHA]
+			if _, done := keys[p.SHA]; done {
+				continue
+			}
+			a := rp.anchorOf()
+			if a < 0 {
+				a = last
+			}
+			last = a
+			c := a / cluster
+			if mode == reconPinsApart && rp.coord < 0 {
+				c += 1 << 40 // every dependent after every pin piece
+			}
+			keys[p.SHA] = key{f.isHeader(p.SHA), c, rp.depth, a, 0}
+		}
+	}
+	for i, sha := range f.order {
+		k := keys[sha]
+		k.seq = i
+		keys[sha] = k
+	}
+	out := slices.Clone(f.order)
+	slices.SortStableFunc(out, func(a, b [32]byte) int {
+		x, y := keys[a], keys[b]
+		if x.hdr != y.hdr {
+			if x.hdr {
+				return -1
+			}
+			return 1
+		}
+		if x.hdr {
+			return cmp.Or(cmp.Compare(x.depth, y.depth), cmp.Compare(x.seq, y.seq))
+		}
+		return cmp.Or(cmp.Compare(x.cluster, y.cluster), cmp.Compare(x.depth, y.depth), cmp.Compare(x.anchor, y.anchor), cmp.Compare(x.seq, y.seq))
+	})
+	return out
+}
+
+// crossCluster counts probe requests of base pieces outside the cluster of the
+// probe's own anchor: what selective duplication of base records could still save.
+func (f *reconFamily) crossCluster() (n, d int) {
+	for _, got := range f.probes {
+		var cs []int64
+		for _, sha := range got {
+			if p := f.pieces[sha]; p != nil && p.coord >= 0 {
+				cs = append(cs, p.coord)
+			}
+		}
+		if len(cs) == 0 {
+			continue
+		}
+		sorted := slices.Clone(cs)
+		slices.Sort(sorted)
+		mid := sorted[len(sorted)/2] / reconCluster
+		for _, c := range cs {
+			d++
+			if c/reconCluster != mid {
+				n++
+			}
+		}
+	}
+	return n, d
+}
+
+// reconEstimate prices the family's probes in distinct 128 KiB pack windows,
+// with the records where they are now and where the plan would write them
+// (packs filled in plan order at the default target, stored sizes as now).
+func (s *Store) reconEstimate(f *reconFamily, order [][32]byte) (now, planned float64) {
+	st := s.packSnap()
+	type win struct {
+		pack int64
+		w    int64
+	}
+	cur := map[[32]byte][2]int64{} // pack, offset
+	for sha := range f.pieces {
+		if loc, ok := st.lookup(sha); ok {
+			cur[sha] = [2]int64{int64(loc.pack), int64(loc.off)}
+		}
+	}
+	plan := map[[32]byte][2]int64{}
+	// Planned packs get negative numbers so they never alias a current pack.
+	var vpack, voff, vlog int64 = 0, 0, defaultPackTargetBytes
+	for _, sha := range order {
+		loc, ok := st.lookup(sha)
+		if !ok {
+			continue
+		}
+		if vlog >= defaultPackTargetBytes {
+			vpack, voff, vlog = vpack-1, packHeaderSize, 0
+		}
+		plan[sha] = [2]int64{vpack, voff + packRecordHeaderSize}
+		voff += packRecordHeaderSize + int64(loc.stored)
+		vlog += int64(loc.logical) + packRecordHeaderSize
+	}
+	count := func(where map[[32]byte][2]int64, got [][32]byte) int {
+		ws := map[win]bool{}
+		for _, sha := range got {
+			p, ok := where[sha]
+			if !ok {
+				continue
+			}
+			loc, _ := st.lookup(sha)
+			for w := (p[1] - packRecordHeaderSize) >> reconWindow; w <= (p[1]+int64(loc.stored)-1)>>reconWindow; w++ {
+				ws[win{p[0], w}] = true
+			}
+		}
+		return len(ws)
+	}
+	var a, b int
+	for _, got := range f.probes {
+		a += count(cur, got)
+		b += count(plan, got)
+	}
+	if len(f.probes) == 0 {
+		return 0, 0
+	}
+	return float64(a) / float64(len(f.probes)), float64(b) / float64(len(f.probes))
+}
+
+// selectPacks adds to sel the packs holding records of a relaid family.
+func (p *reconPlan) selectPacks(us, sel []packUsage) []packUsage {
+	for _, u := range us {
+		if p.packs[u.idx] && !slices.ContainsFunc(sel, func(v packUsage) bool { return v.idx == u.idx }) {
+			sel = append(sel, u)
+		}
+	}
+	return sel
+}
+
+// order sorts carried records: planned records by rank, then the rest as they were.
+func (p *reconPlan) order(_ tier, cands []compactCandidate) {
+	slices.SortStableFunc(cands, func(a, b compactCandidate) int {
+		ra, oka := p.rank[a.sum]
+		rb, okb := p.rank[b.sum]
+		switch {
+		case oka && okb:
+			return cmp.Compare(ra, rb)
+		case oka:
+			return -1
+		case okb:
+			return 1
+		}
+		return 0
+	})
 }
 
 // =============================================================================
@@ -19884,8 +21144,14 @@ type MaintOptions struct {
 	MaxLivePercent int           `json:"max_live_percent"`
 	TargetBytes    int64         `json:"target_bytes"`
 	Compress       bool          `json:"compress"`
-	MaxDeletes     int           `json:"max_deletes"` // loose files and roots condemned per pass
-	Wait           time.Duration `json:"wait"`        // bound on each grace period
+	MaxDeletes     int           `json:"max_deletes"`                // loose files and roots condemned per pass
+	Wait           time.Duration `json:"wait"`                       // bound on each grace period
+	BlockLog       uint8         `json:"record_block_log,omitempty"` // restartable records in replacement packs
+	Layout         packLayout    `json:"-"`                          // layoutRecon: also relayout packs by reconstruction co-access
+}
+
+func (o MaintOptions) encoding() packEncoding {
+	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog}
 }
 
 func defaultMaintOptions() MaintOptions {
@@ -19927,18 +21193,19 @@ type MaintReport struct {
 	AuthBodiesDeleted int `json:"authority_bodies_deleted"`
 	TmpFilesDeleted   int `json:"tmp_files_deleted"`
 
-	BytesReclaimed      int64  `json:"bytes_reclaimed"`     // unlinked
-	NetBytesReclaimed   int64  `json:"net_bytes_reclaimed"` // unlinked minus written
-	RetainedPinned      int    `json:"retained_pinned"`     // dead at the mark, kept because an operation referenced it
-	RetainedPinnedBytes int64  `json:"retained_pinned_bytes"`
-	DeferredItems       int    `json:"deferred_items,omitempty"`
-	DeferredBytes       int64  `json:"deferred_bytes,omitempty"`
-	PendingPacks        int    `json:"pending_packs,omitempty"` // retired from the locator, unlinked by a later pass
-	PendingBytes        int64  `json:"pending_bytes,omitempty"`
-	Pins                int64  `json:"pins"`
-	Deferred            string `json:"deferred,omitempty"`
-	Canceled            bool   `json:"canceled,omitempty"`
-	Error               string `json:"error,omitempty"`
+	BytesReclaimed      int64      `json:"bytes_reclaimed"`     // unlinked
+	NetBytesReclaimed   int64      `json:"net_bytes_reclaimed"` // unlinked minus written
+	RetainedPinned      int        `json:"retained_pinned"`     // dead at the mark, kept because an operation referenced it
+	RetainedPinnedBytes int64      `json:"retained_pinned_bytes"`
+	DeferredItems       int        `json:"deferred_items,omitempty"`
+	DeferredBytes       int64      `json:"deferred_bytes,omitempty"`
+	PendingPacks        int        `json:"pending_packs,omitempty"` // retired from the locator, unlinked by a later pass
+	PendingBytes        int64      `json:"pending_bytes,omitempty"`
+	Pins                int64      `json:"pins"`
+	Recon               *reconPlan `json:"recon,omitempty"` // MaintOptions.Layout recon: the plan of this pass
+	Deferred            string     `json:"deferred,omitempty"`
+	Canceled            bool       `json:"canceled,omitempty"`
+	Error               string     `json:"error,omitempty"`
 }
 
 // doomedFile is a loose file or root a pass condemned.
@@ -20026,13 +21293,19 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		}
 	}
 	doomed := s.maintSelectPacks(ep, live, opt, &rep)
+	enc := opt.encoding()
+	if opt.Layout == layoutRecon {
+		if doomed, err = s.maintRelayout(ep, live, opt, doomed, &enc, &rep); err != nil {
+			return rep, err
+		}
+	}
 	var carry *packCarry
 	if len(doomed) > 0 {
 		for _, u := range doomed {
 			s.retire.add(u.tier, u.ID, s.packSnap().packs[u.idx].path, u.Size)
 		}
 		var rres RepackResult
-		carry, err = s.carryLivePacks(doomed, live, nil, opt.TargetBytes, opt.Compress, &rres)
+		carry, err = s.carryLivePacks(doomed, live, nil, opt.TargetBytes, enc, &rres)
 		rep.PacksWritten += rres.PacksWritten
 		rep.RecordsCopied += rres.RecordsCopied
 		rep.BytesWritten += rres.BytesWritten
@@ -20235,6 +21508,45 @@ func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, opt MaintOptions
 	return sel
 }
 
+// maintRelayout adds the packs of authority families the reconstruction planner
+// would relay out (section 13d1), within the pass's pack budget, and orders the
+// carry accordingly. Planning reads only live records, unlocked; a plan is not
+// recomputed while the records and the pack set are those it last judged.
+func (s *Store) maintRelayout(ep *maintEpoch, live *liveSet, opt MaintOptions, doomed []packUsage, enc *packEncoding, rep *MaintReport) ([]packUsage, error) {
+	st := s.packSnap()
+	h := sha256.New()
+	fmt.Fprintf(h, "%d", s.auth.gen.Load())
+	for _, p := range st.packs {
+		fmt.Fprintf(h, "/%d%s", p.tier, p.id)
+	}
+	key := [32]byte(h.Sum(nil))
+	if s.reconSeen.Load() != nil && *s.reconSeen.Load() == key {
+		return doomed, nil
+	}
+	plan, err := s.planRecon(live, false)
+	if err != nil {
+		return doomed, fmt.Errorf("maintenance: reconstruction layout: %w", err)
+	}
+	rep.Recon = plan
+	us := s.packUsagesLive(live)
+	var add []packUsage
+	for _, u := range plan.selectPacks(us, doomed)[len(doomed):] {
+		if !ep.packs0[[2]string{u.Tier, u.ID}] || st.packs[u.idx].open {
+			return doomed, nil // a family's packs move together or not at all
+		}
+		add = append(add, u)
+	}
+	if opt.MaxSourcePacks > 0 && len(doomed)+len(add) > opt.MaxSourcePacks {
+		rep.PacksDeferred += len(add)
+		return doomed, nil
+	}
+	if len(add) == 0 {
+		s.reconSeen.Store(&key) // nothing worth moving: do not probe again until something changes
+	}
+	enc.order = plan.order
+	return append(doomed, add...), nil
+}
+
 // maintCarryExtra publishes chunks that must survive the doomed packs but were
 // not carried with the live set (pinned or revived after the mark), unless a
 // verified copy already exists outside them.
@@ -20258,7 +21570,7 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 		by[c.t] = append(by[c.t], c.compactCandidate)
 		n++
 	}
-	comp := newCompressor(opt.Compress)
+	comp := newBlockCompressor(opt.Compress, opt.BlockLog)
 	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
 	abort := func(c compactCandidate, err error) error {
 		return fmt.Errorf("maintenance: chunk %x has no readable copy to carry: %w", c.sum, err)
@@ -20280,7 +21592,7 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 		}
 		rep.PacksWritten++
 		rep.BytesWritten += info.size
-		rep.RecordsCopied += len(entries)
+		rep.RecordsCopied += len(comp.packChunkEntries(entries))
 	}
 	for _, c := range need {
 		if _, err := s.casReadH(c.sum, carry.skip, h); err != nil {
@@ -21793,7 +23105,7 @@ func (s *Store) rebalance(rr reachabilityResult, tg *tierTargets, opt rebalanceO
 			}
 		}
 		var rep RepackResult
-		if err := s.replacePacksTo(doomed, rr.live(), dest, opt.TargetBytes, opt.Compress, &rep); err != nil {
+		if err := s.replacePacksTo(doomed, rr.live(), dest, opt.TargetBytes, packEncoding{Compress: opt.Compress}, &rep); err != nil {
 			return err
 		}
 		res.PacksWritten += rep.PacksWritten
@@ -30348,8 +31660,18 @@ func runServe(args []string) {
 	maintWait := fs.Duration("maintenance-wait", 10*time.Minute, "online maintenance: longest wait for in-flight requests at each grace period before a pass defers")
 	maintKeep := fs.Int("maintenance-keep-versions", -1, "online maintenance: before each pass, prune history to this many versions per key in every bucket (-1: never prune)")
 	maintWorkersN := fs.Int("maintenance-workers", max(1, runtime.GOMAXPROCS(0)/2), "online maintenance: parallel workers of a pass (ZEROS3_MAINT_WORKERS overrides)")
+	maintBlocks := fs.String("maintenance-record-blocks", "off", "online repack: restartable compressed records in rewritten packs, off or the block size in KiB (research)")
+	maintLayout := fs.String("maintenance-layout", "locality", "online repack: locality, or recon to also relayout authority families by reconstruction co-access (research)")
 	fs.Parse(args)
 	maintOpt := defaultMaintOptions()
+	var ferr error
+	if maintOpt.BlockLog, ferr = parseRecordBlocksFlag(*maintBlocks); ferr == nil {
+		maintOpt.Layout, ferr = parseLayoutFlag(*maintLayout)
+	}
+	if ferr != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: serve: %v\n", ferr)
+		os.Exit(2)
+	}
 	switch *maintMode {
 	case "off":
 	case "gc":
@@ -52213,11 +53535,25 @@ type authCtx struct {
 	fetched int64
 	// pieces is a request-local FIFO of verified chunks shared by every body of
 	// the closure (a base chunk is often read through several dependents).
-	pmu        sync.Mutex // guards pieces, pieceOrder, pieceBytes and fetched
+	pmu        sync.Mutex // guards pieces, pieceLRU, pieceBytes and fetched
 	pieces     map[[32]byte][]byte
-	pieceOrder [][32]byte
+	pieceLRU   list.List // of [32]byte, least recently used first (P8: a FIFO re-inflated roaming bases)
+	pieceAt    map[[32]byte]*list.Element
 	pieceBytes int64
 	pieceCap   int64
+	// sparse lets a ranged read of at most authSpanReadMax bytes read only the blocks of restartable
+	// pieces it needs; spans holds them (same budget as pieces). Longer reads decode pieces whole.
+	sparse bool
+	win    *packWindows // sparse reads: raw pack windows around the records they missed
+	// prefetch lets bodies read the pieces a read will need on up to authPrefetchWorkers
+	// goroutines ahead of it (served reads); fly single-flights a piece being read.
+	prefetch  bool
+	pf        chan struct{}
+	pfwg      sync.WaitGroup
+	fly       map[[32]byte]chan struct{}
+	spans     map[[32]byte][]authSpan
+	spanOrder [][32]byte
+	spanBytes int64
 	// wc, when set, shares decoded windows of delta bodies between the readers of one planning pass.
 	wc *authWinCache
 	// frameCap is how many decoded frames each in-memory delta body keeps (0: 16); a proof or a planning reader
@@ -52248,13 +53584,13 @@ const (
 	authPieceCacheBytes    = 8 << 20   // verified chunks one served request keeps (a base chunk is read through several dependents)
 	authScanPieceBytes     = 2 << 20   // sequential proof / verify / materialize passes
 	authReaderAtPieceBytes = 1 << 20   // the same for a long-lived random-access reader (analysis, migration)
-	authPlanPieceBytes     = 8 << 20   // base chunks a planning reader keeps (its matcher revisits nearby base regions)
+	authPlanPieceBytes     = 32 << 20  // base chunks a planning reader keeps (its matcher revisits nearby base regions)
 	authPlanWinCacheBytes  = 32 << 20  // planning cache of windowed objects (1 MiB windows)
 	authPlanSrcCacheMin    = 96 << 20  // floor once whole in-memory sources are in scope
 	authPlanWinCacheMax    = 160 << 20 // and what four of the largest in-memory objects may raise it to
 	authProofWinBytes      = 16 << 20  // decoded windows one proof of a windowed body keeps
 	authNestedReadWinBytes = 8 << 20   // decoded base windows kept within one nested read
-	authProofPieceBytes    = 8 << 20   // verified base chunks the same proof keeps
+	authProofPieceBytes    = 32 << 20  // verified base chunks the same proof keeps (LRU; B5: 8 MiB re-inflated each base ~40x)
 	authProofFrames        = 96        // decoded frames per delta body a proof keeps (128 KiB of target each)
 )
 
@@ -52274,7 +53610,78 @@ func (s *Store) newAuthScanCtx() *authCtx {
 	return c
 }
 
-func (c *authCtx) close() {}
+// close waits for the context's prefetches, which may still be reading.
+func (c *authCtx) close() { c.pfwg.Wait() }
+
+// flight, called with pmu held after a cache miss, returns the channel of the
+// goroutine already reading sha, or registers this one as its reader (mine).
+func (c *authCtx) flight(sha [32]byte) (wait <-chan struct{}, mine chan struct{}) {
+	if !c.prefetch {
+		return nil, nil
+	}
+	if ch := c.fly[sha]; ch != nil {
+		return ch, nil
+	}
+	if c.fly == nil {
+		c.fly = map[[32]byte]chan struct{}{}
+	}
+	mine = make(chan struct{})
+	c.fly[sha] = mine
+	return nil, mine
+}
+
+// land ends the read of sha this goroutine registered as mine (nil: none).
+func (c *authCtx) land(sha [32]byte, mine chan struct{}) {
+	if mine == nil {
+		return
+	}
+	c.pmu.Lock()
+	if c.fly[sha] == mine {
+		delete(c.fly, sha)
+	}
+	c.pmu.Unlock()
+	close(mine)
+}
+
+const (
+	authPrefetchWorkers = 4       // concurrent piece reads one served request may run ahead
+	authPrefetchBytes   = 4 << 20 // most piece bytes one prefetch call starts (half the piece cache)
+)
+
+// prefetchPieces starts reads of the pieces of q covering [off, off+n), as ReadAt
+// will request them, on the context's bounded workers. Errors are left to ReadAt.
+func (c *authCtx) prefetchPieces(q *pieceSeq, off, n int64) {
+	if !c.prefetch || n <= 0 {
+		return
+	}
+	if c.pf == nil {
+		c.pf = make(chan struct{}, authPrefetchWorkers)
+	}
+	var budget int64
+	for i := sort.Search(len(q.offs), func(i int) bool { return q.offs[i] > off }) - 1; i >= 0 && i < len(q.pieces) && q.offs[i] < off+n && budget < authPrefetchBytes; i++ {
+		p := q.pieces[i]
+		lo := max(0, off-q.offs[i])
+		hi := min(p.Len, off+n-q.offs[i])
+		c.pmu.Lock()
+		_, have := c.pieces[p.SHA]
+		busy := c.fly[p.SHA] != nil
+		c.pmu.Unlock()
+		if have || busy {
+			continue
+		}
+		budget += hi - lo
+		c.pf <- struct{}{}
+		c.pfwg.Add(1)
+		go func() {
+			defer func() { <-c.pf; c.pfwg.Done() }()
+			if c.sparse && c.ranged && hi-lo < p.Len {
+				c.readPieceSpan(p, lo, hi-lo)
+			} else {
+				c.readPiece(p)
+			}
+		}()
+	}
+}
 
 func (c *authCtx) record(sha [32]byte) (*authRecord, error) {
 	if rec := c.overlay[sha]; rec != nil {
@@ -52340,23 +53747,44 @@ func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
 	if c.trace != nil {
 		c.trace('r', p.SHA, 0, p.Len)
 	}
-	c.pmu.Lock()
-	d, ok := c.pieces[p.SHA]
-	c.pmu.Unlock()
-	if ok {
-		return d, nil
+	var mine chan struct{}
+	for {
+		c.pmu.Lock()
+		d, ok := c.pieces[p.SHA]
+		var wait <-chan struct{}
+		if !ok {
+			wait, mine = c.flight(p.SHA)
+		} else if e := c.pieceAt[p.SHA]; e != nil {
+			c.pieceLRU.MoveToBack(e)
+		}
+		c.pmu.Unlock()
+		if ok {
+			return d, nil
+		}
+		if wait == nil {
+			break
+		}
+		<-wait // a prefetch of this piece is in flight: use its result
 	}
+	defer func() { c.land(p.SHA, mine) }()
 	data, shared := c.cc.get(&p.SHA)
 	if shared = shared && int64(len(data)) == p.Len; shared {
 		c.st.sharedHits.Add(1)
 	} else {
 		var err error
-		if data, err = c.s.casRead(p.SHA); err != nil {
+		if data, err = c.s.casReadWin(p.SHA, c.win); err != nil {
 			return nil, err
 		}
 		if int64(len(data)) != p.Len {
 			return nil, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
 		}
+	}
+	return c.keepPiece(p, data, shared), nil
+}
+
+// keepPiece accounts for and caches a verified whole piece (shared: it came from the store chunk cache).
+func (c *authCtx) keepPiece(p authPiece, data []byte, shared bool) []byte {
+	if !shared {
 		c.cc.offer(&p.SHA, data, c.ccEpoch)
 		c.st.pieceReads.Add(1)
 		c.st.pieceBytes.Add(p.Len)
@@ -52367,7 +53795,7 @@ func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
 	c.pmu.Lock()
 	defer c.pmu.Unlock()
 	if _, dup := c.pieces[p.SHA]; dup {
-		return data, nil
+		return data
 	}
 	if !shared {
 		c.fetched += p.Len
@@ -52375,20 +53803,125 @@ func (c *authCtx) readPiece(p authPiece) ([]byte, error) {
 	if c.pieces == nil {
 		c.pieces = map[[32]byte][]byte{}
 	}
-	for c.pieceBytes+p.Len > c.pieceCap && len(c.pieceOrder) > 0 {
-		old := c.pieceOrder[0]
-		c.pieceOrder = c.pieceOrder[1:]
+	if c.pieceAt == nil {
+		c.pieceAt = map[[32]byte]*list.Element{}
+	}
+	for c.pieceBytes+p.Len > c.pieceCap && c.pieceLRU.Len() > 0 {
+		old := c.pieceLRU.Remove(c.pieceLRU.Front()).([32]byte)
 		c.pieceBytes -= int64(len(c.pieces[old]))
 		delete(c.pieces, old)
+		delete(c.pieceAt, old)
 	}
 	c.pieces[p.SHA] = data
-	c.pieceOrder = append(c.pieceOrder, p.SHA)
+	c.pieceAt[p.SHA] = c.pieceLRU.PushBack(p.SHA)
 	c.pieceBytes += p.Len
-	return data, nil
+	return data
+}
+
+// readPieceSpan returns verified bytes of piece p covering [lo, lo+n) and the
+// piece offset of their first byte. A restartable record (codec 2) yields only the
+// blocks the span covers, kept in a request-local FIFO beside whole pieces; any
+// other record is read whole, as readPiece does.
+func (c *authCtx) readPieceSpan(p authPiece, lo, n int64) ([]byte, int64, error) {
+	if c.trace != nil {
+		c.trace('r', p.SHA, lo, n)
+	}
+	var spans []authSpan
+	var mine chan struct{}
+	for {
+		c.pmu.Lock()
+		d, ok := c.pieces[p.SHA]
+		spans = c.spans[p.SHA]
+		if !ok {
+			for _, sp := range spans {
+				if sp.at <= lo && lo+n <= sp.at+int64(len(sp.data)) {
+					c.pmu.Unlock()
+					return sp.data, sp.at, nil
+				}
+			}
+		}
+		var wait <-chan struct{}
+		if !ok {
+			wait, mine = c.flight(p.SHA)
+		}
+		c.pmu.Unlock()
+		if ok {
+			return d, 0, nil
+		}
+		if wait == nil {
+			break
+		}
+		<-wait
+	}
+	defer func() { c.land(p.SHA, mine) }()
+	if len(spans) >= authSpanPromote {
+		c.land(p.SHA, mine)
+		mine = nil
+		d, err := c.readPiece(p) // a piece this request keeps returning to is cheaper read whole
+		return d, 0, err
+	}
+	if data, shared := c.cc.get(&p.SHA); shared && int64(len(data)) == p.Len {
+		c.st.sharedHits.Add(1)
+		return c.keepPiece(p, data, true), 0, nil
+	}
+	data, at, whole, err := c.s.casReadSpan(p.SHA, p.Len, lo, n, c.win)
+	if err != nil {
+		return nil, 0, err
+	}
+	if whole {
+		if int64(len(data)) != p.Len {
+			return nil, 0, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
+		}
+		return c.keepPiece(p, data, false), 0, nil
+	}
+	c.st.pieceReads.Add(1)
+	c.st.pieceBytes.Add(int64(len(data)))
+	if c.trace != nil {
+		c.trace('c', p.SHA, at, int64(len(data)))
+	}
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	c.fetched += int64(len(data))
+	if c.spans == nil {
+		c.spans = map[[32]byte][]authSpan{}
+	}
+	for c.spanBytes+int64(len(data)) > c.pieceCap && len(c.spanOrder) > 0 {
+		old := c.spanOrder[0]
+		c.spanOrder = c.spanOrder[1:]
+		l := c.spans[old]
+		c.spanBytes -= int64(len(l[0].data))
+		if len(l) == 1 {
+			delete(c.spans, old)
+		} else {
+			c.spans[old] = l[1:]
+		}
+	}
+	c.spans[p.SHA] = append(c.spans[p.SHA], authSpan{at, data})
+	c.spanOrder = append(c.spanOrder, p.SHA)
+	c.spanBytes += int64(len(data))
+	return data, at, nil
+}
+
+// authPackWindows lets sparse served reads fetch raw pack windows (a variable so
+// benchmarks can compare it off).
+var authPackWindows = os.Getenv("ZEROS3_PACK_WINDOWS") == "1"
+
+// authPrefetch lets served reads prefetch pin pieces (a variable so benchmarks can compare it off).
+var authPrefetch = true
+
+const (
+	authSpanReadMax = 1 << 20 // longest served range that reads restartable pieces in part
+	authSpanPromote = 3       // spans of one piece after which the request reads it whole
+)
+
+// authSpan is the verified blocks [at, at+len(data)) of one restartable piece.
+type authSpan struct {
+	at   int64
+	data []byte
 }
 
 // pieceSeq reads a byte range of a sequence of verified chunks, holding the
-// last one decoded.
+// last one decoded (in a ranged context, possibly only some of its blocks).
 type pieceSeq struct {
 	c      *authCtx
 	pieces []authPiece
@@ -52396,6 +53929,7 @@ type pieceSeq struct {
 	size   int64
 	lastI  int
 	last   []byte
+	lastAt int64 // piece offset of last[0]
 }
 
 func newPieceSeq(c *authCtx, pieces []authPiece) *pieceSeq {
@@ -52411,14 +53945,22 @@ func (q *pieceSeq) ReadAt(p []byte, off int64) (int, error) {
 	n := 0
 	for n < len(p) && off < q.size {
 		i := sort.Search(len(q.offs), func(i int) bool { return q.offs[i] > off }) - 1
-		if i != q.lastI {
-			data, err := q.c.readPiece(q.pieces[i])
+		lo := off - q.offs[i]
+		hi := min(q.pieces[i].Len, lo+int64(len(p)-n))
+		if i != q.lastI || lo < q.lastAt || hi > q.lastAt+int64(len(q.last)) {
+			var data []byte
+			at, err := int64(0), error(nil)
+			if q.c.sparse && q.c.ranged && hi-lo < q.pieces[i].Len {
+				data, at, err = q.c.readPieceSpan(q.pieces[i], lo, hi-lo)
+			} else {
+				data, err = q.c.readPiece(q.pieces[i])
+			}
 			if err != nil {
 				return n, err
 			}
-			q.lastI, q.last = i, data
+			q.lastI, q.last, q.lastAt = i, data, at
 		}
-		c := copy(p[n:], q.last[off-q.offs[i]:])
+		c := copy(p[n:], q.last[lo-q.lastAt:])
 		n += c
 		off += int64(c)
 	}
@@ -52435,6 +53977,18 @@ type authPinBody struct {
 }
 
 func (b *authPinBody) Size() int64 { return b.rec.Size }
+
+// prefetch starts reading the pieces [off, off+n) needs (served reads only).
+func (b *authPinBody) prefetch(off, n int64) {
+	if b.q == nil {
+		b.q = newPieceSeq(b.c, b.rec.Pieces)
+	}
+	b.c.prefetchPieces(b.q, off, n)
+}
+
+// authPrefetcher is a body that can start reading what a later ReadAt needs.
+type authPrefetcher interface{ prefetch(off, n int64) }
+
 func (b *authPinBody) ReadAt(p []byte, off int64) (int, error) {
 	if b.c.trace != nil {
 		b.c.trace('i', b.rec.SHA, off, int64(len(p)))
@@ -53091,6 +54645,12 @@ func (x *authExecState) exec(ops []xdOp, bases []authBody, p []byte, off int64) 
 	x.cps = cs
 	if len(cs) > 1 {
 		slices.SortFunc(cs, func(a, b authCopy) int { return cmp.Or(cmp.Compare(a.base, b.base), cmp.Compare(a.src, b.src)) })
+		// The pin pieces behind these intervals are independent reads: start them together.
+		for _, c := range cs {
+			if pf, ok := bases[c.base].(authPrefetcher); ok {
+				pf.prefetch(c.src, c.n)
+			}
+		}
 	}
 	for j := 0; j < len(cs); {
 		lo, hi, need := cs[j].src, cs[j].src+cs[j].n, cs[j].n
@@ -53282,6 +54842,9 @@ func (r *authObjReader) next() ([]byte, error) {
 		return nil, io.EOF
 	}
 	n := int(min(int64(authReadPiece), r.end-r.off+1))
+	if pf, ok := r.body.(authPrefetcher); ok {
+		pf.prefetch(r.off, min(2*authReadPiece, r.end+1-r.off)) // this step and the next
+	}
 	if cap(r.buf) < n {
 		r.buf = make([]byte, authReadPiece)
 	}
@@ -53332,6 +54895,10 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 		}
 	}
 	ctx := s.newAuthCtx()
+	ctx.prefetch = authPrefetch
+	if ctx.sparse = rng.end-rng.start+1 <= authSpanReadMax; ctx.sparse && authPackWindows {
+		ctx.win = &packWindows{tr: s.packTrace}
+	}
 	body, _, err := ctx.body(sha, 0, 1)
 	if err != nil {
 		ctx.close()
@@ -68324,7 +69891,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != packBlockedFeature {
 			return x
 		}
 	}

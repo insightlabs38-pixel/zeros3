@@ -68,45 +68,45 @@ import (
 //   Lines    Area
 //   -----    ----
 //      144    Test helpers, fixtures, and TestMain
-//      274    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1285    SigV4 authentication (header and payload-mode)
-//     1681    Checksums: CRC32 and Content-MD5
-//     2184    End-to-end HTTP and crash/recovery tests
-//     2859    M2: bucket/object/listing/journal protocol compatibility
-//     4083    M3: CDC/dedup evidence, stats, verify
-//     5213    M3: CopyObject
-//     5761    M3: single-range GET
-//     5962    M5-B: multipart upload
-//     7240    Presigned URLs and virtual-hosted-style addressing
-//     8269    M5-C: version history, restore, GC, storage-efficiency proof
-//     9730    Z2-08: history retention (prune)
-//    10834    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    12553    M6: delta sync (`zeros3 sync`)
-//    14295    M6C: recursive directory sync
-//    15355    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    16721    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    18080    M8C: namespace (prefix/bucket) replication
-//    19121    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    20216    M8E: durable namespace snapshots and restore
-//    22295    M8F: conditional operations (Put/Get/Copy preconditions)
-//    23701    M8G: introspection (dry-run planning, diff, inspect)
-//    25653    M8H: bounded parallel chunk transfer
-//    27064    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    28380    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    29317    Streaming reads and aws-chunked SigV4
-//    30174    Packed CAS: pack format, mixed reads, compaction, crash points
-//    31296    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32498    Adaptive pack compression (codec 1, DEFLATE)
-//    33550    Scalable packed-chunk locator (sorted immutable levels)
-//    34036    Z2-07: bulk logical-chunk transport (v2)
-//    35478    Hot/warm/cold physical pack tiers
-//    36264    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    37019    Z2-10: content-aware tier policy and rebalance
-//    38065    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38752    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40201    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41555    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42978    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//      278    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
+//     1289    SigV4 authentication (header and payload-mode)
+//     1685    Checksums: CRC32 and Content-MD5
+//     2188    End-to-end HTTP and crash/recovery tests
+//     2863    M2: bucket/object/listing/journal protocol compatibility
+//     4087    M3: CDC/dedup evidence, stats, verify
+//     5217    M3: CopyObject
+//     5765    M3: single-range GET
+//     5966    M5-B: multipart upload
+//     7244    Presigned URLs and virtual-hosted-style addressing
+//     8273    M5-C: version history, restore, GC, storage-efficiency proof
+//     9734    Z2-08: history retention (prune)
+//    10838    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    12557    M6: delta sync (`zeros3 sync`)
+//    14299    M6C: recursive directory sync
+//    15359    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    16725    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    18084    M8C: namespace (prefix/bucket) replication
+//    19125    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    20220    M8E: durable namespace snapshots and restore
+//    22299    M8F: conditional operations (Put/Get/Copy preconditions)
+//    23705    M8G: introspection (dry-run planning, diff, inspect)
+//    25657    M8H: bounded parallel chunk transfer
+//    27068    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    28384    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    29321    Streaming reads and aws-chunked SigV4
+//    30178    Packed CAS: pack format, mixed reads, compaction, crash points
+//    31300    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    32502    Adaptive pack compression (codec 1, DEFLATE)
+//    33556    Scalable packed-chunk locator (sorted immutable levels)
+//    34042    Z2-07: bulk logical-chunk transport (v2)
+//    35484    Hot/warm/cold physical pack tiers
+//    36270    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    37025    Z2-10: content-aware tier policy and rebalance
+//    38071    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38758    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40211    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41565    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42988    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -32304,7 +32304,7 @@ func TestRepack_AbortsWhenASourcePackIsUnusable(t *testing.T) {
 				os.Remove(path)
 			}
 			var res RepackResult
-			if err := s.replacePacks([]packUsage{u}, rr.ReferencedChunks, 128<<10, false, &res); err == nil {
+			if err := s.replacePacks([]packUsage{u}, rr.ReferencedChunks, 128<<10, packEncoding{}, &res); err == nil {
 				t.Fatal("replacing an unusable pack must fail")
 			}
 			now := packFileSet(t, fx.dir)
@@ -32901,7 +32901,9 @@ func TestPackCompression_InvalidRecordLengthsRejectedAtOpen(t *testing.T) {
 		name string
 		rec  testPackRec
 	}{
-		{"unknown codec 2", testPackRec{sum, uint32(len(good)), 2, stream}},
+		{"unknown codec 4", testPackRec{sum, uint32(len(good)), 4, stream}},
+		{"blocked stored == logical", testPackRec{sum, uint32(len(stream)), packCodecBlocked, stream}},
+		{"dictionary above 32 KiB", testPackRec{sum, uint32(len(good)), packCodecDict, good}},
 		{"unknown codec 255", testPackRec{sum, uint32(len(good)), 255, good}},
 		{"deflate with zero stored length", testPackRec{sum, uint32(len(good)), packCodecDeflate, nil}},
 		{"deflate stored == logical", testPackRec{sum, uint32(len(stream)), packCodecDeflate, stream}},
@@ -40689,7 +40691,7 @@ func TestLocality_RepackKeepsSurvivorsInSourceOrder(t *testing.T) {
 	ref := refSet(live...)
 	us := s.packUsages(ref)
 	var res RepackResult
-	if err := s.replacePacks(us, ref, 1<<20, false, &res); err != nil {
+	if err := s.replacePacks(us, ref, 1<<20, packEncoding{}, &res); err != nil {
 		t.Fatal(err)
 	}
 	assertPhysicalSequence(t, s, live)
@@ -40732,7 +40734,7 @@ func TestLocality_RepackCombinesPacksInPackOrderAndDedups(t *testing.T) {
 		}
 	}
 	var res RepackResult
-	if err := s.replacePacks(s.packUsages(ref), ref, 1<<20, false, &res); err != nil {
+	if err := s.replacePacks(s.packUsages(ref), ref, 1<<20, packEncoding{}, &res); err != nil {
 		t.Fatal(err)
 	}
 	if len(want) != 13 {
@@ -40760,7 +40762,7 @@ func TestLocality_RebalanceSplitKeepsSourceOrderPerTier(t *testing.T) {
 	}
 	ref := refSet(order...)
 	var res RepackResult
-	err = s.replacePacksTo(s.packUsages(ref), ref, func(sum [32]byte) tier { return dest[sum] }, 1<<20, false, &res)
+	err = s.replacePacksTo(s.packUsages(ref), ref, func(sum [32]byte) tier { return dest[sum] }, 1<<20, packEncoding{}, &res)
 	if err != nil {
 		t.Fatal(err)
 	}
