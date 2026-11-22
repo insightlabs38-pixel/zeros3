@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -738,4 +740,223 @@ func TestAuthRootsSortAndStream(t *testing.T) {
 			t.Fatalf("manifest %s missing from the roots", u)
 		}
 	}
+}
+
+// ---- zstd model-window reach ----
+
+func reachRoot(t *testing.T, l *authLab, name string) (*repRoot, *repObject) {
+	t.Helper()
+	root, _, err := l.s.repConstructAt(l.man(name), nil, nil, 0, true)
+	mustOK(t, err)
+	src := l.s.newRepSource(root.Descs, nil)
+	defer src.close()
+	call, err := (&repEnv{Src: src, Limits: repProdLimits}).open(root.Rep)
+	mustOK(t, err)
+	return root, call.Rep
+}
+
+// Every zstd fixture gets a reach table; restarting from the reach is byte exact at
+// every block and range, and fetches no more plaintext than the full model window.
+func TestZstdReachRestartsAreExact(t *testing.T) {
+	files := seekFixtures(t)
+	var savedRatio []string
+	for _, name := range slices.Sorted(func(yield func(string) bool) {
+		for n := range files {
+			if strings.HasSuffix(n, ".zst") && n != "nested.zst" && !yield(n) {
+				return
+			}
+		}
+	}) {
+		t.Run(name, func(t *testing.T) {
+			l := newAuthLab(t)
+			data := files[name]
+			l.put(name, data)
+			root, rep := reachRoot(t, l, name)
+			_, sizes, reach, err := zstdRecipeReach(rep)
+			mustOK(t, err)
+			if reach == nil || len(reach) != len(sizes) {
+				t.Fatalf("no reach table: %d entries for %d blocks", len(reach), len(sizes))
+			}
+			sk := seekOf(t, l.s, root).(*zsSeek)
+			var window int64
+			for _, h := range sk.hdrs {
+				if h != nil {
+					window = max(window, h.window)
+				}
+			}
+			fetch := func(off, n int64) (int64, []byte) {
+				var plain int64
+				repSourceObserver = func(_ repReadStats, cw repCodecTrace) { plain += cw.PlainBytes }
+				defer func() { repSourceObserver = nil }()
+				got, err := seekRead(t, l.s, root, off, n)
+				mustOK(t, err)
+				return plain, got
+			}
+			var withReach, full int64
+			var maxReach uint64
+			for _, r := range reach {
+				maxReach = max(maxReach, r)
+			}
+			for i, sg := range sk.segs {
+				if sg.block < 0 || i%2 == 1 && len(sk.segs) > 200 {
+					continue
+				}
+				for _, n := range []int64{1, 4096, 3*128<<10 + 5} {
+					off := sg.off + int64(i%7)
+					if off >= int64(len(data)) {
+						continue
+					}
+					n = min(n, int64(len(data))-off)
+					zsIgnoreReach = false
+					l.s.purgeReadCaches()
+					l.s.rep.rc.Store(nil)
+					a, got := fetch(off, n)
+					if !bytes.Equal(got, data[off:off+n]) {
+						t.Fatalf("range %d+%d differs with the reach table", off, n)
+					}
+					zsIgnoreReach = true
+					l.s.purgeReadCaches()
+					l.s.rep.rc.Store(nil)
+					b, got2 := fetch(off, n)
+					zsIgnoreReach = false
+					if !bytes.Equal(got2, data[off:off+n]) {
+						t.Fatalf("range %d+%d differs with the full window", off, n)
+					}
+					if a > b {
+						t.Fatalf("range %d+%d fetched %d plaintext bytes with reach, %d without", off, n, a, b)
+					}
+					withReach, full = withReach+a, full+b
+				}
+			}
+			savedRatio = append(savedRatio, fmt.Sprintf("%s window=%d maxreach=%d fetched %d of %d", name, window, maxReach, withReach, full))
+			if int64(maxReach) > window {
+				t.Fatalf("reach %d exceeds the window %d", maxReach, window)
+			}
+		})
+	}
+	t.Log("\n" + strings.Join(savedRatio, "\n"))
+}
+
+// The proof of a representation checks its reach table: an understated block reach
+// is refused, an overstated one is merely conservative.
+func TestZstdReachTableIsProven(t *testing.T) {
+	l := newAuthLab(t)
+	files := seekFixtures(t)
+	name := "reach.l9w23.zst"
+	l.put(name, files[name])
+	man := l.man(name)
+	root, rep := reachRoot(t, l, name)
+	_, sizes, reach, err := zstdRecipeReach(rep)
+	mustOK(t, err)
+	tail := len(repSeekAppend(nil, sizes)) + len(repReachAppend(nil, reach))
+	head := rep.Recipe[:len(rep.Recipe)-tail]
+	prove := func(forgedReach []uint64) error {
+		forged := *rep
+		forged.Recipe = repReachAppend(repSeekAppend(slices.Clone(head), sizes), forgedReach)
+		b := l.s.newRepBuilder(man.TotalLength, nil, nil)
+		defer b.close()
+		for id, d := range root.Descs {
+			b.descs[id] = d
+		}
+		id, err := b.finishRep(&forged)
+		mustOK(t, err)
+		mustOK(t, b.flush())
+		return b.proof(id, man.TotalLength, root.ObjSHA)
+	}
+	if err := prove(reach); err != nil {
+		t.Fatalf("the recorded reach table failed its own proof: %v", err)
+	}
+	longer := slices.Clone(reach)
+	deep := -1
+	for i, r := range longer {
+		longer[i] = r + 5
+		if r > 0 {
+			deep = i
+		}
+	}
+	if err := prove(longer); err != nil {
+		t.Fatalf("a conservative reach table was refused: %v", err)
+	}
+	if deep < 0 {
+		t.Fatal("fixture has no block with a backward reach")
+	}
+	shorter := slices.Clone(reach)
+	shorter[deep]--
+	if err := prove(shorter); err == nil {
+		t.Fatal("a reach table that understates a block's reach passed its proof")
+	}
+	if err := prove(reach[:len(reach)-1]); err == nil {
+		t.Fatal("a reach table with a missing entry passed its proof")
+	}
+}
+
+// TestB3ReachProbe measures cold restarts of one large zstd file with and without
+// the reach table: ZEROS3_B3_ZST=file.zst go test -run TestB3ReachProbe -v .
+func TestB3ReachProbe(t *testing.T) {
+	path := os.Getenv("ZEROS3_B3_ZST")
+	if path == "" {
+		t.Skip("set ZEROS3_B3_ZST")
+	}
+	data, err := os.ReadFile(path)
+	mustOK(t, err)
+	l := newAuthLab(t)
+	l.put("big.zst", data)
+	t0 := time.Now()
+	root, rep := reachRoot(t, l, "big.zst")
+	built := time.Since(t0)
+	_, sizes, reach, err := zstdRecipeReach(rep)
+	mustOK(t, err)
+	sk := seekOf(t, l.s, root).(*zsSeek)
+	var window int64
+	for _, h := range sk.hdrs {
+		if h != nil {
+			window = max(window, h.window)
+		}
+	}
+	sorted := slices.Clone(reach)
+	slices.Sort(sorted)
+	rng := rand.New(rand.NewPCG(9, 9))
+	type result struct {
+		plain int64
+		d     time.Duration
+	}
+	run := func(ignore bool) (res []result) {
+		zsIgnoreReach = ignore
+		defer func() { zsIgnoreReach = false }()
+		for range 40 {
+			off := rng.Int64N(int64(len(data)) - 4096)
+			l.s.purgeReadCaches()
+			l.s.rep.rc.Store(nil)
+			var plain int64
+			repSourceObserver = func(_ repReadStats, cw repCodecTrace) { plain += cw.PlainBytes }
+			start := time.Now()
+			got, err := seekRead(t, l.s, root, off, 4096)
+			d := time.Since(start)
+			repSourceObserver = nil
+			mustOK(t, err)
+			if !bytes.Equal(got, data[off:off+4096]) {
+				t.Fatalf("read at %d differs", off)
+			}
+			res = append(res, result{plain, d})
+		}
+		return res
+	}
+	summary := func(rs []result) (mean int64, median time.Duration) {
+		var sum int64
+		ds := make([]time.Duration, len(rs))
+		for i, r := range rs {
+			sum += r.plain
+			ds[i] = r.d
+		}
+		slices.Sort(ds)
+		return sum / int64(len(rs)), ds[len(ds)/2]
+	}
+	rm, rd := summary(run(false))
+	fm, fd := summary(run(true))
+	out := map[string]any{"file": filepath.Base(path), "bytes": len(data), "blocks": len(sizes), "window": window,
+		"reach_median": sorted[len(sorted)/2], "reach_p90": sorted[len(sorted)*9/10], "reach_max": sorted[len(sorted)-1],
+		"reach_section_bytes": len(repReachAppend(nil, reach)), "seek_section_bytes": len(repSeekAppend(nil, sizes)),
+		"build_ms": built.Milliseconds(), "plain_mean_reach": rm, "plain_mean_full": fm, "median_ms_reach": float64(rd.Microseconds()) / 1000, "median_ms_full": float64(fd.Microseconds()) / 1000}
+	line, _ := json.Marshal(out)
+	fmt.Printf("B3REACH %s\n", line)
 }

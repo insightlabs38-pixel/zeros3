@@ -36413,6 +36413,16 @@ func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error)
 			return nil, err
 		}
 		out.Recipe = repSeekAppend(out.Recipe, sizes)
+		// A reach table that cannot be built leaves the object on full-window restarts.
+		var unitBytes int64
+		for _, n := range result.UnitSizes {
+			unitBytes += int64(n)
+		}
+		reach, rerr := zsBlockReach(result.Skeleton, bufio.NewReaderSize(io.NewSectionReader(units, 0, unitBytes), 1<<16),
+			bufio.NewReaderSize(io.NewSectionReader(plain, 0, sink.n), 1<<16))
+		if rerr == nil && len(reach) == len(sizes) {
+			out.Recipe = repReachAppend(out.Recipe, reach)
+		}
 	}
 	return out, nil
 }
@@ -44378,6 +44388,9 @@ type repZSmatchModel struct {
 	prev   []uint32 // ring: position & mask -> previous position+1 with the same hash
 	mask   uint32
 	ins    int64 // positions < ins have been indexed
+	// lo is the oldest source position a rank decode has walked to since it was
+	// last reset (B3: the plaintext reach of a block). Instrumentation only.
+	lo int64
 }
 
 // Port source: zeros3-z3/zstdz3/model.go
@@ -44395,7 +44408,7 @@ func repZSnewMatchModel(window int64) *repZSmatchModel {
 	for int64(size) < window+2*repZSmaxBlock {
 		size <<= 1
 	}
-	return &repZSmatchModel{window: window, hbits: hb, head: make([]uint32, 1<<hb), prev: make([]uint32, size), mask: size - 1}
+	return &repZSmatchModel{window: window, hbits: hb, head: make([]uint32, 1<<hb), prev: make([]uint32, size), mask: size - 1, lo: math.MaxInt64}
 }
 
 // Port source: zeros3-z3/zstdz3/model.go
@@ -44581,6 +44594,7 @@ func (m *repZSmatchModel) decodeOne(r io.ByteReader, v *repZSblockView, pos int6
 		if src < 0 {
 			return repZSseqRec{}, 0, repZSbadIR("rank %d beyond the candidates", rank)
 		}
+		m.lo = min(m.lo, src)
 		of = uint32(q-src) + 3
 		if !explicitML {
 			ml = uint64(repZSlce(v.buf[src-v.base:], v.buf[q-v.base:v.end-v.base]))
@@ -45656,6 +45670,12 @@ func repZSReplay(w io.Writer, skel []byte, units io.Reader, plain io.Reader, lim
 // Port source: zeros3-z3/zstdz3/replay.go
 // ReplaySkeleton is Replay for an already validated skeleton.
 func repZSReplaySkeleton(w io.Writer, s *repZSSkeleton, unitStream io.Reader, plain io.Reader) (int64, error) {
+	return repZSReplayObserved(w, s, unitStream, plain, nil)
+}
+
+// repZSReplayObserved is the replay with a hook after every block: the frame and
+// block index, and the frame offset the block starts at (B3: measuring reach).
+func repZSReplayObserved(w io.Writer, s *repZSSkeleton, unitStream io.Reader, plain io.Reader, after func(rf *repZSreplayFrame, fi, bi int, start int64) error) (int64, error) {
 	units := bufio.NewReaderSize(unitStream, 1<<16)
 	var n int64
 	put := func(b ...[]byte) error {
@@ -45704,9 +45724,17 @@ func repZSReplaySkeleton(w io.Writer, s *repZSSkeleton, unitStream io.Reader, pl
 				return n, fmt.Errorf("%w: semantic plaintext ends early: %v", repZSErrMismatch, err)
 			}
 			sum.write(buf)
+			if rf.model != nil {
+				rf.model.lo = math.MaxInt64
+			}
 			content, typ, err := rf.rebuildBlock(k, buf, units)
 			if err != nil {
 				return n, fmt.Errorf("frame %d block %d: %w", fi, bi, err)
+			}
+			if after != nil {
+				if err := after(rf, fi, bi, rf.hist.total-int64(k.DecLen)); err != nil {
+					return n, err
+				}
 			}
 			size := len(content)
 			if typ == repZSBlockRLE {
@@ -46514,12 +46542,29 @@ type zsUnit struct {
 
 // zstdRecipe returns the table member count and the seek index: the rebuilt size of every compressed block.
 func zstdRecipe(rep *repObject) (nTable int, seek []uint64, err error) {
+	nTable, seek, _, err = zstdRecipeReach(rep)
+	return nTable, seek, err
+}
+
+// zstdRecipeReach also returns the reach section when the recipe has one: for every
+// compressed block, how many plaintext bytes before it the block's match model reads.
+func zstdRecipeReach(rep *repObject) (nTable int, seek, reach []uint64, err error) {
 	nt, k := binary.Uvarint(rep.Recipe)
 	if k <= 0 || nt < 1 || nt+1 != uint64(len(rep.Members)) || rep.Members[nt].Role != repDerived {
-		return 0, nil, fmt.Errorf("%w: zstd recipe members", errRepCorrupt)
+		return 0, nil, nil, fmt.Errorf("%w: zstd recipe members", errRepCorrupt)
 	}
-	seek, err = repSeekParse(rep.Recipe[k:], 1<<16)
-	return int(nt), seek, err
+	tail := rep.Recipe[k:]
+	if len(tail) == 0 {
+		return int(nt), nil, nil, nil
+	}
+	seek, rest, err := repSeekSection(tail, repSeekTag, 1<<16)
+	if err == nil && len(rest) > 0 {
+		var more []byte
+		if reach, more, err = repSeekSection(rest, repReachTag, 1<<16); err == nil && (len(more) != 0 || len(reach) != len(seek)) {
+			err = fmt.Errorf("%w: zstd reach section", errRepCorrupt)
+		}
+	}
+	return int(nt), seek, reach, err
 }
 
 func zstdTable(c *repCall, nTable int) (skel []byte, units []zsUnit, err error) {
@@ -46601,7 +46646,7 @@ func (u *unitReader) Read(p []byte) (int, error) {
 }
 
 func (zstdDecoder) Decode(c *repCall) error {
-	nTable, seek, err := zstdRecipe(c.Rep)
+	nTable, seek, reach, err := zstdRecipeReach(c.Rep)
 	if err != nil {
 		return err
 	}
@@ -46618,9 +46663,9 @@ func (zstdDecoder) Decode(c *repCall) error {
 	}()
 	ur := &unitReader{c: c, units: units}
 	w := c.W
+	var s *repZSSkeleton
 	if seek != nil { // the replayed block sizes must be the seek index
-		s, err := repZSUnmarshal(skel, repZstdLimits())
-		if err != nil {
+		if s, err = repZSUnmarshal(skel, repZstdLimits()); err != nil {
 			return err
 		}
 		segs, err := zsLayout(s, seek, c.Rep.Size)
@@ -46629,12 +46674,47 @@ func (zstdDecoder) Decode(c *repCall) error {
 		}
 		w = &zsLayoutCheck{w: c.W, s: s, segs: segs}
 	}
-	_, err = repZSReplay(w, skel, bufio.NewReaderSize(ur, 1<<16), pr, repZstdLimits())
+	if reach != nil { // the proof establishes that no block reaches further back than recorded
+		ci := 0
+		_, err = repZSReplayObserved(w, s, bufio.NewReaderSize(ur, 1<<16), pr, func(rf *repZSreplayFrame, fi, bi int, start int64) error {
+			if s.Frames[fi].Blocks[bi].Type != repZSBlockCompressed {
+				return nil
+			}
+			ci++
+			if got := zsModelReach(rf, start); got > reach[ci-1] {
+				return fmt.Errorf("%w: zstd block %d reaches %d bytes back, the reach table says %d", errRepMismatch, ci-1, got, reach[ci-1])
+			}
+			return nil
+		})
+	} else {
+		_, err = repZSReplay(w, skel, bufio.NewReaderSize(ur, 1<<16), pr, repZstdLimits())
+	}
 	pr.CloseWithError(errAbort)
 	if err != nil && ur.err != nil { // a missing or corrupt unit is the cause of a "truncated unit stream"
 		err = fmt.Errorf("%w (replay: %v)", ur.err, err)
 	}
 	return replayCause(err, <-done)
+}
+
+// zsModelReach is how far before a just rebuilt block its model-coded sequences
+// looked: the distance to the oldest source position their rank decode walked to.
+func zsModelReach(rf *repZSreplayFrame, start int64) uint64 {
+	if rf.model == nil || rf.model.lo == math.MaxInt64 || rf.model.lo >= start {
+		return 0
+	}
+	return uint64(start - rf.model.lo)
+}
+
+// zsBlockReach replays a skeleton once to record every compressed block's reach.
+func zsBlockReach(s *repZSSkeleton, units, plain io.Reader) ([]uint64, error) {
+	var out []uint64
+	_, err := repZSReplayObserved(io.Discard, s, units, plain, func(rf *repZSreplayFrame, fi, bi int, start int64) error {
+		if s.Frames[fi].Blocks[bi].Type == repZSBlockCompressed {
+			out = append(out, zsModelReach(rf, start))
+		}
+		return nil
+	})
+	return out, err
 }
 
 // Expand: the large units are named by the stored table.
@@ -46695,29 +46775,47 @@ func repSeekAppend(b []byte, vals []uint64) []byte {
 	return b
 }
 
+// repSeekSection reads one tagged section of uvarints and returns what follows it.
+func repSeekSection(b []byte, tag byte, max int) (vals []uint64, rest []byte, err error) {
+	bad := fmt.Errorf("%w: seek index", errRepCorrupt)
+	n, k := binary.Uvarint(b[min(1, len(b)):])
+	if len(b) == 0 || b[0] != tag || k <= 0 || n > uint64(max) || n > uint64(len(b)-1-k) {
+		return nil, nil, bad
+	}
+	b = b[1+k:]
+	vals = make([]uint64, n)
+	for i := range vals {
+		v, k := binary.Uvarint(b)
+		if k <= 0 {
+			return nil, nil, bad
+		}
+		vals[i], b = v, b[k:]
+	}
+	return vals, b, nil
+}
+
 // repSeekParse reads a seek index filling b exactly; an empty b is no index.
 func repSeekParse(b []byte, max int) ([]uint64, error) {
 	if len(b) == 0 {
 		return nil, nil
 	}
-	bad := fmt.Errorf("%w: seek index", errRepCorrupt)
-	n, k := binary.Uvarint(b[1:])
-	if b[0] != repSeekTag || k <= 0 || n > uint64(max) || n > uint64(len(b)-1-k) {
-		return nil, bad
+	vals, rest, err := repSeekSection(b, repSeekTag, max)
+	if err == nil && len(rest) != 0 {
+		err = fmt.Errorf("%w: seek index", errRepCorrupt)
 	}
-	b = b[1+k:]
-	out := make([]uint64, n)
-	for i := range out {
-		v, k := binary.Uvarint(b)
-		if k <= 0 {
-			return nil, bad
-		}
-		out[i], b = v, b[k:]
+	return vals, err
+}
+
+// repReachTag marks the optional zstd reach section that follows the seek index.
+const repReachTag = 'R'
+
+func repReachAppend(b []byte, vals []uint64) []byte {
+	b = append(b, repReachTag)
+	b = binary.AppendUvarint(b, uint64(len(vals)))
+	for _, v := range vals {
+		b = binary.AppendUvarint(b, v)
 	}
-	if len(b) != 0 {
-		return nil, bad
-	}
-	return out, nil
+	return b
 }
 
 // repSeekSums turns the gzip index's deltas into absolute bit offsets (nil stays nil).
@@ -46764,11 +46862,11 @@ func repSeekerOf(c *repCall) (repSeeker, error) {
 		}
 		sk, cost = z, z.cost
 	case repKindZstd:
-		nt, seek, err := zstdRecipe(c.Rep)
+		nt, seek, reach, err := zstdRecipeReach(c.Rep)
 		if err != nil || seek == nil || !repPlainSeekable(c, nt) {
 			return nil, err
 		}
-		z, err := newZsSeek(c, nt, seek)
+		z, err := newZsSeek(c, nt, seek, reach)
 		if err != nil {
 			return nil, err
 		}
@@ -47398,6 +47496,9 @@ func (c *zsLayoutCheck) Write(p []byte) (int, error) {
 	return c.w.Write(p)
 }
 
+// zsIgnoreReach makes restarts load the full model window (tests measure against it).
+var zsIgnoreReach bool
+
 // zsSeek is the parsed restart structure of a zstd representation with a seek index.
 type zsSeek struct {
 	nTable int
@@ -47409,11 +47510,12 @@ type zsSeek struct {
 	plain  int64
 	cost   int64
 	rs     []int64 // block offsets
+	reach  []int64 // per segment: bytes a model-coded block reads before it; nil without a reach table
 }
 
 func (z *zsSeek) restarts() ([]int64, int64) { return z.rs, 512 << 10 }
 
-func newZsSeek(c *repCall, nTable int, sizes []uint64) (*zsSeek, error) {
+func newZsSeek(c *repCall, nTable int, sizes, reach []uint64) (*zsSeek, error) {
 	skel, units, err := zstdTable(c, nTable)
 	if err != nil {
 		return nil, err
@@ -47443,7 +47545,18 @@ func newZsSeek(c *repCall, nTable int, sizes []uint64) (*zsSeek, error) {
 			z.rs = append(z.rs, sg.off)
 		}
 	}
-	z.cost = int64(len(skel))*3 + 56*int64(len(segs)) + 48*int64(len(units)) + 4096
+	if reach != nil && !zsIgnoreReach {
+		z.reach = make([]int64, len(segs))
+		ci := 0
+		for i, sg := range segs {
+			z.reach[i] = -1
+			if sg.block >= 0 && s.Frames[sg.frame].Blocks[sg.block].Type == repZSBlockCompressed {
+				z.reach[i] = int64(min(reach[ci], 1<<62))
+				ci++
+			}
+		}
+	}
+	z.cost = int64(len(skel))*3 + 56*int64(len(segs)) + 48*int64(len(units)) + 8*int64(len(reach)) + 4096
 	return z, nil
 }
 
@@ -47477,6 +47590,7 @@ func (z *zsSeek) readRange(c *repCall, off, n int64, w io.Writer) error {
 	if i == len(z.segs) {
 		return nil
 	}
+	last := sort.Search(len(z.segs), func(i int) bool { return z.segs[i].off >= end }) // first segment past the range
 	tr := c.codecTrace()
 	clip := &repClip{w: w, pos: z.segs[i].off, a: off, b: end}
 	var pw *repPlainWin
@@ -47506,7 +47620,7 @@ func (z *zsSeek) readRange(c *repCall, off, n int64, w io.Writer) error {
 				pw = &repPlainWin{c: child, size: z.plain, tr: tr}
 			}
 			if rf == nil {
-				if rf, err = z.enter(c, pw, sg); err != nil {
+				if rf, err = z.enter(c, pw, sg, i, last); err != nil {
 					return err
 				}
 				units = bufio.NewReaderSize(&unitReader{c: c, units: z.units, next: sg.unit, tr: tr}, 1<<12)
@@ -47548,7 +47662,7 @@ func (z *zsSeek) block(rf *repZSreplayFrame, pw *repPlainWin, units *bufio.Reade
 
 // enter prepares the replay of a frame from block sg: the inherited entropy tables and, when the frame's later
 // blocks are model-coded, the window of plaintext before it.
-func (z *zsSeek) enter(c *repCall, pw *repPlainWin, sg zsSeg) (*repZSreplayFrame, error) {
+func (z *zsSeek) enter(c *repCall, pw *repPlainWin, sg zsSeg, at, last int) (*repZSreplayFrame, error) {
 	f, fh := &z.s.Frames[sg.frame], z.hdrs[sg.frame]
 	rf := &repZSreplayFrame{bmax: min(fh.blockMax(), repZSmaxBlock), hist: repZShistory{window: fh.window}}
 	fplain := z.segs[z.first[sg.frame]].plain
@@ -47566,13 +47680,35 @@ func (z *zsSeek) enter(c *repCall, pw *repPlainWin, sg zsSeg) (*repZSreplayFrame
 	}
 	rf.hist.total = sg.plain - fplain
 	if rf.model != nil && sg.plain > fplain {
-		wb, err := pw.at(max(fplain, sg.plain-fh.window), sg.plain)
+		wb, err := pw.at(z.windowStart(f, fh, sg, at, last, fplain), sg.plain)
 		if err != nil {
 			return nil, err
 		}
 		rf.hist.buf = append([]byte(nil), wb...)
 	}
 	return rf, nil
+}
+
+// windowStart is the stream plaintext offset a restart at block sg must load from: the
+// full model window, or, with a reach table, only as far back as the oldest source any
+// model-coded block of this frame within the requested segments [at, last) walks to.
+func (z *zsSeek) windowStart(f *repZSFrameRec, fh *repZSframeHdr, sg zsSeg, at, last int, fplain int64) int64 {
+	lo := max(fplain, sg.plain-fh.window)
+	if z.reach == nil {
+		return lo
+	}
+	need := sg.plain
+	for i := at; i < min(last, len(z.segs)) && z.segs[i].frame == sg.frame; i++ {
+		g := z.segs[i]
+		if g.block < 0 || f.Blocks[g.block].Type != repZSBlockCompressed || !f.Blocks[g.block].Model || f.Blocks[g.block].NSeq == 0 {
+			continue
+		}
+		if z.reach[i] < 0 {
+			return lo
+		}
+		need = min(need, g.plain-z.reach[i])
+	}
+	return max(fplain, need)
 }
 
 // state is the coding state block sg inherits: the last Huffman tree and FSE tables its frame's earlier blocks

@@ -1045,7 +1045,7 @@ func TestRepCodecTemporaryWritesRespectDiskReserve(t *testing.T) {
 // blocks), Go's flate, libzstd at both ends of its level range, and the multi-frame and repeat-table zstd vectors.
 func seekFixtures(t *testing.T) map[string][]byte {
 	files := map[string][]byte{}
-	for _, f := range []string{"b2-seek/text.l6.gz", "b2-seek/text.l9.gz", "b2-seek/text.l3.zst", "b2-seek/text.l19.zst",
+	for _, f := range []string{"b2-seek/text.l6.gz", "b2-seek/text.l9.gz", "b2-seek/text.l3.zst", "b2-seek/text.l19.zst", "b2-seek/reach.l3.zst", "b2-seek/reach.l9w23.zst", "b2-seek/reach.l19.zst",
 		"../z3/zstdz3/testdata/skip_concat.zst", "../z3/zstdz3/testdata/fx_repeat_tables.zst", "../z3/zstdz3/testdata/ref157_json.zst"} {
 		b, err := os.ReadFile(filepath.Join("testing-harnesses/testdata", f))
 		if err != nil {
@@ -1197,11 +1197,18 @@ func TestRepCodecSeekIndexIntegrity(t *testing.T) {
 				seek[mid] += 8
 				forged.Recipe = repSeekAppend(call.Rep.Recipe[:len(call.Rep.Recipe)-len(repSeekAppend(nil, g.seek))], seek)
 			} else {
-				_, sizes, _ := zstdRecipe(call.Rep)
+				_, sizes, reach, _ := zstdRecipeReach(call.Rep)
 				seek = slices.Clone(sizes)
 				seek[len(seek)/2]++
 				seek[len(seek)/2+1]--
-				forged.Recipe = repSeekAppend(call.Rep.Recipe[:len(call.Rep.Recipe)-len(repSeekAppend(nil, sizes))], seek)
+				tail := len(repSeekAppend(nil, sizes))
+				if reach != nil {
+					tail += len(repReachAppend(nil, reach))
+				}
+				forged.Recipe = repSeekAppend(call.Rep.Recipe[:len(call.Rep.Recipe)-tail], seek)
+				if reach != nil {
+					forged.Recipe = repReachAppend(forged.Recipe, reach)
+				}
 			}
 			b := l.s.newRepBuilder(man.TotalLength, nil, nil)
 			defer b.close()
