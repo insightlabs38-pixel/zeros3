@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -959,4 +960,115 @@ func TestB3ReachProbe(t *testing.T) {
 		"build_ms": built.Milliseconds(), "plain_mean_reach": rm, "plain_mean_full": fm, "median_ms_reach": float64(rd.Microseconds()) / 1000, "median_ms_full": float64(fd.Microseconds()) / 1000}
 	line, _ := json.Marshal(out)
 	fmt.Printf("B3REACH %s\n", line)
+}
+
+// ---- admission pricing ----
+
+// The planner prices a not yet packed component as the pack writer will store it: the
+// level it used to price at (BestSpeed) overstated compressible components by far more.
+func TestAuthPriceMatchesPackedBytes(t *testing.T) {
+	l := newAuthLab(t)
+	rng := rand.New(rand.NewPCG(11, 12))
+	words := make([]string, 400)
+	for i := range words {
+		words[i] = strings.Repeat(string(rune('a'+rng.IntN(26))), 1+rng.IntN(3)) + fmt.Sprint(rng.IntN(1000))
+	}
+	var sb strings.Builder
+	for sb.Len() < 3<<20 {
+		sb.WriteString(words[rng.IntN(len(words))])
+		sb.WriteByte(" \n;{}"[rng.IntN(5)])
+	}
+	l.put("text", []byte(sb.String()))
+	man := l.man("text")
+	var chunks [][32]byte
+	var sizes []int64
+	for _, c := range man.Chunks {
+		sum, err := decodeHexSHA256(c.SHA256)
+		mustOK(t, err)
+		chunks, sizes = append(chunks, sum), append(sizes, c.Length)
+	}
+	price := func(level int) (n int64) {
+		for i, sum := range chunks {
+			data, err := l.s.casRead(sum)
+			mustOK(t, err)
+			n += int64(xdDeflateLen(data, level))
+			_ = sizes[i]
+		}
+		return n
+	}
+	priced := map[[32]byte]int64{}
+	var planned int64
+	for i, sum := range chunks {
+		planned += l.s.physChunk(sum, sizes[i], priced, false) - packRecordBytes
+	}
+	if planned != price(packPriceLevel) {
+		t.Fatalf("physChunk prices %d bytes, level %d deflate gives %d", planned, packPriceLevel, price(packPriceLevel))
+	}
+	l.offline(func() {
+		_, err := compactStore(l.dir, authCompactOpts())
+		mustOK(t, err)
+		_, err = repackStore(l.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true, Recompress: true})
+		mustOK(t, err)
+	})
+	var stored int64
+	for _, sum := range chunks {
+		loc, ok := l.s.packLookup(sum)
+		if !ok {
+			t.Fatal("chunk not packed")
+		}
+		stored += int64(loc.stored)
+	}
+	if d := float64(planned-stored) / float64(stored); d < -0.02 || d > 0.02 {
+		t.Fatalf("planned %d bytes, the pack stores %d (%.1f%% off)", planned, stored, 100*d)
+	}
+	fast := price(1)
+	t.Logf("component bytes: pack stores %d, planner prices %d (level %d), the old level-1 price was %d (+%.1f%%)", stored, planned, packPriceLevel, fast, 100*float64(fast-stored)/float64(stored))
+	if float64(fast) < 1.03*float64(stored) {
+		t.Fatalf("fixture too incompressible to show the old pricing error: level 1 %d vs stored %d", fast, stored)
+	}
+}
+
+// A representation group's economics are reported next to the per-object ones, and
+// the estimate does not depend on the policy threshold that accepts or refuses it.
+func TestAuthGroupEconomicsAreReported(t *testing.T) {
+	files := seekFixtures(t)
+	run := func(minSaving float64) AuthReport {
+		l := newAuthLab(t)
+		l.put("a.gz", files["text.l6.gz"])
+		l.put("b.gz", files["text.l9.gz"])
+		rep, err := l.s.AuthorityMigrate(AuthPolicy{Order: "oldest", AllowRep: true, CodecReplay: true, NoZN7: true, MinSaving: minSaving})
+		mustOK(t, err)
+		return rep
+	}
+	open, closed := run(-10), run(0.999)
+	var est []float64
+	for name, rep := range map[string]AuthReport{"admitted": open, "refused": closed} {
+		if len(rep.Plans) != 2 {
+			t.Fatalf("%s: %d plans", name, len(rep.Plans))
+		}
+		for _, p := range rep.Plans {
+			g := p.Group
+			if g == nil || g.Kind != "codec" || g.Members != 2 || g.AddedBytes <= 0 || g.CDCBytes <= 0 {
+				t.Fatalf("%s: plan lacks its group economics: %+v", name, p)
+			}
+			if want := 1 - float64(g.AddedBytes)/float64(g.CDCBytes); math.Abs(g.Saving-want) > 1e-9 {
+				t.Fatalf("%s: group saving %.4f, expected %.4f", name, g.Saving, want)
+			}
+			if g.Admitted != (strings.TrimSuffix(p.Form, "?") != "cdc") {
+				t.Fatalf("%s: group admitted=%v but the object's form is %s", name, g.Admitted, p.Form)
+			}
+			if !g.Admitted && !strings.Contains(p.Reason, "group priced") {
+				t.Fatalf("%s: refusal does not name the group estimate: %q", name, p.Reason)
+			}
+			est = append(est, g.Saving)
+		}
+	}
+	if !open.Plans[0].Group.Admitted || closed.Plans[0].Group.Admitted {
+		t.Fatal("the policy threshold did not decide admission")
+	}
+	for _, e := range est {
+		if math.Abs(e-est[0]) > 1e-9 {
+			t.Fatalf("the group estimate moved with the policy: %v", est)
+		}
+	}
 }

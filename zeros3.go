@@ -4532,6 +4532,10 @@ func (r *packRunReader) read(sums [][32]byte, locs []packLoc) (out [][]byte, err
 // compact time end to end; reads are unaffected.
 const packDeflateLevel = flate.DefaultCompression
 
+// packPriceLevel is packDeflateLevel as a concrete level (DefaultCompression is 6): the
+// admission planner prices a component at what the pack writer will store, not at BestSpeed.
+const packPriceLevel = 6
+
 // packCompressor chooses each record's codec. A record is stored deflated
 // only when that saves at least 1/16 of its logical size (and so is
 // strictly smaller than raw, as the codec length rule requires); the
@@ -51782,7 +51786,25 @@ type AuthPlan struct {
 	CDCAmp     float64   `json:"cdc_amp_4k,omitempty"`
 	ReadRatio  float64   `json:"read_ratio,omitempty"` // whole-object read throughput relative to CDC (hybrid admissions)
 	Cost       *AuthCost `json:"read_cost,omitempty"`  // what reading the candidate costs (tiered migrations)
-	Reason     string    `json:"reason,omitempty"`
+	// Group is the cohort a representation was priced in. Saving is what this object adds on its
+	// own; Group.Saving is what admitting the whole cohort frees, which is what the policy tests.
+	Group  *AuthGroup `json:"group,omitempty"`
+	Reason string     `json:"reason,omitempty"`
+}
+
+// AuthGroup is the cohort-level economics of a representation group: its members share
+// components, so the union of their new bytes, not any one member's, is compared with the
+// unshared CDC bytes they would free. Both sides are end-state bytes (what a repack stores).
+type AuthGroup struct {
+	Kind       string  `json:"kind"`
+	Members    int     `json:"members"`
+	AddedBytes int64   `json:"added_bytes"` // union of the members' new components and records
+	CDCBytes   int64   `json:"cdc_bytes"`   // CDC bytes the members would free
+	Against    string  `json:"against"`     // "cdc", or "delta plan" when the delta plan costs less
+	Saving     float64 `json:"saving"`      // 1 - AddedBytes/CDCBytes
+	Required   float64 `json:"required"`    // the policy's MinSaving
+	Admitted   bool    `json:"admitted"`
+	Abandoned  bool    `json:"abandoned,omitempty"` // priced from a projection: building stopped early
 }
 
 // AuthCost is the measured and modeled price of reading an admitted form.
@@ -51967,7 +51989,7 @@ func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64, 
 		// compressed CDC chunk and a freshly staged raw component are compared on the same footing.
 		if !current && loc.codec == packCodecRaw && n >= 512 {
 			if data, err := s.casRead(sum); err == nil {
-				if d := int64(xdDeflateLen(data, 1)); d < n-n/16 {
+				if d := int64(xdDeflateLen(data, packPriceLevel)); d < n-n/16 {
 					n = d
 				}
 			}
@@ -51975,7 +51997,7 @@ func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64, 
 	} else if !current {
 		if data, err := s.casRead(sum); err == nil {
 			n = int64(len(data))
-			if d := int64(xdDeflateLen(data, 1)); d < n-n/16 {
+			if d := int64(xdDeflateLen(data, packPriceLevel)); d < n-n/16 {
 				n = d
 			}
 		}
@@ -52359,6 +52381,7 @@ type authMigrator struct {
 	done         []int // order indexes of objects eligible as bases (processed or bodied)
 	indexedBases map[[32]byte]int
 	repC         map[int]*authRepCand
+	groups       map[int]*AuthGroup
 	byKey        map[string][]int // bucket/key -> admitted-or-eligible base indexes
 	depth        map[int]int
 	zl           map[int]*authZN7Info // tensor layouts of model-shaped contents (nil entry: not a model)
@@ -52494,7 +52517,7 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 	}
 	t0 := time.Now()
 	m := &authMigrator{ctx: ctx, s: s, pol: pol, objs: map[[32]byte]*authObj{}, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
-		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, byKey: map[string][]int{}}
+		index: map[uint64][]int{}, sketch: map[int][]uint64{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, groups: map[int]*AuthGroup{}, byKey: map[string][]int{}}
 	m.rep.StorageCostModel = "recompressed"
 	if pol.PriceCurrentStorage {
 		m.rep.StorageCostModel = "current-packs"
@@ -52640,6 +52663,15 @@ type authRepCand struct {
 	chunks   []chunkRef
 	marginal int64
 	accepted bool
+}
+
+func repKindName(k repKind) string {
+	names := map[repKind]string{repKindConcat: "concat", repKindCAR: "car", repKindSQLite: "sqlite", repKindGit: "git", repKindMerkle: "merkle",
+		repKindGzip: "codec", repKindZstd: "codec", repKindModel: "model", repKindSST: "sst", repKindParquet: "parquet", repKindDEX: "dex", repKindCLR: "clr"}
+	if n, ok := names[k]; ok {
+		return n
+	}
+	return fmt.Sprintf("kind%d", k)
 }
 
 // planRepGroups builds the structural representation of every candidate object
@@ -52876,6 +52908,10 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 			}
 		}
 		abandoned = abandoned || len(built) < m.pol.MinRepGroup
+		against := "cdc"
+		if deltaRatio >= 0 && deltaCost < cdc {
+			against = "delta plan"
+		}
 		if !abandoned {
 			builtCDCRefs := m.groupCDCRefs(built)
 			builtBound := int64(float64(m.groupReclaimable(built, builtCDCRefs)) * (1 - m.pol.MinSaving))
@@ -52885,6 +52921,20 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 			if err != nil {
 				return err
 			}
+		}
+		info := &AuthGroup{Kind: repKindName(kind), Members: len(members), AddedBytes: union, Against: against,
+			Required: m.pol.MinSaving, Admitted: !abandoned && union <= bound, Abandoned: abandoned}
+		if info.CDCBytes = cdc; !abandoned {
+			info.CDCBytes = m.groupReclaimable(built, m.groupCDCRefs(built))
+			info.Members = len(built)
+		}
+		if ref := float64(info.CDCBytes); against == "delta plan" {
+			info.Saving = 1 - float64(union)/float64(max(deltaCost, 1))
+		} else if ref > 0 {
+			info.Saving = 1 - float64(union)/ref
+		}
+		for _, i := range members {
+			m.groups[i] = info
 		}
 		if abandoned || union > bound {
 			for _, i := range members {
@@ -53423,6 +53473,11 @@ func (m *authMigrator) process(i int, o *authObj) error {
 	}
 	if choice == "" {
 		plan.Reason = "no admissible exact representation"
+		if g := m.groups[i]; g != nil && !g.Admitted {
+			plan.Group = g
+			plan.Reason = fmt.Sprintf("no admissible exact representation: its %d-member group priced %d bytes against %d (%s), saving %.3f below policy %.3f",
+				g.Members, g.AddedBytes, g.CDCBytes, g.Against, g.Saving, g.Required)
+		}
 		finish(plan)
 		m.addBase(i)
 		return nil
@@ -53432,6 +53487,9 @@ func (m *authMigrator) process(i int, o *authObj) error {
 		saving = float64(plan.CDCBytes-chosenAdded) / float64(plan.CDCBytes)
 	}
 	plan.AddedBytes, plan.Saving = chosenAdded, saving
+	if choice == "rep" && repGroup {
+		plan.Group = m.groups[i]
+	}
 	if saving < pol.MinSaving && !(choice == "rep" && repGroup) {
 		plan.Reason = fmt.Sprintf("saving %.3f below policy %.3f (%s)", saving, pol.MinSaving, choice)
 		finish(plan)
