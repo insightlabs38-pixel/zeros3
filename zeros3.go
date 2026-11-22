@@ -94,38 +94,38 @@ import (
 //     6684    Visibility journal (append-only, checksummed)
 //     7206    Store: format, namespace, and object CRUD
 //     7634    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    10944    Version history/restore, history pruning, ListObjectsV2
-//    11510    SigV4 authentication (header and presigned-URL)
-//    12487    Request payload checksums and S3-shaped XML error/response types
-//    12704    HTTP routing and S3 operation handlers
-//    13130    Conditional operations (PUT/GET/HEAD preconditions)
-//    13825    CopyObject
-//    14130    Multipart upload
-//    15074    Stats and reachability scanning
-//    16611    Verify
-//    16826    Store locking and safe offline GC
-//    17129    Offline compaction (`zeros3 compact`)
-//    18195    Pack reclamation and repacking (`zeros3 repack`)
-//    18698    Physical tiers: status and pack movement (`zeros3 tier`)
-//    19211    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    20276    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    21080    Delta sync client, credentials, and parallel transfer
-//    23358    Bulk logical-chunk transport (v2)
-//    24269    Recursive directory sync
-//    24574    Remote replication (`zeros3 replicate`)
-//    25487    Peer-assisted corruption repair (`zeros3 repair`)
-//    26055    Namespace (prefix/bucket) replication
-//    26371    Copy-on-write namespace fork (`zeros3 fork`)
-//    26579    Snapshots and restore
-//    27741    Structural diff and inspect (introspection)
-//    29111    Portable snapshot bundles (`zeros3 bundle`)
-//    30308    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    30943    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    49319    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    56840    Windowed and estimated similarity deltas (extracted dcore)
-//    58587    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    66349    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    72621    CLI dispatch, HTTP server/startup, and main
+//    10943    Version history/restore, history pruning, ListObjectsV2
+//    11509    SigV4 authentication (header and presigned-URL)
+//    12486    Request payload checksums and S3-shaped XML error/response types
+//    12703    HTTP routing and S3 operation handlers
+//    13129    Conditional operations (PUT/GET/HEAD preconditions)
+//    13824    CopyObject
+//    14129    Multipart upload
+//    15073    Stats and reachability scanning
+//    16610    Verify
+//    16825    Store locking and safe offline GC
+//    17128    Offline compaction (`zeros3 compact`)
+//    18194    Pack reclamation and repacking (`zeros3 repack`)
+//    18697    Physical tiers: status and pack movement (`zeros3 tier`)
+//    19210    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    20275    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    21079    Delta sync client, credentials, and parallel transfer
+//    23357    Bulk logical-chunk transport (v2)
+//    24268    Recursive directory sync
+//    24573    Remote replication (`zeros3 replicate`)
+//    25486    Peer-assisted corruption repair (`zeros3 repair`)
+//    26054    Namespace (prefix/bucket) replication
+//    26370    Copy-on-write namespace fork (`zeros3 fork`)
+//    26578    Snapshots and restore
+//    27740    Structural diff and inspect (introspection)
+//    29110    Portable snapshot bundles (`zeros3 bundle`)
+//    30307    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    30942    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    49318    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    56839    Windowed and estimated similarity deltas (extracted dcore)
+//    58586    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    66348    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    72620    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
