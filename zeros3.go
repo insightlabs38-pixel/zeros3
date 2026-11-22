@@ -89,43 +89,43 @@ import (
 //      540    Content-defined chunking (CDC)
 //      727    Content-addressed chunk storage (CAS)
 //     2470    Packed CAS (immutable packs, DEFLATE records, locator index, coalesced reads)
-//     4639    Small-object segments (inline manifests, store level 11)
-//     5888    Manifests (immutable, JSON)
-//     6684    Visibility journal (append-only, checksummed)
-//     7206    Store: format, namespace, and object CRUD
-//     7654    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    11298    Version history/restore, history pruning, ListObjectsV2
-//    11899    SigV4 authentication (header and presigned-URL)
-//    12876    Request payload checksums and S3-shaped XML error/response types
-//    13093    HTTP routing and S3 operation handlers
-//    13519    Conditional operations (PUT/GET/HEAD preconditions)
-//    14214    CopyObject
-//    14519    Multipart upload
-//    15463    Stats and reachability scanning
-//    16988    Verify
-//    17203    Store locking and safe offline GC
-//    17506    Offline compaction (`zeros3 compact`)
-//    18572    Pack reclamation and repacking (`zeros3 repack`)
-//    19075    Physical tiers: status and pack movement (`zeros3 tier`)
-//    19588    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    20653    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    21457    Delta sync client, credentials, and parallel transfer
-//    23749    Bulk logical-chunk transport (v2)
-//    24660    Recursive directory sync
-//    24965    Remote replication (`zeros3 replicate`)
-//    25878    Peer-assisted corruption repair (`zeros3 repair`)
-//    26450    Namespace (prefix/bucket) replication
-//    26766    Copy-on-write namespace fork (`zeros3 fork`)
-//    26974    Snapshots and restore
-//    28136    Structural diff and inspect (introspection)
-//    29512    Portable snapshot bundles (`zeros3 bundle`)
-//    30709    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    31344    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    49727    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    57324    Windowed and estimated similarity deltas (extracted dcore)
-//    59071    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    66833    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    73105    CLI dispatch, HTTP server/startup, and main
+//     4649    Small-object segments (inline manifests, store level 11)
+//     5898    Manifests (immutable, JSON)
+//     6694    Visibility journal (append-only, checksummed)
+//     7216    Store: format, namespace, and object CRUD
+//     7664    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    11308    Version history/restore, history pruning, ListObjectsV2
+//    11909    SigV4 authentication (header and presigned-URL)
+//    12886    Request payload checksums and S3-shaped XML error/response types
+//    13103    HTTP routing and S3 operation handlers
+//    13529    Conditional operations (PUT/GET/HEAD preconditions)
+//    14224    CopyObject
+//    14529    Multipart upload
+//    15473    Stats and reachability scanning
+//    16998    Verify
+//    17213    Store locking and safe offline GC
+//    17516    Offline compaction (`zeros3 compact`)
+//    18582    Pack reclamation and repacking (`zeros3 repack`)
+//    19085    Physical tiers: status and pack movement (`zeros3 tier`)
+//    19598    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    20663    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    21467    Delta sync client, credentials, and parallel transfer
+//    23759    Bulk logical-chunk transport (v2)
+//    24670    Recursive directory sync
+//    24975    Remote replication (`zeros3 replicate`)
+//    25888    Peer-assisted corruption repair (`zeros3 repair`)
+//    26460    Namespace (prefix/bucket) replication
+//    26776    Copy-on-write namespace fork (`zeros3 fork`)
+//    26984    Snapshots and restore
+//    28146    Structural diff and inspect (introspection)
+//    29522    Portable snapshot bundles (`zeros3 bundle`)
+//    30719    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    31354    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    49737    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    57333    Windowed and estimated similarity deltas (extracted dcore)
+//    59080    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    66845    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    73117    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -4535,6 +4535,16 @@ const packDeflateLevel = flate.DefaultCompression
 // packPriceLevel is packDeflateLevel as a concrete level (DefaultCompression is 6): the
 // admission planner prices a component at what the pack writer will store, not at BestSpeed.
 const packPriceLevel = 6
+
+// packPriceLen is the payload length packCompressor.encode stores for data:
+// deflated when that saves at least max(1, len/16) bytes, raw otherwise.
+func packPriceLen(data []byte) int64 {
+	n := len(data)
+	if d := xdDeflateLen(data, packPriceLevel); d <= n-max(1, n/16) {
+		return int64(d)
+	}
+	return int64(n)
+}
 
 // packCompressor chooses each record's codec. A record is stored deflated
 // only when that saves at least 1/16 of its logical size (and so is
@@ -50552,14 +50562,14 @@ func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 		}
 	}
 	if rec.Form == authFormRep && rec.Root != nil {
-		hard, stream, _, seek, err := s.repRootReplay(rec.Root)
+		need, err := s.repRootReplay(rec.Root)
 		if err != nil {
 			return err
 		}
 		for _, f := range []struct {
 			on   bool
 			name string
-		}{{hard, authHardFeature}, {stream, authStreamFeature}, {seek, authSeekFeature}} {
+		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}} {
 			if f.on {
 				if err := s.ensureFeature(f.name); err != nil {
 					return err
@@ -52252,7 +52262,8 @@ func (s *Store) authCostOf(runCtx context.Context, rec *authRecord, pins map[[32
 	}
 	switch {
 	case rec.Form == authFormRep && rec.Root != nil:
-		hard, _, codec, _, err := s.repRootReplay(rec.Root)
+		need, err := s.repRootReplay(rec.Root)
+		hard, codec := need.hard, need.codec
 		if err != nil {
 			return nil, err
 		}
@@ -52408,19 +52419,14 @@ func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64, 
 		n = int64(loc.stored)
 		// Physical END-state bytes: a raw record is priced as the cold-tier repack would store it, so a
 		// compressed CDC chunk and a freshly staged raw component are compared on the same footing.
-		if !current && loc.codec == packCodecRaw && n >= 512 {
+		if !current && loc.codec == packCodecRaw {
 			if data, err := s.casRead(sum); err == nil {
-				if d := int64(xdDeflateLen(data, packPriceLevel)); d < n-n/16 {
-					n = d
-				}
+				n = packPriceLen(data)
 			}
 		}
 	} else if !current {
 		if data, err := s.casRead(sum); err == nil {
-			n = int64(len(data))
-			if d := int64(xdDeflateLen(data, packPriceLevel)); d < n-n/16 {
-				n = d
-			}
+			n = packPriceLen(data)
 		}
 	}
 	memo[sum] = n + packRecordBytes
@@ -54677,7 +54683,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature},
 	}
 }
 
@@ -54825,18 +54831,21 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 				return nil, errAuthTransferUnsupported
 			}
 		case authFormRep:
-			hard, stream, _, seek, err := s.repRootReplay(rec.Root)
+			need, err := s.repRootReplay(rec.Root)
 			if err != nil {
 				return nil, err
 			}
-			if hard {
+			if need.hard {
 				addFeature(authHardFeature)
 			}
-			if stream {
+			if need.stream {
 				addFeature(authStreamFeature)
 			}
-			if seek {
+			if need.seek {
 				addFeature(authSeekFeature)
+			}
+			if need.reach {
+				addFeature(authReachFeature)
 			}
 		}
 	}
@@ -66225,8 +66234,11 @@ const (
 	authIQ3Feature    = "zn7iq3s"    // containers that derive IQ3_S tensors: builds without the quantizer refuse the store
 	authZW2Feature    = "zw2"        // windowed deltas with restartable program segments
 	authSeekFeature   = "cxseek"     // gzip and zstd representations whose recipes carry a seek index
-	authZN7MaxAux     = 64 << 20
-	authZN7ReadChunk  = 4 << 20 // decoded span a body keeps between ReadAt calls
+	// zstd recipes with a per-block model reach after the seek index: a cxseek-only
+	// build would open the store and then reject those recipes on every read.
+	authReachFeature = "cxreach"
+	authZN7MaxAux    = 64 << 20
+	authZN7ReadChunk = 4 << 20 // decoded span a body keeps between ReadAt calls
 )
 
 func authZN7GGMLType(t uint32) ncNumcoreDType {
@@ -66799,7 +66811,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature {
 			return x
 		}
 	}
@@ -75216,13 +75228,21 @@ func (s *Store) repPublicationFloor(r *repRoot) (int, error) {
 // repRootReplay reports the format requirements of structured recipes and
 // identifies a top-level exact compressed container for cost reporting.
 // seek reports a codec container with a seek index anywhere in the closure.
-func (s *Store) repRootReplay(r *repRoot) (hard, stream, codec, seek bool, err error) {
+// repReplayNeeds is what replaying a representation closure requires of a reader.
+type repReplayNeeds struct {
+	hard, stream bool // hard codecs; streaming-Brotli Parquet pages
+	codec        bool // the root itself is a gzip or zstd representation
+	seek         bool // a gzip or zstd recipe carries a seek index
+	reach        bool // a zstd recipe carries the per-block model reach (after its seek index)
+}
+
+func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
 	src := s.newRepSource(r.Descs, nil)
 	defer src.close()
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	reach, err := env.reachable(r.Rep)
 	if err != nil {
-		return false, false, false, false, err
+		return need, err
 	}
 	for id, role := range reach.Role {
 		if role != repDepRep {
@@ -75230,31 +75250,32 @@ func (s *Store) repRootReplay(r *repRoot) (hard, stream, codec, seek bool, err e
 		}
 		obj, err := env.loadRep(id)
 		if err != nil {
-			return false, false, false, false, err
+			return need, err
 		}
 		if len(obj.Recipe) > 0 && (obj.Kind == repKindParquet && obj.Recipe[0] >= repPQrecipeVersionHard || obj.Kind == repKindSST && obj.Recipe[0] == repSSrecipeVersionHard) {
-			hard = true
-			stream = stream || obj.Kind == repKindParquet && obj.Recipe[0] == repPQrecipeVersionStream
+			need.hard = true
+			need.stream = need.stream || obj.Kind == repKindParquet && obj.Recipe[0] == repPQrecipeVersionStream
 		}
 		if id == r.Rep {
-			codec = obj.Kind == repKindGzip || obj.Kind == repKindZstd
+			need.codec = obj.Kind == repKindGzip || obj.Kind == repKindZstd
 		}
 		switch obj.Kind {
 		case repKindGzip:
 			g, err := gzipRecipe(obj)
 			if err != nil {
-				return false, false, false, false, err
+				return need, err
 			}
-			seek = seek || g.seek != nil
+			need.seek = need.seek || g.seek != nil
 		case repKindZstd:
-			_, sizes, err := zstdRecipe(obj)
+			_, sizes, rt, err := zstdRecipeReach(obj)
 			if err != nil {
-				return false, false, false, false, err
+				return need, err
 			}
-			seek = seek || sizes != nil
+			need.seek = need.seek || sizes != nil
+			need.reach = need.reach || rt != nil
 		}
 	}
-	return hard, stream, codec, seek, nil
+	return need, nil
 }
 
 // repFloorOf is the store-format level the representation closure reach describes

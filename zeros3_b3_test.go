@@ -2140,3 +2140,109 @@ func TestNamespaceCloseDuringConsolidation(t *testing.T) {
 		}
 	}
 }
+
+// ---- B3-R: admission pricing ----
+
+// physChunk prices every chunk at exactly the payload the pack writer stores:
+// staged chunks and raw records at the recompressed end state, current-storage
+// pricing at what is on disk, across text, model-like, structured and random data.
+func TestAuthPriceIsThePackWritersChoice(t *testing.T) {
+	rng := rand.New(rand.NewPCG(21, 22))
+	var text, csv strings.Builder
+	for text.Len() < 1<<20 {
+		fmt.Fprintf(&text, "func f%d(x int) int { return x*%d + %d }\n", rng.IntN(500), rng.IntN(9), rng.IntN(99))
+	}
+	for csv.Len() < 1<<20 {
+		fmt.Fprintf(&csv, "%d,%s,%.3f,%d\n", rng.IntN(1e6), []string{"red", "green", "blue"}[rng.IntN(3)], rng.Float64()*100, rng.IntN(2))
+	}
+	model := make([]byte, 1<<20)
+	for i := 0; i+4 <= len(model); i += 4 {
+		binary.LittleEndian.PutUint32(model[i:], math.Float32bits(float32(rng.NormFloat64()*0.02)))
+	}
+	random := make([]byte, 1<<19)
+	for i := range random {
+		random[i] = byte(rng.Uint32())
+	}
+	classes := map[string][]byte{"text": []byte(text.String()), "structured": []byte(csv.String()), "model": model, "random": random, "tiny": []byte("short object"),
+		"small": []byte(strings.Repeat("abcabcabd ", 40))}
+	l := newAuthLab(t)
+	for name, data := range classes {
+		l.put(name, data)
+	}
+	want := func(data []byte) int64 {
+		payload, _ := newPackCompressor().encode(data)
+		return int64(len(payload)) + packRecordBytes
+	}
+	check := func(stage string, current bool, expect func(sum [32]byte, data []byte) int64) {
+		t.Helper()
+		memo := map[[32]byte]int64{}
+		for name := range classes {
+			for _, c := range l.man(name).Chunks {
+				sum, _ := decodeHexSHA256(c.SHA256)
+				data, err := l.s.casRead(sum)
+				mustOK(t, err)
+				if got, w := l.s.physChunk(sum, c.Length, memo, current), expect(sum, data); got != w {
+					t.Fatalf("%s %s: chunk of %d bytes priced %d, want %d", stage, name, len(data), got, w)
+				}
+			}
+		}
+	}
+	check("staged", false, func(_ [32]byte, d []byte) int64 { return want(d) })
+	stored := func(sum [32]byte, _ []byte) int64 {
+		loc, ok := l.s.packLookup(sum)
+		if !ok {
+			t.Fatal("chunk not packed")
+		}
+		return int64(loc.stored) + packRecordBytes
+	}
+	compact := func(compress bool) {
+		l.offline(func() {
+			o := authCompactOpts()
+			o.Compress = compress
+			_, err := compactStore(l.dir, o)
+			mustOK(t, err)
+		})
+	}
+	compact(false)
+	check("raw packed, end state", false, func(_ [32]byte, d []byte) int64 { return want(d) })
+	check("raw packed, current", true, stored)
+	l.offline(func() {
+		_, err := repackStore(l.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true, Recompress: true})
+		mustOK(t, err)
+	})
+	check("recompressed, end state", false, stored)
+	check("recompressed, current", true, stored)
+	check("recompressed equals the writer", false, func(_ [32]byte, d []byte) int64 { return want(d) })
+}
+
+// ---- B3-R: zstd reach compatibility ----
+
+// A zstd recipe with a reach section needs its own store feature: a build that
+// knows only cxseek would open the store and reject those recipes on every read.
+func TestZstdReachIsAStoreFeature(t *testing.T) {
+	l := newAuthLab(t)
+	files := seekFixtures(t)
+	for name, wantReach := range map[string]bool{"reach.l9w23.zst": true, "b2-seek/text.l6.gz": false} {
+		key := filepath.Base(name)
+		data, ok := files[name]
+		if !ok {
+			data, ok = files[key]
+		}
+		if !ok {
+			t.Fatalf("fixture %s missing", name)
+		}
+		l.put(key, data)
+		root, _ := reachRoot(t, l, key)
+		need, err := l.s.repRootReplay(root)
+		mustOK(t, err)
+		if !need.seek || need.reach != wantReach || !need.codec {
+			t.Fatalf("%s: replay needs %+v", key, need)
+		}
+	}
+	if x := (storeFormat{Features: []string{authSeekFeature, authReachFeature}}).unknownFeature(); x != "" {
+		t.Fatalf("this build refuses its own feature %q", x)
+	}
+	if !slices.Contains(l.s.AuthorityCaps().Features, authReachFeature) {
+		t.Fatal("transfer capabilities omit cxreach")
+	}
+}

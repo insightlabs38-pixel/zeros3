@@ -1,5 +1,7 @@
 # B3: compact namespace generations, similarity roots, zstd reach, admission pricing
 
+B3-R (`../b3r`) corrects this batch: ordinary opens now load the checkpoint, maintenance fails on incomplete enumeration, and zstd reach has its own store feature.
+
 Linux amd64, Go 1.27.0, 4 vCPU, warm page cache. Old = B2 head `3aa98e5`, new = this branch. Rows: [results.jsonl](results.jsonl) (medians of 5 fresh processes); drivers: `measure.py` and `zeros3_b3_scale_test.go` (fixture and probes; they also compile against the old tree). The fixture is journal-only and synthetic: 1,000,000 puts, ~30% deleted, ~2% overwritten (1.32 M records, 501 MB journal, 700 k visible, 320 k retained roots). It has no packs, so open numbers exclude locator state (the P9 862 MB figure included it); ratios refer to the namespace alone.
 
 ## Architecture
