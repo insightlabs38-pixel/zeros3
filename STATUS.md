@@ -245,6 +245,10 @@ Chunks, packs, and manifests may be durably staged before that boundary; a
 failed request can therefore leave unreachable immutable data, but must not
 publish a partial object.
 
+Online maintenance (`serve -maintenance`) adds no persistent format: it writes
+ordinary packs and only unlinks files. Two lock files coordinate processes of
+this build (`writers.lock`, `readers.lock`); older binaries ignore them.
+
 The implementation and tests cover deterministic crash injection broadly and
 real process termination on selected ingest/import paths. They do **not** claim
 comprehensive hardware power-loss, faulty-device, kernel-fault, or distributed

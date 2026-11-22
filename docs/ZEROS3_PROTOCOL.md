@@ -608,6 +608,19 @@ store's liveness machinery rather than from a persistent refcount index.
 
 It is not intended as an S3 API.
 
+## Maintenance endpoint
+
+```text
+GET  /_zeros3/v1/maintenance
+POST /_zeros3/v1/maintenance
+```
+
+SigV4-authenticated like every request. `GET` returns the online maintenance
+status of a server started with `-maintenance` (`enabled`, `running`, `passes`,
+`options`, `last`). `POST` requests a pass and answers `202` with the status, or
+`409 MaintenanceDisabled` when the server does not maintain its store. The pass
+runs in the background; it is never executed inside the request.
+
 ## Versioning rules
 
 Clients must use the advertised protocol identifiers rather than infer

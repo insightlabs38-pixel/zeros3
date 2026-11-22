@@ -7453,6 +7453,7 @@ type Store struct {
 	maint      atomic.Pointer[maintEpoch]
 	maintMu    sync.Mutex
 	maintOwner bool
+	openedAt   time.Time // a maintainer is the only writer: older staging files are orphans
 	retire     retireSet
 	writerLock *storeLock
 	readerLock *storeLock
@@ -7525,7 +7526,7 @@ func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Sto
 		return nil, err
 	}
 	if ownSegments {
-		s.writerLock, s.maintOwner = lock, maintain
+		s.writerLock, s.maintOwner, s.openedAt = lock, maintain, time.Now()
 	} else {
 		s.readerLock = lock
 	}
@@ -19365,6 +19366,9 @@ func (g *opGate) exit(e *opEpoch) {
 }
 
 func (g *opGate) wait(ctx context.Context, limit time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	old := g.cur.Swap(&opEpoch{done: make(chan struct{})})
 	if old == nil {
 		return nil
@@ -20388,13 +20392,17 @@ func (s *Store) maintUnlinkFiles(ep *maintEpoch, files []doomedFile, rep *MaintR
 }
 
 // maintStagingPrefixes are the staging files a live pass may clear once they
-// are older than its epoch by a margin: every operation that could own one has
-// finished (G1). Namespace checkpoint staging belongs to the consolidator.
+// are older than its epoch by a margin (every operation that could own one has
+// finished, G1), or older than the maintainer's open (a crashed process left
+// them). Namespace checkpoint staging belongs to the consolidator.
 var maintStagingPrefixes = []string{"cas-", "zs3-", "pack-", "rep-", "auth-"}
 
 func (s *Store) maintSweepTmp(t0 time.Time) int {
 	n := 0
 	cut := t0.Add(-10 * time.Minute)
+	if o := s.openedAt.Add(-time.Minute); o.After(cut) && o.Before(t0) {
+		cut = o
+	}
 	for _, dir := range s.tmpDirs() {
 		ents, err := os.ReadDir(dir)
 		if err != nil {

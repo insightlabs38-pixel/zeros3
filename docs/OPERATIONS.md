@@ -115,7 +115,9 @@ Common online operations include S3 reads/writes, snapshots, sync, replication,
 repair, and read-only inspection.
 
 Common offline/exclusive operations include bundle import, compact, destructive
-GC, repack, tier initialization/movement/rebalance, and history pruning.
+GC, repack, tier initialization/movement/rebalance, and history pruning. A
+server started with `-maintenance` performs GC, repacking and keep-last history
+pruning itself while it serves (see "Online maintenance" below).
 
 ## Backup
 
@@ -378,6 +380,37 @@ packs so their records are deflated when that saves space; use it on cold stores
 after `authority migrate` + `gc -apply`, so that the retired CDC copies and the new
 components are compared on the same compressed footing. A pack whose raw records are
 incompressible is rewritten identically by every run.
+
+### Online maintenance
+
+`zeros3 serve -maintenance gc|all` reclaims space without stopping the server:
+`gc` removes unreachable loose chunks and manifests, orphan representation roots
+and authority bodies, and packs with no live record; `all` also rewrites packs
+whose live share is below `-maintenance-max-live-percent` (default 50).
+
+```sh
+./zeros3 serve -store /srv/zeros3 -maintenance all -maintenance-interval 1h \
+  -maintenance-max-source-packs 8 -maintenance-keep-versions 3
+```
+
+`-maintenance-interval 0` runs passes only on request. An authenticated
+`POST /_zeros3/v1/maintenance` starts a pass; `GET` returns the status and the
+last pass report (JSON: mark and reconciled journal sequences, packs retired and
+written, bytes reclaimed, items kept because a request referenced them, waits
+and the reason a pass deferred). Every pass is also logged as one JSON line.
+
+The maintaining server must be the only writing process: it takes
+`writers.lock` exclusively, so another `serve`, `restore` or exclusive command
+of this build refuses to open the store, and the server refuses to start beside
+one. Read-only opens (`stats`, `verify`, `doctor`, `repair`, bundle export) stay
+allowed; while one is open, a pass retires packs from the locator but leaves the
+files until it closes, and the next pass removes them. Binaries older than B4
+take neither lock: do not run them against a maintained store.
+
+Passes are bounded (`-maintenance-max-source-packs`, `-maintenance-max-deletes`)
+and wait at most `-maintenance-wait` for in-flight requests before deferring.
+A crash during a pass leaves redundant packs or files, never a missing one; the
+next pass collects them. Offline `gc`, `repack` and `compact` are unchanged.
 
 ### Maintenance parallelism
 
