@@ -246,8 +246,8 @@ failed request can therefore leave unreachable immutable data, but must not
 publish a partial object.
 
 Online maintenance (`serve -maintenance`) adds no persistent format: it writes
-ordinary packs and only unlinks files. Two lock files coordinate processes of
-this build (`writers.lock`, `readers.lock`); older binaries ignore them.
+ordinary packs and only unlinks files. Two directory flocks coordinate processes of
+this build (writers on `chunks/`, readers on `journal/`); older binaries ignore them.
 
 The implementation and tests cover deterministic crash injection broadly and
 real process termination on selected ingest/import paths. They do **not** claim

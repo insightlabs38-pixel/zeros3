@@ -406,13 +406,14 @@ last pass report (JSON: mark and reconciled journal sequences, packs retired and
 written, bytes reclaimed, items kept because a request referenced them, waits
 and the reason a pass deferred). Every pass is also logged as one JSON line.
 
-The maintaining server must be the only writing process: it takes
-`writers.lock` exclusively, so another `serve`, `restore` or exclusive command
-of this build refuses to open the store, and the server refuses to start beside
-one. Read-only opens (`stats`, `verify`, `doctor`, `repair`, bundle export) stay
-allowed; while one is open, a pass retires packs from the locator but leaves the
-files until it closes, and the next pass removes them. Binaries older than B4
-take neither lock: do not run them against a maintained store.
+The maintaining server must be the only writing process: it holds the writer
+lock (a flock on `chunks/`) exclusively, so another `serve`, `restore` or
+exclusive command of this build refuses to open the store, and the server
+refuses to start beside one. Read-only opens (`stats`, `verify`, `doctor`,
+`repair`, bundle export) stay allowed and hold the reader lease (a flock on
+`journal/`); while one is open, a pass retires packs from the locator but leaves
+the files until it closes, and the next pass removes them. Binaries older than
+B4 take neither lock: do not run them against a maintained store.
 
 Passes are bounded (`-maintenance-max-source-packs`, `-maintenance-max-deletes`)
 and wait at most `-maintenance-wait` for in-flight requests before deferring.

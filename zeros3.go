@@ -107,26 +107,26 @@ import (
 //    17719    Offline compaction (`zeros3 compact`)
 //    18786    Pack reclamation and repacking (`zeros3 repack`)
 //    19310    Online maintenance: epochs, pins, live GC and repack (B4)
-//    20565    Physical tiers: status and pack movement (`zeros3 tier`)
-//    21078    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    22143    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    22947    Delta sync client, credentials, and parallel transfer
-//    25252    Bulk logical-chunk transport (v2)
-//    26163    Recursive directory sync
-//    26468    Remote replication (`zeros3 replicate`)
-//    27381    Peer-assisted corruption repair (`zeros3 repair`)
-//    27953    Namespace (prefix/bucket) replication
-//    28269    Copy-on-write namespace fork (`zeros3 fork`)
-//    28477    Snapshots and restore
-//    29639    Structural diff and inspect (introspection)
-//    31041    Portable snapshot bundles (`zeros3 bundle`)
-//    32238    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    32873    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    51261    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    58847    Windowed and estimated similarity deltas (extracted dcore)
-//    60594    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    68447    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    74719    CLI dispatch, HTTP server/startup, and main
+//    20564    Physical tiers: status and pack movement (`zeros3 tier`)
+//    21077    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    22142    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    22946    Delta sync client, credentials, and parallel transfer
+//    25251    Bulk logical-chunk transport (v2)
+//    26162    Recursive directory sync
+//    26467    Remote replication (`zeros3 replicate`)
+//    27380    Peer-assisted corruption repair (`zeros3 repair`)
+//    27952    Namespace (prefix/bucket) replication
+//    28268    Copy-on-write namespace fork (`zeros3 fork`)
+//    28476    Snapshots and restore
+//    29638    Structural diff and inspect (introspection)
+//    31040    Portable snapshot bundles (`zeros3 bundle`)
+//    32237    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    32872    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    51260    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    58846    Windowed and estimated similarity deltas (extracted dcore)
+//    60593    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    68446    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    74718    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -7504,16 +7504,16 @@ func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Sto
 		if maintain {
 			mode = syscall.LOCK_EX
 		}
-		if lock, err = flockStore(root, "writers.lock", mode, false); errors.Is(err, syscall.EWOULDBLOCK) {
+		if lock, err = flockStore(root, writerLockDir, mode, false); errors.Is(err, syscall.EWOULDBLOCK) {
 			if maintain {
 				return nil, fmt.Errorf("store: online maintenance needs the only writing process: %w", errGCStoreInUse)
 			}
 			return nil, fmt.Errorf("store: %w", errMaintOwned)
 		}
-	} else if lock, err = flockStore(root, "readers.lock", syscall.LOCK_SH, true); err != nil && !os.IsNotExist(err) && !errors.Is(err, fs.ErrPermission) {
+	} else if lock, err = flockStore(root, readerLeaseDir, syscall.LOCK_SH, true); err != nil && !errors.Is(err, fs.ErrPermission) {
 		return nil, fmt.Errorf("store: taking the reader lease: %w", err)
 	} else {
-		err = nil // a read-only store without a lease file has no maintainer
+		err = nil // an unreadable journal directory: the open fails below anyway
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: taking the writer lock: %w", err)
@@ -19523,14 +19523,6 @@ func (t *pinTable) release(keys [][32]byte, ch chan struct{}, drop bool) {
 	close(ch)
 }
 
-// revived reports whether a condemned key was pinned since.
-func (t *pinTable) revived(k [32]byte) bool {
-	sh := t.shard(&k)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	return sh.m[k].flags&pinRevived != 0
-}
-
 func uuidPinKey(uuid string) [32]byte { return sha256.Sum256([]byte("zeros3/pin/manifest\x00" + uuid)) }
 func authPinKey(sha [32]byte) [32]byte {
 	return sha256.Sum256(append([]byte("zeros3/pin/body\x00"), sha[:]...))
@@ -19629,20 +19621,27 @@ func (s *Store) mpinAuthClosure(sha [32]byte, seen map[[32]byte]bool) error {
 
 // ---- inter-process leases ------------------------------------------------
 //
-// writers.lock: every owner open holds it shared; a store opened for online
-// maintenance holds it exclusively, so no other writing process (this build)
-// can run beside the maintainer. readers.lock: every shared open holds it
-// shared for its lifetime; the maintainer unlinks only while it can take it
-// exclusively, so a reader in another process never loses a pack or file its
-// view of the store names. Binaries older than B4 take neither lock.
+// Both are flocks on store directories, so they add no file to the store. The
+// writer lock (chunks/): every owner open holds it shared; a store opened for
+// online maintenance holds it exclusively, so no other writing process (this
+// build) runs beside the maintainer. The reader lease (journal/): every shared
+// open holds it shared for its lifetime; the maintainer unlinks only while it
+// can take it exclusively, so a reader in another process never loses a pack
+// or file its view names. Binaries older than B4 take neither.
+
+const (
+	writerLockDir  = "chunks"
+	readerLeaseDir = "journal"
+)
 
 func flockStore(root, name string, mode int, block bool) (*storeLock, error) {
 	path := filepath.Join(root, name)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err := os.MkdirAll(path, 0o755); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	f, err := os.Open(path)
 	if err != nil {
-		if f, err = os.Open(path); err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	if !block {
 		mode |= syscall.LOCK_NB
@@ -19660,9 +19659,9 @@ func flockStore(root, name string, mode int, block bool) (*storeLock, error) {
 	return &storeLock{f: f}, nil
 }
 
-// tryReaderLease takes readers.lock exclusively if no shared opener holds it.
+// tryReaderLease takes the reader lease exclusively if no shared opener holds it.
 func (s *Store) tryReaderLease() *storeLock {
-	l, err := flockStore(s.root, "readers.lock", syscall.LOCK_EX, false)
+	l, err := flockStore(s.root, readerLeaseDir, syscall.LOCK_EX, false)
 	if err != nil {
 		return nil
 	}
@@ -20084,10 +20083,10 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		}
 	}
 	fireTestHook(hookMaintCondemned)
-	if n, err := s.maintCarryExtra(late, carry, opt, &rep); err != nil {
+	n, err := s.maintCarryExtra(late, carry, opt, &rep)
+	rep.LateRecords += n
+	if err != nil {
 		return rep, err
-	} else {
-		rep.LateRecords += n
 	}
 
 	if carry != nil {

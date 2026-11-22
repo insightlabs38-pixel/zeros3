@@ -15,8 +15,8 @@ packs while serving; offline `gc`, `repack` and `compact` are unchanged.
   are condemned and a later pin revives them. Pinned and revived pack records are carried
   before the doomed packs are masked out of the immutable locator under a short hold.
 * **G2** drains every request that may hold an old locator or reference. Unlinks need
-  `readers.lock` exclusively (shared opens hold it), else packs stay pending for a later pass;
-  `writers.lock` makes the maintainer the only writer. No new persistent state: a crash
+  the reader lease (a `journal/` flock shared opens hold) exclusively, else packs stay
+  pending; a `chunks/` flock makes the maintainer the only writer. No new persistent state: a crash
   leaves redundant files the next pass removes. `POST|GET /_zeros3/v1/maintenance` (SigV4).
 
 ## Evidence (`zeros3_b4_test.go`, also `-race`)
@@ -47,7 +47,7 @@ restart to ready 155-205 ms.
 ## Limits
 Every pass rereads all manifests; long downloads delay G2 and old writers G1 (then the
 pass defers after `-maintenance-wait`); pack writes are not throttled; binaries before B4
-ignore both lock files.
+ignore both flocks.
 
 ## B3-R follow-ups
 * TypeScript 5.6.2/5.6.3/5.7.2 (registry sha1/sha512 verified): planned 23.38%, measured

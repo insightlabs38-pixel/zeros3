@@ -143,10 +143,7 @@ func TestB4PinTableCondemnReviveHold(t *testing.T) {
 	if !p.condemn(b) {
 		t.Fatal("an unpinned key was not condemned")
 	}
-	p.pin(b) // revives
-	if !p.revived(b) {
-		t.Fatal("a pin of a condemned key did not revive it")
-	}
+	p.pin(b) // revives: the hold below reports it
 	c := sha256.Sum256([]byte("c"))
 	p.condemn(c)
 	ch := make(chan struct{})
