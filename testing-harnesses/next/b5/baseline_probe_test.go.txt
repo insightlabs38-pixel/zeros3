@@ -1,0 +1,98 @@
+//go:build b5baseline && b1rangeexperiment
+
+package main
+
+// B5 old-binary baseline: copy into a worktree of the base commit (b169eda) as zeros3_b5_baseline_test.go.
+// It uses only APIs that commit has. Offsets are drawn exactly as TestB5ReadBench draws them.
+//
+//	ZEROS3_B5_STORES=name=dir,...  ZEROS3_B5_N  ZEROS3_B5_OUT  ZEROS3_B5_LABEL   (cold reads, page cache dropped)
+//	ZEROS3_B5_MIGRATE=dir          migrate a copy as the B1 fixtures were built (timing, peak RSS)
+
+import (
+	"bytes"
+	"encoding/json"
+	rand "math/rand/v2"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func b5bDisk() (ios int64) {
+	ents, _ := os.ReadDir("/sys/block")
+	for _, e := range ents {
+		b, _ := os.ReadFile(filepath.Join("/sys/block", e.Name(), "stat"))
+		if f := strings.Fields(string(b)); len(f) > 0 {
+			n, _ := strconv.ParseInt(f[0], 10, 64)
+			ios += n
+		}
+	}
+	return
+}
+
+func TestB5BaselineReads(t *testing.T) {
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "32")
+	n, _ := strconv.Atoi(os.Getenv("ZEROS3_B5_N"))
+	out, _ := os.OpenFile(os.Getenv("ZEROS3_B5_OUT"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	defer out.Close()
+	for _, kv := range strings.Split(os.Getenv("ZEROS3_B5_STORES"), ",") {
+		name, dir, _ := strings.Cut(kv, "=")
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, _ := s.ListObjectsV2("b", "", "", "", 1000)
+		for oi, o := range page.contents {
+			_, want, err := s.GetObject("b", o.key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			size := int64(len(want))
+			rng := rand.New(rand.NewPCG(uint64(oi)+1, 0xb5))
+			for _, ln := range []int64{4 << 10, 64 << 10} {
+				if ln > size {
+					continue
+				}
+				var offs []int64
+				for range n {
+					offs = append(offs, rng.Int64N(size-ln+1))
+				}
+				for _, off := range offs {
+					s.purgeReadCaches()
+					s.authInvalidate()
+					syscall.Sync()
+					os.WriteFile("/proc/sys/vm/drop_caches", []byte("1"), 0o200)
+					d0 := b5bDisk()
+					t0 := time.Now()
+					_, _, got, err := s.GetObjectRange("b", o.key, byteRange{off, off + ln - 1})
+					us := time.Since(t0).Microseconds()
+					if err != nil || !bytes.Equal(got, want[off:off+ln]) {
+						t.Fatalf("%s %s %d: %v", name, o.key, off, err)
+					}
+					b, _ := json.Marshal(map[string]any{"Label": os.Getenv("ZEROS3_B5_LABEL"), "Store": name, "Key": o.key, "Mode": "cold" + strconv.FormatInt(ln>>10, 10) + "k", "Off": off, "Len": ln, "WallUS": us, "DiskReads": b5bDisk() - d0})
+					out.Write(append(b, '\n'))
+				}
+			}
+		}
+		s.Close()
+	}
+}
+
+func TestB5BaselineMigrate(t *testing.T) {
+	src := os.Getenv("ZEROS3_B5_MIGRATE")
+	if src == "" {
+		t.Skip()
+	}
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(src)); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(dir, "LOCK"))
+	resetRSSPeak()
+	cpu0, t0 := procCPUSeconds(), time.Now()
+	rep := b1Migrate(t, dir, b1Layout{"zw-mixed", 1 << 20, 256 << 10, 1}, 1<<20, false)
+	t.Logf("migrate: wall_s=%.2f cpu_s=%.2f peak_rss_mib=%.0f admitted=%d", time.Since(t0).Seconds(), procCPUSeconds()-cpu0, rssPeakMiB(), rep.Admitted)
+}

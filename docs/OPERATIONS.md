@@ -420,6 +420,34 @@ and wait at most `-maintenance-wait` for in-flight requests before deferring.
 A crash during a pass leaves redundant packs or files, never a missing one; the
 next pass collects them. Offline `gc`, `repack` and `compact` are unchanged.
 
+### Restartable records and reconstruction layout (research, B5)
+
+Both are opt-in and change only physical placement; reads stay byte-exact and
+SHA-256-verified. Results: `testing-harnesses/next/b5/README.md`.
+
+```sh
+./zeros3 repack -store /srv/zeros3 -apply -recompress -record-blocks 32   # convert
+./zeros3 repack -store /srv/zeros3 -apply -layout recon                   # relayout families
+./zeros3 serve ... -maintenance all -maintenance-record-blocks 32 -maintenance-layout recon
+```
+
+`-record-blocks 32` (also on `compact`) writes compressible records longer than
+32 KiB as restartable records: independently decodable 32 KiB blocks, each with
+its own SHA-256, primed with a 32 KiB dictionary that every such pack holds twice.
+Ranged reads of up to 1 MiB decode only the blocks they need; storage grows about
+2-3% on compressible data. The first such pack records store feature `packblk`:
+builds without it refuse the store, and the feature is never removed. With
+`-recompress`, repack selects packs holding single-stream records longer than one
+block, so a converted store is not selected again for that reason. Online passes
+write blocked records only into the packs they rewrite anyway.
+
+`-layout recon` probes authority families with sparse reads through the normal
+resolver, places each delta piece by the base offsets its reconstructions read,
+and rewrites a family's packs only when the estimate (128 KiB windows per probe)
+improves by 15%; a relaid family is not selected again. Planning reads about
+1,000 probes per 60 MB family (2-3 s). On the measured SSD-backed store it did
+not reduce latency: keep it for evaluation, not as a default.
+
 ### Maintenance parallelism
 
 `stats`, `verify` (including `-deep`), `doctor`, `gc`, `repack` and `compact`

@@ -1,8 +1,8 @@
-//go:build b5locality
+//go:build b5locality && b1rangeexperiment
 
 package main
 
-// B5 physical-locality benchmark (not a regression test).
+// B5 physical-locality benchmark (not a regression test): go test -tags b5locality,b1rangeexperiment.
 //
 //	ZEROS3_B5_STORES  comma-separated name=dir fixture stores (opened read-only in spirit: reads only)
 //	ZEROS3_B5_OUT     JSONL rows (appended)
@@ -15,9 +15,11 @@ import (
 	"bytes"
 	"cmp"
 	"compress/flate"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	rand "math/rand/v2"
 	"os"
 	"path/filepath"
@@ -447,6 +449,10 @@ func TestB5MigrateProfile(t *testing.T) {
 		dbytes += v
 	}
 	t.Logf("peak RSS %.0f MiB", rssPeakMiB())
+	if k := os.Getenv("ZEROS3_B5_KEEP"); k != "" {
+		s.Close()
+		os.CopyFS(k, os.DirFS(dir))
+	}
 	t.Logf("migrate: %.1fs wall %.1fs cpu admitted=%d; single-record decodes %d (%.1f MB, %d distinct %.1f MB), run decodes %d (%.1f MB)",
 		time.Since(t0).Seconds(), procCPUSeconds()-cpu0, rep.Admitted, single, float64(singleBytes)/1e6, len(distinct), float64(dbytes)/1e6, runs, float64(runLogical)/1e6)
 }
@@ -842,4 +848,436 @@ func b5VariantOrder(f *reconFamily, cluster int64, refine bool) [][32]byte {
 		return cmp.Or(cmp.Compare(clusterOf[a], clusterOf[b]), cmp.Compare(f.pieces[a].depth, f.pieces[b].depth), cmp.Compare(seq[a], seq[b]))
 	})
 	return out
+}
+
+// b5Corpus is one benchmark corpus family: files ingested oldest first, then migrated and reclaimed.
+type b5Corpus struct {
+	name  string
+	files []string
+	pol   AuthPolicy
+}
+
+func b5Corpora(corpus string) []b5Corpus {
+	g := func(p string) []string { m, _ := filepath.Glob(filepath.Join(corpus, p)); slices.Sort(m); return m }
+	arch := AuthPolicy{Order: "oldest", MaxDepth: 2, AllowRep: true, AllowDelta: true, MinSaving: 0.05}
+	return []b5Corpus{
+		{"sqlite", g("sqlite/v*.db"), arch},
+		{"git", g("git/h*.pack"), arch},
+		{"ts", g("ts/typescript-*.tgz"), arch},
+		{"gz", g("gz/coreutils-9.7.l6.tar.gz"), AuthPolicy{AllowRep: true, MinSaving: 0.05}},
+		{"random", g("random/r*.bin"), arch},
+	}
+}
+
+// TestB5BuildFixtures builds ZEROS3_B5_FX/<family>/{base,blk,rb} from ZEROS3_B2_CORPUS (make_inputs.py and
+// fetch_corpus.sh) and copies the B1 Coreutils stores from ZEROS3_B1_DIR; derived variants are rewritten by
+// repack (-recompress -record-blocks 32 [-layout recon]) and their cost is appended to ZEROS3_B5_OUT.
+func TestB5BuildFixtures(t *testing.T) {
+	fx, corpus := os.Getenv("ZEROS3_B5_FX"), os.Getenv("ZEROS3_B2_CORPUS")
+	if fx == "" || corpus == "" {
+		t.Skip("set ZEROS3_B5_FX and ZEROS3_B2_CORPUS")
+	}
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
+	for _, f := range b5Corpora(corpus) {
+		base := filepath.Join(fx, f.name, "base")
+		if _, err := os.Stat(filepath.Join(base, ".b5-ready")); err == nil {
+			continue
+		}
+		if len(f.files) == 0 {
+			t.Fatalf("%s: no inputs", f.name)
+		}
+		os.RemoveAll(base)
+		b1Put(t, base, f.files)
+		econReclaim(t, base)
+		lock, err := acquireStoreLock(base, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := OpenStore(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pol := f.pol
+		pol.Apply = true
+		rep, err := s.AuthorityMigrate(pol)
+		s.Close()
+		lock.release()
+		if err != nil {
+			t.Fatal(err)
+		}
+		econReclaim(t, base)
+		alloc, apparent := allocatedBytes(base)
+		meta, _ := json.Marshal(map[string]any{"family": f.name, "allocated": alloc, "apparent": apparent, "admitted": rep.Admitted, "objects": len(f.files)})
+		os.WriteFile(filepath.Join(base, ".b5-ready"), meta, 0o644)
+		t.Logf("%s: %s", f.name, meta)
+	}
+	if b1 := os.Getenv("ZEROS3_B1_DIR"); b1 != "" {
+		for _, lay := range []string{"zw-mixed", "xd-multi", "cdc"} {
+			dst := filepath.Join(fx, "coreutils-"+lay, "base")
+			if _, err := os.Stat(dst); err == nil {
+				continue
+			}
+			if err := os.CopyFS(dst, os.DirFS(filepath.Join(b1, "coreutils", lay))); err != nil {
+				t.Fatal(err)
+			}
+			os.Remove(filepath.Join(dst, "LOCK"))
+		}
+	}
+	ents, _ := os.ReadDir(fx)
+	for _, e := range ents {
+		base := filepath.Join(fx, e.Name(), "base")
+		for _, v := range []struct {
+			name string
+			opt  repackOptions
+		}{{"blk", repackOptions{BlockLog: 15}}, {"rb", repackOptions{BlockLog: 15, Layout: layoutRecon}}} {
+			dst := filepath.Join(fx, e.Name(), v.name)
+			if _, err := os.Stat(dst); err == nil {
+				continue
+			}
+			if err := os.CopyFS(dst, os.DirFS(base)); err != nil {
+				t.Fatal(err)
+			}
+			os.Remove(filepath.Join(dst, "LOCK"))
+			opt := v.opt
+			opt.TargetBytes, opt.MaxLivePercent, opt.Compress, opt.Recompress = defaultPackTargetBytes, 100, true, true
+			resetRSSPeak()
+			cpu0, t0 := procCPUSeconds(), time.Now()
+			res, err := repackStore(dst, opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wall, cpu := time.Since(t0).Seconds(), procCPUSeconds()-cpu0
+			a0, _ := allocatedBytes(base)
+			a1, _ := allocatedBytes(dst)
+			row := map[string]any{"kind": "repack", "family": e.Name(), "variant": v.name, "wall_s": wall, "cpu_s": cpu, "peak_rss_mib": rssPeakMiB(),
+				"bytes_read": res.BytesRead, "bytes_written": res.BytesWritten, "records_copied": res.RecordsCopied, "packs_rewritten": res.PacksRewritten,
+				"allocated_base": a0, "allocated": a1, "recon": res.Recon}
+			b, _ := json.Marshal(row)
+			t.Logf("%s", b)
+			if out := os.Getenv("ZEROS3_B5_OUT"); out != "" {
+				f, _ := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+				f.Write(append(b, '\n'))
+				f.Close()
+			}
+		}
+	}
+}
+
+// TestB5ConcurrentBench runs ZEROS3_B5_READERS closed-loop readers of random 4 KiB / 64 KiB ranges over
+// every object of each configuration for ZEROS3_B5_SECONDS, starting from a dropped page cache; reads are
+// checked against the reference bytes.
+func TestB5ConcurrentBench(t *testing.T) {
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "32")
+	defer func(p bool) { authPrefetch = p }(authPrefetch)
+	cfgs := b5Configs(t)
+	readers, _ := strconv.Atoi(cmp.Or(os.Getenv("ZEROS3_B5_READERS"), "8"))
+	secs, _ := strconv.Atoi(cmp.Or(os.Getenv("ZEROS3_B5_SECONDS"), "15"))
+	var objs []b5Object
+	for i, c := range cfgs {
+		s, err := OpenStore(c.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			objs = b5Objects(t, s)
+		}
+		s.Close()
+	}
+	for _, c := range cfgs {
+		s, err := OpenStore(c.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authPrefetch = c.prefetch
+		b5Purge(s)
+		b5Drop()
+		io0, sec0 := b5DiskReads()
+		cpu0 := procCPUSeconds()
+		var mu sync.Mutex
+		var lat []int64
+		var bytesRead int64
+		deadline := time.Now().Add(time.Duration(secs) * time.Second)
+		var wg sync.WaitGroup
+		for g := range readers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r := rand.New(rand.NewPCG(uint64(g), 0xc0))
+				for time.Now().Before(deadline) {
+					o := objs[r.IntN(len(objs))]
+					n := int64(4 << 10)
+					if r.IntN(4) == 0 {
+						n = 64 << 10
+					}
+					n = min(n, int64(len(o.data)))
+					off := r.Int64N(int64(len(o.data)) - n + 1)
+					t0 := time.Now()
+					_, _, got, err := s.GetObjectRange("b", o.key, byteRange{off, off + n - 1})
+					d := time.Since(t0).Microseconds()
+					if err != nil || !bytes.Equal(got, o.data[off:off+n]) {
+						t.Errorf("%s %s %d+%d: %v", c.name, o.key, off, n, err)
+						return
+					}
+					mu.Lock()
+					lat, bytesRead = append(lat, d), bytesRead+n
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		cpu := procCPUSeconds() - cpu0
+		io1, sec1 := b5DiskReads()
+		s.Close()
+		slices.Sort(lat)
+		q := func(p float64) int64 { return lat[min(len(lat)-1, int(p*float64(len(lat))))] }
+		row := map[string]any{"kind": "concurrent", "label": os.Getenv("ZEROS3_B5_LABEL"), "config": c.name, "readers": readers, "seconds": secs,
+			"reads": len(lat), "reads_per_s": float64(len(lat)) / float64(secs), "p50_us": q(.5), "p95_us": q(.95), "p99_us": q(.99),
+			"cpu_s": cpu, "disk_reads": io1 - io0, "disk_bytes": (sec1 - sec0) * 512, "payload_bytes": bytesRead}
+		b, _ := json.Marshal(row)
+		t.Logf("%s", b)
+		if out := os.Getenv("ZEROS3_B5_OUT"); out != "" {
+			f, _ := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			f.Write(append(b, '\n'))
+			f.Close()
+		}
+	}
+}
+
+// TestB5MaintUnderLoad copies ZEROS3_B5_MAINTSTORE, adds dead data, and measures 4 KiB reader latency over
+// three phases: idle, during back-to-back online passes with -maintenance-layout recon -maintenance-record-blocks 32,
+// and after. Each pass is reported (time, CPU, bytes rewritten, relayout).
+func TestB5MaintUnderLoad(t *testing.T) {
+	src := os.Getenv("ZEROS3_B5_MAINTSTORE")
+	if src == "" {
+		t.Skip("set ZEROS3_B5_MAINTSTORE")
+	}
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "32")
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(src)); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(dir, "LOCK"))
+	s := b4OpenMaint(t, dir)
+	defer s.Close()
+	objs := b5Objects(t, s)
+	for i := range 24 { // dead data for the passes to reclaim beside the relayout
+		k := fmt.Sprintf("dead%02d", i)
+		if _, err := s.PutObject("b", k, b5Text(uint64(900+i), 1<<20), "text/plain", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteObject("b", k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b4Prune(t, s)
+	emit := func(row map[string]any) {
+		b, _ := json.Marshal(row)
+		t.Logf("%s", b)
+		if out := os.Getenv("ZEROS3_B5_OUT"); out != "" {
+			f, _ := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			f.Write(append(b, '\n'))
+			f.Close()
+		}
+	}
+	phase := func(name string, d time.Duration, during func(stop <-chan struct{})) {
+		stop := make(chan struct{})
+		var mu sync.Mutex
+		var lat []int64
+		var wg sync.WaitGroup
+		for g := range 4 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r := rand.New(rand.NewPCG(uint64(g), 0xd0))
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					o := objs[r.IntN(len(objs))]
+					off := r.Int64N(int64(len(o.data)) - 4096)
+					t0 := time.Now()
+					_, _, got, err := s.GetObjectRange("b", o.key, byteRange{off, off + 4095})
+					if err != nil || !bytes.Equal(got, o.data[off:off+4096]) {
+						t.Errorf("%s: %s@%d: %v", name, o.key, off, err)
+						return
+					}
+					mu.Lock()
+					lat = append(lat, time.Since(t0).Microseconds())
+					mu.Unlock()
+				}
+			}()
+		}
+		done := make(chan struct{})
+		go func() { during(stop); close(done) }()
+		time.Sleep(d)
+		close(stop)
+		wg.Wait()
+		<-done
+		slices.Sort(lat)
+		q := func(p float64) int64 { return lat[min(len(lat)-1, int(p*float64(len(lat))))] }
+		emit(map[string]any{"kind": "maint-phase", "phase": name, "reads": len(lat), "p50_us": q(.5), "p95_us": q(.95), "p99_us": q(.99), "max_us": lat[len(lat)-1]})
+	}
+	opt := b4Opts()
+	opt.MaxLivePercent, opt.Layout, opt.BlockLog, opt.TargetBytes = defaultRepackMaxLivePercent, layoutRecon, 15, defaultPackTargetBytes
+	a0, _ := allocatedBytes(dir)
+	phase("idle", 10*time.Second, func(<-chan struct{}) {})
+	phase("passes", 10*time.Second, func(stop <-chan struct{}) {
+		idle := 0
+		defer func() { emit(map[string]any{"kind": "maint-idle-passes", "passes": idle}) }()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			cpu0, t0 := procCPUSeconds(), time.Now()
+			rep, err := s.maintainOnline(context.Background(), opt)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if rep.PacksWritten == 0 && rep.PacksRetired == 0 && rep.Recon == nil {
+				idle++
+				continue
+			}
+			emit(map[string]any{"kind": "maint-pass", "pass": i, "wall_ms": time.Since(t0).Milliseconds(), "process_cpu_s": procCPUSeconds() - cpu0,
+				"packs_written": rep.PacksWritten, "bytes_written": rep.BytesWritten, "bytes_reclaimed": rep.BytesReclaimed, "packs_retired": rep.PacksRetired,
+				"scan_ms": rep.ScanMS, "recon": rep.Recon})
+		}
+	})
+	phase("after", 10*time.Second, func(<-chan struct{}) {})
+	a1, _ := allocatedBytes(dir)
+	emit(map[string]any{"kind": "maint-store", "allocated_before": a0, "allocated_after": a1})
+	for _, o := range objs {
+		_, got, err := s.GetObject("b", o.key)
+		if err != nil || !bytes.Equal(got, o.data) {
+			t.Fatalf("%s inexact after maintenance", o.key)
+		}
+	}
+	res, err := s.Verify(true)
+	if err != nil || !res.OK() {
+		t.Fatalf("verify: %v %+v", err, res.Issues)
+	}
+}
+
+// TestB5DupEconomics prices selective duplication on the planned (interleaved) layout of ZEROS3_B5_RECONSTORE's
+// family: a probe pays one window per distinct cluster its pieces fall in; copying a base piece into a cluster
+// removes that window from every probe anchored there that reads the piece and nothing else of its cluster.
+// Copies are chosen greedily by windows saved per stored byte; the curve is appended to ZEROS3_B5_OUT.
+func TestB5DupEconomics(t *testing.T) {
+	dir := os.Getenv("ZEROS3_B5_RECONSTORE")
+	if dir == "" {
+		t.Skip("set ZEROS3_B5_RECONSTORE")
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rr, err := s.computeReachability(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, _ := s.authFiles()
+	var fam []*authRecord
+	for _, sha := range files {
+		r, _ := s.authLoad(sha)
+		fam = append(fam, r)
+	}
+	f, err := s.probeReconFamily(fam, rr.liveSet(), 1<<14)
+	if err != nil || f == nil {
+		t.Fatal(err)
+	}
+	st := s.packSnap()
+	clusterOf := func(sha [32]byte) int64 {
+		p := f.pieces[sha]
+		if f.isHeader(sha) {
+			return -1
+		}
+		a := p.anchorOf()
+		if p.coord >= 0 {
+			a = p.coord
+		}
+		return max(a, 0) / reconCluster
+	}
+	type probe struct {
+		home   int64
+		pieces map[int64][][32]byte // cluster -> pieces read there
+	}
+	var ps []probe
+	var total int
+	for _, got := range f.probes {
+		pr := probe{pieces: map[int64][][32]byte{}}
+		var cs []int64
+		for _, sha := range got {
+			c := clusterOf(sha)
+			if !slices.Contains(pr.pieces[c], sha) {
+				pr.pieces[c] = append(pr.pieces[c], sha)
+			}
+			if f.pieces[sha].coord < 0 && c >= 0 {
+				cs = append(cs, c)
+			}
+		}
+		if len(cs) == 0 {
+			continue
+		}
+		slices.Sort(cs)
+		pr.home = cs[len(cs)/2]
+		ps = append(ps, pr)
+		total += len(pr.pieces)
+	}
+	// Candidate copy (piece, home cluster): saves one window for each probe of that home whose only piece in
+	// the piece's cluster is that piece.
+	type cand struct {
+		sha  [32]byte
+		home int64
+	}
+	gain := map[cand]int{}
+	for _, pr := range ps {
+		for c, l := range pr.pieces {
+			if c != pr.home && c >= 0 && len(l) == 1 && f.pieces[l[0]].coord >= 0 {
+				gain[cand{l[0], pr.home}]++
+			}
+		}
+	}
+	type scored struct {
+		cand
+		saved int
+		bytes int64
+	}
+	var all []scored
+	for k, n := range gain {
+		loc, _ := st.lookup(k.sha)
+		all = append(all, scored{k, n, int64(loc.stored) + packRecordHeaderSize})
+	}
+	slices.SortFunc(all, func(a, b scored) int {
+		return cmp.Compare(float64(b.saved)/float64(b.bytes), float64(a.saved)/float64(a.bytes))
+	})
+	var famBytes int64
+	for sha := range f.pieces {
+		loc, _ := st.lookup(sha)
+		famBytes += int64(loc.stored) + packRecordHeaderSize
+	}
+	var saved int
+	var extra int64
+	next := []float64{0.05, 0.1, 0.2, 0.3}
+	var curve []map[string]any
+	for _, c := range all {
+		saved += c.saved
+		extra += c.bytes
+		for len(next) > 0 && float64(saved)/float64(total) >= next[0] {
+			curve = append(curve, map[string]any{"window_reduction": next[0], "extra_bytes": extra, "extra_share": float64(extra) / float64(famBytes), "copies": 0})
+			next = next[1:]
+		}
+	}
+	row := map[string]any{"kind": "dup-economics", "probes": len(ps), "windows": total, "family_bytes": famBytes, "max_window_reduction": float64(saved) / float64(total), "all_copies_bytes": extra, "curve": curve}
+	b, _ := json.Marshal(row)
+	t.Logf("%s", b)
+	if out := os.Getenv("ZEROS3_B5_OUT"); out != "" {
+		fo, _ := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		fo.Write(append(b, '\n'))
+		fo.Close()
+	}
 }

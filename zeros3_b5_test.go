@@ -695,3 +695,95 @@ func TestB5DamagedStagedPackRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestB5RevertAllKeepsPackFeature: reverting every authority record clears the
+// authority features but not packblk, which describes pack records that remain.
+func TestB5RevertAllKeepsPackFeature(t *testing.T) {
+	l := b5Family(t)
+	l.close()
+	b5Repack(t, l.dir, repackOptions{BlockLog: 15})
+	l.open()
+	if _, err := l.s.AuthorityRevertAll(); err != nil {
+		t.Fatal(err)
+	}
+	f := l.s.formatSnapshot()
+	if !slices.Contains(f.Features, packBlockedFeature) || slices.Contains(f.Features, authZW2Feature) {
+		t.Fatalf("features after revert -all: %v", f.Features)
+	}
+	l.exact("reverted")
+	l.close()
+	l.open()
+	l.exact("reopened")
+	l.verifyOK("reverted")
+}
+
+// TestB5RepeatedSpanAdmits: the first small range of a restartable chunk reads
+// only blocks; a repeat reads it whole so the chunk cache admits it; the next
+// repeat is a cache hit with no pack read (served CDC and authority paths alike).
+func TestB5RepeatedSpanAdmits(t *testing.T) {
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "32")
+	dir, data := b5Blocked(t)
+	s, err := OpenStore(dir)
+	mustOK(t, err)
+	defer s.Close()
+	var spans, partial int
+	var mu sync.Mutex
+	tr := &packTrace{OnRecord: func(_ *[32]byte, _ int32, _ int64, stored, logical uint32, codec byte, _, _ int64) {
+		mu.Lock()
+		spans++
+		if codec == packCodecBlocked && logical <= 64<<10 {
+			partial++
+		}
+		mu.Unlock()
+	}}
+	s.packTrace = tr
+	read := func() (records, runs int) {
+		mu.Lock()
+		spans, partial = 0, 0
+		mu.Unlock()
+		r0 := tr.ReadAts.Load()
+		off := int64(700_000)
+		_, _, got, err := s.GetObjectRange("b", "a", byteRange{off, off + 4095})
+		if err != nil || !bytes.Equal(got, data[off:off+4096]) {
+			t.Fatalf("range: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return spans, int(tr.ReadAts.Load() - r0)
+	}
+	s.purgeReadCaches()
+	if n, _ := read(); n == 0 || partial == 0 {
+		t.Fatalf("first read: %d records, %d partial", n, partial)
+	}
+	read() // read whole: admitted
+	if n, runs := read(); n != 0 || runs != 0 {
+		t.Fatalf("third read still read the pack: %d records, %d runs", n, runs)
+	}
+}
+
+func TestB5RepeatedSpanAdmitsAuthority(t *testing.T) {
+	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "32")
+	l := b5Family(t)
+	l.close()
+	b5Repack(t, l.dir, repackOptions{BlockLog: 15})
+	l.open()
+	var n int
+	var mu sync.Mutex
+	l.s.packTrace = &packTrace{OnRecord: func(*[32]byte, int32, int64, uint32, uint32, byte, int64, int64) { mu.Lock(); n++; mu.Unlock() }}
+	l.s.purgeReadCaches()
+	want := l.want["k/v0"] // the deepest delta in archive order
+	for i := range 3 {
+		mu.Lock()
+		n = 0
+		mu.Unlock()
+		_, _, got, err := l.s.GetObjectRange("b", "k/v0", byteRange{900_000, 900_000 + 4095})
+		if err != nil || !bytes.Equal(got, want[900_000:900_000+4096]) {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		mu.Lock()
+		if i == 2 && n != 0 {
+			t.Fatalf("third repeat read %d pack records", n)
+		}
+		mu.Unlock()
+	}
+}

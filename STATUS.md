@@ -102,12 +102,12 @@ understand a required format must refuse the store instead of guessing.
 | Store format | 1..12 | feature floor recorded in `FORMAT.json`; 10 authority, 11 segments, 12 both; see below |
 | Authority body record | 1 | optional content-keyed body (`bodies/<hh>/<sha256>.body`, magic `ZS3B`): pin, representation or delta |
 | Authority delta envelope | 1 | `ZS3D` (in-memory, up to 256 MiB), `ZW1` (windowed single base, any size), `ZW2` (ZW1 whose frame programs are restartable 128 KiB segments; the default for new windowed records) and `ZN7\x01` (windowed model container: float histories, quantized derivations) |
-| Store features | 1 | `FORMAT.json` records `zn7` for model containers, `zn7iq3s` for derived IQ3_S blocks, `hardcodec` for exact Brotli or LZ4 replay, `hardstream` for streaming Brotli recipes, `zw2` for segmented windowed deltas, `cxseek` for gzip/zstd recipes with a seek index, and `cxreach` for zstd recipes that also carry per-block model reach. Unknown required features cause an open to fail. `authority revert -all` clears the authority features once their records are retired. |
+| Store features | 1 | `FORMAT.json` records `zn7` for model containers, `zn7iq3s` for derived IQ3_S blocks, `hardcodec` for exact Brotli or LZ4 replay, `hardstream` for streaming Brotli recipes, `zw2` for segmented windowed deltas, `cxseek` for gzip/zstd recipes with a seek index, `cxreach` for zstd recipes that also carry per-block model reach, and `packblk` for packs holding restartable records (pack codecs 2 and 3, B5). Unknown required features cause an open to fail. `authority revert -all` clears the authority features once their records are retired; `packblk` stays. |
 | Parquet recipe | 1..3 | Version 2 adds hard-codec pages. Version 3 adds exact streaming Brotli replay. Readers refuse unknown recipe versions. |
 | SST recipe | 1, 2 | Version 2 adds exact LZ4 and LZ4HC blocks. |
 | Representation object | 1 | optional immutable structured-representation description, magic `ZS3R` |
 | Representation root | 1 | optional per-manifest sidecar naming a representation, magic `ZS3T` |
-| Pack | 1 | immutable packed CAS records and index |
+| Pack | 1 | immutable packed CAS records and index; record codecs raw, deflate, restartable blocked (2) and its dictionary (3) |
 | Segment | 1 | open pack-v1 prefix (`segments/<seq>.seg`) holding small chunk and manifest records; sealed into an ordinary pack |
 | Snapshot descriptor | 1 | immutable namespace snapshot descriptor |
 | Full snapshot bundle | 1 | `.zs3b`, magic `ZS3BNDL1` |

@@ -111,23 +111,23 @@ import (
 //    21876    Physical tiers: status and pack movement (`zeros3 tier`)
 //    22389    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
 //    23454    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24258    Delta sync client, credentials, and parallel transfer
-//    26563    Bulk logical-chunk transport (v2)
-//    27474    Recursive directory sync
-//    27779    Remote replication (`zeros3 replicate`)
-//    28692    Peer-assisted corruption repair (`zeros3 repair`)
-//    29264    Namespace (prefix/bucket) replication
-//    29580    Copy-on-write namespace fork (`zeros3 fork`)
-//    29788    Snapshots and restore
-//    30950    Structural diff and inspect (introspection)
-//    32362    Portable snapshot bundles (`zeros3 bundle`)
-//    33559    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34194    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52582    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60413    Windowed and estimated similarity deltas (extracted dcore)
-//    62160    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    70013    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    76285    CLI dispatch, HTTP server/startup, and main
+//    24305    Delta sync client, credentials, and parallel transfer
+//    26610    Bulk logical-chunk transport (v2)
+//    27521    Recursive directory sync
+//    27826    Remote replication (`zeros3 replicate`)
+//    28739    Peer-assisted corruption repair (`zeros3 repair`)
+//    29311    Namespace (prefix/bucket) replication
+//    29627    Copy-on-write namespace fork (`zeros3 fork`)
+//    29835    Snapshots and restore
+//    30997    Structural diff and inspect (introspection)
+//    32409    Portable snapshot bundles (`zeros3 bundle`)
+//    33606    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34241    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52629    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    60467    Windowed and estimated similarity deltas (extracted dcore)
+//    62214    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    70067    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    76339    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -23642,6 +23642,23 @@ func (c *chunkCache) get(sum *[32]byte) ([]byte, bool) {
 	return e.val, true
 }
 
+// repeat records a sighting of sum at the door and reports whether it repeats a
+// recent one. Partial (span) reads call it: a chunk read again is read whole and
+// offered, so the cache admits it as it would any re-read chunk.
+func (c *chunkCache) repeat(sum *[32]byte) bool {
+	if !c.enabled() {
+		return false
+	}
+	sh := c.shard(sum)
+	fp := binary.LittleEndian.Uint64(sum[8:16]) | 1
+	slot := &sh.door[(fp>>5)%uint64(len(sh.door))]
+	if slot.Load() == fp {
+		return true
+	}
+	slot.Store(fp)
+	return false
+}
+
 // offer considers caching data, whose SHA-256 was just verified to be sum, for
 // a reader that began at epoch. The first sighting only records the key.
 func (c *chunkCache) offer(sum *[32]byte, data []byte, epoch uint64) {
@@ -24119,6 +24136,16 @@ func (m *manifestReader) next() ([]byte, error) {
 			continue
 		}
 		sum := m.m.sum(i)
+		lo, hi := int64(0), length
+		if m.rng.start > chunkStart {
+			lo = m.rng.start - chunkStart
+		}
+		if m.rng.end < m.offset-1 {
+			hi = m.rng.end - chunkStart + 1
+		}
+		if part, ok := m.span(i, sum, lo, hi); ok {
+			return part, nil
+		}
 		data, err := m.chunk(i, sum, chunkStart)
 		if err != nil {
 			m.close()
@@ -24127,13 +24154,6 @@ func (m *manifestReader) next() ([]byte, error) {
 		if int64(len(data)) != length {
 			m.close()
 			return nil, fmt.Errorf("chunk %x: length mismatch", sum)
-		}
-		lo, hi := int64(0), length
-		if m.rng.start > chunkStart {
-			lo = m.rng.start - chunkStart
-		}
-		if m.rng.end < m.offset-1 {
-			hi = m.rng.end - chunkStart + 1
 		}
 		return data[lo:hi], nil
 	}
@@ -24177,6 +24197,33 @@ func (m *manifestReader) chunk(i int, sum [32]byte, chunkStart int64) ([]byte, e
 		m.cc.offer(&sum, data, m.epoch)
 	}
 	return data, err
+}
+
+// span serves [lo, hi) of chunk i, a part of it, from the blocks of a restartable
+// primary record (codec 2); ok is false when the chunk is read whole as before.
+func (m *manifestReader) span(i int, sum [32]byte, lo, hi int64) ([]byte, bool) {
+	length := m.m.length(i)
+	if lo == 0 && hi == length || m.qh < len(m.q) {
+		return nil, false
+	}
+	if m.pr == nil {
+		if st := m.s.packSnap(); len(st.packs) > 0 {
+			m.pr = newPackRunReader(st, m.s.packTrace)
+		} else {
+			return nil, false
+		}
+	}
+	if loc, ok := m.primary(sum, length); !ok || loc.codec != packCodecBlocked {
+		return nil, false
+	}
+	if _, ok := m.cc.get(&sum); ok || m.admit && m.cc.repeat(&sum) {
+		return nil, false // cached, or read recently: the whole read lets the cache admit it
+	}
+	data, at, whole, err := m.s.casReadSpan(sum, length, lo, hi-lo, nil)
+	if err != nil || whole || at > lo || at+int64(len(data)) < hi {
+		return nil, false // the whole-chunk path decides, and reports any failure
+	}
+	return data[lo-at : hi-at], true
 }
 
 // primary is the packed record casRead would serve for sum if it verifies:
@@ -53854,15 +53901,20 @@ func (c *authCtx) readPieceSpan(p authPiece, lo, n int64) ([]byte, int64, error)
 		<-wait
 	}
 	defer func() { c.land(p.SHA, mine) }()
-	if len(spans) >= authSpanPromote {
-		c.land(p.SHA, mine)
-		mine = nil
-		d, err := c.readPiece(p) // a piece this request keeps returning to is cheaper read whole
-		return d, 0, err
-	}
 	if data, shared := c.cc.get(&p.SHA); shared && int64(len(data)) == p.Len {
 		c.st.sharedHits.Add(1)
 		return c.keepPiece(p, data, true), 0, nil
+	}
+	// A piece this request keeps returning to, or one read recently, is read whole (and so cached).
+	if len(spans) >= authSpanPromote || c.cc.repeat(&p.SHA) {
+		data, err := c.s.casReadWin(p.SHA, c.win)
+		if err != nil {
+			return nil, 0, err
+		}
+		if int64(len(data)) != p.Len {
+			return nil, 0, fmt.Errorf("%w: chunk %x is %d bytes, record says %d", errAuthCorrupt, p.SHA[:6], len(data), p.Len)
+		}
+		return c.keepPiece(p, data, false), 0, nil
 	}
 	data, at, whole, err := c.s.casReadSpan(p.SHA, p.Len, lo, n, c.win)
 	if err != nil {
@@ -57534,7 +57586,9 @@ func (s *Store) authLowerFloor() (int, error) {
 	}
 	s.auth.mayHave.Store(false)
 	f := s.format
-	f.StoreFormatVersion, f.RequiredLevel, f.Features = max(f.RequiredLevel, storeFormatVersion), 0, nil
+	// Pack features describe pack records, not bodies: they stay while such packs may exist.
+	keep := slices.DeleteFunc(slices.Clone(f.Features), func(x string) bool { return x != packBlockedFeature })
+	f.StoreFormatVersion, f.RequiredLevel, f.Features = max(f.RequiredLevel, storeFormatVersion), 0, keep
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return 0, err
