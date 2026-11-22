@@ -1,0 +1,72 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestB3RSimProbe(t *testing.T) {
+	dir := os.Getenv("ZEROS3_B3R_STORE")
+	if dir == "" {
+		t.Skip("probe")
+	}
+	var peak atomic.Uint64
+	stop := make(chan struct{})
+	go func() {
+		var m runtime.MemStats
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			runtime.ReadMemStats(&m)
+			if m.HeapInuse > peak.Load() {
+				peak.Store(m.HeapInuse)
+			}
+		}
+	}()
+	phase := func(name string, t0 time.Time) {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		fmt.Printf("PHASE %-10s %7.0f ms  heap_inuse %6.1f MB  peak_so_far %6.1f MB  total_alloc %7.1f MB\n", name, float64(time.Since(t0).Milliseconds()), float64(m.HeapInuse)/1e6, float64(peak.Load())/1e6, float64(m.TotalAlloc)/1e6)
+	}
+	t0 := time.Now()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	phase("open", t0)
+	t0 = time.Now()
+	report, snapshots, err := s.authSimilarityFence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase("fence", t0)
+	t0 = time.Now()
+	roots, err := s.authSimilarityRoots(snapshots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase("roots", t0)
+	t0 = time.Now()
+	report.Generation = uint64(time.Now().UnixNano())
+	rep, err := s.writeAuthSimilarityStage(report, roots, nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase("stage", t0)
+	t0 = time.Now()
+	name := rep.Directory[len(dir)+len("/similarity-index/"):]
+	if _, err := s.readAuthSimilarityStage(name); err != nil {
+		t.Fatal(err)
+	}
+	phase("verify", t0)
+	close(stop)
+	fmt.Printf("objects %d runs %d roots %d\n", rep.Objects, len(rep.Runs), roots.len())
+}

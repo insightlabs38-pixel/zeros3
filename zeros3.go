@@ -122,10 +122,10 @@ import (
 //    30709    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    31344    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    49727    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    57317    Windowed and estimated similarity deltas (extracted dcore)
-//    59064    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    66826    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    73098    CLI dispatch, HTTP server/startup, and main
+//    57324    Windowed and estimated similarity deltas (extracted dcore)
+//    59071    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    66833    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    73105    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -52489,12 +52489,19 @@ func authFeatures(b []byte, k int) []uint64 {
 }
 
 // authSketchAt is authFeatures over a stream, in blocks, with no whole-object buffer.
+// authSketchBufs holds the read buffers of authSketchAt: an index build
+// sketches every content, most of them small, and a fresh 1 MiB buffer each
+// time made allocation (and zeroing) the build's dominant cost.
+var authSketchBufs = sync.Pool{New: func() any { b := make([]byte, 1<<20); return &b }}
+
 func authSketchAt(r io.ReaderAt, size int64, k int) ([]uint64, error) {
 	sk := authSketch{k: k}
 	var ring [xdWindow]byte
 	var h uint64
 	n := 0
-	buf := make([]byte, 1<<20)
+	pb := authSketchBufs.Get().(*[]byte)
+	defer authSketchBufs.Put(pb)
+	buf := *pb
 	for off := int64(0); off < size; {
 		m, err := r.ReadAt(buf[:min(int64(len(buf)), size-off)], off)
 		if m == 0 && err != nil {

@@ -1,0 +1,9 @@
+# 150k-put packed store (171,429 contents), fresh processes; rss.py = getrusage children max RSS
+{'label': 'old-build', 'exit': 0, 'wall_s': 32.87, 'user_s': 94.27, 'max_rss_mb': 180.2}
+{'label': 'old-publish', 'exit': 0, 'wall_s': 1.2, 'user_s': 0.75, 'max_rss_mb': 163.2} {
+{'label': 'new-build', 'exit': 0, 'wall_s': 5.68, 'user_s': 5.09, 'max_rss_mb': 97.8}
+{'label': 'new-publish', 'exit': 0, 'wall_s': 0.4, 'user_s': 0.46, 'max_rss_mb': 89.8} {
+# in-process phases (sim_probe_test.go.txt), before -> after pooling the sketch buffer
+# stage: 16490 ms, total alloc 181,232 MB (authSketchAt: 1 MiB buffer per content), peak heap_inuse 234.1 MB
+# stage:  5240 ms, total alloc     678 MB,                                          peak heap_inuse 139.8 MB
+# open 180 ms / fence 67 ms / roots 237 ms / verify 155 ms unchanged; both generations: 171429 objects, runs 10x262144 + 121424 postings
