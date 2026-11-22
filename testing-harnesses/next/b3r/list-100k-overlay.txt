@@ -1,0 +1,5 @@
+# 10-key ListObjectsV2 page, 100k rows in a generation + 100k in the mutable overlay (list_probe_test.go.txt), 50 pages
+b3  a9a7147  prefix="p/d3/" delim=""  4935094 B/page 53 allocs/page 2.548ms/page
+b3  a9a7147  prefix="p/"    delim="/" 12970696 B/page 52 allocs/page 20.125ms/page
+b3r          prefix="p/d3/" delim=""     1344 B/page 27 allocs/page 0.0045ms/page
+b3r          prefix="p/"    delim="/"    1576 B/page 42 allocs/page 0.0151ms/page

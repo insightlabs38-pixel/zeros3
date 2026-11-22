@@ -93,39 +93,39 @@ import (
 //     5888    Manifests (immutable, JSON)
 //     6684    Visibility journal (append-only, checksummed)
 //     7206    Store: format, namespace, and object CRUD
-//     7634    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    11234    Version history/restore, history pruning, ListObjectsV2
-//    11807    SigV4 authentication (header and presigned-URL)
-//    12784    Request payload checksums and S3-shaped XML error/response types
-//    13001    HTTP routing and S3 operation handlers
-//    13427    Conditional operations (PUT/GET/HEAD preconditions)
-//    14122    CopyObject
-//    14427    Multipart upload
-//    15371    Stats and reachability scanning
-//    16896    Verify
-//    17111    Store locking and safe offline GC
-//    17414    Offline compaction (`zeros3 compact`)
-//    18480    Pack reclamation and repacking (`zeros3 repack`)
-//    18983    Physical tiers: status and pack movement (`zeros3 tier`)
-//    19496    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    20561    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    21365    Delta sync client, credentials, and parallel transfer
-//    23657    Bulk logical-chunk transport (v2)
-//    24568    Recursive directory sync
-//    24873    Remote replication (`zeros3 replicate`)
-//    25786    Peer-assisted corruption repair (`zeros3 repair`)
-//    26358    Namespace (prefix/bucket) replication
-//    26674    Copy-on-write namespace fork (`zeros3 fork`)
-//    26882    Snapshots and restore
-//    28044    Structural diff and inspect (introspection)
-//    29414    Portable snapshot bundles (`zeros3 bundle`)
-//    30611    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    31246    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    49629    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    57219    Windowed and estimated similarity deltas (extracted dcore)
-//    58966    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    66728    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    73000    CLI dispatch, HTTP server/startup, and main
+//     7654    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    11298    Version history/restore, history pruning, ListObjectsV2
+//    11899    SigV4 authentication (header and presigned-URL)
+//    12876    Request payload checksums and S3-shaped XML error/response types
+//    13093    HTTP routing and S3 operation handlers
+//    13519    Conditional operations (PUT/GET/HEAD preconditions)
+//    14214    CopyObject
+//    14519    Multipart upload
+//    15463    Stats and reachability scanning
+//    16988    Verify
+//    17203    Store locking and safe offline GC
+//    17506    Offline compaction (`zeros3 compact`)
+//    18572    Pack reclamation and repacking (`zeros3 repack`)
+//    19075    Physical tiers: status and pack movement (`zeros3 tier`)
+//    19588    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    20653    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    21457    Delta sync client, credentials, and parallel transfer
+//    23749    Bulk logical-chunk transport (v2)
+//    24660    Recursive directory sync
+//    24965    Remote replication (`zeros3 replicate`)
+//    25878    Peer-assisted corruption repair (`zeros3 repair`)
+//    26450    Namespace (prefix/bucket) replication
+//    26766    Copy-on-write namespace fork (`zeros3 fork`)
+//    26974    Snapshots and restore
+//    28136    Structural diff and inspect (introspection)
+//    29512    Portable snapshot bundles (`zeros3 bundle`)
+//    30709    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    31344    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    49727    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    57317    Windowed and estimated similarity deltas (extracted dcore)
+//    59064    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    66826    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    73098    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -7377,16 +7377,27 @@ type Store struct {
 
 // OpenStore opens the store rooted at root, initializing it (writing
 // FORMAT.json and creating the directory layout) if it does not already
-// exist, then replays the journal to rebuild the in-memory namespace.
+// exist, then rebuilds the namespace: from the published namespace checkpoint
+// when one verifies against the journal (plus the journal suffix after it),
+// otherwise by replaying the whole journal. An owner publishes a fresh
+// checkpoint in the background once enough has changed (see nsMaybeConsolidate).
 // Opening a store with an unsupported format version fails clearly rather
 // than attempting to read it.
-func OpenStore(root string) (*Store, error) { return openStore(root, true, false) }
+func OpenStore(root string) (*Store, error) { return openStore(root, true, nsCheckpointDefault()) }
 
 // OpenStoreShared opens a store for reading while a server may be running: it
 // never takes ownership of the small-object segments (no recovery, truncation,
 // adoption or sealing), so `stats`, `verify` and `doctor` cannot disturb a live
 // writer and a later server still gets ownership.
-func OpenStoreShared(root string) (*Store, error) { return openStore(root, false, false) }
+// A shared open loads a verified checkpoint too but never publishes one.
+func OpenStoreShared(root string) (*Store, error) {
+	return openStore(root, false, nsCheckpointDefault())
+}
+
+// nsCheckpointDefault reports whether ordinary opens use the namespace
+// checkpoint. ZEROS3_NAMESPACE_CHECKPOINT=off is the diagnostic opt-out: every
+// open replays the whole journal and consolidations stay private.
+func nsCheckpointDefault() bool { return os.Getenv("ZEROS3_NAMESPACE_CHECKPOINT") != "off" }
 
 // openGCPercent is the collector's GOGC while a store is opened.
 const openGCPercent = 400
@@ -7479,6 +7490,15 @@ const namespaceCompactCheckpointName = "namespace-v3.zck"
 const namespaceCompactCheckpointMagic = "ZS3NSC3\n"
 const hookNamespaceCheckpointSynced = "namespace-checkpoint-synced"
 const hookNamespaceCheckpointRenamed = "namespace-checkpoint-renamed"
+
+// Consolidation boundaries (online and offline): before the overlay freezes,
+// once it is frozen and writers run again, and around the generation swap.
+const (
+	hookNamespaceBeforeFreeze = "namespace-before-freeze"
+	hookNamespaceFrozen       = "namespace-frozen"
+	hookNamespaceBeforeSwap   = "namespace-before-swap"
+	hookNamespaceSwapped      = "namespace-swapped"
+)
 
 type namespaceCheckpointHeader struct {
 	StoreID   string
@@ -8340,6 +8360,14 @@ func (v *nsView[V]) next() bool {
 		if v.from < 0 || !v.dead(v.val) {
 			return true
 		}
+	}
+}
+
+// seek repositions the view at the first live row >= k (k beyond the current row).
+func (v *nsView[V]) seek(k string) {
+	v.base = v.base.t.iter(k)
+	for _, l := range v.layers {
+		l.seek(k)
 	}
 }
 
@@ -9334,7 +9362,11 @@ func (ns *nsState) nsLimit() int {
 	return max(ns.limit, min(rows/4, 4*ns.limit))
 }
 
-func (s *Store) nsMaybeConsolidate() {
+func (s *Store) nsMaybeConsolidate() { s.nsConsolidateAt(s.ns.nsLimit()) }
+
+// nsConsolidateAt starts a background consolidation once the overlay holds
+// limit rows. Held: mu.
+func (s *Store) nsConsolidateAt(limit int) {
 	ns := &s.ns
 	if ns.replaying {
 		if !ns.noSpill && ns.overlayLen() >= nsReplayFloor {
@@ -9342,7 +9374,7 @@ func (s *Store) nsMaybeConsolidate() {
 		}
 		return
 	}
-	if ns.overlayLen() < ns.nsLimit() {
+	if ns.overlayLen() < limit {
 		return
 	}
 	if !ns.auto || ns.busy || ns.closing || time.Now().Before(ns.retryAfter) {
@@ -9362,6 +9394,19 @@ func (s *Store) nsMaybeConsolidate() {
 		}
 		s.mu.Unlock()
 	}()
+}
+
+// nsKick runs at server start. An owner that publishes checkpoints folds a
+// replayed journal suffix of nsPublishFloor rows or more right away (the next
+// start then loads it instead of replaying); otherwise the ordinary limit holds.
+func (s *Store) nsKick() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	limit := s.ns.nsLimit()
+	if s.ns.publish {
+		limit = min(limit, nsPublishFloor)
+	}
+	s.nsConsolidateAt(limit)
 }
 
 // nsSpill folds a full replay overlay into a private generation so opening a
@@ -9493,13 +9538,28 @@ func (s *Store) nsFreeze(publish bool) (*nsSnapshot, error) {
 // generation replaces the namespace checkpoint; otherwise it is private and
 // unlinked at once. The overlays keep serving reads and absorbing writes meanwhile.
 func (s *Store) nsConsolidate(publish bool) error {
+	fireTestHook(hookNamespaceBeforeFreeze)
 	s.commitMu.Lock()
 	snap, err := s.nsFreeze(publish)
 	s.commitMu.Unlock()
 	if err != nil {
 		return err
 	}
+	fireTestHook(hookNamespaceFrozen)
 	gen, err := s.nsBuild(snap)
+	if err == nil {
+		fireTestHook(hookNamespaceBeforeSwap)
+	}
+	if err = s.nsSwap(snap, gen, err); err == nil {
+		fireTestHook(hookNamespaceSwapped)
+	}
+	return err
+}
+
+// nsSwap installs a built generation, or after a failed build folds the frozen
+// overlay back under the writes that arrived meanwhile. Either way the frozen
+// overlay is gone and the snapshot's generation reference is dropped.
+func (s *Store) nsSwap(snap *nsSnapshot, gen *nsGen, err error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if snap.gen != nil {
@@ -9574,6 +9634,10 @@ func (s *Store) nsBuild(snap *nsSnapshot) (*nsGen, error) {
 // replay in a few seconds, so it only spills past nsReplayFloor, which bounds
 // the memory of replaying a very large journal without slowing ordinary ones.
 var nsOverlayFloor, nsReplayFloor = 1 << 18, 1 << 21
+
+// nsPublishFloor is the replayed suffix, in rows, worth a checkpoint at server
+// start: below it a replay costs a few tens of milliseconds.
+var nsPublishFloor = 1 << 14
 
 // nsHashBlock is the unit of journal-prefix verification. Blocks hash
 // independently, so opening verifies the prefix on every core and publishing
@@ -11714,15 +11778,27 @@ type listedObject struct {
 	entry *objectEntry
 }
 
+// listGroup is the delimiter group (common prefix) key falls in under prefix.
+func listGroup(key, prefix, delimiter string) (string, bool) {
+	if delimiter == "" || !strings.HasPrefix(key, prefix) {
+		return "", false
+	}
+	idx := strings.Index(key[len(prefix):], delimiter)
+	if idx < 0 {
+		return "", false
+	}
+	return key[:len(prefix)+idx+len(delimiter)], true
+}
+
 // listObjectsV2Page is one page of ListObjectsV2 results.
 type listObjectsV2Page struct {
 	contents       []listedObject
 	commonPrefixes []string
 	truncated      bool
 	// lastConsumedKey is the last input key (from the sorted, prefix
-	// filtered candidate list) that this page fully accounted for, used
-	// to build NextContinuationToken. It is only meaningful when
-	// truncated is true.
+	// filtered candidate list) that this page fully accounted for, or the
+	// last common prefix when a group ended the page; it builds
+	// NextContinuationToken. It is only meaningful when truncated is true.
 	lastConsumedKey string
 }
 
@@ -11737,6 +11813,16 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 	from := lo
 	if sk := nsKey(bucket, startAfterKey); startAfterKey != "" && sk > lo {
 		from = sk
+		// A cursor inside a delimiter group resumes after the whole group: a
+		// page that emitted a common prefix ends its cursor on it (older
+		// cursors name the group's last key, which this equally passes).
+		if group, ok := listGroup(startAfterKey, prefix, delimiter); ok {
+			end := nsPrefixEnd(group)
+			if end == "" {
+				return page, nil
+			}
+			from = nsKey(bucket, end)
+		}
 	}
 	s.mu.Lock()
 	if _, ok := s.buckets[bucket]; !ok {
@@ -11754,7 +11840,7 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 	}
 
 	var lastGroup, last []byte
-	haveGroup := false
+	haveGroup, folded := false, 0
 	for view.next() {
 		ck := view.key
 		if !bytes.HasPrefix(ck, []byte(lo)) {
@@ -11768,9 +11854,15 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 			if idx := bytes.Index(key[len(prefix):], []byte(delimiter)); idx >= 0 {
 				cp := key[:len(prefix)+idx+len(delimiter)]
 				if haveGroup && bytes.Equal(cp, lastGroup) {
-					// Another key folding into the common prefix group already
-					// emitted: it adds no result unit but advances the page.
-					last = append(last[:0], key...)
+					// Another key folding into the group already emitted: it adds no
+					// result unit. Past a few, seek over the rest of the group.
+					if folded++; folded == 8 {
+						end := nsPrefixEnd(string(cp))
+						if end == "" {
+							break
+						}
+						view.seek(nsKey(bucket, end))
+					}
 					continue
 				}
 				if len(page.contents)+len(page.commonPrefixes) >= maxKeys {
@@ -11779,8 +11871,8 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 				}
 				page.commonPrefixes = append(page.commonPrefixes, string(cp))
 				lastGroup = append(lastGroup[:0], cp...)
-				haveGroup = true
-				last = append(last[:0], key...)
+				haveGroup, folded = true, 0
+				last = append(last[:0], cp...)
 				continue
 			}
 		}
@@ -28708,8 +28800,11 @@ func newHardenedHTTPServer(addr string, handler http.Handler) *http.Server {
 func runNamespaceCheckpoint(args []string) {
 	fs := flag.NewFlagSet("namespace-checkpoint", flag.ExitOnError)
 	root := fs.String("store", "./zeros3-data", "path to an existing offline store")
-	fs.Bool("compact-history", false, "accepted for compatibility; the checkpoint is always the compact paged layout")
+	compact := fs.Bool("compact-history", false, "deprecated, no effect: the checkpoint is always the paged V4 layout, which stores history compactly")
 	fs.Parse(args)
+	if *compact {
+		fmt.Fprintln(os.Stderr, "zeros3: namespace-checkpoint: -compact-history is deprecated and has no effect; the V4 checkpoint always stores history compactly")
+	}
 	if _, err := os.Stat(filepath.Join(*root, "FORMAT.json")); err != nil {
 		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
 	}
@@ -28732,7 +28827,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	addr := fs.String("addr", "127.0.0.1:9000", "listen address")
-	checkpoint := fs.Bool("namespace-checkpoint", false, "load a validated namespace checkpoint if one exists and publish fresh generations in the background")
+	checkpoint := fs.Bool("namespace-checkpoint", nsCheckpointDefault(), "load a verified namespace checkpoint at startup and publish fresh ones in the background; false replays the whole journal and keeps consolidated generations private")
 	vhostBase := fs.String("vhost-base", "", "base domain for virtual-hosted-style addressing (bucket.<base>); empty disables it and only path-style is served")
 	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID clients must sign with (default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key clients must sign with (default: AWS_SECRET_ACCESS_KEY)")
@@ -28779,6 +28874,9 @@ func runServe(args []string) {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	// A long journal suffix (or no checkpoint at all) is folded and published
+	// now rather than at the next write, so the next start is a checkpoint load.
+	store.nsKick()
 	store.setRepMode(repSel)
 	if repSel != repModeOff {
 		store.repEnsure()

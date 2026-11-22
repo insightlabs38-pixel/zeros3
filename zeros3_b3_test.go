@@ -14,8 +14,10 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -1752,5 +1754,389 @@ func TestNamespaceCheckpointRejectsInvalidInterior(t *testing.T) {
 	}
 	if _, err := s.ListObjectsV2("b", "", "", "", 1000); !errors.Is(err, errNSCorrupt) {
 		t.Fatalf("listing after damage: %v", err)
+	}
+}
+
+// ---- B3-R: bounded listing over large overlays ----
+
+// b3Inject puts n synthetic rows straight into the mutable overlay (listing
+// cost only; nothing is journaled).
+func b3Inject(s *Store, keys []string, tomb func(i int) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, k := range keys {
+		ck := nsKey("b", k)
+		cur, _ := s.objFindCK(ck)
+		var e *objectEntry
+		if tomb == nil || !tomb(i) {
+			e = &objectEntry{manifestUUID: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", etag: "e", contentType: "text/plain", seq: uint64(i + 1)}
+		}
+		s.objSetCK("b", ck, e, cur != nil)
+	}
+}
+
+func b3PageAllocs(t *testing.T, fn func()) (bytesPer uint64) {
+	t.Helper()
+	fn()
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	const runs = 20
+	for range runs {
+		fn()
+	}
+	runtime.ReadMemStats(&b)
+	return (b.TotalAlloc - a.TotalAlloc) / runs
+}
+
+func TestListSmallPagesOverLargeOverlay(t *testing.T) {
+	dir := t.TempDir()
+	s := b3Store(t, dir, true)
+	mustOK(t, s.CreateBucket("b"))
+	const groups, per = 6, 8000
+	var keys []string
+	for g := range groups {
+		for i := range per {
+			keys = append(keys, fmt.Sprintf("p/d%d/k%05d", g, i))
+		}
+	}
+	keys = append(keys, "p/d3/", "p/top")
+	// Half the rows live in a generation, half (and tombstones over some of the
+	// table rows) in the mutable overlay.
+	b3Inject(s, keys[:len(keys)/2], nil)
+	mustOK(t, s.nsConsolidate(false))
+	b3Inject(s, keys[len(keys)/2:], nil)
+	b3Inject(s, keys[:2000], func(i int) bool { return i%3 == 0 })
+	model := &b3Model{visible: map[string]string{}}
+	for i, k := range keys {
+		if i >= 2000 || i%3 != 0 {
+			model.visible[k] = "x"
+		}
+	}
+	if s.ns.objMut.n < 20000 {
+		t.Fatalf("overlay holds %d rows", s.ns.objMut.n)
+	}
+	for _, c := range []struct{ prefix, delim string }{{"p/", "/"}, {"p/d4/", ""}, {"p/", ""}, {"p/d", "/"}} {
+		want := model.units(c.prefix, c.delim)
+		for _, max := range []int{1, 3, 1000} {
+			if got := b3List(t, s, c.prefix, c.delim, max); !slices.Equal(got, want) {
+				t.Fatalf("list(%q,%q,%d): %d units, want %d", c.prefix, c.delim, max, len(got), len(want))
+			}
+		}
+	}
+	// A 10-key page costs what the page needs, not the matching overlay range
+	// (which is ~25,000 rows here, 600 KB as a copied slice).
+	cost := b3PageAllocs(t, func() {
+		if _, err := s.ListObjectsV2("b", "p/d4/", "", "", 10); err != nil {
+			t.Fatal(err)
+		}
+	})
+	groupCost := b3PageAllocs(t, func() {
+		if _, err := s.ListObjectsV2("b", "p/", "/", "", 10); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Logf("10-key page: %d B allocated; delimiter page over %d-member groups: %d B", cost, per, groupCost)
+	if cost > 64<<10 || groupCost > 64<<10 {
+		t.Fatalf("a small page allocated %d / %d bytes", cost, groupCost)
+	}
+	// Seeking over groups: the delimiter page decodes a few rows per group
+	// rather than every member.
+	s.ns.cache = newNSPageCache()
+	s.ns.gen.cache = s.ns.cache
+	before := s.ns.gen.reads.Load()
+	page, err := s.ListObjectsV2("b", "p/", "/", "", 1000)
+	mustOK(t, err)
+	if len(page.commonPrefixes) != groups || s.ns.gen.reads.Load()-before > 3*groups {
+		t.Fatalf("%d groups, %d table pages read", len(page.commonPrefixes), s.ns.gen.reads.Load()-before)
+	}
+}
+
+// ---- B3-R: ordinary opens use the namespace checkpoint ----
+
+func TestOrdinaryOpenUsesNamespaceCheckpoint(t *testing.T) {
+	defer func(v int) { nsOverlayFloor = v }(nsOverlayFloor)
+	nsOverlayFloor = 64
+	dir := t.TempDir()
+	path := filepath.Join(dir, "journal", nsGenName)
+	open := func(shared bool) *Store {
+		t.Helper()
+		var s *Store
+		var err error
+		if shared {
+			s, err = OpenStoreShared(dir)
+		} else {
+			s, err = OpenStore(dir)
+		}
+		mustOK(t, err)
+		return s
+	}
+	journalOnly := func() string {
+		t.Helper()
+		t.Setenv("ZEROS3_NAMESPACE_CHECKPOINT", "off")
+		s := open(true)
+		defer s.Close()
+		os.Unsetenv("ZEROS3_NAMESPACE_CHECKPOINT")
+		if s.ns.gen != nil {
+			t.Fatal("the opt-out loaded a checkpoint")
+		}
+		return nsDump(t, s)
+	}
+
+	// Fresh store, below the publication threshold: nothing is published and
+	// the next open replays the journal.
+	s := open(false)
+	mustOK(t, s.CreateBucket("b"))
+	for i := range 20 {
+		mustPutObject(t, s, "b", fmt.Sprintf("a%03d", i), []byte("v"), "text/plain", nil)
+	}
+	mustOK(t, s.Close())
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("a small store published a checkpoint: %v", err)
+	}
+	s = open(false)
+	if s.ns.gen != nil || s.ns.objMut.n != 20 {
+		t.Fatalf("fresh reopen: gen %v, %d overlay rows", s.ns.gen != nil, s.ns.objMut.n)
+	}
+	// Server start publishes a replayed suffix past nsPublishFloor even below the
+	// consolidation limit; a smaller one waits.
+	s.nsKick()
+	s.ns.wg.Wait()
+	if s.ns.gen != nil {
+		t.Fatal("a suffix below the publication floor was published")
+	}
+	func(v int) {
+		defer func() { nsPublishFloor = v }()
+		nsPublishFloor = 16
+		s.nsKick()
+		s.ns.wg.Wait()
+	}(nsPublishFloor)
+	if s.ns.gen == nil || !s.ns.gen.meta.Published {
+		t.Fatal("server start did not publish the replayed suffix")
+	}
+	mustOK(t, os.Remove(path)) // the rest of the test starts without a checkpoint
+
+	// Past the threshold an owner publishes in the background.
+	for i := range 200 {
+		mustPutObject(t, s, "b", fmt.Sprintf("k%04d", i), []byte("v"), "text/plain", nil)
+		if i%50 == 0 {
+			mustPutObject(t, s, "b", fmt.Sprintf("k%04d", i), []byte("w"), "text/plain", nil)
+		}
+	}
+	s.ns.wg.Wait()
+	mustOK(t, s.Close())
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no checkpoint after %d changes: %v", 200, err)
+	}
+	want := journalOnly()
+
+	// Checkpointed store: the ordinary open loads it and replays only the suffix.
+	s = open(false)
+	if s.ns.gen == nil || !s.ns.gen.meta.Published {
+		t.Fatal("ordinary open did not load the published checkpoint")
+	}
+	if got := nsDump(t, s); got != want {
+		t.Fatal("checkpoint open differs from the journal state")
+	}
+	suffix := s.ns.objMut.n + s.ns.histMut.n
+	for i := range 10 {
+		mustPutObject(t, s, "b", fmt.Sprintf("s%02d", i), []byte("v"), "text/plain", nil)
+	}
+	mustOK(t, s.DeleteObject("b", "a000"))
+	mustOK(t, s.Close())
+	want = journalOnly()
+
+	// Journal with a suffix beyond the checkpoint: same state, the suffix in
+	// the overlay. A shared open loads it too and never publishes.
+	before, err := os.ReadFile(path)
+	mustOK(t, err)
+	s = open(true)
+	if s.ns.gen == nil || s.ns.objMut.n+s.ns.histMut.n != suffix+12 {
+		t.Fatalf("suffix open: gen %v, %d overlay rows, want %d", s.ns.gen != nil, s.ns.objMut.n+s.ns.histMut.n, suffix+12)
+	}
+	if got := nsDump(t, s); got != want {
+		t.Fatal("suffix open differs from the journal state")
+	}
+	s.nsKick()
+	s.ns.wg.Wait()
+	mustOK(t, s.Close())
+	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+		t.Fatal("a shared open published a checkpoint")
+	}
+
+	// The opt-out replays and keeps consolidations private.
+	t.Setenv("ZEROS3_NAMESPACE_CHECKPOINT", "off")
+	s = open(false)
+	for i := range 100 {
+		mustPutObject(t, s, "b", fmt.Sprintf("o%03d", i), []byte("v"), "text/plain", nil)
+	}
+	s.ns.wg.Wait()
+	if s.ns.gen == nil || s.ns.gen.meta.Published {
+		t.Fatal("expected a private consolidation under the opt-out")
+	}
+	mustOK(t, s.Close())
+	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+		t.Fatal("the opt-out published a checkpoint")
+	}
+	os.Unsetenv("ZEROS3_NAMESPACE_CHECKPOINT")
+
+	// Back on the default path, the older checkpoint plus the longer suffix agree with replay.
+	s = open(false)
+	if got, want := nsDump(t, s), journalOnly(); got != want {
+		t.Fatal("reopen after private consolidations differs")
+	}
+	mustOK(t, s.Close())
+}
+
+// ---- B3-R: online consolidation lifecycle ----
+
+// The background publication of an owner is cut (process exit) at each
+// boundary; every acknowledged write survives and the reopened namespace is
+// the journal's, from whatever checkpoint the cut left.
+func TestNamespaceOnlinePublicationCuts(t *testing.T) {
+	if dir := os.Getenv("ZEROS3_TEST_NS_CUT_DIR"); dir != "" {
+		nsOverlayFloor = 48
+		cut := os.Getenv("ZEROS3_TEST_NS_CUT")
+		testHook = func(point string) {
+			if point == cut {
+				os.Exit(93)
+			}
+		}
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; ; i++ {
+			k := fmt.Sprintf("k%04d", i%300)
+			if _, err := s.PutObject("b", k, []byte(fmt.Sprintf("v%d", i)), "text/plain", nil); err != nil {
+				t.Fatal(err)
+			}
+			fmt.Printf("ack %s v%d\n", k, i)
+			if i%7 == 0 {
+				if err := s.DeleteObject("b", fmt.Sprintf("k%04d", (i+150)%300)); err != nil {
+					t.Fatal(err)
+				}
+				fmt.Printf("del k%04d\n", (i+150)%300)
+			}
+			if i > 5000 {
+				t.Fatal("the cut was never reached")
+			}
+		}
+	}
+	for _, cut := range []string{hookNamespaceBeforeFreeze, hookNamespaceFrozen, hookNamespaceCheckpointSynced,
+		hookNamespaceCheckpointRenamed, hookNamespaceBeforeSwap, hookNamespaceSwapped} {
+		t.Run(cut, func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := OpenStore(dir)
+			mustOK(t, err)
+			mustOK(t, s.CreateBucket("b"))
+			mustOK(t, s.Close())
+			cmd := exec.Command(os.Args[0], "-test.run=^TestNamespaceOnlinePublicationCuts$")
+			cmd.Env = append(os.Environ(), "ZEROS3_TEST_NS_CUT_DIR="+dir, "ZEROS3_TEST_NS_CUT="+cut)
+			out, err := cmd.Output()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 93 {
+				t.Fatalf("cut %s not reached: %v", cut, err)
+			}
+			want := map[string]string{}
+			for _, line := range strings.Split(string(out), "\n") {
+				f := strings.Fields(line)
+				switch {
+				case len(f) == 3 && f[0] == "ack":
+					want[f[1]] = f[2]
+				case len(f) == 2 && f[0] == "del":
+					delete(want, f[1])
+				}
+			}
+			_, statErr := os.Stat(filepath.Join(dir, "journal", nsGenName))
+			published := statErr == nil
+			s, err = OpenStore(dir)
+			mustOK(t, err)
+			defer s.Close()
+			if afterRename := cut == hookNamespaceCheckpointRenamed || cut == hookNamespaceBeforeSwap || cut == hookNamespaceSwapped; published != afterRename || (s.ns.gen != nil) != afterRename {
+				t.Fatalf("cut %s: checkpoint on disk %v, loaded %v", cut, published, s.ns.gen != nil)
+			}
+			for k, v := range want {
+				if _, got, err := s.GetObject("b", k); err != nil || string(got) != v {
+					t.Fatalf("acknowledged %s=%s lost: %q %v", k, v, got, err)
+				}
+			}
+			got := nsDump(t, s)
+			t.Setenv("ZEROS3_NAMESPACE_CHECKPOINT", "off")
+			r, err := OpenStoreShared(dir)
+			mustOK(t, err)
+			defer r.Close()
+			if nsDump(t, r) != got {
+				t.Fatal("checkpoint open differs from journal replay")
+			}
+		})
+	}
+}
+
+// Close while a background consolidation runs: it does not hang, the build
+// gives up and restores its overlay, and writes made meanwhile stay visible.
+func TestNamespaceCloseDuringConsolidation(t *testing.T) {
+	defer func(v int) { nsOverlayFloor = v }(nsOverlayFloor)
+	nsOverlayFloor = 32
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	mustOK(t, err)
+	mustOK(t, s.CreateBucket("b"))
+	frozen, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	withTestHook(t, func(point string) {
+		if point == hookNamespaceFrozen {
+			once.Do(func() { close(frozen); <-release })
+		}
+	})
+	acked := map[string]string{}
+	for i := 0; ; i++ {
+		k := fmt.Sprintf("k%03d", i)
+		mustPutObject(t, s, "b", k, []byte(k), "text/plain", nil)
+		acked[k] = k
+		select {
+		case <-frozen:
+		default:
+			continue
+		}
+		break
+	}
+	// Writes and reads proceed while the frozen overlay is being folded.
+	for i := range 20 {
+		k := fmt.Sprintf("during%02d", i)
+		mustPutObject(t, s, "b", k, []byte(k), "text/plain", nil)
+		acked[k] = k
+	}
+	mustOK(t, s.DeleteObject("b", "k000"))
+	delete(acked, "k000")
+	if _, got, err := s.GetObject("b", "k001"); err != nil || string(got) != "k001" {
+		t.Fatalf("frozen row unreadable: %q %v", got, err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	select {
+	case err := <-closed:
+		mustOK(t, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close hung behind the consolidation")
+	}
+	if s.ns.objFrozen != nil {
+		t.Fatal("the frozen overlay was not restored")
+	}
+	if _, err := s.lookupObject("b", "k001"); !errors.Is(err, errStoreClosed) {
+		t.Fatalf("lookup after Close: %v", err)
+	}
+	testHook = nil
+	s, err = OpenStore(dir)
+	mustOK(t, err)
+	defer s.Close()
+	if n := s.buckets["b"].count; n != len(acked) {
+		t.Fatalf("%d visible after reopen, want %d", n, len(acked))
+	}
+	for k, v := range acked {
+		if _, got, err := s.GetObject("b", k); err != nil || string(got) != v {
+			t.Fatalf("%s = %q, %v", k, got, err)
+		}
 	}
 }

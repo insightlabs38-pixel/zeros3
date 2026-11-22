@@ -1,0 +1,53 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+	"testing"
+	"time"
+)
+
+func TestB3RListProbe(t *testing.T) {
+	if os.Getenv("ZEROS3_B3R_PROBE") == "" {
+		t.Skip("probe")
+	}
+	s, err := openStore(t.TempDir(), true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ns.auto = false
+	defer s.Close()
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	inject := func(lo, hi int) {
+		s.mu.Lock()
+		for i := lo; i < hi; i++ {
+			ck := nsKey("b", fmt.Sprintf("p/d%d/k%05d", i/40000, i%40000))
+			cur, _ := s.objFindCK(ck)
+			s.objSetCK("b", ck, &objectEntry{manifestUUID: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", etag: "e", contentType: "text/plain"}, cur != nil)
+		}
+		s.mu.Unlock()
+	}
+	inject(0, 100000) // table
+	if err := s.nsConsolidate(false); err != nil {
+		t.Fatal(err)
+	}
+	inject(100000, 200000) // mutable overlay: 100k rows, 2.5 groups of 40k
+	for _, c := range []struct{ prefix, delim string }{{"p/d3/", ""}, {"p/", "/"}} {
+		var a, b runtime.MemStats
+		s.ListObjectsV2("b", c.prefix, c.delim, "", 10)
+		runtime.ReadMemStats(&a)
+		t0 := time.Now()
+		const n = 50
+		for range n {
+			if _, err := s.ListObjectsV2("b", c.prefix, c.delim, "", 10); err != nil {
+				t.Fatal(err)
+			}
+		}
+		el := time.Since(t0) / n
+		runtime.ReadMemStats(&b)
+		fmt.Printf("list prefix=%q delim=%q max=10: %d B/page, %d allocs/page, %v/page\n", c.prefix, c.delim, (b.TotalAlloc-a.TotalAlloc)/n, (b.Mallocs-a.Mallocs)/n, el)
+	}
+}

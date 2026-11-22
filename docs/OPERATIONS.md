@@ -54,6 +54,18 @@ For normal shutdown, send SIGINT or SIGTERM and let the graceful drain finish.
 Abrupt termination is tested on selected paths, but it is not the recommended
 administrative stop procedure.
 
+Startup loads the namespace from `journal/namespace-v4.zck` when that derived
+checkpoint verifies against the journal (file digest, page structure and the
+journal prefix it covers) and replays only the journal after it; otherwise it
+replays the whole journal. The server publishes a fresh checkpoint in the
+background when it starts with a replayed suffix of 16,384 rows or more and
+whenever the in-memory overlay grows past its consolidation limit; publication
+is crash-safe (sync, rename, directory sync) and shutdown abandons one in
+progress. `serve -namespace-checkpoint=false` or
+`ZEROS3_NAMESPACE_CHECKPOINT=off` (any command) replays the whole journal and
+never publishes. `zeros3 namespace-checkpoint -store DIR` publishes one offline;
+its `-compact-history` flag is deprecated and has no effect.
+
 ## Health checks
 
 Use the lightweight structural check for routine validation:

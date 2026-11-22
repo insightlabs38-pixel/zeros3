@@ -105,9 +105,12 @@ In memory the namespace is an immutable paged table (a generation file read
 through a sparse page directory and a bounded page cache) plus sorted overlays
 for what changed since, merged in key order by reads and listings. A generation
 published as `journal/namespace-v4.zck` is derived state bound to a journal
-prefix by per-block SHA-256; opening it replays only the journal suffix, and a
-missing, stale or damaged one falls back to full replay. A damaged page found
-later fails reads explicitly instead of answering from a partial view.
+prefix by per-block SHA-256; every open (ordinary, shared and server) loads it
+and replays only the journal suffix, and a missing, stale, damaged or
+structurally invalid one falls back to full replay. A damaged page found later
+fails reads explicitly instead of answering from a partial view, and maintenance
+that acts on the whole root set (authority revert, migration, repair) fails
+rather than proceed from an incomplete enumeration.
 
 ## Write path
 
