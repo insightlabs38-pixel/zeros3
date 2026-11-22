@@ -1822,7 +1822,7 @@ func TestAuthorityConcurrentOperations(t *testing.T) {
 	l.exact("after-gc")
 	l.verifyOK("after-gc")
 	// Retained history and snapshots still resolve (every manifest any root names).
-	for _, lm := range l.s.liveManifests() {
+	for _, lm := range testLiveManifests(t, l.s) {
 		got := repReadAll(t, l.s, lm.man, byteRange{0, lm.man.TotalLength - 1})
 		if hex.EncodeToString(sumSlice(got)) != lm.man.ObjectSHA256 {
 			t.Fatalf("live root %s/%s resolves to wrong bytes", lm.bucket, lm.key)
@@ -4942,7 +4942,7 @@ func TestAuthorityScaleFixture(t *testing.T) {
 	if os.Getenv("ZEROS3_C1_SCALE_PINS") != "" {
 		t0 = time.Now()
 		pins := 0
-		for _, lm := range s.liveManifests() {
+		for _, lm := range testLiveManifests(t, s) {
 			if strings.HasPrefix(lm.key, "s/") {
 				sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
 				if err := s.authEnsurePin(&authObj{sha: sha, man: lm.man}); err != nil {
@@ -5184,7 +5184,7 @@ func TestAuthorityRetireEverythingSubprocess(t *testing.T) {
 		t.Fatal(err)
 	}
 	var retired, total int
-	for _, lm := range s.liveManifests() {
+	for _, lm := range testLiveManifests(t, s) {
 		sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
 		if rec, _ := s.authLoad(sha); rec == nil {
 			continue

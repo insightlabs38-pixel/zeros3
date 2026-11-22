@@ -143,7 +143,10 @@ func (s *Store) referenceReachability(deep bool, obs rootObserver) (reachability
 	// history. Within a category the order is deterministic when an observer
 	// is attached. GC and verify only take the union, so order is otherwise moot.
 	// Root category 1: current visible objects.
-	curObjs := s.snapshotNamespaceBestEffort()
+	curObjs, err := s.snapshotNamespace()
+	if err != nil {
+		return reachabilityResult{}, err
+	}
 	if obs != nil {
 		sort.Slice(curObjs, func(i, j int) bool {
 			return cmp.Or(cmp.Compare(curObjs[i].bucket, curObjs[j].bucket), cmp.Compare(curObjs[i].key, curObjs[j].key)) < 0
@@ -216,7 +219,10 @@ func (s *Store) referenceReachability(deep bool, obs rootObserver) (reachability
 	}
 
 	// Root category 2: retained historical versions.
-	histObjs := s.snapshotHistoryBestEffort()
+	histObjs, err := s.snapshotHistory()
+	if err != nil {
+		return reachabilityResult{}, err
+	}
 	if obs != nil { // newest retained version first
 		sort.Slice(histObjs, func(i, j int) bool {
 			a, b := histObjs[i], histObjs[j]

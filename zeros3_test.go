@@ -37102,10 +37102,10 @@ func tierRootSets(t *testing.T, s *Store) tierSets {
 			sets[sc][c.SHA256] = true
 		}
 	}
-	for _, o := range s.snapshotNamespaceBestEffort() {
+	for _, o := range mustSnapshotNamespace(t, s) {
 		add(scopeCurrent, o.entry.manifestUUID)
 	}
-	for _, o := range s.snapshotHistoryBestEffort() {
+	for _, o := range mustSnapshotHistory(t, s) {
 		add(scopeHistory, o.entry.manifestUUID)
 	}
 	snaps, _ := s.scanSnapshots()
@@ -37532,7 +37532,7 @@ func tierCheckFixture(t *testing.T, dir string) {
 		}
 	}
 	hist := map[string]bool{}
-	for _, o := range s.snapshotHistoryBestEffort() {
+	for _, o := range mustSnapshotHistory(t, s) {
 		hist[string(tierManifestBytes(t, s, o.entry.manifestUUID))] = true
 	}
 	if len(hist) != 2 || !hist[string(tierJoin("a", "d"))] || !hist[string(tierJoin("a", "b"))] {
@@ -39212,7 +39212,11 @@ func bundleNamespaceFingerprint(s *Store) string {
 	for _, b := range s.ListBuckets() {
 		fmt.Fprintf(&sb, "bucket %s %s\n", b.name, b.createdAt.Format(time.RFC3339Nano))
 	}
-	for _, o := range s.snapshotNamespaceBestEffort() {
+	objs, err := s.snapshotNamespace()
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	for _, o := range objs {
 		fmt.Fprintf(&sb, "%s/%s %s %x %d %s %s %d\n", o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256, o.entry.size, o.entry.etag, o.entry.contentType, o.entry.seq)
 	}
 	return sb.String()

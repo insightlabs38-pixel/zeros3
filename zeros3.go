@@ -94,38 +94,38 @@ import (
 //     6684    Visibility journal (append-only, checksummed)
 //     7206    Store: format, namespace, and object CRUD
 //     7634    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    10943    Version history/restore, history pruning, ListObjectsV2
-//    11509    SigV4 authentication (header and presigned-URL)
-//    12486    Request payload checksums and S3-shaped XML error/response types
-//    12703    HTTP routing and S3 operation handlers
-//    13129    Conditional operations (PUT/GET/HEAD preconditions)
-//    13824    CopyObject
-//    14129    Multipart upload
-//    15073    Stats and reachability scanning
-//    16610    Verify
-//    16825    Store locking and safe offline GC
-//    17128    Offline compaction (`zeros3 compact`)
-//    18194    Pack reclamation and repacking (`zeros3 repack`)
-//    18697    Physical tiers: status and pack movement (`zeros3 tier`)
-//    19210    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    20275    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    21079    Delta sync client, credentials, and parallel transfer
-//    23357    Bulk logical-chunk transport (v2)
-//    24268    Recursive directory sync
-//    24573    Remote replication (`zeros3 replicate`)
-//    25486    Peer-assisted corruption repair (`zeros3 repair`)
-//    26054    Namespace (prefix/bucket) replication
-//    26370    Copy-on-write namespace fork (`zeros3 fork`)
-//    26578    Snapshots and restore
-//    27740    Structural diff and inspect (introspection)
-//    29110    Portable snapshot bundles (`zeros3 bundle`)
-//    30307    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    30942    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    49318    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    56839    Windowed and estimated similarity deltas (extracted dcore)
-//    58586    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    66348    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    72620    CLI dispatch, HTTP server/startup, and main
+//    11234    Version history/restore, history pruning, ListObjectsV2
+//    11807    SigV4 authentication (header and presigned-URL)
+//    12784    Request payload checksums and S3-shaped XML error/response types
+//    13001    HTTP routing and S3 operation handlers
+//    13427    Conditional operations (PUT/GET/HEAD preconditions)
+//    14122    CopyObject
+//    14427    Multipart upload
+//    15371    Stats and reachability scanning
+//    16896    Verify
+//    17111    Store locking and safe offline GC
+//    17414    Offline compaction (`zeros3 compact`)
+//    18480    Pack reclamation and repacking (`zeros3 repack`)
+//    18983    Physical tiers: status and pack movement (`zeros3 tier`)
+//    19496    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    20561    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    21365    Delta sync client, credentials, and parallel transfer
+//    23657    Bulk logical-chunk transport (v2)
+//    24568    Recursive directory sync
+//    24873    Remote replication (`zeros3 replicate`)
+//    25786    Peer-assisted corruption repair (`zeros3 repair`)
+//    26358    Namespace (prefix/bucket) replication
+//    26674    Copy-on-write namespace fork (`zeros3 fork`)
+//    26882    Snapshots and restore
+//    28044    Structural diff and inspect (introspection)
+//    29414    Portable snapshot bundles (`zeros3 bundle`)
+//    30611    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    31246    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    49629    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    57219    Windowed and estimated similarity deltas (extracted dcore)
+//    58966    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    66728    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    73000    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -7668,7 +7668,10 @@ const (
 	nsFlagUTC       = 16
 )
 
-var errNSCorrupt = errors.New("namespace generation: corrupt page")
+var (
+	errNSCorrupt   = errors.New("namespace generation: corrupt page")
+	errStoreClosed = errors.New("store closed")
+)
 
 type nsKV[V any] struct {
 	k string
@@ -7677,10 +7680,17 @@ type nsKV[V any] struct {
 
 // nsOverlay is a sorted set of keyed values in blocks of at most nsBlockMax,
 // so an insert moves a block rather than the whole set. Blocks are never empty.
+//
+// snapshot hands out the blocks without copying them; the overlay then treats
+// them as shared and copies on write: the block list once per snapshot, and a
+// block the first time it changes after one (bgen[i] < epoch means shared).
 type nsOverlay[V any] struct {
 	blocks [][]nsKV[V]
 	n      int
 	m      map[string]V // bulk-load mode (replay): unordered until seal
+	bgen   []uint64     // per block: the epoch in which this overlay last copied it
+	lgen   uint64       // the epoch in which the block list was last copied
+	epoch  uint64       // incremented by every snapshot
 }
 
 func newBulkOverlay[V any]() *nsOverlay[V] { return &nsOverlay[V]{m: map[string]V{}} }
@@ -7696,13 +7706,37 @@ func (o *nsOverlay[V]) seal() {
 	}
 	slices.SortFunc(kv, func(a, b nsKV[V]) int { return strings.Compare(a.k, b.k) })
 	const fill = nsBlockMax * 3 / 4
-	o.blocks = o.blocks[:0]
+	o.blocks = nil
 	for len(kv) > 0 {
 		n := min(fill, len(kv))
 		o.blocks = append(o.blocks, slices.Clone(kv[:n]))
 		kv = kv[n:]
 	}
 	o.n, o.m = len(o.m), nil
+	o.lgen, o.bgen = o.epoch, make([]uint64, len(o.blocks))
+	for i := range o.bgen {
+		o.bgen[i] = o.epoch
+	}
+}
+
+// snapshot returns the current blocks, immutable from now on for the caller.
+func (o *nsOverlay[V]) snapshot() [][]nsKV[V] {
+	o.seal()
+	o.epoch++
+	return o.blocks
+}
+
+// own makes the block list, and block bi when bi >= 0, private to the overlay.
+func (o *nsOverlay[V]) own(bi int) {
+	if o.lgen != o.epoch {
+		o.blocks = slices.Clone(o.blocks)
+		o.bgen = slices.Clone(o.bgen)
+		o.lgen = o.epoch
+	}
+	if bi >= 0 && o.bgen[bi] != o.epoch {
+		o.blocks[bi] = append(make([]nsKV[V], 0, len(o.blocks[bi])+1), o.blocks[bi]...)
+		o.bgen[bi] = o.epoch
+	}
 }
 
 func nsCmpKV[V any](e nsKV[V], k string) int { return strings.Compare(e.k, k) }
@@ -7736,14 +7770,18 @@ func (o *nsOverlay[V]) set(k string, v V) {
 	bi, i := o.locate(k)
 	switch {
 	case len(o.blocks) == 0:
+		o.own(-1)
 		o.blocks = append(o.blocks, make([]nsKV[V], 0, nsBlockMax/4))
+		o.bgen = append(o.bgen, o.epoch)
 		bi = 0
 	case bi == len(o.blocks):
 		bi, i = bi-1, len(o.blocks[bi-1])
 	case o.blocks[bi][i].k == k:
+		o.own(bi)
 		o.blocks[bi][i].v = v
 		return
 	}
+	o.own(bi)
 	b := slices.Insert(o.blocks[bi], i, nsKV[V]{k, v})
 	o.n++
 	if len(b) > nsBlockMax {
@@ -7751,36 +7789,14 @@ func (o *nsOverlay[V]) set(k string, v V) {
 		right := slices.Clone(b[half:])
 		clear(b[half:])
 		o.blocks = slices.Insert(o.blocks, bi+1, right)
+		o.bgen = slices.Insert(o.bgen, bi+1, o.epoch)
 		b = b[:half]
 	}
 	o.blocks[bi] = b
 }
 
-// slice copies the entries in [lo, hi) into one block; an empty hi means no bound.
-func (o *nsOverlay[V]) slice(lo, hi string) [][]nsKV[V] {
-	o.seal()
-	bi, i := o.locate(lo)
-	var out []nsKV[V]
-	for ; bi < len(o.blocks); bi, i = bi+1, 0 {
-		for _, e := range o.blocks[bi][i:] {
-			if hi != "" && e.k >= hi {
-				return nsOneBlock(out)
-			}
-			out = append(out, e)
-		}
-	}
-	return nsOneBlock(out)
-}
-
-func nsOneBlock[V any](b []nsKV[V]) [][]nsKV[V] {
-	if len(b) == 0 {
-		return nil
-	}
-	return [][]nsKV[V]{b}
-}
-
 func (o *nsOverlay[V]) clone() *nsOverlay[V] {
-	c := &nsOverlay[V]{blocks: make([][]nsKV[V], len(o.blocks)), n: o.n}
+	c := &nsOverlay[V]{blocks: make([][]nsKV[V], len(o.blocks)), bgen: make([]uint64, len(o.blocks)), n: o.n}
 	for i, b := range o.blocks {
 		c.blocks[i] = slices.Clone(b)
 	}
@@ -7828,7 +7844,7 @@ type nsGen struct {
 	cache   *nsPageCache
 	strs    []string
 	meta    nsMeta
-	reads   atomic.Int64 // pages read from the file
+	reads   atomic.Int64 // pages read on demand (the open check is not counted)
 	hashSt  []byte
 	private bool
 }
@@ -7883,16 +7899,141 @@ func (t *nsTable) page(i int) ([]byte, error) {
 	if b := g.cache.get(ck); b != nil {
 		return b, nil
 	}
-	buf := make([]byte, t.dir.Len[i])
-	if _, err := g.f.ReadAt(buf, int64(t.dir.Off[i])); err != nil {
-		return nil, fmt.Errorf("namespace generation: read page: %w", err)
+	buf, err := t.readPage(i, nil)
+	if err != nil {
+		return nil, err
 	}
 	g.reads.Add(1)
+	g.cache.put(ck, buf)
+	return buf, nil
+}
+
+// readPage reads page i into buf (reallocated when short) and verifies its CRC
+// and structure.
+func (t *nsTable) readPage(i int, buf []byte) ([]byte, error) {
+	n := int(t.dir.Len[i])
+	if cap(buf) < n {
+		buf = make([]byte, n)
+	}
+	buf = buf[:n]
+	if _, err := t.g.f.ReadAt(buf, int64(t.dir.Off[i])); err != nil {
+		return nil, fmt.Errorf("namespace generation: read page: %w", err)
+	}
 	if len(buf) < 12 || crc32.Checksum(buf[:len(buf)-4], castagnoliTable) != binary.LittleEndian.Uint32(buf[len(buf)-4:]) {
 		return nil, errNSCorrupt
 	}
-	g.cache.put(ck, buf)
+	var next []byte
+	if i+1 < t.pages() {
+		next = t.firstKey(i + 1)
+	}
+	if err := nsValidatePage(buf, t.firstKey(i), next); err != nil {
+		return nil, err
+	}
 	return buf, nil
+}
+
+// check validates every page and row payload of the generation, in parallel.
+// It runs beside the whole-file digest at open: a file whose digest is right
+// but whose content its writer got wrong is then replaced by a replay instead
+// of failing the same reads after every restart.
+func (g *nsGen) check() error {
+	obj, hist := g.tables()
+	type job struct {
+		t *nsTable
+		i int
+	}
+	jobs := make(chan job, 64)
+	go func() {
+		defer close(jobs)
+		for _, t := range []*nsTable{obj, hist} {
+			for i := range t.pages() {
+				jobs <- job{t, i}
+			}
+		}
+	}()
+	var bad atomic.Bool
+	var wg sync.WaitGroup
+	workers := min(runtime.GOMAXPROCS(0), 8)
+	errs := make([]error, workers)
+	rows := make([][2]int, workers)            // object and history rows seen
+	buckets := make([]map[string]int, workers) // object rows per bucket
+	for w := range errs {
+		buckets[w] = map[string]int{}
+		wg.Go(func() {
+			var buf, scratch []byte
+			for j := range jobs {
+				if bad.Load() {
+					continue
+				}
+				var err error
+				var n int
+				if buf, err = j.t.readPage(j.i, buf); err == nil {
+					n, err = nsCheckRows(buf, j.t.hist, g.strs, &scratch, buckets[w])
+				}
+				if err != nil {
+					errs[w] = err
+					bad.Store(true)
+				}
+				rows[w][btoi(j.t.hist)] += n
+			}
+		})
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	var total [2]int
+	count := map[string]int{}
+	for w := range workers {
+		total[0], total[1] = total[0]+rows[w][0], total[1]+rows[w][1]
+		for b, n := range buckets[w] {
+			count[b] += n
+		}
+	}
+	if total[0] != obj.dir.Rows || total[1] != hist.dir.Rows {
+		return errors.New("namespace generation: row counts disagree with the pages")
+	}
+	for _, b := range g.meta.Buckets {
+		if count[b.Name] != b.Count {
+			return fmt.Errorf("namespace generation: bucket %q has %d rows, the trailer says %d", b.Name, count[b.Name], b.Count)
+		}
+		delete(count, b.Name)
+	}
+	if len(count) != 0 {
+		return errors.New("namespace generation: rows for an unknown bucket")
+	}
+	return nil
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// nsCheckRows validates every payload of a structurally valid page and returns
+// its row count; object rows are counted per bucket.
+func nsCheckRows(b []byte, hist bool, strs []string, scratch *[]byte, buckets map[string]int) (int, error) {
+	p, _ := nsParsePage(b)
+	var key, payload []byte
+	var err error
+	n := 0
+	for pos := 0; pos < len(p.rows); n++ {
+		if pos, key, payload, err = p.row(pos, key); err != nil {
+			return n, err
+		}
+		if hist {
+			*scratch, err = historyRoots(payload, *scratch, strs, func([]byte, [32]byte) {})
+		} else {
+			*scratch, _, err = objectRoot(payload, (*scratch)[:0], strs)
+			buckets[string(key[:bytes.IndexByte(key, 0)])]++
+		}
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // nsPage is a parsed page: rows, then restart offsets, restart count, row count, CRC.
@@ -7905,18 +8046,61 @@ func nsParsePage(b []byte) (nsPage, error) {
 	if len(b) < 12 {
 		return nsPage{}, errNSCorrupt
 	}
-	nr := int(binary.LittleEndian.Uint32(b[len(b)-12:]))
-	end := len(b) - 12 - 4*nr
-	if nr < 1 || end < 0 {
+	nr := uint64(binary.LittleEndian.Uint32(b[len(b)-12:]))
+	if nr < 1 || nr > uint64(len(b)-12)/4 {
 		return nsPage{}, errNSCorrupt
 	}
+	end := len(b) - 12 - 4*int(nr)
 	return nsPage{rows: b[:end], restarts: b[end : len(b)-12]}, nil
+}
+
+// nsValidatePage checks the whole structure of a CRC-verified page once, before
+// it is cached: every row is framed inside the page, the restart table holds
+// exactly one entry per nsRestartEvery rows, pointing at those rows, which
+// store full keys; the row count matches; keys contain the bucket separator and
+// strictly increase from the directory's first key to below the next page's.
+// A page that passes cannot make later decoding index outside it or hide rows
+// behind an ordering error; one that fails is corruption.
+func nsValidatePage(b, first, next []byte) error {
+	p, err := nsParsePage(b)
+	if err != nil {
+		return err
+	}
+	want := uint64(binary.LittleEndian.Uint32(b[len(b)-8:]))
+	nr := len(p.restarts) / 4
+	var key, prev []byte
+	rows := 0
+	for pos := 0; pos < len(p.rows); rows++ {
+		if rows%nsRestartEvery == 0 {
+			if r := rows / nsRestartEvery; r >= nr || p.restart(r) != pos {
+				return errNSCorrupt
+			}
+			if shared, n := binary.Uvarint(p.rows[pos:]); n < 1 || shared != 0 {
+				return errNSCorrupt
+			}
+			key = key[:0]
+		}
+		if pos, key, _, err = p.row(pos, key); err != nil {
+			return err
+		}
+		if bytes.IndexByte(key, 0) < 0 || (rows == 0 && !bytes.Equal(key, first)) || (rows > 0 && bytes.Compare(prev, key) >= 0) {
+			return errNSCorrupt
+		}
+		prev = append(prev[:0], key...)
+	}
+	if rows == 0 || uint64(rows) != want || nr != (rows+nsRestartEvery-1)/nsRestartEvery || (next != nil && bytes.Compare(prev, next) >= 0) {
+		return errNSCorrupt
+	}
+	return nil
 }
 
 func (p nsPage) restart(i int) int { return int(binary.LittleEndian.Uint32(p.restarts[4*i:])) }
 
 // row decodes the row at pos into key (extending key[:shared]) and its payload.
 func (p nsPage) row(pos int, key []byte) (next int, k, payload []byte, err error) {
+	if pos < 0 || pos >= len(p.rows) {
+		return 0, nil, nil, errNSCorrupt
+	}
 	b := p.rows[pos:]
 	shared, n1 := binary.Uvarint(b)
 	if n1 < 1 {
@@ -7938,12 +8122,22 @@ func (p nsPage) row(pos int, key []byte) (next int, k, payload []byte, err error
 
 // restartKey is the full key of a restart row, aliasing the page.
 func (p nsPage) restartKey(i int) ([]byte, error) {
-	b := p.rows[p.restart(i):]
+	pos := p.restart(i)
+	if pos >= len(p.rows) {
+		return nil, errNSCorrupt
+	}
+	b := p.rows[pos:]
 	shared, n1 := binary.Uvarint(b)
-	unshared, n2 := binary.Uvarint(b[min(n1, len(b)):])
-	_, n3 := binary.Uvarint(b[min(n1+n2, len(b)):])
+	if n1 < 1 || shared != 0 {
+		return nil, errNSCorrupt
+	}
+	unshared, n2 := binary.Uvarint(b[n1:])
+	if n2 < 1 {
+		return nil, errNSCorrupt
+	}
+	_, n3 := binary.Uvarint(b[n1+n2:])
 	hdr := n1 + n2 + n3
-	if shared != 0 || n1 < 1 || n2 < 1 || n3 < 1 || unshared > uint64(len(b)-hdr) {
+	if n3 < 1 || unshared > uint64(len(b)-hdr) {
 		return nil, errNSCorrupt
 	}
 	return b[hdr : hdr+int(unshared)], nil
@@ -8469,8 +8663,10 @@ func (g *nsGen) decodeHistory(payload []byte) ([]*historyVersionEntry, error) {
 
 // skipRef skips a dictionary reference or an inline string.
 func (r *nsReader) skipRef() {
-	if r.uv() == 0 {
+	if i := r.uv(); i == 0 {
 		r.lenBytes()
+	} else if i > uint64(len(r.strs)) {
+		r.fail()
 	}
 }
 
@@ -8492,26 +8688,31 @@ func (r *nsReader) identityUUID(flags byte, dst []byte) []byte {
 }
 
 // objectRoot extracts the manifest UUID and digest of an object row without
-// decoding the rest. The UUID is appended to dst.
-func objectRoot(payload, dst []byte) (uuid []byte, sha [32]byte, err error) {
-	r := nsReader{b: payload}
+// decoding the rest, validating it as decodeObject would. The UUID is appended
+// to dst. strs is the generation's dictionary.
+func objectRoot(payload, dst []byte, strs []string) (uuid []byte, sha [32]byte, err error) {
+	r := nsReader{b: payload, strs: strs}
 	r.skipRef()
 	flags := r.take(1)
 	if r.err != nil {
 		return dst, sha, r.err
 	}
 	copy(sha[:], r.take(sha256.Size))
-	r.uv()
+	size := r.uv()
 	r.uv()
 	dst = r.identityUUID(flags[0], dst)
-	return dst, sha, r.err
+	if r.err != nil || len(r.b) != 0 || int64(size) < 0 {
+		return dst, sha, errNSCorrupt
+	}
+	return dst, sha, nil
 }
 
-// historyRoots calls fn with the manifest UUID and digest of every version of a history row.
-func historyRoots(payload []byte, scratch []byte, fn func(uuid []byte, sha [32]byte)) ([]byte, error) {
-	r := nsReader{b: payload}
+// historyRoots calls fn with the manifest UUID and digest of every version of
+// a history row, validating the row as decodeHistory would.
+func historyRoots(payload []byte, scratch []byte, strs []string, fn func(uuid []byte, sha [32]byte)) ([]byte, error) {
+	r := nsReader{b: payload, strs: strs}
 	n := r.uv()
-	if r.err != nil || n > uint64(len(payload)) {
+	if r.err != nil || n == 0 || n > uint64(len(payload)) {
 		return scratch, errNSCorrupt
 	}
 	for range n {
@@ -8524,14 +8725,19 @@ func historyRoots(payload []byte, scratch []byte, fn func(uuid []byte, sha [32]b
 		if flags&nsFlagUTC != 0 {
 			r.uv() // seconds, zigzag varint
 			r.uv()
-		} else {
-			r.lenBytes()
+		} else if when := r.lenBytes(); r.err == nil {
+			var t time.Time
+			if t.UnmarshalBinary(when) != nil {
+				r.fail()
+			}
 		}
 		r.skipRef()
 		r.skipRef()
 		var sha [32]byte
 		copy(sha[:], r.take(sha256.Size))
-		r.uv()
+		if int64(r.uv()) < 0 {
+			r.fail()
+		}
 		scratch = r.identityUUID(flags, scratch[:0])
 		if flags&nsFlagVersionID != 0 {
 			if flags&nsFlagIDUUID != 0 {
@@ -8785,7 +8991,10 @@ func (s *Store) nsWriteGeneration(snap *nsSnapshot) (*nsGen, string, error) {
 		objDec = snap.gen.decodeObject
 	}
 	view := newNSView(snap.obj, "", nsObjDead, objDec, objOv)
-	for view.next() {
+	for n := 0; view.next(); n++ {
+		if n%4096 == 0 && s.ns.abort.Load() {
+			return fail(errStoreClosed)
+		}
 		payload := view.payload
 		if view.from >= 0 {
 			row = dict.appendObject(row[:0], view.val)
@@ -8835,7 +9044,10 @@ func (s *Store) nsWriteGeneration(snap *nsSnapshot) (*nsGen, string, error) {
 		histDec = snap.gen.decodeHistory
 	}
 	hview := newNSView(snap.hist, "", nsHistDead, histDec, histOv)
-	for hview.next() {
+	for n := 0; hview.next(); n++ {
+		if n%4096 == 0 && s.ns.abort.Load() {
+			return fail(errStoreClosed)
+		}
 		payload := hview.payload
 		if hview.from >= 0 {
 			if row, err = dict.appendHistory(row[:0], hview.val); err != nil {
@@ -8931,8 +9143,10 @@ func openNSGen(f *os.File, cache *nsPageCache) (*nsGen, func() error, error) {
 		return nil, nil, err
 	}
 	g.strs = g.meta.Strings
+	// The history pages follow the object pages: the tables cannot overlap.
+	lo := int64(len(nsGenMagic))
 	for _, d := range []*nsDirectory{&g.meta.Obj, &g.meta.Hist} {
-		if err := d.validate(int64(len(nsGenMagic)), metaOff); err != nil {
+		if lo, err = d.validate(lo, metaOff); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -8940,28 +9154,30 @@ func openNSGen(f *os.File, cache *nsPageCache) (*nsGen, func() error, error) {
 	return g, verify, nil
 }
 
-func (d *nsDirectory) validate(lo, hi int64) error {
+// validate checks the directory's pages lie in order within [lo, hi) and
+// returns the end of the last one.
+func (d *nsDirectory) validate(lo, hi int64) (int64, error) {
 	n := len(d.Off)
-	if len(d.Len) != n || len(d.Ends) != n || d.Rows < 0 || (n == 0) != (d.Rows == 0) {
-		return errors.New("namespace generation: invalid page directory")
+	if len(d.Len) != n || len(d.Ends) != n || d.Rows < 0 || (n == 0) != (d.Rows == 0) || d.Rows < n {
+		return 0, errors.New("namespace generation: invalid page directory")
 	}
 	end, prevKeyEnd := lo, uint32(0)
 	var prev []byte
 	for i := range n {
-		if int64(d.Off[i]) < end || d.Len[i] < 12 || d.Len[i] > nsMaxPage || int64(d.Off[i])+int64(d.Len[i]) > hi ||
+		if d.Off[i] > uint64(hi) || int64(d.Off[i]) < end || d.Len[i] < 12 || d.Len[i] > nsMaxPage || int64(d.Off[i])+int64(d.Len[i]) > hi ||
 			d.Ends[i] <= prevKeyEnd || int(d.Ends[i]) > len(d.Keys) {
-			return errors.New("namespace generation: invalid page directory")
+			return 0, errors.New("namespace generation: invalid page directory")
 		}
 		key := d.Keys[prevKeyEnd:d.Ends[i]]
 		if prev != nil && bytes.Compare(prev, key) >= 0 {
-			return errors.New("namespace generation: page directory out of order")
+			return 0, errors.New("namespace generation: page directory out of order")
 		}
 		end, prevKeyEnd, prev = int64(d.Off[i])+int64(d.Len[i]), d.Ends[i], key
 	}
 	if n > 0 && int(prevKeyEnd) != len(d.Keys) {
-		return errors.New("namespace generation: invalid page directory")
+		return 0, errors.New("namespace generation: invalid page directory")
 	}
-	return nil
+	return end, nil
 }
 
 func (g *nsGen) tables() (obj, hist *nsTable) {
@@ -8984,7 +9200,9 @@ type nsState struct {
 	auto       bool // fold the overlay into a new generation in the background
 	publish    bool // ... and publish it as the checkpoint
 	busy       bool
-	replaying  bool // the overlay is an unordered bulk load; a full one spills
+	closing    bool        // Close started: no new background consolidation
+	abort      atomic.Bool // a running generation write gives up (Close)
+	replaying  bool        // the overlay is an unordered bulk load; a full one spills
 	noSpill    bool
 	retryAfter time.Time
 	limit      int // overlay entries that trigger a consolidation
@@ -9127,7 +9345,7 @@ func (s *Store) nsMaybeConsolidate() {
 	if ns.overlayLen() < ns.nsLimit() {
 		return
 	}
-	if !ns.auto || ns.busy || time.Now().Before(ns.retryAfter) {
+	if !ns.auto || ns.busy || ns.closing || time.Now().Before(ns.retryAfter) {
 		return
 	}
 	ns.busy = true
@@ -9172,12 +9390,12 @@ func (s *Store) nsSpill() {
 }
 
 // nsView sources. Held: mu. The caller releases the returned function after use.
-func (s *Store) nsObjectView(lo, hi string) (*nsView[*objectEntry], func(), error) {
+func (s *Store) nsObjectView(lo string) (*nsView[*objectEntry], func(), error) {
 	ns := &s.ns
 	if ns.damaged != nil {
 		return nil, nil, ns.damaged
 	}
-	layers := [][][]nsKV[*objectEntry]{ns.objMut.slice(lo, hi)}
+	layers := [][][]nsKV[*objectEntry]{ns.objMut.snapshot()}
 	if ns.objFrozen != nil {
 		layers = append(layers, ns.objFrozen.blocks)
 	}
@@ -9191,12 +9409,12 @@ func (s *Store) nsObjectView(lo, hi string) (*nsView[*objectEntry], func(), erro
 	return newNSView(ns.obj, lo, nsObjDead, dec, layers...), release, nil
 }
 
-func (s *Store) nsHistoryView(lo, hi string) (*nsView[[]*historyVersionEntry], func(), error) {
+func (s *Store) nsHistoryView(lo string) (*nsView[[]*historyVersionEntry], func(), error) {
 	ns := &s.ns
 	if ns.damaged != nil {
 		return nil, nil, ns.damaged
 	}
-	layers := [][][]nsKV[[]*historyVersionEntry]{ns.histMut.slice(lo, hi)}
+	layers := [][][]nsKV[[]*historyVersionEntry]{ns.histMut.snapshot()}
 	if ns.histFrozen != nil {
 		layers = append(layers, ns.histFrozen.blocks)
 	}
@@ -9449,7 +9667,11 @@ func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 	// The file digest and the journal prefix are independent reads: check both at once.
 	var fileErr error
 	var wg sync.WaitGroup
-	wg.Go(func() { fileErr = verify() })
+	wg.Go(func() {
+		if fileErr = verify(); fileErr == nil {
+			fileErr = g.check()
+		}
+	})
 	blocks, err := journalBlockHashes(journal, m.Offset, nil, 0)
 	crc, crcErr := journalLastCRC(journal, m.Offset)
 	wg.Wait()
@@ -10285,14 +10507,33 @@ func parsePruneHistoryPayload(payload []byte) (journalPruneHistoryPayload, error
 // present is skipped. History slices are replaced, never edited in place,
 // because readers hold them outside s.mu. Must be called with s.mu held.
 func (s *Store) removeHistoryLocked(p journalPruneHistoryPayload) (removed int, err error) {
+	apply, removed, err := s.planHistoryRemoval(p)
+	if err == nil {
+		apply()
+	}
+	return removed, err
+}
+
+// planHistoryRemoval resolves every row a prune frame changes without changing
+// any; the returned apply cannot fail. Held: mu.
+func (s *Store) planHistoryRemoval(p journalPruneHistoryPayload) (apply func(), removed int, err error) {
+	type change struct {
+		ck   string
+		kept []*historyVersionEntry
+	}
+	var changes []change
+	pending := map[string][]*historyVersionEntry{} // a frame may name a key twice
 	for _, e := range p.Entries {
 		drop := make(map[string]bool, len(e.VersionIDs))
 		for _, id := range e.VersionIDs {
 			drop[id] = true
 		}
-		old, err := s.histFind(e.Bucket, e.Key)
-		if err != nil {
-			return removed, err
+		ck := nsKey(e.Bucket, e.Key)
+		old, ok := pending[ck]
+		if !ok {
+			if old, err = s.histFindCK(ck); err != nil {
+				return nil, 0, err
+			}
 		}
 		kept := make([]*historyVersionEntry, 0, len(old))
 		for _, h := range old {
@@ -10303,49 +10544,91 @@ func (s *Store) removeHistoryLocked(p journalPruneHistoryPayload) (removed int, 
 			kept = append(kept, h)
 		}
 		if len(kept) != len(old) {
-			s.histSet(e.Bucket, e.Key, kept)
+			pending[ck] = kept
+			changes = append(changes, change{ck, kept})
 		}
 	}
-	return removed, nil
+	return func() {
+		for _, c := range changes {
+			s.histSetCK(c.ck, c.kept)
+		}
+	}, removed, nil
 }
 
-// archiveVersionLocked appends one archived-version payload (decoded from
-// either a live commit's own critical section or journal replay -- the
-// exact same code path either way, so replay can never diverge from what
-// live traffic recorded) to bucket/key's history slice. Must be called
-// with s.mu held.
-func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalArchivedVersionPayload) error {
+// histPending is a history append resolved before its journal frame is
+// written: the lookup that can fail (a namespace page read) is done, so
+// applying it once the frame is durable cannot fail. A committed frame must
+// never be reported as a rejected write.
+type histPending struct {
+	ck   string
+	e    *historyVersionEntry
+	list []*historyVersionEntry
+}
+
+// histPrepare resolves the retained versions that archiving p onto bucket/key
+// extends. prior, when ok, is what earlier requests of the same batch will
+// have left for the key. A nil p prepares nothing. Held: mu (and commitMu, so
+// nothing else can change the key's history before apply).
+func (s *Store) histPrepare(bucket, key string, p *journalArchivedVersionPayload, prior []*historyVersionEntry, ok bool) (*histPending, error) {
+	if p == nil {
+		return nil, nil
+	}
 	sum, err := decodeHexSHA256(p.ManifestSHA256)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ck := nsKey(bucket, key)
-	old, err := s.histFindCK(ck)
+	if !ok {
+		if prior, err = s.histFindCK(ck); err != nil {
+			return nil, err
+		}
+	}
+	e := &historyVersionEntry{versionID: p.VersionID, manifestUUID: p.ManifestUUID, manifestSHA256: sum, size: p.Size,
+		etag: p.ETag, contentType: p.ContentType, archivedAt: p.ArchivedAt, reason: p.Reason}
+	// Appending may write past the end of a list readers share; they never read
+	// beyond their length, and a list that is not applied is simply dropped.
+	return &histPending{ck: ck, e: e, list: append(prior, e)}, nil
+}
+
+// apply installs the prepared history with the frame's sequence. Held: mu.
+func (h *histPending) apply(s *Store, seq uint64) {
+	if h != nil {
+		h.e.seq = seq
+		s.histSetCK(h.ck, h.list)
+	}
+}
+
+// archiveVersionLocked applies one archived-version payload during journal
+// replay. Live commits run the same histPrepare before their frame and its
+// apply after it, so replay cannot diverge from what live traffic recorded.
+// Must be called with s.mu held.
+func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalArchivedVersionPayload) error {
+	h, err := s.histPrepare(bucket, key, &p, nil, false)
 	if err != nil {
 		return err
 	}
-	s.histSetCK(ck, append(old, &historyVersionEntry{
-		versionID:      p.VersionID,
-		manifestUUID:   p.ManifestUUID,
-		manifestSHA256: sum,
-		size:           p.Size,
-		etag:           p.ETag,
-		contentType:    p.ContentType,
-		archivedAt:     p.ArchivedAt,
-		reason:         p.Reason,
-		seq:            seq,
-	}))
+	h.apply(s, seq)
 	return nil
 }
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	// Under mu, so no consolidation can start after the wait below begins; a
+	// running one stops at its next check and restores its overlay.
+	s.mu.Lock()
+	s.ns.closing = true
+	s.mu.Unlock()
+	s.ns.abort.Store(true)
 	s.ns.wg.Wait()
-	// No lock: a crash-simulating test can leave mu held, and Close runs after every operation.
+	s.mu.Lock()
 	if g := s.ns.gen; g != nil {
 		s.ns.gen, s.ns.obj, s.ns.hist = nil, nil, nil
-		g.release()
+		g.release() // readers still inside a view hold their own references
 	}
+	if s.ns.damaged == nil {
+		s.ns.damaged = errStoreClosed
+	}
+	s.mu.Unlock()
 	s.repQueueStop(10 * time.Second)
 	s.dumpReadCacheStats()
 	if s.segs != nil {
@@ -10468,6 +10751,10 @@ func (s *Store) DeleteObject(bucket, key string) error {
 		return nil
 	}
 	archived := archivedVersionPayload(cur, historyReasonDeleted) // non-nil: cur is non-nil here
+	hist, err := s.histPrepare(bucket, key, archived, nil, false)
+	if err != nil {
+		return fmt.Errorf("delete: reading history: %w", err)
+	}
 	payload, err := json.Marshal(journalDeleteObjectPayloadV2{Bucket: bucket, Key: key, Archived: *archived})
 	if err != nil {
 		return err
@@ -10477,12 +10764,7 @@ func (s *Store) DeleteObject(bucket, key string) error {
 		return err
 	}
 	s.objSet(bucket, key, nil, true)
-	if err := s.archiveVersionLocked(bucket, key, seq, *archived); err != nil {
-		// archivedVersionPayload always produces a valid hex sha256 from an
-		// already-valid in-memory objectEntry, so this cannot happen in
-		// practice; treated as fatal rather than silently dropping history.
-		return fmt.Errorf("delete: recording history: %w", err)
-	}
+	hist.apply(s, seq)
 	return nil
 }
 
@@ -10670,12 +10952,13 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 	type viewKey struct{ bucket, key string }
 	type item struct {
 		r       *rootCommitReq
-		prev    *journalArchivedVersionPayload
+		hist    *histPending
 		existed bool
 	}
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	view := map[viewKey]*objectEntry{} // what earlier requests of this batch will have committed
+	histView := map[string][]*historyVersionEntry{}
 	var items []item
 	var recs []journalFrameIn
 	func() {
@@ -10705,6 +10988,13 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 			if exists {
 				prev = archivedVersionPayload(cur, historyReasonOverwritten)
 			}
+			ck := nsKey(r.bucket, r.key)
+			prior, seen := histView[ck]
+			hist, err := s.histPrepare(r.bucket, r.key, prev, prior, seen)
+			if err != nil {
+				r.err = fmt.Errorf("commit: reading history: %w", err)
+				continue
+			}
 			payload, err := json.Marshal(journalPutPayloadV2{
 				Bucket:         r.bucket,
 				Key:            r.key,
@@ -10728,7 +11018,10 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 				contentType:    r.man.ContentType,
 			}
 			view[viewKey{r.bucket, r.key}] = r.entry
-			items = append(items, item{r, prev, exists})
+			if hist != nil {
+				histView[ck] = hist.list
+			}
+			items = append(items, item{r, hist, exists})
 			recs = append(recs, journalFrameIn{recType: recordTypePutObjectRootV2, payload: payload})
 		}
 	}()
@@ -10754,24 +11047,31 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Past the durability boundary nothing may fail: every lookup was resolved above.
 	for i, it := range items {
 		r := it.r
 		r.entry.seq = first + uint64(i)
 		s.objSet(r.bucket, r.key, r.entry, it.existed)
-		if it.prev != nil {
-			if err := s.archiveVersionLocked(r.bucket, r.key, r.entry.seq, *it.prev); err != nil {
-				r.err = fmt.Errorf("commit: recording history: %w", err)
-			}
-		}
+		it.hist.apply(s, r.entry.seq)
 	}
 }
 
 // commitObjectRootSerial is the pre-P1B commit: one journal fsync per request
 // under mu (ZEROS3_PUB_ABLATE=serialcommit, for A/B measurement).
 func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]byte, man manifestV1, check func(cur *objectEntry, exists bool) error) (*objectEntry, error) {
+	entry, err := s.commitObjectRootSerialLocked(bucket, key, manUUID, manSHA, man, check)
+	if err != nil {
+		return nil, err
+	}
+	fireTestHook(hookAfterApplyBeforeResponse)
+	return entry, nil
+}
+
+func (s *Store) commitObjectRootSerialLocked(bucket, key, manUUID string, manSHA [32]byte, man manifestV1, check func(cur *objectEntry, exists bool) error) (*objectEntry, error) {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
+	defer s.mu.Unlock() // deferred: a panic inside the journal append must not strand the lock
 	// Re-check bucket existence here, at the actual commit point, not just
 	// at entry to the caller: the CDC/CAS/manifest work leading up to this
 	// call runs without holding s.mu (by design -- it's slow and doesn't
@@ -10783,24 +11083,25 @@ func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]b
 	// (s.buckets[bucket] is nil) and produce a journal that fails replay
 	// (applyRecord requires the bucket to exist for a put-object-root).
 	if _, ok := s.buckets[bucket]; !ok {
-		s.mu.Unlock()
 		return nil, errNoSuchBucket
 	}
 	cur, err := s.objFind(bucket, key)
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
 	exists := cur != nil
 	if check != nil {
 		if err := check(cur, exists); err != nil {
-			s.mu.Unlock()
 			return nil, err
 		}
 	}
 	var prevPayload *journalArchivedVersionPayload
 	if exists {
 		prevPayload = archivedVersionPayload(cur, historyReasonOverwritten)
+	}
+	hist, err := s.histPrepare(bucket, key, prevPayload, nil, false)
+	if err != nil {
+		return nil, fmt.Errorf("commit: reading history: %w", err)
 	}
 	payload, err := json.Marshal(journalPutPayloadV2{
 		Bucket:         bucket,
@@ -10814,12 +11115,10 @@ func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]b
 		Previous:       prevPayload,
 	})
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
 	seq, err := s.journal.appendFrame(recordTypePutObjectRootV2, payload)
 	if err != nil {
-		s.mu.Unlock()
 		return nil, fmt.Errorf("journal append failed: %w", err)
 	}
 	entry := &objectEntry{
@@ -10831,15 +11130,7 @@ func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]b
 		seq:            seq,
 	}
 	s.objSet(bucket, key, entry, exists)
-	if prevPayload != nil {
-		if err := s.archiveVersionLocked(bucket, key, seq, *prevPayload); err != nil {
-			s.mu.Unlock()
-			return nil, fmt.Errorf("commit: recording history: %w", err)
-		}
-	}
-	s.mu.Unlock()
-	fireTestHook(hookAfterApplyBeforeResponse)
-
+	hist.apply(s, seq)
 	return entry, nil
 }
 
@@ -10974,7 +11265,7 @@ type historyNamespaceObject struct {
 // are never mutated in place after archiveVersionLocked appends them.
 func (s *Store) snapshotHistory() ([]historyNamespaceObject, error) {
 	s.mu.Lock()
-	v, release, err := s.nsHistoryView("", "")
+	v, release, err := s.nsHistoryView("")
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -11022,7 +11313,7 @@ func (s *Store) historyRows(bucket, prefix, only string) (map[string][]*historyV
 	}
 	lo := nsKey(bucket, prefix)
 	s.mu.Lock()
-	v, release, err := s.nsHistoryView(lo, nsPrefixEnd(lo))
+	v, release, err := s.nsHistoryView(lo)
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -11342,24 +11633,31 @@ func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) erro
 			return err
 		}
 		fireTestHook(hookPruneBeforeFrame)
-		s.commitMu.Lock()
-		s.mu.Lock()
-		if _, err := s.journal.appendFrame(recordTypePruneHistory, payload); err != nil {
-			s.mu.Unlock()
-			s.commitMu.Unlock()
-			return err
-		}
-		removed, err := s.removeHistoryLocked(p)
-		res.VersionsPruned += removed
-		s.mu.Unlock()
-		s.commitMu.Unlock()
-		if err != nil {
+		if err := s.applyPruneFrame(res, p, payload); err != nil {
 			return err
 		}
 		res.JournalFrames++
 		fireTestHook(hookPruneAfterFrame)
 	}
 	res.Applied = true
+	return nil
+}
+
+// applyPruneFrame resolves a frame's rows, journals it and applies it.
+func (s *Store) applyPruneFrame(res *HistoryPruneResult, p journalPruneHistoryPayload, payload []byte) error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	apply, removed, err := s.planHistoryRemoval(p)
+	if err != nil {
+		return err
+	}
+	if _, err := s.journal.appendFrame(recordTypePruneHistory, payload); err != nil {
+		return err
+	}
+	apply()
+	res.VersionsPruned += removed
 	return nil
 }
 
@@ -11445,7 +11743,7 @@ func (s *Store) ListObjectsV2(bucket, prefix, delimiter, startAfterKey string, m
 		s.mu.Unlock()
 		return page, errNoSuchBucket
 	}
-	view, release, err := s.nsObjectView(from, nsPrefixEnd(lo))
+	view, release, err := s.nsObjectView(from)
 	s.mu.Unlock()
 	if err != nil {
 		return page, err
@@ -14685,6 +14983,10 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	if prev != nil {
 		prevPayload = archivedVersionPayload(prev, historyReasonOverwritten)
 	}
+	hist, err := s.histPrepare(bucket, key, prevPayload, nil, false)
+	if err != nil {
+		return nil, manifestV1{}, fmt.Errorf("multipart: reading history: %w", err)
+	}
 	payload, err := json.Marshal(journalCompleteMultipartPayloadV2{
 		UploadID: uploadID, Bucket: bucket, Key: key,
 		ManifestUUID: manUUID, ManifestSHA256: hex.EncodeToString(manSHA[:]),
@@ -14704,11 +15006,7 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	}
 	s.objSet(bucket, key, entry, prev != nil)
 	delete(s.uploads, uploadID)
-	if prevPayload != nil {
-		if err := s.archiveVersionLocked(bucket, key, seq, *prevPayload); err != nil {
-			return nil, manifestV1{}, fmt.Errorf("multipart: recording history: %w", err)
-		}
-	}
+	hist.apply(s, seq)
 	fireTestHook(hookAfterApplyBeforeResponse)
 	s.repAfterCommit(bucket, key, man)
 	return entry, man, nil
@@ -15129,7 +15427,7 @@ type namespaceObject struct {
 // currently reading.
 func (s *Store) snapshotNamespace() ([]namespaceObject, error) {
 	s.mu.Lock()
-	v, release, err := s.nsObjectView("", "")
+	v, release, err := s.nsObjectView("")
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -15145,18 +15443,6 @@ func (s *Store) snapshotNamespace() ([]namespaceObject, error) {
 		out = append(out, namespaceObject{bucket: bucket, key: key, entry: e})
 	}
 	return out, s.nsFailed(v.err)
-}
-
-// snapshotNamespaceBestEffort serves derived accelerators and annotations: a
-// damaged generation yields an empty view, never an authoritative decision.
-func (s *Store) snapshotNamespaceBestEffort() []namespaceObject {
-	out, _ := s.snapshotNamespace()
-	return out
-}
-
-func (s *Store) snapshotHistoryBestEffort() []historyNamespaceObject {
-	out, _ := s.snapshotHistory()
-	return out
 }
 
 // bucketNames returns every currently visible bucket name.
@@ -21504,7 +21790,9 @@ type rootRef struct {
 // membership), exactly as if it weren't live; Verify/GC's own fail-closed
 // integrity gate is still the one place a broken root blocks destructive
 // action, and this diagnostic function has no destructive action to gate.
-func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
+// A namespace that cannot be enumerated is an error, though: a partial
+// membership would understate sharing ("reachable elsewhere: false").
+func (s *Store) computeChunkRootMembership() (map[string]map[rootRef]bool, error) {
 	membership := map[string]map[rootRef]bool{}
 	add := func(root rootRef, sha string) {
 		m, ok := membership[sha]
@@ -21515,7 +21803,15 @@ func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
 		m[root] = true
 	}
 
-	for _, o := range s.snapshotNamespaceBestEffort() {
+	curObjs, err := s.snapshotNamespace()
+	if err != nil {
+		return nil, err
+	}
+	histObjs, err := s.snapshotHistory()
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range curObjs {
 		root := rootRef{"current", o.bucket + "/" + o.key}
 		man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
 		if err != nil {
@@ -21525,7 +21821,7 @@ func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
 			add(root, c.SHA256)
 		}
 	}
-	for _, o := range s.snapshotHistoryBestEffort() {
+	for _, o := range histObjs {
 		root := rootRef{"historical", fmt.Sprintf("%s/%s@%s", o.bucket, o.key, o.entry.versionID)}
 		man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256)
 		if err != nil {
@@ -21560,7 +21856,7 @@ func (s *Store) computeChunkRootMembership() map[string]map[rootRef]bool {
 			}
 		}
 	}
-	return membership
+	return membership, nil
 }
 
 // chunkReachabilityInfo is one distinct chunk digest's store-wide
@@ -21620,7 +21916,11 @@ func (srv *Server) handleReachabilityQuery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	membership := srv.store.computeChunkRootMembership()
+	membership, err := srv.store.computeChunkRootMembership()
+	if err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
 	currentRoot := rootRef{"current", bucket + "/" + key}
 
 	seen := make(map[string]bool, len(man.Chunks))
@@ -25621,12 +25921,16 @@ func (s *Store) annotateAffectedObjects(findings []RepairFinding) {
 			}
 		}
 	}
-	for _, o := range s.snapshotNamespaceBestEffort() {
+	// Annotation only: an unreadable namespace leaves the findings unannotated
+	// (the reachability pass that produced them already failed closed).
+	curObjs, _ := s.snapshotNamespace()
+	histObjs, _ := s.snapshotHistory()
+	for _, o := range curObjs {
 		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
 			note(o.bucket+"/"+o.key, s.rootDependencyChunks(man))
 		}
 	}
-	for _, o := range s.snapshotHistoryBestEffort() {
+	for _, o := range histObjs {
 		if man, err := s.readVerifiedManifest(o.entry.manifestUUID, o.entry.manifestSHA256); err == nil {
 			note(fmt.Sprintf("history:%s/%s@%s", o.bucket, o.key, o.entry.versionID), s.rootDependencyChunks(man))
 		}
@@ -26923,7 +27227,7 @@ func (s *Store) captureSnapshotEntries(bucket, prefix string) ([]snapshotEntryV1
 		s.mu.Unlock()
 		return nil, errNoSuchBucket
 	}
-	v, release, err := s.nsObjectView(lo, nsPrefixEnd(lo))
+	v, release, err := s.nsObjectView(lo)
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -36811,14 +37115,15 @@ func (s *Store) repDescLookup(id [32]byte) *repDesc {
 }
 
 // liveManifestUUIDs is the set of manifests some authoritative root (current,
-// retained history, snapshot) names.
-func (s *Store) liveManifestUUIDs() map[string]bool {
+// retained history, snapshot) names. An invalid snapshot descriptor is
+// skipped (reachability reports it); an unreadable namespace is an error.
+func (s *Store) liveManifestUUIDs() (map[string]bool, error) {
 	live := map[string]bool{}
-	for _, o := range s.snapshotNamespaceBestEffort() {
-		live[o.entry.manifestUUID] = true
-	}
-	for _, o := range s.snapshotHistoryBestEffort() {
-		live[o.entry.manifestUUID] = true
+	if err := s.nsEachRoot(nil, func(_ bool, _, uuid []byte, _ [32]byte) error {
+		live[string(uuid)] = true
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	snaps, _ := s.scanSnapshots()
 	for _, sn := range snaps {
@@ -36826,7 +37131,7 @@ func (s *Store) liveManifestUUIDs() map[string]bool {
 			live[e.ManifestUUID] = true
 		}
 	}
-	return live
+	return live, nil
 }
 
 // repEnsure builds the derived state from the live roots once. A root that
@@ -36841,7 +37146,13 @@ func (s *Store) repEnsure() {
 	if s.rep.built.Load() {
 		return
 	}
-	live := s.liveManifestUUIDs()
+	live, err := s.liveManifestUUIDs()
+	if err != nil {
+		// Not marked built: the next use retries instead of serving a catalog
+		// that silently lacks the roots of an unread namespace page.
+		log.Printf("zeros3: representation state not built: %v", err)
+		return
+	}
 	files, _ := s.repRootFiles()
 	desc := map[[32]byte]*repDesc{}
 	seen := map[[32]byte]bool{}
@@ -51937,42 +52248,55 @@ type liveMan struct {
 }
 
 // liveManifests returns every manifest some live root (current, history,
-// snapshot) names, with unreadable ones skipped (reachability reports those).
-func (s *Store) liveManifests() []liveMan {
+// snapshot) names. It fails rather than return a partial set.
+func (s *Store) liveManifests() ([]liveMan, error) {
 	var out []liveMan
-	s.eachLiveManifest(nil, func(lm liveMan) { out = append(out, lm) })
-	return out
+	err := s.eachLiveManifest(nil, func(lm liveMan) error { out = append(out, lm); return nil })
+	return out, err
 }
 
-// eachLiveManifest is liveManifests without retaining the manifests: fn sees every manifest once (want, when set,
-// is asked first for the root's bucket and key and spares the read of the manifests it declines).
-func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liveMan)) {
+// eachLiveManifest calls fn once per manifest a live root names (want, when set,
+// is asked first for the root's bucket and key and spares the read of the
+// manifests it declines). The enumeration is complete or it fails: a namespace
+// page that cannot be read, an invalid snapshot descriptor or a live manifest
+// that does not verify is an error, because the callers retire, rewrite or
+// price content from the result. Reachability reports the same defects.
+func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liveMan) error) error {
 	seen := map[string]bool{}
-	add := func(bucket, key, uuid string, sha [32]byte) {
+	add := func(bucket, key, uuid string, sha [32]byte) error {
 		if seen[uuid] || want != nil && !want(bucket, key) {
-			return
+			return nil
 		}
 		man, err := s.readVerifiedManifest(uuid, sha)
 		if err != nil {
-			return
+			return fmt.Errorf("live root %s/%s: manifest %s: %w", bucket, key, uuid, err)
 		}
 		seen[uuid] = true
-		fn(liveMan{bucket, key, man})
+		return fn(liveMan{bucket, key, man})
 	}
-	for _, o := range s.snapshotNamespaceBestEffort() {
-		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
+	err := s.nsEachRoot(nil, func(_ bool, ck, uuid []byte, sha [32]byte) error {
+		bucket, key, _ := bytes.Cut(ck, []byte{0})
+		return add(string(bucket), string(key), string(uuid), sha)
+	})
+	if err != nil {
+		return err
 	}
-	for _, o := range s.snapshotHistoryBestEffort() {
-		add(o.bucket, o.key, o.entry.manifestUUID, o.entry.manifestSHA256)
+	snaps, issues := s.scanSnapshots()
+	if len(issues) != 0 {
+		return fmt.Errorf("snapshot %s: %s", issues[0].Subject, issues[0].Detail)
 	}
-	snaps, _ := s.scanSnapshots()
 	for _, sn := range snaps {
 		for _, e := range sn.Entries {
-			if sum, err := decodeHexSHA256(e.ManifestSHA256); err == nil {
-				add(sn.SourceBucket, e.Key, e.ManifestUUID, sum)
+			sum, err := decodeHexSHA256(e.ManifestSHA256)
+			if err != nil {
+				return fmt.Errorf("snapshot %s: %s: %w", sn.SnapshotID, e.Key, err)
+			}
+			if err := add(sn.SourceBucket, e.Key, e.ManifestUUID, sum); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
 }
 
 // physChunk prices a chunk under the selected pack policy, including its
@@ -52472,8 +52796,8 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 		// The comparator uses the union rule of the planner: a kept object retains
 		// ALL its chunks (shared ones included), an admitted one costs its added bytes.
 		bySHA := map[string]manifestV1{}
-		for _, lm := range s.liveManifests() {
-			bySHA[lm.man.ObjectSHA256] = lm.man
+		if err := s.eachLiveManifest(nil, func(lm liveMan) error { bySHA[lm.man.ObjectSHA256] = lm.man; return nil }); err != nil {
+			return AuthReport{}, err
 		}
 		phys := map[[32]byte]int64{}
 		total := func(r AuthReport) (n int64) {
@@ -52538,44 +52862,45 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 	scopedRun := pol.Bucket != "" || pol.Prefix != ""
 	scoped := map[[32]byte]liveMan{}
 	if scopedRun {
-		s.eachLiveManifest(func(bucket, key string) bool {
+		err := s.eachLiveManifest(func(bucket, key string) bool {
 			return (pol.Bucket == "" || bucket == pol.Bucket) && strings.HasPrefix(key, pol.Prefix)
-		}, func(lm liveMan) {
+		}, func(lm liveMan) error {
 			sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
 			if err != nil {
-				return
+				return nil
 			}
 			prior, exists := scoped[sha]
 			if !exists || lm.man.CreatedAt.Before(prior.man.CreatedAt) {
 				scoped[sha] = lm
 			}
+			return nil
 		})
+		if err != nil {
+			return m.rep, err
+		}
 	}
 	outSeen := map[[32]byte]bool{}
 	authoritySeen := map[[32]byte]bool{}
-	var scanErr error
-	s.eachLiveManifest(nil, func(lm liveMan) {
+	err := s.eachLiveManifest(nil, func(lm liveMan) error {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
-		if scanErr = cmp.Or(scanErr, ctx.Err()); scanErr != nil || err != nil || lm.man.TotalLength < 1 {
-			return
+		if cerr := ctx.Err(); cerr != nil || err != nil || lm.man.TotalLength < 1 {
+			return cerr
 		}
 		matched, inScope := scoped[sha]
 		if scopedRun && !inScope {
 			if outSeen[sha] {
-				return
+				return nil
 			}
 			outSeen[sha] = true
 			rec, err := s.authLoad(sha)
 			if err != nil {
-				scanErr = err
-				return
+				return err
 			}
 			if rec != nil {
-				scanErr = m.countAuthorityClosure(sha, authoritySeen)
-				return
+				return m.countAuthorityClosure(sha, authoritySeen)
 			}
 			m.countChunks(lm.man.Chunks)
-			return
+			return nil
 		}
 		if inScope {
 			lm = matched
@@ -52584,8 +52909,7 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 		if o == nil {
 			rec, rerr := s.authLoad(sha)
 			if rerr != nil {
-				scanErr = rerr
-				return
+				return rerr
 			}
 			o = &authObj{sha: sha, man: lm.man, bucket: lm.bucket, key: lm.key, t: lm.man.CreatedAt, hasRec: rec != nil}
 			m.objs[sha] = o
@@ -52594,9 +52918,10 @@ func (s *Store) AuthorityMigrateContext(ctx context.Context, pol AuthPolicy) (Au
 		if lm.man.CreatedAt.Before(o.t) {
 			o.t = lm.man.CreatedAt
 		}
+		return nil
 	})
-	if scanErr != nil {
-		return m.rep, scanErr
+	if err != nil {
+		return m.rep, err
 	}
 	sort.Slice(m.order, func(i, j int) bool {
 		a, b := m.order[i], m.order[j]
@@ -53879,11 +54204,17 @@ func (s *Store) AuthorityRevert(sha [32]byte) error {
 	if err != nil || rec == nil {
 		return err
 	}
+	// Every manifest naming the content must be found: one missed is a body
+	// whose chunks were never re-created when the record goes.
 	var mans []manifestV1
-	for _, lm := range s.liveManifests() {
-		if lm.man.ObjectSHA256 == hex.EncodeToString(sha[:]) {
+	want := hex.EncodeToString(sha[:])
+	if err := s.eachLiveManifest(nil, func(lm liveMan) error {
+		if lm.man.ObjectSHA256 == want {
 			mans = append(mans, lm.man)
 		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("revert %x: %w", sha[:6], err)
 	}
 	for _, man := range mans {
 		if err := s.materializeCDC(man); err != nil {
@@ -53892,7 +54223,10 @@ func (s *Store) AuthorityRevert(sha [32]byte) error {
 	}
 	fireTestHook(hookAuthRevertMaterial)
 	dependents := false
-	files, _ := s.authFiles()
+	files, err := s.authFiles()
+	if err != nil {
+		return err
+	}
 	for _, f := range files {
 		r, err := s.authLoad(f)
 		if err != nil {
@@ -53951,24 +54285,30 @@ func (s *Store) AuthorityRevertAll() (AuthRevertReport, error) {
 		}
 	}
 	rep.Records = len(depth)
-	for _, lm := range s.liveManifests() {
+	// No record may be retired unless every live manifest was enumerated and
+	// materialized: the error of an incomplete walk returns before any retirement.
+	err = s.eachLiveManifest(nil, func(lm liveMan) error {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
 		if err != nil {
-			continue
+			return nil
 		}
 		if _, ok := depth[sha]; !ok {
-			continue
+			return nil
 		}
 		if err := s.materializeCDC(lm.man); err != nil {
-			return rep, fmt.Errorf("reverting %s/%s: %w", lm.bucket, lm.key, err)
+			return fmt.Errorf("reverting %s/%s: %w", lm.bucket, lm.key, err)
 		}
 		for _, c := range lm.man.Chunks {
 			sum, _ := decodeHexSHA256(c.SHA256)
 			if n, err := s.casStat(sum); err != nil || n != c.Length {
-				return rep, fmt.Errorf("reverting %s/%s: chunk %x is not present after materialization", lm.bucket, lm.key, sum[:6])
+				return fmt.Errorf("reverting %s/%s: chunk %x is not present after materialization", lm.bucket, lm.key, sum[:6])
 			}
 		}
 		rep.Materialized++
+		return nil
+	})
+	if err != nil {
+		return rep, fmt.Errorf("authority revert: live manifests: %w", err)
 	}
 	fireTestHook(hookAuthRevertMaterial)
 	order := slices.Collect(maps.Keys(depth))
@@ -54842,12 +55182,17 @@ func (s *Store) AuthorityRepairObjectFrom(sha [32]byte, fetch func(sum [32]byte,
 		return err
 	}
 	var man *manifestV1
-	for _, lm := range s.liveManifests() {
-		if lm.man.ObjectSHA256 == hex.EncodeToString(sha[:]) {
-			m := lm.man
-			man = &m
-			break
+	errFound := errors.New("found")
+	want := hex.EncodeToString(sha[:])
+	if err := s.eachLiveManifest(nil, func(lm liveMan) error {
+		if lm.man.ObjectSHA256 != want {
+			return nil
 		}
+		m := lm.man
+		man = &m
+		return errFound
+	}); err != nil && err != errFound {
+		return fmt.Errorf("repair %x: %w", sha[:6], err)
 	}
 	if man == nil {
 		return fmt.Errorf("repair %x: no live manifest names this content", sha[:6])
@@ -55017,15 +55362,15 @@ func (s *Store) authVirtualIndex() map[[32]byte]authVLoc {
 		return s.auth.vidx
 	}
 	have := map[[32]byte]bool{}
-	files, _ := s.authFiles()
+	files, ferr := s.authFiles()
 	for _, f := range files {
 		have[f] = true
 	}
 	idx := map[[32]byte]authVLoc{}
-	for _, lm := range s.liveManifests() {
+	err := s.eachLiveManifest(nil, func(lm liveMan) error {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
 		if err != nil || !have[sha] {
-			continue
+			return nil
 		}
 		var off int64
 		for _, c := range lm.man.Chunks {
@@ -55036,8 +55381,13 @@ func (s *Store) authVirtualIndex() map[[32]byte]authVLoc {
 			}
 			off += c.Length
 		}
+		return nil
+	})
+	// A partial index only under-reports virtual chunks (reads and checks then
+	// fail closed); it is served but never cached.
+	if err == nil && ferr == nil {
+		s.auth.vidx, s.auth.vkey = idx, key
 	}
-	s.auth.vidx, s.auth.vkey = idx, key
 	return idx
 }
 
@@ -55553,17 +55903,39 @@ func (s *Store) buildAuthSimilarityStage() (authSimilarityStageReport, error) {
 }
 
 // addNamespaceRoots streams the manifest roots of every visible row and retained
-// version, in key order, from a consistent snapshot. Table rows are read in
-// place: nothing is decoded beyond the UUID and digest.
+// version, in key order, from a consistent snapshot.
 func (s *Store) addNamespaceRoots(roots *authRoots) error {
+	return s.nsEachRoot(func(n int) {
+		roots.refs = slices.Grow(roots.refs, n)
+		roots.arena = slices.Grow(roots.arena, 36*n)
+	}, func(_ bool, _, uuid []byte, sha [32]byte) error {
+		roots.addBytes(uuid, sha)
+		return nil
+	})
+}
+
+// nsEachRoot calls fn with the row key (bucket NUL key), manifest UUID and
+// digest of every visible object (hist false) and then every retained version
+// (hist true) of one consistent snapshot, in key order. Table rows are read in
+// place; key and uuid alias scratch buffers. It returns the first error of a
+// page read, a row decode or fn, so a caller either sees every root or fails:
+// nothing that acts on the complete root set may ignore the error. hint, when
+// set, receives a capacity estimate first.
+func (s *Store) nsEachRoot(hint func(rows int), fn func(hist bool, key, uuid []byte, sha [32]byte) error) error {
 	s.mu.Lock()
-	objs, relObjs, err := s.nsObjectView("", "")
+	objs, relObjs, err := s.nsObjectView("")
 	var hist *nsView[[]*historyVersionEntry]
-	var relHist func()
+	relHist := func() {}
+	var strs []string
+	if s.ns.gen != nil {
+		strs = s.ns.gen.strs
+	}
 	if err == nil {
-		hist, relHist, err = s.nsHistoryView("", "")
-		roots.refs = slices.Grow(roots.refs, s.ns.rowEstimate())
-		roots.arena = slices.Grow(roots.arena, 36*s.ns.rowEstimate())
+		if hist, relHist, err = s.nsHistoryView(""); err != nil {
+			relObjs()
+		} else if hint != nil {
+			hint(s.ns.rowEstimate())
+		}
 	}
 	s.mu.Unlock()
 	if err != nil {
@@ -55573,15 +55945,15 @@ func (s *Store) addNamespaceRoots(roots *authRoots) error {
 	defer relHist()
 	var scratch []byte
 	for objs.next() {
-		if objs.from >= 0 {
-			roots.add(objs.val.manifestUUID, objs.val.manifestSHA256)
-			continue
-		}
 		var sha [32]byte
-		if scratch, sha, err = objectRoot(objs.payload, scratch[:0]); err != nil {
+		if objs.from >= 0 {
+			scratch, sha = append(scratch[:0], objs.val.manifestUUID...), objs.val.manifestSHA256
+		} else if scratch, sha, err = objectRoot(objs.payload, scratch[:0], strs); err != nil {
 			return s.nsFailed(err)
 		}
-		roots.addBytes(scratch, sha)
+		if err := fn(false, objs.key, scratch, sha); err != nil {
+			return err
+		}
 	}
 	if err := s.nsFailed(objs.err); err != nil {
 		return err
@@ -55589,12 +55961,20 @@ func (s *Store) addNamespaceRoots(roots *authRoots) error {
 	for hist.next() {
 		if hist.from >= 0 {
 			for _, h := range hist.val {
-				roots.add(h.manifestUUID, h.manifestSHA256)
+				if err := fn(true, hist.key, []byte(h.manifestUUID), h.manifestSHA256); err != nil {
+					return err
+				}
 			}
 			continue
 		}
-		if scratch, err = historyRoots(hist.payload, scratch, roots.addBytes); err != nil {
-			return s.nsFailed(err)
+		var ferr error
+		scratch, err = historyRoots(hist.payload, scratch, strs, func(uuid []byte, sha [32]byte) {
+			if ferr == nil {
+				ferr = fn(true, hist.key, uuid, sha)
+			}
+		})
+		if err = cmp.Or(ferr, s.nsFailed(err)); err != nil {
+			return err
 		}
 	}
 	return s.nsFailed(hist.err)

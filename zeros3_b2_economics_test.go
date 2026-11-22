@@ -215,7 +215,7 @@ func econBreakdown(t *testing.T, dir string) map[string]int64 {
 func econBlast(s *Store) (maxN int, mean float64, chunks int) {
 	deps := map[string]int{}
 	seen := map[[32]byte]bool{}
-	for _, lm := range s.liveManifests() {
+	for _, lm := range testLiveManifests(nil, s) {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
 		if err != nil || seen[sha] {
 			continue
@@ -278,7 +278,7 @@ func econReads(t *testing.T, dir string, cacheMiB int64, cold bool) econReadStat
 	defer s.Close()
 	s.SetAuthorityCache(cacheMiB << 20)
 	var mans []manifestV1
-	for _, lm := range s.liveManifests() {
+	for _, lm := range testLiveManifests(t, s) {
 		mans = append(mans, lm.man)
 	}
 	sort.Slice(mans, func(i, j int) bool { return mans[i].ManifestUUID < mans[j].ManifestUUID })
@@ -576,7 +576,7 @@ func TestB2RepBreakdown(t *testing.T) {
 	var rows []bodyRow
 	seen := map[[32]byte]bool{}
 	var sumLogical, unionLogical, unionStored, dupRecords, rawRecs, deflRecs, framing int64
-	mans := s.liveManifests()
+	mans := testLiveManifests(t, s)
 	sort.Slice(mans, func(i, j int) bool { return mans[i].key < mans[j].key })
 	for _, lm := range mans {
 		sha, _ := decodeHexSHA256(lm.man.ObjectSHA256)
@@ -719,7 +719,7 @@ func TestP8Migration(t *testing.T) {
 						t.Fatal(err)
 					}
 					exact := true
-					for _, lm := range s.liveManifests() {
+					for _, lm := range testLiveManifests(t, s) {
 						rd := s.openObjectReader(lm.man, byteRange{0, lm.man.TotalLength - 1})
 						h := sha256.New()
 						for {

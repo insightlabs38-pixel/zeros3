@@ -969,7 +969,7 @@ func TestAuthoritySimilarityIndexedCandidatesScopeAndFallback(t *testing.T) {
 		byKey:        make(map[string][]int),
 		index:        make(map[uint64][]int),
 	}
-	for _, lm := range s.liveManifests() {
+	for _, lm := range testLiveManifests(t, s) {
 		for _, obj := range m.order {
 			if lm.man.ObjectSHA256 == fmt.Sprintf("%x", obj.sha) {
 				obj.man, obj.bucket, obj.key = lm.man, lm.bucket, lm.key
@@ -1024,7 +1024,7 @@ func TestAuthoritySimilarityHotPostingsRetainOlderScopedBase(t *testing.T) {
 	defer q.close()
 
 	objs := make([]*authObj, 0, next.Objects)
-	for _, lm := range s.liveManifests() {
+	for _, lm := range testLiveManifests(t, s) {
 		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
 		mustOK(t, err)
 		objs = append(objs, &authObj{sha: sha, man: lm.man, bucket: lm.bucket, key: lm.key})

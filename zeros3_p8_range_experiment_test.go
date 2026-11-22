@@ -90,7 +90,7 @@ func TestP8NestedRangeExperiment(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			mans := s.liveManifests()
+			mans := testLiveManifests(t, s)
 			if len(mans) != len(corpus) {
 				t.Fatalf("wrong manifest count: %d", len(mans))
 			}

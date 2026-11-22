@@ -212,7 +212,7 @@ func TestP8Rep(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.setRepMode(repModePrefer)
-			lm := s.liveManifests()
+			lm := testLiveManifests(t, s)
 			if len(lm) != 1 {
 				t.Fatalf("manifests: %d", len(lm))
 			}
