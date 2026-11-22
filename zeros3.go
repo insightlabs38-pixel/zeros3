@@ -10341,12 +10341,11 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
 	s.ns.wg.Wait()
-	s.mu.Lock()
+	// No lock: a crash-simulating test can leave mu held, and Close runs after every operation.
 	if g := s.ns.gen; g != nil {
 		s.ns.gen, s.ns.obj, s.ns.hist = nil, nil, nil
 		g.release()
 	}
-	s.mu.Unlock()
 	s.repQueueStop(10 * time.Second)
 	s.dumpReadCacheStats()
 	if s.segs != nil {
@@ -28429,7 +28428,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	addr := fs.String("addr", "127.0.0.1:9000", "listen address")
-	checkpoint := fs.Bool("namespace-checkpoint", false, "use a validated offline namespace checkpoint if available")
+	checkpoint := fs.Bool("namespace-checkpoint", false, "load a validated namespace checkpoint if one exists and publish fresh generations in the background")
 	vhostBase := fs.String("vhost-base", "", "base domain for virtual-hosted-style addressing (bucket.<base>); empty disables it and only path-style is served")
 	accessKey := fs.String("access-key", defaultAccessKeyID, "access key ID clients must sign with (default: AWS_ACCESS_KEY_ID)")
 	secretKey := fs.String("secret-key", defaultSecretAccessKey, "secret access key clients must sign with (default: AWS_SECRET_ACCESS_KEY)")
