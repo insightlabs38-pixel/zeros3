@@ -31,7 +31,6 @@ import (
 	"crypto/sha3"
 	"crypto/sha512"
 	"crypto/subtle"
-	"encoding"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
@@ -7411,7 +7410,8 @@ func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 		ccache:  newChunkCache(chunkCacheBytes()),
 	}
 	s.ns.init()
-	s.ns.auto = useCheckpoint && ownSegments
+	s.ns.auto, s.ns.publish = ownSegments, useCheckpoint
+	s.ns.startBulk()
 	// Replay builds the namespace: nearly everything it allocates stays live, so
 	// collecting often only rescans a growing heap. Collect less often while the
 	// namespace is built; the heap cannot outgrow what replay allocates in total.
@@ -7424,6 +7424,7 @@ func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 	}
 	j, applyErr, err := openJournalWithCheckpoint(journalPath, !ownSegments, s.applyRecord, checkpoint)
 	s.replayIn = nil
+	s.ns.endBulk()
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to open journal: %w", err)
 	}
@@ -7655,7 +7656,6 @@ const (
 	nsBlockMax      = 256
 	nsMaxPage       = 64 << 20
 	nsDictMax       = 4096
-	nsOverlayFloor  = 1 << 18 // overlay entries before a consolidation is considered
 	nsPageCacheMiB  = 32
 	nsFlagUUID      = 1 // manifest UUID stored as 16 raw bytes
 	nsFlagETag      = 2 // ETag stored as 16 raw bytes (32 hex digits)
@@ -7676,6 +7676,29 @@ type nsKV[V any] struct {
 type nsOverlay[V any] struct {
 	blocks [][]nsKV[V]
 	n      int
+	m      map[string]V // bulk-load mode (replay): unordered until seal
+}
+
+func newBulkOverlay[V any]() *nsOverlay[V] { return &nsOverlay[V]{m: map[string]V{}} }
+
+// seal turns a bulk-load overlay into sorted blocks.
+func (o *nsOverlay[V]) seal() {
+	if o.m == nil {
+		return
+	}
+	kv := make([]nsKV[V], 0, len(o.m))
+	for k, v := range o.m {
+		kv = append(kv, nsKV[V]{k, v})
+	}
+	slices.SortFunc(kv, func(a, b nsKV[V]) int { return strings.Compare(a.k, b.k) })
+	const fill = nsBlockMax * 3 / 4
+	o.blocks = o.blocks[:0]
+	for len(kv) > 0 {
+		n := min(fill, len(kv))
+		o.blocks = append(o.blocks, slices.Clone(kv[:n]))
+		kv = kv[n:]
+	}
+	o.n, o.m = len(o.m), nil
 }
 
 func nsCmpKV[V any](e nsKV[V], k string) int { return strings.Compare(e.k, k) }
@@ -7690,6 +7713,10 @@ func (o *nsOverlay[V]) locate(k string) (bi, i int) {
 }
 
 func (o *nsOverlay[V]) find(k string) (v V, ok bool) {
+	if o.m != nil {
+		v, ok = o.m[k]
+		return v, ok
+	}
 	if bi, i := o.locate(k); bi < len(o.blocks) && o.blocks[bi][i].k == k {
 		return o.blocks[bi][i].v, true
 	}
@@ -7697,6 +7724,11 @@ func (o *nsOverlay[V]) find(k string) (v V, ok bool) {
 }
 
 func (o *nsOverlay[V]) set(k string, v V) {
+	if o.m != nil {
+		o.m[k] = v
+		o.n = len(o.m)
+		return
+	}
 	bi, i := o.locate(k)
 	switch {
 	case len(o.blocks) == 0:
@@ -7722,6 +7754,7 @@ func (o *nsOverlay[V]) set(k string, v V) {
 
 // slice copies the entries in [lo, hi) into one block; an empty hi means no bound.
 func (o *nsOverlay[V]) slice(lo, hi string) [][]nsKV[V] {
+	o.seal()
 	bi, i := o.locate(lo)
 	var out []nsKV[V]
 	for ; bi < len(o.blocks); bi, i = bi+1, 0 {
@@ -8529,8 +8562,7 @@ type nsMeta struct {
 	Offset    int64
 	Sequence  uint64
 	LastCRC   uint32
-	PrefixSHA [32]byte
-	HashState []byte // marshaled SHA-256 state after the covered journal prefix
+	Blocks    [][32]byte // SHA-256 of each nsHashBlock of the covered journal prefix
 	Buckets   []nsBucketRec
 	Strings   []string
 	Obj, Hist nsDirectory
@@ -8765,57 +8797,59 @@ func (s *Store) nsWriteGeneration(snap *nsSnapshot) (*nsGen, string, error) {
 
 // ---- generation file: reader ----
 
-// openNSGen verifies the file digest and trailer, then returns the generation
-// with its directories. Pages are not read.
-func openNSGen(f *os.File, cache *nsPageCache) (*nsGen, error) {
+// openNSGen parses the trailer and directories and returns the generation with
+// the check of the whole-file digest, which the caller must run. Pages are not read.
+func openNSGen(f *os.File, cache *nsPageCache) (*nsGen, func() error, error) {
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	size := info.Size()
 	const tailLen = 16 + sha256.Size
 	if size < int64(len(nsGenMagic))+tailLen {
-		return nil, io.ErrUnexpectedEOF
+		return nil, nil, io.ErrUnexpectedEOF
 	}
 	body := size - sha256.Size
-	h := sha256.New()
-	buf := make([]byte, 1<<20)
-	if n, err := io.CopyBuffer(h, io.NewSectionReader(f, 0, body), buf); err != nil || n != body {
-		return nil, errors.New("namespace generation: unable to read complete body")
-	}
-	var want [sha256.Size]byte
-	if _, err := f.ReadAt(want[:], body); err != nil || !bytes.Equal(want[:], h.Sum(nil)) {
-		return nil, errors.New("namespace generation: checksum mismatch")
+	verify := func() error {
+		h := sha256.New()
+		if n, err := io.CopyBuffer(h, io.NewSectionReader(f, 0, body), make([]byte, 1<<20)); err != nil || n != body {
+			return errors.New("namespace generation: unable to read complete body")
+		}
+		var want [sha256.Size]byte
+		if _, err := f.ReadAt(want[:], body); err != nil || !bytes.Equal(want[:], h.Sum(nil)) {
+			return errors.New("namespace generation: checksum mismatch")
+		}
+		return nil
 	}
 	var tail [16]byte
 	if _, err := f.ReadAt(tail[:], body-16); err != nil || string(tail[8:]) != nsGenFooter {
-		return nil, errors.New("namespace generation: unrecognized trailer")
+		return nil, nil, errors.New("namespace generation: unrecognized trailer")
 	}
 	metaLen := int64(binary.LittleEndian.Uint32(tail[:]))
 	metaOff := body - 16 - metaLen
 	if metaOff < int64(len(nsGenMagic)) {
-		return nil, errors.New("namespace generation: invalid trailer length")
+		return nil, nil, errors.New("namespace generation: invalid trailer length")
 	}
 	mb := make([]byte, metaLen)
 	if _, err := f.ReadAt(mb, metaOff); err != nil || crc32.Checksum(mb, castagnoliTable) != binary.LittleEndian.Uint32(tail[4:]) {
-		return nil, errors.New("namespace generation: trailer checksum mismatch")
+		return nil, nil, errors.New("namespace generation: trailer checksum mismatch")
 	}
 	var magic [len(nsGenMagic)]byte
 	if _, err := f.ReadAt(magic[:], 0); err != nil || string(magic[:]) != nsGenMagic {
-		return nil, errors.New("namespace generation: unrecognized format")
+		return nil, nil, errors.New("namespace generation: unrecognized format")
 	}
 	g := &nsGen{f: f, id: nsGenIDs.Add(1), cache: cache}
 	if err := gob.NewDecoder(bytes.NewReader(mb)).Decode(&g.meta); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	g.strs = g.meta.Strings
 	for _, d := range []*nsDirectory{&g.meta.Obj, &g.meta.Hist} {
 		if err := d.validate(int64(len(nsGenMagic)), metaOff); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	g.refs.Store(1)
-	return g, nil
+	return g, verify, nil
 }
 
 func (d *nsDirectory) validate(lo, hi int64) error {
@@ -8859,9 +8893,14 @@ type nsState struct {
 	histMut    *nsOverlay[[]*historyVersionEntry]
 	histFrozen *nsOverlay[[]*historyVersionEntry]
 	damaged    error
-	auto       bool // consolidate in the background and publish checkpoints
+	auto       bool // fold the overlay into a new generation in the background
+	publish    bool // ... and publish it as the checkpoint
 	busy       bool
+	replaying  bool // the overlay is an unordered bulk load; a full one spills
+	noSpill    bool
+	retryAfter time.Time
 	limit      int // overlay entries that trigger a consolidation
+	wg         sync.WaitGroup
 }
 
 func (ns *nsState) init() {
@@ -8870,6 +8909,15 @@ func (ns *nsState) init() {
 	ns.histMut = &nsOverlay[[]*historyVersionEntry]{}
 	ns.limit = nsOverlayFloor
 }
+
+// startBulk switches the overlays to bulk-load mode for journal replay.
+func (ns *nsState) startBulk() {
+	ns.objMut, ns.histMut, ns.replaying = newBulkOverlay[*objectEntry](), newBulkOverlay[[]*historyVersionEntry](), true
+}
+
+// endBulk leaves the overlays unordered: point operations never need the
+// order, and the first listing, snapshot or consolidation seals them.
+func (ns *nsState) endBulk() { ns.replaying = false }
 
 func nsKey(bucket, key string) string { return bucket + "\x00" + key }
 
@@ -8886,12 +8934,13 @@ func (ns *nsState) fail(err error) error {
 func (ns *nsState) overlayLen() int { return ns.objMut.n + ns.histMut.n }
 
 // objFind resolves a visible object; nil with a nil error means absent. Held: mu.
-func (s *Store) objFind(bucket, key string) (*objectEntry, error) {
+func (s *Store) objFind(bucket, key string) (*objectEntry, error) { return s.objFindCK(nsKey(bucket, key)) }
+
+func (s *Store) objFindCK(ck string) (*objectEntry, error) {
 	ns := &s.ns
 	if ns.damaged != nil {
 		return nil, ns.damaged
 	}
-	ck := nsKey(bucket, key)
 	if e, ok := ns.objMut.find(ck); ok {
 		return e, nil
 	}
@@ -8916,6 +8965,10 @@ func objFromBase(t *nsTable, ck string) (*objectEntry, error) {
 // objSet records a new visible state; existed says whether the key was visible
 // before. It cannot fail, so it is safe after the journal commit. Held: mu.
 func (s *Store) objSet(bucket, key string, e *objectEntry, existed bool) {
+	s.objSetCK(bucket, nsKey(bucket, key), e, existed)
+}
+
+func (s *Store) objSetCK(bucket, ck string, e *objectEntry, existed bool) {
 	b := s.buckets[bucket]
 	switch {
 	case e != nil && !existed:
@@ -8923,18 +8976,21 @@ func (s *Store) objSet(bucket, key string, e *objectEntry, existed bool) {
 	case e == nil && existed:
 		b.count--
 	}
-	s.ns.objMut.set(nsKey(bucket, key), e)
+	s.ns.objMut.set(ck, e)
 	s.nsMaybeConsolidate()
 }
 
 // histFind returns the retained versions of a key, oldest first. The slice is
 // shared: append to it, never edit it. Held: mu.
 func (s *Store) histFind(bucket, key string) ([]*historyVersionEntry, error) {
+	return s.histFindCK(nsKey(bucket, key))
+}
+
+func (s *Store) histFindCK(ck string) ([]*historyVersionEntry, error) {
 	ns := &s.ns
 	if ns.damaged != nil {
 		return nil, ns.damaged
 	}
-	ck := nsKey(bucket, key)
 	if l, ok := ns.histMut.find(ck); ok {
 		return l, nil
 	}
@@ -8953,7 +9009,11 @@ func (s *Store) histFind(bucket, key string) ([]*historyVersionEntry, error) {
 
 // histSet replaces a key's retained versions; an empty list removes them.
 func (s *Store) histSet(bucket, key string, list []*historyVersionEntry) {
-	s.ns.histMut.set(nsKey(bucket, key), list)
+	s.histSetCK(nsKey(bucket, key), list)
+}
+
+func (s *Store) histSetCK(ck string, list []*historyVersionEntry) {
+	s.ns.histMut.set(ck, list)
 	s.nsMaybeConsolidate()
 }
 
@@ -8968,18 +9028,57 @@ func (ns *nsState) nsLimit() int {
 
 func (s *Store) nsMaybeConsolidate() {
 	ns := &s.ns
-	if !ns.auto || ns.busy || ns.overlayLen() < ns.nsLimit() {
+	if ns.replaying {
+		if !ns.noSpill && ns.overlayLen() >= nsReplayFloor {
+			s.nsSpill()
+		}
+		return
+	}
+	if ns.overlayLen() < ns.nsLimit() {
+		return
+	}
+	if !ns.auto || ns.busy || time.Now().Before(ns.retryAfter) {
 		return
 	}
 	ns.busy = true
+	publish := ns.publish
+	ns.wg.Add(1)
 	go func() {
-		if err := s.nsConsolidate(true); err != nil {
-			log.Printf("zeros3: namespace consolidation failed: %v", err)
-		}
+		defer ns.wg.Done()
+		err := s.nsConsolidate(publish)
 		s.mu.Lock()
 		s.ns.busy = false
+		if err != nil {
+			log.Printf("zeros3: namespace consolidation failed: %v", err)
+			s.ns.retryAfter = time.Now().Add(30 * time.Second)
+		}
 		s.mu.Unlock()
 	}()
+}
+
+// nsSpill folds a full replay overlay into a private generation so opening a
+// large journal stays within the overlay bound. Replay is single threaded.
+func (s *Store) nsSpill() {
+	ns := &s.ns
+	ns.objMut.seal()
+	ns.histMut.seal()
+	snap := &nsSnapshot{gen: ns.gen, obj: ns.obj, hist: ns.hist, objOv: ns.objMut, histOv: ns.histMut}
+	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
+		b := s.buckets[name]
+		snap.buckets = append(snap.buckets, nsBucketRec{b.name, b.createdAt, b.count})
+	}
+	gen, err := s.nsBuild(snap)
+	if err != nil {
+		log.Printf("zeros3: namespace spill during replay failed, keeping rows in memory: %v", err)
+		ns.noSpill = true
+		return
+	}
+	if old := ns.gen; old != nil {
+		old.release()
+	}
+	ns.gen = gen
+	ns.obj, ns.hist = gen.tables()
+	ns.objMut, ns.histMut = newBulkOverlay[*objectEntry](), newBulkOverlay[[]*historyVersionEntry]()
 }
 
 // nsView sources. Held: mu. The caller releases the returned function after use.
@@ -9046,20 +9145,19 @@ func (s *Store) nsFreeze(publish bool) (*nsSnapshot, error) {
 	if ns.objFrozen != nil {
 		return nil, errors.New("namespace consolidation already running")
 	}
+	ns.objMut.seal()
+	ns.histMut.seal()
 	snap := &nsSnapshot{gen: ns.gen, obj: ns.obj, hist: ns.hist, objOv: ns.objMut, histOv: ns.histMut, publish: publish}
 	if publish {
 		j := s.journal
 		j.mu.Lock()
 		off, seq := j.writeOffset, j.nextSeq-1
 		j.mu.Unlock()
-		snap.bind = nsMeta{Offset: off, Sequence: seq}
-		if off > 0 {
-			var trailer [4]byte
-			if _, err := j.f.ReadAt(trailer[:], off-4); err != nil {
-				return nil, err
-			}
-			snap.bind.LastCRC = binary.BigEndian.Uint32(trailer[:])
+		crc, err := journalLastCRC(j.f, off)
+		if err != nil {
+			return nil, err
 		}
+		snap.bind = nsMeta{Offset: off, Sequence: seq, LastCRC: crc}
 	}
 	for _, name := range slices.Sorted(maps.Keys(s.buckets)) {
 		b := s.buckets[name]
@@ -9129,11 +9227,16 @@ func nsMergeOver[V any](base, top *nsOverlay[V]) *nsOverlay[V] {
 
 func (s *Store) nsBuild(snap *nsSnapshot) (*nsGen, error) {
 	if snap.publish {
-		prefix, state, err := s.nsPrefixHash(snap)
+		var prior [][32]byte
+		var priorTo int64
+		if g := snap.gen; g != nil && g.meta.Published {
+			prior, priorTo = g.meta.Blocks, g.meta.Offset
+		}
+		blocks, err := journalBlockHashes(s.journal.f, snap.bind.Offset, prior, priorTo)
 		if err != nil {
 			return nil, err
 		}
-		snap.bind.PrefixSHA, snap.bind.HashState = prefix, state
+		snap.bind.Blocks = blocks
 	}
 	gen, tmp, err := s.nsWriteGeneration(snap)
 	if err != nil {
@@ -9158,51 +9261,75 @@ func (s *Store) nsBuild(snap *nsSnapshot) (*nsGen, error) {
 	return gen, nil
 }
 
-// nsPrefixHash chains from the previous generation's hash state when it covers
-// a prefix of the journal, so publication costs the suffix, not the journal.
-func (s *Store) nsPrefixHash(snap *nsSnapshot) ([32]byte, []byte, error) {
-	var from int64
-	var state []byte
-	if g := snap.gen; g != nil && g.meta.Published && len(g.meta.HashState) > 0 && g.meta.Offset <= snap.bind.Offset {
-		from, state = g.meta.Offset, g.meta.HashState
+// nsOverlayFloor is the overlay size, in rows, at which a live consolidation
+// starts. A journal replay rewrites the table at every spill and a million rows
+// replay in a few seconds, so it only spills past nsReplayFloor, which bounds
+// the memory of replaying a very large journal without slowing ordinary ones.
+var nsOverlayFloor, nsReplayFloor = 1 << 18, 1 << 21
+
+// nsHashBlock is the unit of journal-prefix verification. Blocks hash
+// independently, so opening verifies the prefix on every core and publishing
+// reuses the blocks an earlier generation already covers in full.
+var nsHashBlock int64 = 16 << 20
+
+func journalBlockHashes(f *os.File, to int64, prior [][32]byte, priorTo int64) ([][32]byte, error) {
+	if to < 0 || (to > 0 && to < journalHeaderSize+4) {
+		return nil, errors.New("checkpoint: invalid journal offset")
 	}
-	sum, st, _, err := journalPrefixHash(s.journal.f, from, snap.bind.Offset, state)
-	return sum, st, err
+	block := nsHashBlock
+	out := make([][32]byte, (to+block-1)/block)
+	reuse := min(int(priorTo/block), len(prior), len(out))
+	copy(out, prior[:reuse])
+	todo := make(chan int, len(out))
+	for i := reuse; i < len(out); i++ {
+		todo <- i
+	}
+	close(todo)
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for w := range min(runtime.GOMAXPROCS(0), 8, max(len(out)-reuse, 1)) {
+		wg.Go(func() {
+			buf := make([]byte, 1<<20)
+			for i := range todo {
+				off := int64(i) * block
+				size := min(block, to-off)
+				h := sha256.New()
+				if n, err := io.CopyBuffer(h, io.NewSectionReader(f, off, size), buf); err != nil || n != size {
+					errs[w] = cmp.Or(err, io.ErrUnexpectedEOF)
+					return
+				}
+				h.Sum(out[i][:0])
+			}
+		})
+	}
+	wg.Wait()
+	return out, errors.Join(errs...)
 }
 
-// journalPrefixHash hashes journal bytes [from, to) onto an optional saved SHA-256 state.
-func journalPrefixHash(f *os.File, from, to int64, state []byte) (sum [32]byte, saved []byte, crc uint32, err error) {
-	if to < 0 || (to > 0 && to < journalHeaderSize+4) || from < 0 || from > to {
-		return sum, nil, 0, errors.New("checkpoint: invalid journal offset")
+// journalLastCRC is the CRC trailer of the last frame ending at off.
+func journalLastCRC(f *os.File, off int64) (uint32, error) {
+	if off == 0 {
+		return 0, nil
+	}
+	var trailer [4]byte
+	_, err := f.ReadAt(trailer[:], off-4)
+	return binary.BigEndian.Uint32(trailer[:]), err
+}
+
+// journalCheckpointDigest is the legacy V2/V3 binding: one SHA-256 of the prefix.
+func journalCheckpointDigest(f *os.File, end int64) (sum [32]byte, crc uint32, err error) {
+	if end < 0 || (end > 0 && end < journalHeaderSize+4) {
+		return sum, 0, errors.New("checkpoint: invalid journal offset")
+	}
+	if crc, err = journalLastCRC(f, end); err != nil {
+		return sum, 0, err
 	}
 	h := sha256.New()
-	if state != nil {
-		if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(state); err != nil {
-			return sum, nil, 0, err
-		}
-	}
-	if to > 0 {
-		var trailer [4]byte
-		if _, err := f.ReadAt(trailer[:], to-4); err != nil {
-			return sum, nil, 0, err
-		}
-		crc = binary.BigEndian.Uint32(trailer[:])
-	}
-	buf := make([]byte, 1<<20)
-	n, err := io.CopyBuffer(h, io.NewSectionReader(f, from, to-from), buf)
-	if err == nil && n != to-from {
+	n, err := io.CopyBuffer(h, io.NewSectionReader(f, 0, end), make([]byte, 1<<20))
+	if err == nil && n != end {
 		err = io.ErrUnexpectedEOF
 	}
-	if err != nil {
-		return sum, nil, 0, err
-	}
-	saved, err = h.(encoding.BinaryMarshaler).MarshalBinary()
 	h.Sum(sum[:0])
-	return sum, saved, crc, err
-}
-
-func journalCheckpointDigest(f *os.File, end int64) ([32]byte, uint32, error) {
-	sum, _, crc, err := journalPrefixHash(f, 0, end, nil)
 	return sum, crc, err
 }
 
@@ -9213,9 +9340,9 @@ func (s *Store) loadNamespaceGeneration(journal *os.File) (int64, uint64, error)
 	if err != nil {
 		return 0, 0, err
 	}
-	g, err := openNSGen(f, s.ns.cache)
+	g, verify, err := openNSGen(f, s.ns.cache)
 	if err == nil {
-		err = s.nsAdopt(g, journal)
+		err = s.nsAdopt(g, journal, verify)
 	}
 	if err != nil {
 		f.Close()
@@ -9224,20 +9351,23 @@ func (s *Store) loadNamespaceGeneration(journal *os.File) (int64, uint64, error)
 	return g.meta.Offset, g.meta.Sequence, nil
 }
 
-func (s *Store) nsAdopt(g *nsGen, journal *os.File) error {
+func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 	m := &g.meta
 	if !m.Published || m.StoreID != s.format.StoreID || m.Offset < 0 || (m.Sequence == 0) != (m.Offset == 0) {
 		return errors.New("checkpoint: invalid header")
 	}
-	sum, crc, err := journalCheckpointDigest(journal, m.Offset)
-	if err != nil || sum != m.PrefixSHA || crc != m.LastCRC {
-		return errors.New("checkpoint: journal prefix changed")
+	// The file digest and the journal prefix are independent reads: check both at once.
+	var fileErr error
+	var wg sync.WaitGroup
+	wg.Go(func() { fileErr = verify() })
+	blocks, err := journalBlockHashes(journal, m.Offset, nil, 0)
+	crc, crcErr := journalLastCRC(journal, m.Offset)
+	wg.Wait()
+	if fileErr != nil {
+		return fileErr
 	}
-	if len(m.HashState) > 0 {
-		h := sha256.New()
-		if h.(encoding.BinaryUnmarshaler).UnmarshalBinary(m.HashState) != nil || [32]byte(h.Sum(nil)) != m.PrefixSHA {
-			return errors.New("checkpoint: hash state does not match the journal prefix")
-		}
+	if err != nil || crcErr != nil || crc != m.LastCRC || !slices.Equal(blocks, m.Blocks) {
+		return errors.New("checkpoint: journal prefix changed")
 	}
 	rows := 0
 	buckets := make(map[string]*bucketEntry, len(m.Buckets))
@@ -9344,6 +9474,7 @@ func (s *Store) loadNamespaceCheckpointLayout(journal *os.File, compactHistory b
 	}
 	staged := &Store{buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{}, replayIn: s.replayIn}
 	staged.ns.init()
+	staged.ns.startBulk()
 	if err := staged.decodeNamespaceCheckpoint(dec, input, hdr, end, compactHistory); err != nil {
 		return 0, 0, err
 	}
@@ -9811,11 +9942,12 @@ func decodeDeleteV2Fast(b []byte, p *journalDeleteObjectPayloadV2, in *strIntern
 
 // objApply is objSet for replay, which has no earlier lookup to reuse.
 func (s *Store) objApply(bucket, key string, e *objectEntry) error {
-	old, err := s.objFind(bucket, key)
+	ck := nsKey(bucket, key)
+	old, err := s.objFindCK(ck)
 	if err != nil {
 		return err
 	}
-	s.objSet(bucket, key, e, old != nil)
+	s.objSetCK(bucket, ck, e, old != nil)
 	return nil
 }
 
@@ -10097,11 +10229,12 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 	if err != nil {
 		return err
 	}
-	old, err := s.histFind(bucket, key)
+	ck := nsKey(bucket, key)
+	old, err := s.histFindCK(ck)
 	if err != nil {
 		return err
 	}
-	s.histSet(bucket, key, append(old, &historyVersionEntry{
+	s.histSetCK(ck, append(old, &historyVersionEntry{
 		versionID:      p.VersionID,
 		manifestUUID:   p.ManifestUUID,
 		manifestSHA256: sum,
@@ -10117,6 +10250,13 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
+	s.ns.wg.Wait()
+	s.mu.Lock()
+	if g := s.ns.gen; g != nil {
+		s.ns.gen, s.ns.obj, s.ns.hist = nil, nil, nil
+		g.release()
+	}
+	s.mu.Unlock()
 	s.repQueueStop(10 * time.Second)
 	s.dumpReadCacheStats()
 	if s.segs != nil {

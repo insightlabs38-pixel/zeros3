@@ -9,12 +9,20 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func init() {
+	// Lets the scale probe observe replay spills without a rebuild.
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_B3_REPLAY_FLOOR")); err == nil && v > 0 {
+		nsReplayFloor = v
+	}
+}
 
 // ---- overlay and table units ----
 
@@ -413,10 +421,12 @@ func TestNamespaceGenerationHashChain(t *testing.T) {
 		}
 		mustOK(t, s.nsConsolidate(true))
 		m := s.ns.gen.meta
-		sum, crc, err := journalCheckpointDigest(s.journal.f, s.journal.writeOffset)
+		blocks, err := journalBlockHashes(s.journal.f, s.journal.writeOffset, nil, 0)
 		mustOK(t, err)
-		if m.PrefixSHA != sum || m.LastCRC != crc || m.Offset != s.journal.writeOffset || len(m.HashState) == 0 {
-			t.Fatalf("round %d: chained hash disagrees with a full journal hash", round)
+		crc, err := journalLastCRC(s.journal.f, s.journal.writeOffset)
+		mustOK(t, err)
+		if !slices.Equal(m.Blocks, blocks) || m.LastCRC != crc || m.Offset != s.journal.writeOffset || len(m.Blocks) == 0 {
+			t.Fatalf("round %d: reused block hashes disagree with a full journal hash", round)
 		}
 	}
 	mustOK(t, s.Close())
@@ -563,5 +573,77 @@ func TestNamespaceConcurrentConsolidation(t *testing.T) {
 	mustOK(t, s.Close())
 	if got := nsDump(t, b3Store(t, dir, true)); got != live {
 		t.Fatal("reopened namespace differs")
+	}
+}
+
+// A journal larger than one hash block: published blocks are reused, the last
+// partial block is rehashed, and any changed byte anywhere in the prefix is caught.
+func TestNamespaceGenerationBlockHashes(t *testing.T) {
+	old := nsHashBlock
+	nsHashBlock = 4096
+	t.Cleanup(func() { nsHashBlock = old })
+	dir := t.TempDir()
+	s := b3Store(t, dir, true)
+	mustOK(t, s.CreateBucket("b"))
+	for round := range 3 {
+		for i := range 30 {
+			mustPutObject(t, s, "b", fmt.Sprintf("r%d/%02d", round, i), []byte("x"), "text/plain", nil)
+		}
+		mustOK(t, s.nsConsolidate(true))
+		m := s.ns.gen.meta
+		full, err := journalBlockHashes(s.journal.f, m.Offset, nil, 0)
+		mustOK(t, err)
+		if len(full) < round+3 || !slices.Equal(full, m.Blocks) {
+			t.Fatalf("round %d: %d blocks, reuse differs from a full hash", round, len(full))
+		}
+	}
+	want := nsDump(t, s)
+	mustOK(t, s.Close())
+	if got := nsDump(t, b3Store(t, dir, true)); got != want {
+		t.Fatal("reopen differs")
+	}
+	// Flip one journal byte in the middle block; the frame CRC check of a full
+	// replay catches it, and the checkpoint must not mask it.
+	path := filepath.Join(dir, "journal", "visibility.log")
+	data, err := os.ReadFile(path)
+	mustOK(t, err)
+	data[len(data)/2] ^= 0x40
+	mustOK(t, os.WriteFile(path, data, 0o600))
+	if s, err := openStore(dir, true, true); err == nil {
+		s.Close()
+		t.Fatal("checkpoint masked journal damage")
+	}
+}
+
+// Replaying more rows than the overlay bound spills private generations and
+// yields the same namespace as an unbounded replay.
+func TestNamespaceReplaySpills(t *testing.T) {
+	dir := t.TempDir()
+	s := b3Store(t, dir, false)
+	mustOK(t, s.CreateBucket("b"))
+	for i := range 160 {
+		mustPutObject(t, s, "b", fmt.Sprintf("k%03d", i%100), []byte(fmt.Sprint(i)), "text/plain", nil)
+	}
+	for i := range 40 {
+		mustOK(t, s.DeleteObject("b", fmt.Sprintf("k%03d", i*2)))
+	}
+	mustOK(t, s.Close())
+	full := nsDump(t, b3Store(t, dir, false))
+
+	old := nsReplayFloor
+	nsReplayFloor = 25
+	t.Cleanup(func() { nsReplayFloor = old })
+	spilled := b3Store(t, dir, false)
+	if spilled.ns.gen == nil || !spilled.ns.gen.private {
+		t.Fatal("replay did not spill")
+	}
+	if got := nsDump(t, spilled); got != full {
+		t.Fatal("spilled replay differs from the unbounded replay")
+	}
+	tmp, _ := os.ReadDir(filepath.Join(dir, "tmp"))
+	for _, e := range tmp {
+		if strings.HasPrefix(e.Name(), "namespace-") {
+			t.Fatalf("spill left %s behind", e.Name())
+		}
 	}
 }
