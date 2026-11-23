@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"io/fs"
 	"math/bits"
 	"math/rand/v2"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -274,3 +277,146 @@ func TestB7DiscoveryDeterministic(t *testing.T) {
 	}
 	_ = context.Background
 }
+
+// b7Files counts the regular files under dir (staged components are files or pack records in files).
+func b7Files(dir string) (n int, size int64) {
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			if fi, err := d.Info(); err == nil {
+				n++
+				size += fi.Size()
+			}
+		}
+		return nil
+	})
+	return
+}
+
+// TestB7LazyRepCandidates: representation candidates are priced without staging anything, at the
+// prices the staged build gives, and a selected lazy candidate is constructed and proven at apply.
+func TestB7LazyRepCandidates(t *testing.T) {
+	l := newAuthLab(t)
+	for _, f := range repFixtures(t) {
+		l.put(f.name, f.data)
+	}
+	l.reclaim()
+	price := func(stage bool) (map[[32]byte]int64, *rgGraph) {
+		g := b6Graph(t, l, OptimizePolicy{Profile: "archive", AuthPolicy: AuthPolicy{Order: "oldest", AllowRep: true}, StageReps: stage})
+		out := map[[32]byte]int64{}
+		for _, nd := range g.nodes {
+			for _, o := range nd.opts {
+				if o.kind == rgRep {
+					var c int64
+					for _, id := range o.comps {
+						c += g.cphys[id]
+					}
+					out[nd.sha] = c + o.meta
+				}
+			}
+		}
+		return out, g
+	}
+	n0, s0 := b7Files(l.dir)
+	lazy, g := price(false)
+	if n1, s1 := b7Files(l.dir); n1 != n0 || s1 != s0 {
+		t.Fatalf("lazy planning wrote: %d files / %d bytes -> %d / %d", n0, s0, n1, s1)
+	}
+	if len(lazy) < 3 {
+		t.Fatalf("%d representation candidates", len(lazy))
+	}
+	staged, _ := price(true)
+	for sha, c := range lazy {
+		if staged[sha] != c {
+			t.Fatalf("%x: lazy price %d, staged %d", sha[:6], c, staged[sha])
+		}
+	}
+	// force every lazy representation into the plan and apply it
+	e := newRGEval(g, g.currentSel())
+	forced := 0
+	for v, nd := range g.nodes {
+		for o, opt := range nd.opts {
+			if opt.kind == rgRep && opt.rep.lazy {
+				e.set(int32(v), int32(o))
+				forced++
+			}
+		}
+	}
+	var rep OptimizeReport
+	if err := g.apply(context.Background(), e, &rep); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("forced %d lazy representations, %d candidates", forced, len(lazy))
+	if rep.Applied != forced || rep.Failed != 0 {
+		t.Fatalf("applied %d of %d lazy representations (failed %d)", rep.Applied, forced, rep.Failed)
+	}
+	st, _ := l.s.AuthorityStatus()
+	if st.ByForm["rep"] != forced {
+		t.Fatalf("rep records %v, want %d", st.ByForm, forced)
+	}
+	l.exact("lazy reps")
+	l.reclaim()
+	l.exact("lazy reps reclaimed")
+	l.verifyOK("lazy reps")
+}
+
+// TestB7UnionProgramsExact: programs matched over the union of 2-4 bases (shifted, reordered and
+// repeated regions, each locality) reconstruct the target exactly from the bases the envelope names.
+func TestB7UnionProgramsExact(t *testing.T) {
+	r := rand.New(rand.NewPCG(4, 4))
+	for trial := range 24 {
+		nb := 2 + trial%3
+		var bases [][]byte
+		var srcs []xdSrc
+		for k := range nb {
+			b := b5Text(uint64(trial*10+k), 20<<10+r.IntN(60<<10))
+			bases = append(bases, b)
+			srcs = append(srcs, xdSrc{sha256Of(b), b})
+		}
+		var tgt []byte
+		for range 6 + r.IntN(10) {
+			b := bases[r.IntN(nb)]
+			off := r.IntN(len(b) - 4096)
+			tgt = append(tgt, b[off:off+512+r.IntN(3500)]...)
+			if r.IntN(3) == 0 {
+				tgt = append(tgt, b7Rand(uint64(trial), 1+r.IntN(300))...)
+			}
+		}
+		x, err := dwDcoreBuildIndex(bases, dwDcoreDefaultParams())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, loc := range []int{0, 32, 256} {
+			blob, refs, err := xdEncodeOpsSum(srcs, xdFromDw(x.MatchLocal(tgt, loc)), tgt, sha256Of(tgt), 128<<10)
+			if err != nil || len(refs) < 2 {
+				t.Fatalf("trial %d loc %d: %d refs, %v", trial, loc, len(refs), err)
+			}
+			h, more, err := xdParseHeader(blob)
+			if err != nil || more {
+				t.Fatal(err)
+			}
+			by := map[[32]byte][]byte{}
+			for _, s := range srcs {
+				by[s.sha] = s.data
+			}
+			out := make([]byte, h.size)
+			for i, f := range h.frames {
+				ops, err := xdDecodeFrame(&h, i, blob[f.poff:f.poff+f.plen])
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, o := range ops {
+					if o.base < 0 {
+						copy(out[o.tpos:], o.lit)
+					} else {
+						copy(out[o.tpos:o.tpos+o.n], by[h.bases[o.base].SHA][o.off:o.off+o.n])
+					}
+				}
+			}
+			if !bytes.Equal(out, tgt) {
+				t.Fatalf("trial %d loc %d: reconstruction differs", trial, loc)
+			}
+		}
+	}
+}
+
+func sha256Of(b []byte) [32]byte { return sha256.Sum256(b) }

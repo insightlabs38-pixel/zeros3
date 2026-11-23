@@ -441,6 +441,17 @@ Profiles: `archive` (bytes only), `mixed` (sparse and whole reads priced),
 `-read-budget` and `-locality` override them; the newest version of each
 multi-version key stays CDC unless `-order oldest` or `-archive`.
 
+Candidate discovery (B7) defaults to `-discovery region`: sampled positional
+fingerprints rank bases by the target bytes they hold outside chunks other
+contents already share, complementary 2-4 base sets are offered when their
+program pays for each extra base, large bases (over 32 MiB) are indexed with
+one COPY anchor per `-anchor-bytes` (8; at most 8 Mi anchors, a 128 MiB
+table), and representation candidates are built in memory and constructed
+for real only when selected. `-discovery sketch -anchor-bytes -1` is the B6
+behaviour. Fingerprints are derived per run, never persisted, and never
+decide bytes: every selected record is re-encoded and proven at apply.
+Results: `testing-harnesses/next/b7/README.md`.
+
 ### Restartable records and reconstruction layout (research, B5)
 
 Both are opt-in and change only physical placement; reads stay byte-exact and

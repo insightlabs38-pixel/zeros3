@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -422,7 +423,7 @@ func TestB7Oracle(t *testing.T) {
 			name string
 			p    func(*OptimizePolicy)
 		}{
-			{"b6", func(p *OptimizePolicy) { p.Discovery = "sketch"; p.noRestrictedStart = true }},
+			{"b6", func(p *OptimizePolicy) { b7AsB6(p) }},
 			{"b6-search", func(p *OptimizePolicy) { p.Discovery = "sketch" }},
 			{"b7-single", func(p *OptimizePolicy) { p.Discovery = "region"; p.Region.Multi = false }},
 			{"b7", func(p *OptimizePolicy) { p.Discovery = "region" }},
@@ -489,7 +490,15 @@ func TestB7Density(t *testing.T) {
 			base, _ := os.ReadFile(f.puts[i-1].file)
 			tgt, _ := os.ReadFile(f.puts[i].file)
 			bsha, tsha := sha256.Sum256(base), sha256.Sum256(tgt)
-			for _, anchors := range []int{0, 1 << 20, 1 << 22, 1 << 24, 1 << 26} {
+			list := []int{0, 1 << 20, 1 << 22, 1 << 24, 1 << 26}
+			if v := os.Getenv("ZEROS3_B7_ANCHORS"); v != "" {
+				list = nil
+				for _, f := range strings.Split(v, ",") {
+					n, _ := strconv.Atoi(f)
+					list = append(list, n)
+				}
+			}
+			for _, anchors := range list {
 				row := map[string]any{"kind": "density", "family": f.name, "pair": i, "base_bytes": len(base), "target_bytes": len(tgt)}
 				runtime.GC()
 				if int64(len(base)) <= authWindowMin {
@@ -714,18 +723,22 @@ func TestB7Graph(t *testing.T) {
 			p := OptimizePolicy{AuthPolicy: AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, AllowDelta: true}, Profile: cmp.Or(os.Getenv("ZEROS3_B7_PROFILE"), "archive"),
 				Locality: []int{0}, Algorithm: cmp.Or(os.Getenv("ZEROS3_B7_ALG"), "global"), Oracle: os.Getenv("ZEROS3_B7_ORACLE") == "1"}
 			p.Discovery = "sketch"
-			p.noRestrictedStart = cfg == "b6"
+			if cfg == "b6" {
+				b7AsB6(&p)
+			}
 			if cfg != "b6" && cfg != "b6-search" {
 				p.Discovery = "region"
 				p.Region = rsDefaultParams()
 				p.Region.Multi = cfg != "b7-single" && cfg != "union-single"
 				p.Region.Union = strings.HasPrefix(cfg, "union")
 			}
+			cpu0 := procCPUSeconds()
 			rep, err := s.AuthorityOptimize(context.Background(), p)
 			if err != nil {
 				t.Fatal(err)
 			}
-			row := map[string]any{"kind": "graph-alg", "family": f.name, "config": cfg, "algorithm": p.Algorithm, "planned": rep.Planned, "oracle": rep.Oracle, "oracle_parts": rep.OracleParts, "local": rep.Local, "changes": rep.Changes, "options": rep.Options}
+			t.Logf("%s %s: cpu %.1fs candidates %.1fs discovery %+v", f.name, cfg, procCPUSeconds()-cpu0, rep.CandidateSeconds, rep.Discovery)
+			row := map[string]any{"kind": "graph-alg", "cpu_s": procCPUSeconds() - cpu0, "candidate_s": rep.CandidateSeconds, "discovery": rep.Discovery, "encodes": rep.Encodes, "family": f.name, "config": cfg, "algorithm": p.Algorithm, "planned": rep.Planned, "oracle": rep.Oracle, "oracle_parts": rep.OracleParts, "local": rep.Local, "changes": rep.Changes, "options": rep.Options}
 			b6Emit(row)
 			o := int64(-1)
 			if rep.Oracle != nil {
@@ -737,5 +750,122 @@ func TestB7Graph(t *testing.T) {
 			}
 		}
 		done()
+	}
+}
+
+// b7AsB6 configures the optimizer exactly as committed at B6.
+func b7AsB6(p *OptimizePolicy) {
+	p.Discovery, p.noRestrictedStart, p.AnchorBytes, p.StageReps = "sketch", true, -1, true
+}
+
+// b7Lanes are the materialized B7 configurations: the B6 optimizer exactly as committed and B7, under
+// the archive and mixed profiles (production order for mixed, archive order for archive).
+func b7Lanes() []b6Lane {
+	np := AuthPolicy{Order: "newest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10}
+	op := AuthPolicy{Order: "oldest", MaxDepth: 2, MaxBases: 2, MinSaving: 0.10}
+	run := func(p OptimizePolicy, b6 bool) func(context.Context, *Store) (any, error) {
+		return func(ctx context.Context, s *Store) (any, error) {
+			p.Apply, p.AllowDelta, p.AllowRep = true, true, true
+			if b6 {
+				b7AsB6(&p)
+			}
+			return s.AuthorityOptimize(ctx, p)
+		}
+	}
+	return []b6Lane{
+		{"cdc", nil, ""},
+		{"b6-archive", run(OptimizePolicy{AuthPolicy: op, Profile: "archive"}, true), ""},
+		{"b7-archive", run(OptimizePolicy{AuthPolicy: op, Profile: "archive"}, false), ""},
+		{"b6-mixed", run(OptimizePolicy{AuthPolicy: np, Profile: "mixed"}, true), ""},
+		{"b7-mixed", run(OptimizePolicy{AuthPolicy: np, Profile: "mixed"}, false), ""},
+	}
+}
+
+func b7Campaign(t *testing.T, test func(*testing.T)) {
+	b6FamilySet, b6LaneSet = b7Families, b7Lanes
+	defer func() { b6FamilySet, b6LaneSet = b6Families, b6Lanes }()
+	test(t)
+}
+
+// TestB7Lanes, TestB7Reads and TestB7Concurrent run the B6 campaign over the B7 families and lanes.
+func TestB7Lanes(t *testing.T)      { b7Campaign(t, TestB6Lanes) }
+func TestB7Reads(t *testing.T)      { b7Campaign(t, TestB6Reads) }
+func TestB7Concurrent(t *testing.T) { b7Campaign(t, TestB6Concurrent) }
+
+// TestB7Scale times retrieval alone on synthetic histories of N small files that share a boilerplate
+// header (30% of each file) and have three versions each: B6 sketch scoring vs B7 region ranking, with
+// the recall of each file's previous version in the top 4. No store: the graph holds only what ranking reads.
+func TestB7Scale(t *testing.T) {
+	if os.Getenv("ZEROS3_B7_SCALE") == "" {
+		t.Skip("set ZEROS3_B7_SCALE=1000,4000,16000")
+	}
+	hdr := b5Text(9, 6<<10)
+	for _, f := range strings.Split(os.Getenv("ZEROS3_B7_SCALE"), ",") {
+		n, _ := strconv.Atoi(f)
+		g := &rgGraph{pol: OptimizePolicy{AuthPolicy: AuthPolicy{Candidates: 4}}.norm()}
+		var data [][]byte
+		for i := range n / 3 {
+			v := slices.Concat(hdr, b5Text(uint64(1000+i), 8<<10+i%7*2<<10))
+			for k := range 3 {
+				g.nodes = append(g.nodes, &rgNode{live: true, size: int64(len(v)), sha: sha256.Sum256(v), obj: &authObj{bucket: "b", key: fmt.Sprintf("f%d/v%d", i, k)}})
+				data = append(data, v)
+				v = b5Mutate(v, uint64(i*3+k), 4)
+			}
+		}
+		runtime.GC()
+		var m0 runtime.MemStats
+		runtime.ReadMemStats(&m0)
+		row := map[string]any{"kind": "scale", "contents": len(g.nodes)}
+		// B6: bottom-16 sketches, inverted lists, shared-feature scoring
+		t0 := time.Now()
+		inv := map[uint64][]int32{}
+		for v, b := range data {
+			g.nodes[v].sk = authFeatures(b, 16)
+			for _, x := range g.nodes[v].sk {
+				inv[x] = append(inv[x], int32(v))
+			}
+		}
+		build6 := time.Since(t0).Seconds()
+		t0 = time.Now()
+		hit6 := 0
+		for v := range g.nodes {
+			if v%3 == 0 {
+				continue
+			}
+			if slices.Contains(g.rgCandidates(int32(v), inv, nil), int32(v-1)) {
+				hit6++
+			}
+		}
+		row["sketch"] = map[string]any{"build_s": build6, "rank_s": time.Since(t0).Seconds(), "recall_prev@4": float64(hit6) / float64(len(g.nodes)*2/3)}
+		// B7: fingerprints, posting index, rank (coverage only: no matcher verification here)
+		t0 = time.Now()
+		p := rsDefaultParams()
+		feats, lvls := make([][]rsFeat, len(data)), make([]uint8, len(data))
+		for v, b := range data {
+			feats[v], lvls[v] = p.features(b)
+		}
+		g.rs = newRSIndex(p, feats, lvls)
+		build7 := time.Since(t0).Seconds()
+		t0 = time.Now()
+		hit7 := 0
+		ok := func(int32) bool { return true }
+		for v := range g.nodes {
+			if v%3 == 0 {
+				continue
+			}
+			cs := g.rs.rank(int32(v), g.nodes[v].size, ok, nil, nil)
+			for k := range cs[:min(4, len(cs))] {
+				if cs[k].u == int32(v-1) {
+					hit7++
+				}
+			}
+		}
+		var m1 runtime.MemStats
+		runtime.ReadMemStats(&m1)
+		row["region"] = map[string]any{"build_s": build7, "rank_s": time.Since(t0).Seconds(), "recall_prev@4": float64(hit7) / float64(len(g.nodes)*2/3), "index_bytes": g.rs.Bytes()}
+		row["heap_mib"] = (m1.HeapAlloc - m0.HeapAlloc) >> 20
+		b6Emit(row)
+		b, _ := json.Marshal(row)
+		t.Logf("%s", b)
 	}
 }

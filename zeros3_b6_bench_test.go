@@ -73,6 +73,9 @@ func b6Families(c string) []b6Family {
 	return fams
 }
 
+// b6FamilySet and b6LaneSet are what the lane, read and concurrency campaigns iterate (B7 reuses them).
+var b6FamilySet, b6LaneSet = b6Families, b6Lanes
+
 func b6Want(env, name string) bool {
 	v := os.Getenv(env)
 	return v == "" || slices.Contains(strings.Split(v, ","), name)
@@ -113,7 +116,7 @@ func TestB6Build(t *testing.T) {
 		t.Skip("set ZEROS3_B6_FX and ZEROS3_B6_CORPUS")
 	}
 	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
-	for _, f := range b6Families(c) {
+	for _, f := range b6FamilySet(c) {
 		if !b6Want("ZEROS3_B6_FAMILIES", f.name) {
 			continue
 		}
@@ -211,12 +214,12 @@ func TestB6Lanes(t *testing.T) {
 		t.Skip("set ZEROS3_B6_FX and ZEROS3_B6_CORPUS")
 	}
 	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "0")
-	for _, f := range b6Families(c) {
+	for _, f := range b6FamilySet(c) {
 		if !b6Want("ZEROS3_B6_FAMILIES", f.name) {
 			continue
 		}
 		base := filepath.Join(fx, f.name, "cdc")
-		for _, ln := range b6Lanes() {
+		for _, ln := range b6LaneSet() {
 			if !b6Want("ZEROS3_B6_LANES", ln.name) {
 				continue
 			}
@@ -356,12 +359,12 @@ func TestB6Reads(t *testing.T) {
 	if v, err := strconv.Atoi(os.Getenv("ZEROS3_B6_N")); err == nil && v > 0 {
 		n4 = v
 	}
-	for _, f := range b6Families(c) {
+	for _, f := range b6FamilySet(c) {
 		if !b6Want("ZEROS3_B6_FAMILIES", f.name) {
 			continue
 		}
 		var cfgs []*b6Cfg
-		for _, ln := range b6Lanes() {
+		for _, ln := range b6LaneSet() {
 			dir := filepath.Join(fx, f.name, ln.name)
 			if ln.run == nil {
 				dir = filepath.Join(fx, f.name, "cdc")
@@ -462,12 +465,12 @@ func TestB6Concurrent(t *testing.T) {
 	if v, err := strconv.Atoi(os.Getenv("ZEROS3_B6_SECONDS")); err == nil && v > 0 {
 		secs = v
 	}
-	for _, f := range b6Families(c) {
+	for _, f := range b6FamilySet(c) {
 		if !b6Want("ZEROS3_B6_FAMILIES", f.name) {
 			continue
 		}
 		var lanes []string
-		for _, ln := range b6Lanes() {
+		for _, ln := range b6LaneSet() {
 			if b6Want("ZEROS3_B6_LANES", ln.name) {
 				lanes = append(lanes, ln.name)
 			}
@@ -600,7 +603,7 @@ func TestB6LocalitySweep(t *testing.T) {
 	}
 	t.Setenv("ZEROS3_CHUNK_CACHE_MIB", "64")
 	slacks := []int{0, 32, 256, 1024, 4096}
-	for _, f := range b6Families(c) {
+	for _, f := range b6FamilySet(c) {
 		if !b6Want("ZEROS3_B6_FAMILIES", f.name) || f.name == "cu-files" {
 			continue
 		}

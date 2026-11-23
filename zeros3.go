@@ -86,49 +86,50 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      543    Content-defined chunking (CDC)
-//      730    Content-addressed chunk storage (CAS)
-//     2525    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5313    Small-object segments (inline manifests, store level 11)
-//     6563    Manifests (immutable, JSON)
-//     7361    Visibility journal (append-only, checksummed)
-//     7883    Store: format, namespace, and object CRUD
-//     8395    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12047    Version history/restore, history pruning, ListObjectsV2
-//    12653    SigV4 authentication (header and presigned-URL)
-//    13630    Request payload checksums and S3-shaped XML error/response types
-//    13847    HTTP routing and S3 operation handlers
-//    14279    Conditional operations (PUT/GET/HEAD preconditions)
-//    14974    CopyObject
-//    15279    Multipart upload
-//    16223    Stats and reachability scanning
-//    17811    Verify
-//    18026    Store locking and safe offline GC
-//    18329    Offline compaction (`zeros3 compact`)
-//    19512    Pack reclamation and repacking (`zeros3 repack`)
-//    20100    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20560    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21864    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22377    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23442    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24293    Delta sync client, credentials, and parallel transfer
-//    26598    Bulk logical-chunk transport (v2)
-//    27509    Recursive directory sync
-//    27814    Remote replication (`zeros3 replicate`)
-//    28727    Peer-assisted corruption repair (`zeros3 repair`)
-//    29299    Namespace (prefix/bucket) replication
-//    29615    Copy-on-write namespace fork (`zeros3 fork`)
-//    29823    Snapshots and restore
-//    30985    Structural diff and inspect (introspection)
-//    32397    Portable snapshot bundles (`zeros3 bundle`)
-//    33594    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34229    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52617    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60501    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    63398    Windowed and estimated similarity deltas (extracted dcore)
-//    65235    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    73088    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    79360    CLI dispatch, HTTP server/startup, and main
+//      544    Content-defined chunking (CDC)
+//      731    Content-addressed chunk storage (CAS)
+//     2526    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5314    Small-object segments (inline manifests, store level 11)
+//     6564    Manifests (immutable, JSON)
+//     7362    Visibility journal (append-only, checksummed)
+//     7884    Store: format, namespace, and object CRUD
+//     8396    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12048    Version history/restore, history pruning, ListObjectsV2
+//    12654    SigV4 authentication (header and presigned-URL)
+//    13631    Request payload checksums and S3-shaped XML error/response types
+//    13848    HTTP routing and S3 operation handlers
+//    14280    Conditional operations (PUT/GET/HEAD preconditions)
+//    14975    CopyObject
+//    15280    Multipart upload
+//    16224    Stats and reachability scanning
+//    17812    Verify
+//    18027    Store locking and safe offline GC
+//    18330    Offline compaction (`zeros3 compact`)
+//    19513    Pack reclamation and repacking (`zeros3 repack`)
+//    20101    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20561    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21865    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22378    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23443    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24294    Delta sync client, credentials, and parallel transfer
+//    26599    Bulk logical-chunk transport (v2)
+//    27510    Recursive directory sync
+//    27815    Remote replication (`zeros3 replicate`)
+//    28728    Peer-assisted corruption repair (`zeros3 repair`)
+//    29300    Namespace (prefix/bucket) replication
+//    29616    Copy-on-write namespace fork (`zeros3 fork`)
+//    29824    Snapshots and restore
+//    30986    Structural diff and inspect (introspection)
+//    32398    Portable snapshot bundles (`zeros3 bundle`)
+//    33595    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34230    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52660    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    60560    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    63642    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    64185    Windowed and estimated similarity deltas (extracted dcore)
+//    66022    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    73875    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    80147    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -36393,6 +36394,7 @@ type storeRepSource struct {
 	s     *Store
 	local map[[32]byte]*repDesc
 	base  func([32]byte) *repDesc
+	mem   map[[32]byte][]byte // components a planning (dry) build holds in memory instead of staging
 
 	mu    sync.Mutex
 	st    *packState // one locator snapshot for the whole request
@@ -36501,6 +36503,10 @@ func (src *storeRepSource) Size(id [32]byte) (int64, error) {
 		src.mu.Unlock()
 		return n, nil
 	}
+	if d, ok := src.mem[id]; ok {
+		src.mu.Unlock()
+		return int64(len(d)), nil
+	}
 	src.mu.Unlock()
 	n, err := src.s.casStat(id)
 	if err != nil {
@@ -36576,6 +36582,12 @@ func (src *storeRepSource) readerFor(pack int32) *packRunReader {
 func (src *storeRepSource) chunk(sum [32]byte, length int64) ([]byte, error) {
 	if src.lastD != nil && src.last == sum {
 		return src.lastD, nil
+	}
+	if d, ok := src.mem[sum]; ok {
+		if length >= 0 && int64(len(d)) != length {
+			return nil, fmt.Errorf("%w: chunk %x is %d bytes, expected %d", errRepMismatch, sum[:6], len(d), length)
+		}
+		return d, nil
 	}
 	if d, ok := src.pre[sum]; ok {
 		return d, nil
@@ -39051,6 +39063,8 @@ func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *rep
 // ones, loose CAS files otherwise.
 func (b *repBuilder) newSink() chunkSink {
 	switch {
+	case b.src != nil && b.src.mem != nil:
+		return repMemSink(b.src.mem)
 	case b.big:
 		return b.s.newPackSink(b.size)
 	case b.s.segFor(ingestOptions{size: b.size}):
@@ -39062,6 +39076,19 @@ func (b *repBuilder) newSink() chunkSink {
 	}
 	return looseSink{b.s.newCASBatch()}
 }
+
+// repMemSink holds a planning build's components in memory: nothing is staged, the proof reads them
+// through the source overlay, and a selected candidate is constructed again for real.
+type repMemSink map[[32]byte][]byte
+
+func (m repMemSink) Put(sum [32]byte, chunk []byte) error {
+	if _, ok := m[sum]; !ok {
+		m[sum] = bytes.Clone(chunk)
+	}
+	return nil
+}
+func (m repMemSink) Flush() error { return nil }
+func (m repMemSink) Abort()       {}
 
 func (b *repBuilder) close() {
 	b.sink.Abort()
@@ -40365,6 +40392,12 @@ func (s *Store) repConstructFor(man manifestV1, live func() bool) (*repRoot, int
 // (nil: read them through the manifest). The caller must have read src from this manifest's verified chunks.
 // seek records the seek index of a top-level codec container (authority representations).
 func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64, seek bool) (*repRoot, int, error) {
+	return s.repConstructMem(man, src, live, reserve, seek, nil)
+}
+
+// repConstructMem is repConstructAt; with mem non-nil, components the store lacks are kept in mem (a
+// planning build: proven over the overlay, nothing written).
+func (s *Store) repConstructMem(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64, seek bool, mem map[[32]byte][]byte) (*repRoot, int, error) {
 	if man.TotalLength < 1 {
 		return nil, 0, errRepUnsupported
 	}
@@ -40390,6 +40423,11 @@ func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool
 	t0 := time.Now()
 	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
 	b.reserve, b.seek = reserve, seek
+	if mem != nil {
+		b.sink.Abort()
+		b.src.mem = mem
+		b.sink = b.newSink()
+	}
 	defer b.close()
 	var rep *repObject
 	if err := func() (err error) {
@@ -40983,7 +41021,12 @@ func (rc *repReachCtx) closureOf(uuid string, man manifestV1) *repClosure {
 }
 
 func (s *Store) repClosureOf(root *repRoot) (*repClosure, error) {
+	return s.repClosureMem(root, nil)
+}
+
+func (s *Store) repClosureMem(root *repRoot, mem map[[32]byte][]byte) (*repClosure, error) {
 	src := s.newRepSource(root.Descs, nil)
+	src.mem = mem
 	defer src.close()
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	reach, err := env.reachable(root.Rep)
@@ -55947,6 +55990,7 @@ type authMigrator struct {
 	wc           *authWinCache        // decoded sources and windows shared by this pass's planning readers
 	idx          *authIdxCache        // anchor indexes of bases, built once however many targets use them
 	rep          AuthReport
+	dryRep       bool // planning: representation candidates are built in memory, not staged (B7)
 }
 
 // authIdxCache keeps the single-base anchor indexes of the most recently used bases within a byte budget: a base
@@ -56223,6 +56267,7 @@ type authRepCand struct {
 	chunks   []chunkRef
 	marginal int64
 	accepted bool
+	lazy     bool // built in memory for planning: construct (stage and prove) again before publishing
 }
 
 func repKindName(k repKind) string {
@@ -56414,7 +56459,11 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 						src = bytes.NewReader(b)
 					}
 				}
-				root, _, err := m.s.repConstructAt(m.order[i].man, src, func() bool { return m.ctx.Err() == nil }, m.pol.ReserveFreeBytes, true)
+				var mem map[[32]byte][]byte
+				if m.dryRep {
+					mem = map[[32]byte][]byte{}
+				}
+				root, _, err := m.s.repConstructMem(m.order[i].man, src, func() bool { return m.ctx.Err() == nil }, m.pol.ReserveFreeBytes, true, mem)
 				if errors.Is(err, syscall.ENOSPC) {
 					return err
 				}
@@ -56424,11 +56473,19 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 				if err != nil {
 					continue
 				}
-				cl, err := m.s.repClosureOf(root)
+				cl, err := m.s.repClosureMem(root, mem)
 				if err != nil {
 					continue
 				}
-				rc = &authRepCand{kind: kind, root: root, chunks: cl.chunks}
+				// a planning build prices the components it did not stage exactly as the pack writer would
+				for sum, d := range mem {
+					if _, ok := m.phys[sum]; !ok {
+						if _, err := m.s.casStat(sum); err != nil {
+							m.phys[sum] = packPriceLen(d) + packRecordBytes
+						}
+					}
+				}
+				rc = &authRepCand{kind: kind, root: root, chunks: cl.chunks, lazy: mem != nil}
 				rc2 := *rc
 				if cache != nil {
 					cache.repC[m.order[i].sha] = &rc2
@@ -60257,7 +60314,8 @@ func runAuthority(args []string) {
 	algorithm := fs.String("algorithm", "global", "optimize: global, local (the sequential rule on the same candidates), oracle or current")
 	pareto := fs.String("pareto", "", "optimize: comma-separated read weights of a frontier reported beside the plan")
 	cands := fs.Int("candidates", 4, "migrate/optimize: trial bases per target (max 8)")
-	discovery := fs.String("discovery", "", "optimize: candidate discovery, region (B7 positional fingerprints, complementary bases) or sketch (B6)")
+	discovery := fs.String("discovery", "region", "optimize: candidate discovery, region (B7 positional fingerprints, complementary bases) or sketch (B6)")
+	anchorBytes := fs.Int("anchor-bytes", 8, "optimize: windowed bases (over 32 MiB) index one COPY anchor per this many bytes, at most 8 Mi (-1: the migration rule)")
 	fs.Parse(args[1:])
 	if sub == "recover" {
 		applyCredentialEnvFallback(fs, accessKey, secretKey, region)
@@ -60420,7 +60478,7 @@ func runAuthority(args []string) {
 		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
-			Discovery: *discovery}
+			Discovery: *discovery, AnchorBytes: *anchorBytes}
 		pol.Locality = []int{}
 		for _, f := range strings.Split(*locality, ",") {
 			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
@@ -60535,10 +60593,12 @@ type OptimizePolicy struct {
 	Blocked           *bool                               `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
 	Oracle            bool                                `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
 	Discovery         string                              `json:"discovery"`         // candidate discovery: region (B7) | sketch (B6)
+	AnchorBytes       int                                 `json:"anchor_bytes"`      // windowed bases: bytes per COPY anchor (B7 default 8; 1024 = B6)
 	Region            rsParams                            `json:"-"`
 	discover          func(g *rgGraph, v int32) rgCandSet // research hook: replaces discovery (oracles)
 	recordBlock       int64                               // research: price record files in this allocation unit
 	noRestrictedStart bool                                // ablation: the B6 search without the single-base start
+	StageReps         bool                                `json:"stage_reps,omitempty"` // B6 behaviour: stage every representation candidate while planning
 }
 
 // rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
@@ -60592,7 +60652,10 @@ func (p OptimizePolicy) norm() OptimizePolicy {
 		p.MaxEvals = 400000
 	}
 	if p.Discovery == "" {
-		p.Discovery = "sketch"
+		p.Discovery = "region"
+	}
+	if p.AnchorBytes == 0 {
+		p.AnchorBytes = 8
 	}
 	if p.Region.MinLevel == 0 {
 		p.Region = rsDefaultParams()
@@ -62077,6 +62140,22 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cs rgCa
 	return nil
 }
 
+// wparams are the windowed encoder's parameters for a base. The optimizer indexes large bases densely
+// (B7: one anchor per AnchorBytes, at most 8 Mi anchors, a 128 MiB table): matching between sparse
+// anchors misses short and shifted matches that the continuation probes cannot reach.
+func (g *rgGraph) wparams(baseSize int64) dwDcoreWParams {
+	wp := authWParams(g.pol.workers(), baseSize)
+	if g.pol.AnchorBytes > 0 {
+		wp.Anchor.MaxAnchors = int(min(max(baseSize/int64(g.pol.AnchorBytes), 256<<10), rgMaxAnchors))
+	}
+	if g.pol.SegmentKiB > 0 {
+		wp.Segment = g.pol.SegmentKiB << 10
+	}
+	return wp
+}
+
+const rgMaxAnchors = 8 << 20
+
 // rgMemSource is the largest content a windowed encoder reads from one sequential decode held in memory;
 // a scattered base read through CDC re-inflates whole chunks per page.
 const rgMemSource = 128 << 20
@@ -62112,7 +62191,7 @@ func (g *rgGraph) windowedOpts(ctx context.Context, m *authMigrator, v int32, ca
 		if err != nil {
 			continue
 		}
-		wp := authWParams(g.pol.workers(), un.size)
+		wp := g.wparams(un.size)
 		if g.pol.SegmentKiB > 0 {
 			wp.Segment = g.pol.SegmentKiB << 10
 		}
@@ -62150,6 +62229,7 @@ func (g *rgGraph) windowedOpts(ctx context.Context, m *authMigrator, v int32, ca
 // offers each as an option; their shared components are what the closure accounting amortizes.
 func (g *rgGraph) repOpts(ctx context.Context, m *authMigrator, eligible []int32) error {
 	m.pol.MinSaving = -1e9 // build every candidate: the graph, not the group rule, prices them
+	m.dryRep = !g.pol.StageReps
 	for _, v := range eligible {
 		nd := g.nodes[v]
 		if nd.cur == nil {
@@ -62174,19 +62254,22 @@ func (g *rgGraph) repOpts(ctx context.Context, m *authMigrator, eligible []int32
 			o.meta = g.roundMeta(int64(len(b)))
 		}
 		seen := map[int32]bool{}
+		o.write = o.meta
 		for _, c := range rc.chunks {
 			sum, _ := decodeHexSHA256(c.SHA256)
 			id, ok := g.cid[sum]
 			if !ok {
-				id = g.comp(sum, c.Length, g.s.physChunk(sum, c.Length, map[[32]byte]int64{}, g.pol.PriceCurrentStorage))
+				id = g.comp(sum, c.Length, g.s.physChunk(sum, c.Length, m.phys, g.pol.PriceCurrentStorage))
 			}
 			o.pieces = append(o.pieces, id)
 			if !seen[id] {
 				seen[id] = true
 				o.comps = append(o.comps, id)
+				if n, err := g.s.casStat(sum); err != nil || n != c.Length {
+					o.write += g.cphys[id] // B7: components a transition must still write (staged ones were free)
+				}
 			}
 		}
-		o.write = o.meta
 		g.layoutLinear(o, nd.size)
 		nd.opts = append(nd.opts, o)
 	}
@@ -63316,7 +63399,21 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 				rep.Written += p.Len
 			}
 		case rgRep:
-			rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormRep, Sketch: nd.sk, Root: o.rep.root}
+			root := o.rep.root
+			if o.rep.lazy {
+				r2, _, err := s.repConstructAt(nd.obj.man, nil, func() bool { return ctx.Err() == nil }, g.pol.ReserveFreeBytes, true)
+				if err == nil && r2.Rep != root.Rep {
+					err = errors.New("representation re-construction differs from the plan")
+				}
+				if err != nil {
+					if cerr := ctx.Err(); cerr != nil {
+						return cerr
+					}
+					return fail(err)
+				}
+				root = r2
+			}
+			rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormRep, Sketch: nd.sk, Root: root}
 		default:
 			setStatus(v, "done")
 			return nil
@@ -63452,7 +63549,7 @@ func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt) ([]authPi
 			return nil, err
 		}
 		defer bclose()
-		wp := authWParams(g.pol.workers(), un.size)
+		wp := g.wparams(un.size)
 		if g.pol.SegmentKiB > 0 {
 			wp.Segment = g.pol.SegmentKiB << 10
 		}
@@ -64016,12 +64113,25 @@ func (g *rgGraph) regionCands(m *authMigrator, v int32, byKey map[string][]int32
 	for k := range order {
 		order[k] = k
 	}
-	// Order stays by share-discounted coverage (an estimate counts bytes deduplicated chunks already
-	// share); verification drops shortlisted bases whose program would not beat standalone storage.
+	// Order by share-discounted coverage (an estimate counts bytes deduplicated chunks already share),
+	// interleaved with the verified estimate; verification drops bases that would not beat standalone.
 	if len(cands) > g.pol.Candidates && p.Verify > 0 {
 		order = order[:min(len(cands), max(p.Verify, g.pol.Candidates))]
 		e0 := dwDcoreEstimateProgram([]dwDcoreOp{{N: int64(len(target)), Base: -1, Lit: target}}, dwDcoreEstimateOpts{}).Est
 		order = slices.DeleteFunc(order, func(k int) bool { return estimate(k) >= e0*98/100 })
+		// interleave the coverage order with the estimate order: the encode budget covers the bases that
+		// free the most unshared bytes and the bases giving the smallest programs
+		byEst := slices.Clone(order)
+		slices.SortStableFunc(byEst, func(a, b int) int { return cmp.Compare(est[a], est[b]) })
+		var mixed []int
+		for i := range order {
+			for _, k := range []int{order[i], byEst[i]} {
+				if !slices.Contains(mixed, k) {
+					mixed = append(mixed, k)
+				}
+			}
+		}
+		order = mixed
 	}
 	// diversity: a single whose fingerprints an earlier single (nearly) all holds, and vice versa, goes last
 	var lead, late []int
