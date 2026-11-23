@@ -7966,7 +7966,8 @@ type multipartUpload struct {
 }
 
 type Store struct {
-	replayIn *strIntern // journal replay only: shared bucket/content-type strings
+	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
+	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
 	root     string
 	format   storeFormat
 	// formatMu serializes ensureStoreFormat: concurrent direct-pack ingests
@@ -34309,11 +34310,12 @@ const (
 	repKindDEX     repKind = 11
 	repKindCLR     repKind = 12
 	repAnalyzeELF  repKind = 13 // encoder selector, stored as concat
+	repKindZip     repKind = 14 // B8: ZIP entries replayed over a canonical body of their decoded contents
 )
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip
 }
 
 type repRole uint8
@@ -34322,6 +34324,9 @@ const (
 	repStored  repRole = 1
 	repVia     repRole = 2 // never on the wire: discovered by the kind's Expand
 	repDerived repRole = 3
+	// repBody (B8) names the exact bytes of an authority body (content SHA-256, length): a shared
+	// canonical stream resolved through the record's declared bases, never through the CAS.
+	repBody repRole = 4
 )
 
 // repFrame is the exact bytes around a child's output inside a derived member.
@@ -34331,7 +34336,8 @@ type repFrame struct {
 }
 
 // repMember is one wire entry. For repStored, SHA/Size name the component. For
-// repDerived they name the framed output (Prefix || child output || Zeros).
+// repDerived they name the framed output (Prefix || child output || Zeros). For
+// repBody they name a body record's content.
 type repMember struct {
 	Role  repRole
 	SHA   [32]byte
@@ -34428,6 +34434,10 @@ func (r *repObject) validate(lim repLimits) error {
 			}
 			if int64(len(f.Prefix))+int64(f.Zeros) > m.Size {
 				return repCorrupt("member %d: frame exceeds the framed length", i)
+			}
+		case repBody:
+			if r.Kind != repKindGzip && r.Kind != repKindZstd && r.Kind != repKindZip || m.Size < 1 {
+				return repCorrupt("member %d: body reference in kind %d", i, r.Kind)
 			}
 		case repVia:
 			return repCorrupt("member %d: VIA has no wire form", i)
@@ -34581,7 +34591,7 @@ func unmarshalRep(b []byte, lim repLimits) (*repObject, error) {
 		}
 		m.Role = repRole(role[0])
 		switch m.Role {
-		case repStored, repDerived:
+		case repStored, repDerived, repBody:
 		default:
 			r.fail("member %d: role %d", i, role[0])
 			continue
@@ -34828,6 +34838,8 @@ func repDecoderFor(k repKind) (repDecoder, bool) {
 		return gzipDecoder{}, true
 	case repKindZstd:
 		return zstdDecoder{}, true
+	case repKindZip:
+		return repZipDecoder{}, true
 	}
 	return nil, false
 }
@@ -34838,6 +34850,10 @@ type repEnv struct {
 	Limits repLimits
 
 	noVerify bool // tests only: skip the representation digest check (a hash cycle cannot be built honestly)
+
+	// Body resolves a body reference (B8) to its exact bytes; nil outside an authority read, where a
+	// representation that references a body fails as unsupported.
+	Body func(sha [32]byte, size int64) (io.ReaderAt, error)
 
 	// Cache, when set, holds verified, parsed representation objects across
 	// requests. Only the read path sets it: construction, proof and verification
@@ -35248,10 +35264,46 @@ func (c *repCall) writeMember(m *repMember, w io.Writer) error {
 	if err := c.decodeWork().step(1); err != nil {
 		return err
 	}
-	if m.Role == repDerived {
+	switch m.Role {
+	case repDerived:
 		return c.streamDerived(m, w)
+	case repBody:
+		return c.streamBody(m, w)
 	}
 	return c.streamStored(m, w)
+}
+
+// bodyAt resolves a body member through the environment (B8).
+func (c *repCall) bodyAt(m *repMember) (io.ReaderAt, error) {
+	if c.env.Body == nil {
+		return nil, fmt.Errorf("%w: body reference %x outside an authority context", errRepUnsupported, m.SHA[:6])
+	}
+	return c.env.Body(m.SHA, m.Size)
+}
+
+// streamBody copies a body member to w in bounded pieces and checks its SHA-256 after the last.
+func (c *repCall) streamBody(m *repMember, w io.Writer) error {
+	ra, err := c.bodyAt(m)
+	if err != nil {
+		return err
+	}
+	buf := make([]byte, min(m.Size, 1<<20))
+	h := sha256.New()
+	for off := int64(0); off < m.Size; {
+		n := int(min(int64(len(buf)), m.Size-off))
+		if k, err := ra.ReadAt(buf[:n], off); k != n {
+			return fmt.Errorf("%w: body %x returned %d of %d bytes at %d: %v", errRepShort, m.SHA[:6], k, n, off, err)
+		}
+		h.Write(buf[:n])
+		if _, err := w.Write(buf[:n]); err != nil {
+			return err
+		}
+		off += int64(n)
+	}
+	if [32]byte(h.Sum(nil)) != m.SHA {
+		return fmt.Errorf("%w: body %x bytes do not hash to its address", errRepMismatch, m.SHA[:6])
+	}
+	return nil
 }
 
 // streamStored copies one component to w in bounded pieces, checking its length
@@ -35382,7 +35434,7 @@ func (c *repCall) member(i int) ([]byte, error) {
 		return nil, fmt.Errorf("%w: derived member %d is %d bytes", errRepLimit, i, m.Size)
 	}
 	var buf bytes.Buffer
-	if err := c.streamDerived(m, &buf); err != nil {
+	if err := c.writeMember(m, &buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -35443,6 +35495,9 @@ type repReach struct {
 	Role    map[[32]byte]repDepRole
 	Order   []([32]byte) // first-seen order: deterministic for one source
 	Derived int
+	// Bodies are the body references (B8) the walk met: dependencies outside the CAS, kept alive and
+	// sized by the referencing record's bases.
+	Bodies map[[32]byte]int64
 	// Height is, per representation, the nesting depth of its own subtree. A
 	// representation shared by several parents is walked once, so each further
 	// use is checked against this instead of being re-walked: liveness never
@@ -35530,6 +35585,16 @@ func (e *repEnv) walk(r *repReach, id [32]byte, depth int, path [][32]byte) erro
 			if h := 1 + r.Height[m.Child]; h > height {
 				height = h
 			}
+			continue
+		}
+		if m.Role == repBody {
+			if r.Bodies == nil {
+				r.Bodies = map[[32]byte]int64{}
+			}
+			if n, ok := r.Bodies[m.SHA]; ok && n != m.Size {
+				return repCorrupt("body %x referenced with lengths %d and %d", m.SHA[:6], n, m.Size)
+			}
+			r.Bodies[m.SHA] = m.Size
 			continue
 		}
 		if err := r.add(m.SHA, member, lim.MaxObjects); err != nil {
@@ -39048,6 +39113,38 @@ type repBuilder struct {
 	src     *storeRepSource
 	env     *repEnv
 	cat     *repCatalog
+	canon   *repCanon // B8: a top-level codec container references its plaintext as a body
+}
+
+// repCanon is the canonical stream a canonical build split off: the decoded plaintext of a top-level codec
+// container, owned by the caller (a temp file) once the build returns.
+type repCanon struct {
+	SHA  [32]byte
+	Size int64
+	File *os.File
+}
+
+func (c *repCanon) close() {
+	if c != nil && c.File != nil {
+		repRemoveTemp(c.File)
+		c.File = nil
+	}
+}
+
+// canonPlain returns the plaintext member of a top-level codec container: a body reference that keeps f
+// (canonical build), else nil.
+func (b *repBuilder) canonPlain(f *os.File, sha [32]byte, n int64) (repMember, bool) {
+	if b.canon == nil || b.depth != 1 || b.canon.File != nil {
+		return repMember{}, false
+	}
+	b.canon.SHA, b.canon.Size, b.canon.File = sha, n, f
+	b.env.Body = func(id [32]byte, size int64) (io.ReaderAt, error) {
+		if id != b.canon.SHA || size != b.canon.Size {
+			return nil, fmt.Errorf("%w: body %x is not this build's plaintext", errRepMissing, id[:6])
+		}
+		return b.canon.File, nil
+	}
+	return repMember{Role: repBody, SHA: sha, Size: n}, true
 }
 
 func (s *Store) newRepBuilder(size int64, base func([32]byte) *repDesc, cat *repCatalog) *repBuilder {
@@ -39598,7 +39695,11 @@ func (b *repBuilder) encodeGzip(src io.ReaderAt, size int64) (*repObject, error)
 	if err != nil {
 		return nil, err
 	}
-	defer repRemoveTemp(f)
+	defer func() {
+		if f != nil {
+			repRemoveTemp(f)
+		}
+	}()
 	var sink *repCodecSink
 	var stats *repIRStreamStats
 	for _, mode := range []string{"", "balanced", "fast"} {
@@ -39630,8 +39731,13 @@ func (b *repBuilder) encodeGzip(src io.ReaderAt, size int64) (*repObject, error)
 	if err := sink.admitDescription(size, len(stats.Skeleton)); err != nil {
 		return nil, err
 	}
-	child, err := b.encodeCodecPlain(f, sink.n)
-	if err != nil {
+	var plainSHA [32]byte
+	sink.digest.Sum(plainSHA[:0])
+	body, canon := b.canonPlain(f, plainSHA, sink.n)
+	var child [32]byte
+	if canon {
+		f = nil // kept: the caller owns the canonical plaintext
+	} else if child, err = b.encodeCodecPlain(f, sink.n); err != nil {
 		return nil, err
 	}
 	table := binary.AppendUvarint(nil, uint64(len(stats.Skeleton)))
@@ -39643,9 +39749,11 @@ func (b *repBuilder) encodeGzip(src io.ReaderAt, size int64) (*repObject, error)
 		return nil, err
 	}
 	out := &repObject{Kind: repKindGzip, Size: size, Members: members}
-	var plainSHA [32]byte
-	sink.digest.Sum(plainSHA[:0])
-	out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	if canon {
+		out.Members = append(out.Members, body)
+	} else {
+		out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	}
 	out.Recipe = binary.AppendUvarint(nil, uint64(len(header)))
 	out.Recipe = append(out.Recipe, header...)
 	out.Recipe = append(out.Recipe, trailer[:]...)
@@ -39678,7 +39786,12 @@ func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error)
 	if err != nil {
 		return nil, err
 	}
-	defer repRemoveTemp(plain)
+	keep := false
+	defer func() {
+		if !keep {
+			repRemoveTemp(plain)
+		}
+	}()
 	units, err := b.codecTemp()
 	if err != nil {
 		return nil, err
@@ -39708,9 +39821,15 @@ func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error)
 	if err := sink.admitDescription(size, len(result.Raw)); err != nil {
 		return nil, err
 	}
-	child, err := b.encodeCodecPlain(plain, sink.n)
-	if err != nil {
-		return nil, err
+	var plainSHA [32]byte
+	sink.digest.Sum(plainSHA[:0])
+	body, canon := b.canonPlain(plain, plainSHA, sink.n)
+	keep = canon
+	var child [32]byte
+	if !canon {
+		if child, err = b.encodeCodecPlain(plain, sink.n); err != nil {
+			return nil, err
+		}
 	}
 	table := binary.AppendUvarint(nil, uint64(len(result.Raw)))
 	table = append(table, result.Raw...)
@@ -39720,10 +39839,12 @@ func (b *repBuilder) encodeZstd(src io.ReaderAt, size int64) (*repObject, error)
 	if err != nil {
 		return nil, err
 	}
-	var plainSHA [32]byte
-	sink.digest.Sum(plainSHA[:0])
 	out := &repObject{Kind: repKindZstd, Size: size, Members: members, Recipe: binary.AppendUvarint(nil, uint64(len(members)))}
-	out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	if canon {
+		out.Members = append(out.Members, body)
+	} else {
+		out.Members = append(out.Members, repMember{Role: repDerived, SHA: plainSHA, Size: sink.n, Child: child})
+	}
 	if b.seek && b.depth == 1 {
 		sizes, err := zsBlockSizes(src, size, result.Skeleton)
 		if err != nil {
@@ -39983,6 +40104,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 		return b.encodeGzip(src, size)
 	case repKindZstd:
 		return b.encodeZstd(src, size)
+	case repKindZip:
+		return b.encodeZip(src, size)
 	case repKindSQLite:
 		return b.encodeSQLite(src, size)
 	case repKindCAR:
@@ -40266,6 +40389,16 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if m.s.rep.stopping.Load() {
 		return 0, errRepBuildStopped
 	}
+	if ra := m.s.canon.lookup(m.man); ra != nil {
+		if off >= m.size {
+			return 0, io.EOF
+		}
+		n, err := ra.ReadAt(p[:min(int64(len(p)), m.size-off)], off)
+		if err == nil && n < len(p) {
+			err = io.EOF
+		}
+		return n, err
+	}
 	if !m.aNone && m.s.auth.mayHave.Load() {
 		if !m.aInit {
 			m.aInit = true
@@ -40398,6 +40531,25 @@ func (s *Store) repConstructAt(man manifestV1, src io.ReaderAt, live func() bool
 // repConstructMem is repConstructAt; with mem non-nil, components the store lacks are kept in mem (a
 // planning build: proven over the overlay, nothing written).
 func (s *Store) repConstructMem(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64, seek bool, mem map[[32]byte][]byte) (*repRoot, int, error) {
+	return s.repConstructOpt(man, src, live, reserve, seek, mem, nil)
+}
+
+// repConstructCanon builds the canonical representation of a codec container (B8): its recipe with the decoded
+// plaintext as a body reference. The returned canon holds the plaintext; the caller closes it.
+func (s *Store) repConstructCanon(man manifestV1, src io.ReaderAt, reserve uint64, mem map[[32]byte][]byte) (*repRoot, *repCanon, error) {
+	canon := &repCanon{}
+	root, _, err := s.repConstructOpt(man, src, nil, reserve, true, mem, canon)
+	if err == nil && canon.File == nil {
+		err = fmt.Errorf("%w: not a codec container", errRepUnsupported)
+	}
+	if err != nil {
+		canon.close()
+		return nil, nil, err
+	}
+	return root, canon, nil
+}
+
+func (s *Store) repConstructOpt(man manifestV1, src io.ReaderAt, live func() bool, reserve uint64, seek bool, mem map[[32]byte][]byte, canon *repCanon) (*repRoot, int, error) {
 	if man.TotalLength < 1 {
 		return nil, 0, errRepUnsupported
 	}
@@ -40415,14 +40567,17 @@ func (s *Store) repConstructMem(man manifestV1, src io.ReaderAt, live func() boo
 		ra = mra
 	}
 	kind, ok := repCandidate(ra, man.TotalLength)
-	if !ok {
+	if canon != nil && canonKind(ra, man.TotalLength) == repKindZip {
+		kind, ok = repKindZip, true
+	}
+	if !ok || canon != nil && kind != repKindGzip && kind != repKindZstd && kind != repKindZip {
 		return nil, 0, errRepUnsupported
 	}
 	s.repEnsure()
 	fireTestHook(hookRepAnalysisStarted)
 	t0 := time.Now()
 	b := s.newRepBuilder(man.TotalLength, s.repDescLookup, nil)
-	b.reserve, b.seek = reserve, seek
+	b.reserve, b.seek, b.canon = reserve, seek, canon
 	if mem != nil {
 		b.sink.Abort()
 		b.src.mem = mem
@@ -40911,7 +41066,21 @@ func (s *Store) repCloneRoot(srcUUID string, dst manifestV1) bool {
 // ordinary CAS chunks its components occupy, with exact accounting.
 type repClosure struct {
 	chunks []chunkRef
-	logic  []repLogical // every logical object of the closure; counted once, then dropped
+	logic  []repLogical       // every logical object of the closure; counted once, then dropped
+	bodies map[[32]byte]int64 // B8 body references: outside the CAS, the record's bases
+}
+
+// authRepBasesMatch checks that a rep record's declared bases are exactly the bodies its closure references.
+func authRepBasesMatch(rec *authRecord, cl *repClosure) error {
+	if len(cl.bodies) != len(rec.Bases) {
+		return fmt.Errorf("%w: rep references %d bodies, record declares %d bases", errAuthCorrupt, len(cl.bodies), len(rec.Bases))
+	}
+	for _, b := range rec.Bases {
+		if n, ok := cl.bodies[b.SHA]; !ok || n != b.Size {
+			return fmt.Errorf("%w: base %x is not a body the rep references", errAuthCorrupt, b.SHA[:6])
+		}
+	}
+	return nil
 }
 
 type repLogical struct {
@@ -41010,6 +41179,9 @@ func (rc *repReachCtx) closureOf(uuid string, man manifestV1) *repClosure {
 		return cl
 	}
 	c, err := rc.s.repClosureOf(root)
+	if err == nil && len(c.bodies) > 0 {
+		err = fmt.Errorf("%w: manifest root %s references bodies", errRepUnsupported, uuid)
+	}
 	if err != nil {
 		rc.fault(uuid, err)
 		return nil
@@ -41036,6 +41208,7 @@ func (s *Store) repClosureMem(root *repRoot, mem map[[32]byte][]byte) (*repClosu
 	cl := &repClosure{
 		chunks: make([]chunkRef, 0, len(reach.Order)),
 		logic:  make([]repLogical, 0, len(reach.Order)),
+		bodies: reach.Bodies,
 	}
 	seen := make(map[[32]byte]bool, len(reach.Order))
 	add := func(sum [32]byte, n int64) {
@@ -41381,9 +41554,17 @@ func (s *Store) repOpenReader(man manifestV1, rng byteRange) (objectReader, erro
 
 // repOpenRootReader serves a range (or the whole object) from a trusted root.
 func (s *Store) repOpenRootReader(root *repRoot, rng byteRange) (objectReader, error) {
-	whole := rng.start == 0 && rng.end == root.ObjSize-1
 	src := s.newRepSource(root.Descs, nil)
-	env := &repEnv{Src: src, Limits: repProdLimits, Cache: s.repCache()}
+	return s.repOpenEnvReader(&repEnv{Src: src, Limits: repProdLimits, Cache: s.repCache()}, src, root, rng, nil)
+}
+
+// repOpenEnvReader serves rng of root through env (B8: an environment that resolves body references);
+// done, when set, runs once the stream has finished.
+func (s *Store) repOpenEnvReader(env *repEnv, src *storeRepSource, root *repRoot, rng byteRange, done func()) (objectReader, error) {
+	whole := rng.start == 0 && rng.end == root.ObjSize-1
+	if done == nil {
+		done = func() {}
+	}
 	var produce func(w io.Writer) error
 	if whole {
 		produce = func(w io.Writer) error {
@@ -41396,8 +41577,9 @@ func (s *Store) repOpenRootReader(root *repRoot, rng byteRange) (objectReader, e
 			}
 			return nil
 		}
-		// A zstd frame replays block after block; its seek index lets workers regenerate parts of it concurrently.
-		if call, err := env.open(root.Rep); err == nil && call.Rep.Kind == repKindZstd && call.Rep.Size == root.ObjSize {
+		// A zstd frame replays block after block; its seek index lets workers regenerate parts of it concurrently
+		// (B8: so does a gzip stream whose plaintext is a body, which would otherwise feed one decoder).
+		if call, err := env.open(root.Rep); err == nil && (call.Rep.Kind == repKindZstd || env.Body != nil && call.Rep.Kind == repKindGzip) && call.Rep.Size == root.ObjSize {
 			if sk, err := repSeekerOf(call); err == nil && sk != nil {
 				produce = func(w io.Writer) error {
 					h := sha256.New()
@@ -41415,13 +41597,17 @@ func (s *Store) repOpenRootReader(root *repRoot, rng byteRange) (objectReader, e
 		call, err := env.open(root.Rep)
 		if err != nil {
 			src.close()
+			done()
 			return nil, err
 		}
 		if produce, err = repRangeReader(call, rng.start, rng.end-rng.start+1); produce == nil || err != nil {
 			src.close()
+			done()
 			return nil, err
 		}
 	}
+	inner := produce
+	produce = func(w io.Writer) error { defer done(); return inner(w) }
 	rd := startRepStream(src, produce)
 	first, err := rd.next()
 	if err != nil && err != io.EOF {
@@ -41443,6 +41629,9 @@ func (s *Store) repOpenRootReader(root *repRoot, rng byteRange) (objectReader, e
 // mode allows it and it applies, otherwise (or on any failure before the first
 // byte) the ordinary CDC manifest reader. CDC stays the authority.
 func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
+	if ra := s.canon.lookup(man); ra != nil {
+		return &canonReader{ra: ra, off: rng.start, end: rng.end + 1}
+	}
 	sm, err := newServedManifest(man, [32]byte{})
 	if err != nil {
 		return &manifestReader{s: s, err: err, rng: rng}
@@ -49709,7 +49898,7 @@ func gzipRecipe(rep *repObject) (*gzRecipe, error) {
 	}
 	g := &gzRecipe{header: r[n : n+int(hl)], trailer: r[n+int(hl) : n+int(hl)+8]}
 	nt, k := binary.Uvarint(r[n+int(hl)+8:])
-	if k <= 0 || nt < 1 || nt+1 != uint64(len(rep.Members)) || rep.Members[nt].Role != repDerived {
+	if k <= 0 || nt < 1 || nt+1 != uint64(len(rep.Members)) || !repPlainRole(rep.Members[nt].Role) {
 		return nil, fmt.Errorf("%w: gzip recipe members", errRepCorrupt)
 	}
 	g.nTable = int(nt)
@@ -49895,7 +50084,7 @@ func zstdRecipe(rep *repObject) (nTable int, seek []uint64, err error) {
 // compressed block, how many plaintext bytes before it the block's match model reads.
 func zstdRecipeReach(rep *repObject) (nTable int, seek, reach []uint64, err error) {
 	nt, k := binary.Uvarint(rep.Recipe)
-	if k <= 0 || nt < 1 || nt+1 != uint64(len(rep.Members)) || rep.Members[nt].Role != repDerived {
+	if k <= 0 || nt < 1 || nt+1 != uint64(len(rep.Members)) || !repPlainRole(rep.Members[nt].Role) {
 		return 0, nil, nil, fmt.Errorf("%w: zstd recipe members", errRepCorrupt)
 	}
 	tail := rep.Recipe[k:]
@@ -50228,6 +50417,9 @@ func repSeekerOf(c *repCall) (repSeeker, error) {
 // repPlainSeekable reports whether the derived plaintext member i is a concatenation of stored components.
 func repPlainSeekable(c *repCall, i int) bool {
 	m := &c.Rep.Members[i]
+	if m.Role == repBody {
+		return c.env.Body != nil
+	}
 	rep, err := c.env.load(m.Child, c.depth+1, c.path)
 	if err != nil || rep.Kind != repKindConcat || rep.Size != m.Size {
 		return false
@@ -50258,6 +50450,8 @@ func repRangeReader(c *repCall, off, n int64) (func(w io.Writer) error, error) {
 			return nil, err
 		}
 		return func(w io.Writer) error { return repSeekRead(c, sk, off, n, w) }, nil
+	case repKindZip:
+		return func(w io.Writer) error { return zipReadRange(c, off, n, w) }, nil
 	}
 	return nil, nil
 }
@@ -50355,10 +50549,31 @@ func (c *repClip) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// plainWin opens the plaintext member i of a codec representation for range reads: a derived child's
+// range reader, or a body reference read directly (B8).
+func (c *repCall) plainWin(i int, size int64, tr *repCodecTrace) (*repPlainWin, error) {
+	m := &c.Rep.Members[i]
+	if m.Role == repBody {
+		ra, err := c.bodyAt(m)
+		if err != nil {
+			return nil, err
+		}
+		return &repPlainWin{body: ra, size: size, tr: tr}, nil
+	}
+	child, err := c.child(i)
+	if err != nil {
+		return nil, err
+	}
+	return &repPlainWin{c: child, size: size, tr: tr}, nil
+}
+
+func repPlainRole(r repRole) bool { return r == repDerived || r == repBody }
+
 // repPlainWin reads the semantic plaintext from the derived child by range, keeping the latest window so the
 // overlapping warm-up windows of consecutive units are read once. Returned slices are valid until the next call.
 type repPlainWin struct {
 	c    *repCall
+	body io.ReaderAt // B8: the plaintext is a body reference
 	size int64
 	lo   int64
 	buf  []byte
@@ -50383,6 +50598,16 @@ func (p *repPlainWin) at(from, to int64) ([]byte, error) {
 			p.buf, p.lo = p.buf[:copy(p.buf, p.buf[d:])], from
 		}
 		end := min(p.size, max(to, hi+repPlainAhead))
+		if p.body != nil {
+			n := int(end - hi)
+			p.buf = slices.Grow(p.buf, n)
+			if k, err := p.body.ReadAt(p.buf[len(p.buf):len(p.buf)+n], hi); k != n {
+				return nil, fmt.Errorf("%w: plaintext body returned %d of %d bytes at %d: %v", errRepShort, k, n, hi, err)
+			}
+			p.buf = p.buf[:len(p.buf)+n]
+			p.tr.PlainBytes += end - hi
+			return p.buf[from-p.lo : to-p.lo], nil
+		}
 		rd, err := repRangeReader(p.c, hi, end-hi)
 		if err == nil && rd == nil {
 			err = fmt.Errorf("%w: plaintext of kind %d has no range reader", errRepUnsupported, p.c.Rep.Kind)
@@ -50504,12 +50729,12 @@ func (z *gzSeek) readRange(c *repCall, off, n int64, w io.Writer) error {
 // deflate writes bytes [a, b) of the DEFLATE stream, starting at the last unit whose first token begins in a byte
 // before a.
 func (z *gzSeek) deflate(c *repCall, a, b int64, w io.Writer) error {
-	child, err := c.child(z.g.nTable)
+	tr := c.codecTrace()
+	pw, err := c.plainWin(z.g.nTable, z.plain, tr)
 	if err != nil {
 		return err
 	}
-	tr := c.codecTrace()
-	tk := &gzTokens{z: z, c: c, pw: &repPlainWin{c: child, size: z.plain, tr: tr}, tr: tr}
+	tk := &gzTokens{z: z, c: c, pw: pw, tr: tr}
 	u0 := sort.Search(len(z.bits), func(i int) bool { return z.bits[i]/8 >= a }) - 1
 	var startBit int64
 	first, bi := 0, 0
@@ -50958,11 +51183,10 @@ func (z *zsSeek) readRange(c *repCall, off, n int64, w io.Writer) error {
 			_, err = clip.Write(append(binary.LittleEndian.AppendUint32(nil, repZSmagicStd), f.Header...))
 		default:
 			if pw == nil {
-				child, err := c.child(z.nTable)
+				pw, err = c.plainWin(z.nTable, z.plain, tr)
 				if err != nil {
 					return err
 				}
-				pw = &repPlainWin{c: child, size: z.plain, tr: tr}
 			}
 			if rf == nil {
 				if rf, err = z.enter(c, pw, sg, i, last); err != nil {
@@ -53280,7 +53504,8 @@ func unmarshalAuthRecord(b []byte) (*authRecord, error) {
 			return nil, fmt.Errorf("%w: delta shape", errAuthCorrupt)
 		}
 	case authFormRep:
-		if len(r.Pieces) != 0 || len(r.Bases) != 0 || r.Depth != 0 {
+		// B8: a rep may reference bodies (canonical streams); they are its bases and set its depth.
+		if len(r.Pieces) != 0 || (len(r.Bases) == 0) != (r.Depth == 0) {
 			return nil, fmt.Errorf("%w: rep shape", errAuthCorrupt)
 		}
 		rl, ok := uv()
@@ -53561,6 +53786,15 @@ func (s *Store) authCheckClosure(rec *authRecord) error {
 			return fmt.Errorf("%w: base %x size or depth inconsistent", errAuthCorrupt, b.SHA[:6])
 		}
 	}
+	if rec.Form == authFormRep && rec.Root != nil {
+		cl, err := s.repClosureOf(rec.Root)
+		if err != nil {
+			return err
+		}
+		if err := authRepBasesMatch(rec, cl); err != nil {
+			return err
+		}
+	}
 	chunks, err := s.authRecordChunks(rec)
 	if err != nil {
 		return err
@@ -53818,7 +54052,7 @@ func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authReco
 	case authFormPin:
 		b = &authPinBody{c: c, rec: rec}
 	case authFormRep:
-		b = &authRepBody{c: c, rec: rec}
+		b = &authRepBody{c: c, rec: rec, depth: depth}
 	case authFormDelta:
 		b, err = c.newDelta(rec, depth)
 		if err != nil {
@@ -54097,6 +54331,47 @@ type authRepBody struct {
 	rec    *authRecord
 	data   []byte
 	noSeek bool
+	depth  int
+}
+
+// env is the representation environment of the record: body references resolve to its declared bases only.
+func (b *authRepBody) env(src *storeRepSource, cache *repReadCache) *repEnv {
+	e := &repEnv{Src: src, Limits: repProdLimits, Cache: cache}
+	if len(b.rec.Bases) > 0 {
+		var mu sync.Mutex // concurrent range workers resolve through one context and share one reader
+		opened := map[[32]byte]*authLockedAt{}
+		e.Body = func(sha [32]byte, size int64) (io.ReaderAt, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if l := opened[sha]; l != nil && l.b.Size() == size {
+				return l, nil
+			}
+			for _, x := range b.rec.Bases {
+				if x.SHA == sha && x.Size == size {
+					body, _, err := b.c.body(sha, size, b.depth+1)
+					if err != nil {
+						return nil, err
+					}
+					opened[sha] = &authLockedAt{b: body}
+					return opened[sha], nil
+				}
+			}
+			return nil, fmt.Errorf("%w: body %x is not a declared base", errAuthCorrupt, sha[:6])
+		}
+	}
+	return e
+}
+
+// authLockedAt serializes reads of a body shared by concurrent codec range workers.
+type authLockedAt struct {
+	mu sync.Mutex
+	b  authBody
+}
+
+func (l *authLockedAt) ReadAt(p []byte, off int64) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.ReadAt(p, off)
 }
 
 func (b *authRepBody) Size() int64 { return b.rec.Size }
@@ -54108,7 +54383,7 @@ func (b *authRepBody) readSeek(p []byte, off int64) (n int, ok bool, err error) 
 	}
 	src := b.c.s.newRepSource(b.rec.Root.Descs, nil)
 	defer src.close()
-	env := &repEnv{Src: src, Limits: repProdLimits, Cache: b.c.s.repCache()}
+	env := b.env(src, b.c.s.repCache())
 	call, err := env.open(b.rec.Root.Rep)
 	if err == nil && call.Rep.Size != b.rec.Size {
 		err = fmt.Errorf("%w: representation of %d bytes for a %d byte record", errAuthCorrupt, call.Rep.Size, b.rec.Size)
@@ -54156,7 +54431,7 @@ func (b *authRepBody) ReadAt(p []byte, off int64) (int, error) {
 				return 0, err
 			}
 			src := b.c.s.newRepSource(b.rec.Root.Descs, nil)
-			env := &repEnv{Src: src, Limits: repProdLimits}
+			env := b.env(src, nil)
 			var buf bytes.Buffer
 			buf.Grow(int(b.rec.Size))
 			n, sum, err := env.reconstruct(b.rec.Root.Rep, &buf)
@@ -54975,8 +55250,18 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 	}
 	whole := rng.start == 0 && rng.end == man.TotalLength-1
 	if rec.Form == authFormRep {
-		// Whole reads stream; ranges use the kind's native range decoder when it has one.
-		if rd, err := s.repOpenRootReader(rec.Root, rng); rd != nil || err != nil {
+		// Whole reads stream; ranges use the kind's native range decoder when it has one. A rep built
+		// on bodies (B8) resolves them through an authority context of its own.
+		var rd objectReader
+		if len(rec.Bases) == 0 {
+			rd, err = s.repOpenRootReader(rec.Root, rng)
+		} else {
+			ctx := s.newAuthCtx()
+			src := s.newRepSource(rec.Root.Descs, nil)
+			rb := &authRepBody{c: ctx, rec: rec, depth: 1}
+			rd, err = s.repOpenEnvReader(rb.env(src, s.repCache()), src, rec.Root, rng, ctx.close)
+		}
+		if rd != nil || err != nil {
 			if whole {
 				s.auth.reads.Add(1)
 			} else {
@@ -55107,6 +55392,9 @@ func (a *authReachCtx) mark(sha [32]byte, want func([]chunkRef), path map[[32]by
 		}
 	case authFormRep:
 		cl, cerr := a.s.repClosureOf(rec.Root)
+		if cerr == nil {
+			cerr = authRepBasesMatch(rec, cl)
+		}
 		if cerr != nil {
 			a.fault(sha, cerr)
 			return 0, cerr
@@ -55132,7 +55420,7 @@ func (a *authReachCtx) mark(sha [32]byte, want func([]chunkRef), path map[[32]by
 		}
 		maxD = max(maxD, d)
 	}
-	if rec.Form == authFormDelta && int(rec.Depth) < maxD+1 || rec.Form != authFormDelta && rec.Depth != 0 {
+	if len(rec.Bases) > 0 && int(rec.Depth) < maxD+1 || len(rec.Bases) == 0 && rec.Depth != 0 {
 		err := fmt.Errorf("%w: recorded depth %d inconsistent with its bases", errAuthCorrupt, rec.Depth)
 		a.fault(sha, err)
 		return 0, err
@@ -56272,7 +56560,7 @@ type authRepCand struct {
 
 func repKindName(k repKind) string {
 	names := map[repKind]string{repKindConcat: "concat", repKindCAR: "car", repKindSQLite: "sqlite", repKindGit: "git", repKindMerkle: "merkle",
-		repKindGzip: "codec", repKindZstd: "codec", repKindModel: "model", repKindSST: "sst", repKindParquet: "parquet", repKindDEX: "dex", repKindCLR: "clr"}
+		repKindGzip: "codec", repKindZstd: "codec", repKindZip: "zip", repKindModel: "model", repKindSST: "sst", repKindParquet: "parquet", repKindDEX: "dex", repKindCLR: "clr"}
 	if n, ok := names[k]; ok {
 		return n
 	}
@@ -57867,7 +58155,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature},
 	}
 }
 
@@ -58030,6 +58318,9 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 			}
 			if need.reach {
 				addFeature(authReachFeature)
+			}
+			if need.canon || len(rec.Bases) > 0 {
+				addFeature(authCanonFeature)
 			}
 		}
 	}
@@ -60315,6 +60606,7 @@ func runAuthority(args []string) {
 	pareto := fs.String("pareto", "", "optimize: comma-separated read weights of a frontier reported beside the plan")
 	cands := fs.Int("candidates", 4, "migrate/optimize: trial bases per target (max 8)")
 	discovery := fs.String("discovery", "region", "optimize: candidate discovery, region (B7 positional fingerprints, complementary bases) or sketch (B6)")
+	canonical := fs.Bool("canonical", false, "optimize: B8 canonical streams: gzip, zstd and ZIP containers share their decoded content")
 	anchorBytes := fs.Int("anchor-bytes", 8, "optimize: windowed bases (over 32 MiB) index one COPY anchor per this many bytes, at most 8 Mi (-1: the migration rule)")
 	fs.Parse(args[1:])
 	if sub == "recover" {
@@ -60478,7 +60770,7 @@ func runAuthority(args []string) {
 		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
-			Discovery: *discovery, AnchorBytes: *anchorBytes}
+			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical}
 		pol.Locality = []int{}
 		for _, f := range strings.Split(*locality, ",") {
 			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
@@ -60599,6 +60891,10 @@ type OptimizePolicy struct {
 	recordBlock       int64                               // research: price record files in this allocation unit
 	noRestrictedStart bool                                // ablation: the B6 search without the single-base start
 	StageReps         bool                                `json:"stage_reps,omitempty"` // B6 behaviour: stage every representation candidate while planning
+	Canonical         bool                                `json:"canonical,omitempty"`  // B8: canonical streams of codec containers
+	B7Search          bool                                `json:"b7_search,omitempty"`  // B8 ablation: the B7 search (no group starts, exact search or incumbent)
+	noZip             bool                                // ablation: no ZIP adapter
+	canonNoDelta      bool                                // ablation: canonical streams only as CDC
 }
 
 // rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
@@ -60701,7 +60997,10 @@ type rgOpt struct {
 	sum    [32]byte
 	rep    *authRepCand
 	cur    bool
-	chunky bool // pieces are CDC chunks (restartable blocks apply)
+	chunky bool  // pieces are CDC chunks (restartable blocks apply)
+	replay byte  // B8 read model: the codec a read of this option replays
+	plain  int64 // decoded plaintext size of a replayed container
+	canon  bool  // a canonical wrapper: its base is the container's stream
 }
 
 type rgNode struct {
@@ -60718,6 +61017,7 @@ type rgNode struct {
 	sk       []uint64
 	cdcRead  float64
 	cdcWhole float64
+	canon    *repCanon // B8: the planning copy of a canonical stream (synthetic manifest in obj)
 }
 
 // rgModel is the calibrated read-cost model (µs): a cold record fetch and a decoded byte.
@@ -60741,6 +61041,7 @@ type rgGraph struct {
 	idx       map[[32]byte]int32
 	cid       map[[32]byte]int32
 	cphys     []int64
+	csha      [][32]byte
 	clen      []int64
 	craw      []bool // stored (or priced) without compression
 	ext       []int32
@@ -60756,6 +61057,7 @@ type rgGraph struct {
 	disc      *DiscoveryStats
 	vops      map[int32]map[int32][]dwDcoreOp // plain programs discovery verified (target -> base), reused by the encoder
 	chunkRefs map[[32]byte]int32              // eligible contents holding each CDC chunk (B7 share discount)
+	canonSt   CanonStats                      // B8 canonical analysis
 }
 
 // rgCandSet is what discovery hands the encoders for one target: single bases, best first, and
@@ -60771,6 +61073,7 @@ func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
 	}
 	id := int32(len(g.cphys))
 	g.cid[sha] = id
+	g.csha = append(g.csha, sha)
 	g.cphys = append(g.cphys, phys)
 	g.clen = append(g.clen, logical)
 	g.craw = append(g.craw, phys-packRecordBytes >= logical*15/16)
@@ -60798,7 +61101,8 @@ type rgEval struct {
 	ref      []int32
 	users    [][]int32
 	metaOf   []int64
-	bytes    int64 // components + record files
+	wrOf     []int64 // writes charged for v: its selection's, while v is required (B8: unrequired streams write nothing)
+	bytes    int64   // components + record files
 	meta     int64
 	writes   int64
 	rc       []float64
@@ -60814,12 +61118,13 @@ type rgEval struct {
 	tmp      rgTouch
 	single   bool // ablation: single-node moves only
 	maxBases int  // restricted start: options with at most this many bases (0 = any)
+	noCanon  bool // B8 incumbent: canonical options excluded
 }
 
 func newRGEval(g *rgGraph, sel []int32) *rgEval {
 	n := len(g.nodes)
 	e := &rgEval{g: g, sel: make([]int32, n), req: make([]int32, n), ref: slices.Clone(g.ext), users: make([][]int32, n),
-		metaOf: make([]int64, n), rc: make([]float64, n), rcOK: make([]bool, n), wh: make([]float64, n), queued: make([]bool, n), dep: make([]int8, n), depOK: make([]bool, n), tmp: newRGTouch()}
+		metaOf: make([]int64, n), wrOf: make([]int64, n), rc: make([]float64, n), rcOK: make([]bool, n), wh: make([]float64, n), queued: make([]bool, n), dep: make([]int8, n), depOK: make([]bool, n), tmp: newRGTouch()}
 	for c, r := range e.ref {
 		if r > 0 {
 			e.bytes += g.cphys[c]
@@ -60877,6 +61182,18 @@ func (e *rgEval) require(v int32, d int32) {
 		}
 	}
 	e.updMeta(v)
+	e.updWrite(v)
+}
+
+func (e *rgEval) updWrite(v int32) {
+	var w int64
+	if e.sel[v] >= 0 && e.req[v] > 0 {
+		if o := e.opt(v); !o.cur {
+			w = o.write
+		}
+	}
+	e.writes += w - e.wrOf[v]
+	e.wrOf[v] = w
 }
 
 // updMeta charges v's record file: a pin only while it has dependents (or an outside one) and is required.
@@ -60901,16 +61218,16 @@ func (e *rgEval) setRaw(v int32, o int32) {
 	}
 	nd := e.g.nodes[v]
 	if old >= 0 {
-		po := nd.opts[old]
-		if !po.cur {
-			e.writes -= po.write
-		}
-		if e.req[v] > 0 {
+		// Detached first: a selection cycle can route the release back to v, whose old option must
+		// then not be released a second time.
+		po, was := nd.opts[old], e.req[v] > 0
+		e.sel[v] = -1
+		if was {
 			e.addComps(po, -1)
 		}
 		for _, b := range po.bases {
 			e.users[b] = slices.DeleteFunc(e.users[b], func(u int32) bool { return u == v })
-			if e.req[v] > 0 {
+			if was {
 				e.require(b, -1)
 			}
 		}
@@ -60918,9 +61235,6 @@ func (e *rgEval) setRaw(v int32, o int32) {
 	e.sel[v] = o
 	if o >= 0 {
 		no := nd.opts[o]
-		if !no.cur {
-			e.writes += no.write
-		}
 		if e.req[v] > 0 {
 			e.addComps(no, 1)
 		}
@@ -60932,6 +61246,7 @@ func (e *rgEval) setRaw(v int32, o int32) {
 		}
 	}
 	e.updMeta(v)
+	e.updWrite(v)
 }
 
 // set changes v's option and invalidates the read costs and depths of v and everything built on it.
@@ -60988,7 +61303,7 @@ func (e *rgEval) depthWalk(v int32, guard int) int {
 	}
 	o := e.opt(v)
 	d := 0
-	if o.kind == rgDelta || o.kind == rgKeep && len(o.bases) > 0 {
+	if len(o.bases) > 0 {
 		for _, b := range o.bases {
 			bd := e.depthWalk(b, guard+1)
 			if bd < 0 {
@@ -61032,7 +61347,11 @@ func (e *rgEval) nodeOK(x int32) bool {
 		return false
 	}
 	nd, o := g.nodes[x], e.opt(x)
-	if o.kind != rgKeep && d > g.pol.MaxDepth {
+	pd := d
+	if o.canon {
+		pd-- // B8: the policy limits delta chains; a wrapper's replay is priced by the read model
+	}
+	if o.kind != rgKeep && pd > g.pol.MaxDepth {
 		return false
 	}
 	if o.kind == rgKeep && len(o.bases) > 0 {
@@ -61160,15 +61479,20 @@ func (e *rgEval) objective() float64 {
 // whole); own holds those the content's own record names (the rest are reached through COPYs and are
 // fetched by the dependency prefetch in parallel).
 type rgTouch struct {
-	m   map[int32]uint64
-	own map[int32]bool
+	m      map[int32]uint64
+	own    map[int32]bool
+	replay *float64 // B8: modeled codec replay CPU of the read (µs)
+	whole  bool     // a whole-object read (replay priced per output byte)
 }
 
-func newRGTouch() rgTouch { return rgTouch{m: map[int32]uint64{}, own: map[int32]bool{}} }
+func newRGTouch() rgTouch {
+	return rgTouch{m: map[int32]uint64{}, own: map[int32]bool{}, replay: new(float64)}
+}
 
 func (t rgTouch) reset() {
 	clear(t.m)
 	clear(t.own)
+	*t.replay = 0
 }
 
 func (t rgTouch) mark(c int32, m uint64, depth int) {
@@ -61188,6 +61512,13 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 	}
 	for _, p := range o.hdr {
 		t.mark(p, ^uint64(0), depth)
+	}
+	if o.replay != rgReplayNone {
+		*t.replay += g.replayUS(o, a, b, t.whole)
+	}
+	if o.canon && len(o.bases) == 1 {
+		g.canonTouch(e, v, o, a, b, t, depth)
+		return
 	}
 	k, _ := slices.BinarySearchFunc(o.units, a, func(u rgUnit, x int64) int { return cmp.Compare(u.tend, x+1) })
 	for ; k < len(o.units) && o.units[k].tpos < b; k++ {
@@ -61223,7 +61554,7 @@ func (g *rgGraph) cost(t rgTouch) (us float64, recs int, decoded int64) {
 	f := g.features(t)
 	md := g.model
 	us = md.Fixed + float64(f.nodes)*md.Node + float64(f.rec[0])*md.Rec + float64(f.infl[0])*md.Byte + float64(f.raw[0])*md.RawByte +
-		float64(f.rec[1])*md.RecB + float64(f.infl[1])*md.ByteB + float64(f.raw[1])*md.RawByte
+		float64(f.rec[1])*md.RecB + float64(f.infl[1])*md.ByteB + float64(f.raw[1])*md.RawByte + *t.replay
 	return us, f.rec[0] + f.rec[1], f.infl[0] + f.infl[1] + f.raw[0] + f.raw[1]
 }
 
@@ -61304,6 +61635,7 @@ func (g *rgGraph) wholeCost(e *rgEval, v int32) float64 {
 		return 0
 	}
 	t := newRGTouch()
+	t.whole = true
 	g.touch(e, v, 0, nd.size, t, 0)
 	var recs, dec int64
 	for c := range t.m {
@@ -61314,7 +61646,7 @@ func (g *rgGraph) wholeCost(e *rgEval, v int32) float64 {
 			}
 		}
 	}
-	return g.model.Fixed + float64(recs)*g.model.WRec + float64(dec)*g.model.WByte + float64(nd.size)*g.model.WCopy*float64(max(e.depth(v), 0))
+	return g.model.Fixed + float64(recs)*g.model.WRec + float64(dec)*g.model.WByte + float64(nd.size)*g.model.WCopy*float64(max(e.depth(v), 0)) + *t.replay
 }
 
 // rgReadStats is the modeled physical work of a read.
@@ -61627,8 +61959,27 @@ func (g *rgGraph) keepOpt(nd *rgNode) (*rgOpt, error) {
 		}
 	default:
 		g.layoutLinear(o, nd.size)
+		if k, plain, err := g.s.repTopCodec(r.Root); err == nil && k != 0 {
+			o.replay, o.plain = rgReplayOf(k), plain
+			if o.canon = len(r.Bases) == 1; o.canon {
+				o.units = nil
+				g.codecLayout(o, r.Root, nil, nd.size)
+			}
+		}
 	}
 	return o, nil
+}
+
+// repTopCodec is the codec kind of a root's top representation and its plaintext size (0: not a codec).
+func (s *Store) repTopCodec(root *repRoot) (repKind, int64, error) {
+	src := s.newRepSource(root.Descs, nil)
+	defer src.close()
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	rep, err := env.loadRep(root.Rep)
+	if err != nil || rgReplayOf(rep.Kind) == rgReplayNone || len(rep.Members) == 0 {
+		return 0, 0, err
+	}
+	return rep.Kind, rep.Members[len(rep.Members)-1].Size, nil
 }
 
 func authFormName(f byte) string {
@@ -61850,7 +62201,7 @@ func (g *rgGraph) rgCandidates(v int32, inv map[uint64][]int32, byKey map[string
 	var all []cs
 	for u, n := range score {
 		un := g.nodes[u]
-		if !un.live || un.obj == nil {
+		if !(un.live || un.canon != nil) || un.obj == nil || !g.canonOrderOK(v, u) {
 			continue
 		}
 		all = append(all, cs{u, n})
@@ -61881,6 +62232,15 @@ func (g *rgGraph) generate(ctx context.Context) error {
 	for i, nd := range g.nodes {
 		if nd.live && !nd.fixed && nd.size >= pol.MinObject {
 			eligible = append(eligible, int32(i))
+		}
+	}
+	if pol.Canonical {
+		streams, err := g.canonOpts(ctx, m, eligible)
+		if err != nil {
+			return err
+		}
+		if !pol.canonNoDelta {
+			eligible = append(eligible, streams...)
 		}
 	}
 	// Sketches (one read per node); CDC alternatives of record-holding nodes are priced from the bytes.
@@ -62249,6 +62609,11 @@ func (g *rgGraph) repOpts(ctx context.Context, m *authMigrator, eligible []int32
 		v := g.idx[m.order[i].sha]
 		nd := g.nodes[v]
 		o := &rgOpt{kind: rgRep, label: "rep-" + repKindName(rc.kind), rep: rc}
+		if rc.kind == repKindGzip { // B8: the read model prices the replay (zstd groups with gzip)
+			ra := g.s.newManifestReaderAt(nd.obj.man)
+			o.replay = rgReplayOf(canonKind(ra, nd.size))
+			ra.close()
+		}
 		rec := authRecord{SHA: nd.sha, Size: nd.size, Gen: 1, Form: authFormRep, Root: rc.root, Sketch: make([]uint64, 16)}
 		if b, err := rec.marshal(); err == nil {
 			o.meta = g.roundMeta(int64(len(b)))
@@ -62364,6 +62729,9 @@ func (e *rgEval) allowed(v, o int32) bool {
 		return false
 	}
 	if e.g.pol.Order == "newest" && nd.newest && opt.kind != rgCDC && !opt.cur {
+		return false
+	}
+	if e.noCanon && opt.canon && !opt.cur {
 		return false
 	}
 	return e.maxBases == 0 || len(opt.bases) <= e.maxBases || opt.cur
@@ -62579,7 +62947,7 @@ func (e *rgEval) arborescence(part []int32) {
 				continue
 			}
 			switch {
-			case opt.kind == rgCDC || opt.kind == rgRep || opt.kind == rgKeep && len(opt.bases) == 0:
+			case opt.kind == rgCDC || len(opt.bases) == 0:
 				edges = append(edges, edge{n, i, price(v, opt), v, int32(o)})
 			case len(opt.bases) >= 1:
 				if j, ok := local[opt.bases[0]]; ok {
@@ -62981,6 +63349,7 @@ type OptimizeReport struct {
 	WholeBudget      float64          `json:"whole_budget"`
 	Model            rgModel          `json:"model"`
 	Discovery        *DiscoveryStats  `json:"discovery,omitempty"`
+	Canon            *CanonStats      `json:"canon,omitempty"`
 	Nodes            int              `json:"nodes"`
 	Live             int              `json:"live"`
 	Partitions       int              `json:"partitions"`
@@ -63057,40 +63426,25 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 				e.localSearch(part, g.pol.MaxEvals)
 			}
 		default:
-			e.arborescence(part)
-			e.localSearch(part, g.pol.MaxEvals/2)
-			ja, selA := e.objective(), make([]int32, len(part))
-			for k, v := range part {
-				selA[k] = e.sel[v]
+			if g.pol.B7Search || !g.canonIn(part) {
+				g.searchB7(e, part, saved)
+				break
 			}
-			for _, v := range part {
-				e.set(v, saved[v])
+			// B8: the best plan without canonical options is the incumbent the full search must beat.
+			e.noCanon = true
+			g.searchB7(e, part, saved)
+			g.searchGroups(e, part)
+			e.noCanon = false
+			ji, selI := e.objective(), snapshotSel(e, part)
+			restoreSel(e, part, saved)
+			g.searchB7(e, part, saved)
+			g.searchGroups(e, part)
+			if ji < e.objective() || !e.feasibleAll(part) {
+				restoreSel(e, part, selI)
 			}
-			e.localSearch(part, g.pol.MaxEvals/2)
-			if ja < e.objective() {
-				for k, v := range part {
-					e.set(v, selA[k])
-				}
-			}
-			// B7: multi-base options can lead single moves into a worse optimum than the single-base
-			// options alone reach; a start searched over single-base options, then over all, bounds that.
-			if g.multiIn(part) && !g.pol.noRestrictedStart {
-				jb, selB := e.objective(), make([]int32, len(part))
-				for k, v := range part {
-					selB[k] = e.sel[v]
-					e.set(v, saved[v])
-				}
-				e.maxBases = 1
-				e.arborescence(part)
-				e.localSearch(part, g.pol.MaxEvals/4)
-				e.maxBases = 0
-				e.localSearch(part, g.pol.MaxEvals/4)
-				if jb <= e.objective() {
-					for k, v := range part {
-						e.set(v, selB[k])
-					}
-				}
-			}
+		}
+		if alg == "global" && !g.pol.B7Search && !g.canonIn(part) {
+			g.searchGroups(e, part)
 		}
 		// MinGain: a partition is rewritten only for a real improvement over its current form.
 		var stored int64
@@ -63106,6 +63460,109 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 		}
 	}
 	return e, oracled
+}
+
+// searchB7 is the B6/B7 search of one partition: an arborescence start and the current start, each improved
+// by local search, plus (B7) a single-base restricted start when multi-base options exist.
+func (g *rgGraph) searchB7(e *rgEval, part []int32, saved []int32) {
+	e.arborescence(part)
+	e.localSearch(part, g.pol.MaxEvals/2)
+	ja, selA := e.objective(), make([]int32, len(part))
+	for k, v := range part {
+		selA[k] = e.sel[v]
+	}
+	for _, v := range part {
+		e.set(v, saved[v])
+	}
+	e.localSearch(part, g.pol.MaxEvals/2)
+	if ja < e.objective() {
+		for k, v := range part {
+			e.set(v, selA[k])
+		}
+	}
+	// B7: multi-base options can lead single moves into a worse optimum than the single-base
+	// options alone reach; a start searched over single-base options, then over all, bounds that.
+	if g.multiIn(part) && !g.pol.noRestrictedStart {
+		jb, selB := e.objective(), make([]int32, len(part))
+		for k, v := range part {
+			selB[k] = e.sel[v]
+			e.set(v, saved[v])
+		}
+		e.maxBases = 1
+		e.arborescence(part)
+		e.localSearch(part, g.pol.MaxEvals/4)
+		e.maxBases = 0
+		e.localSearch(part, g.pol.MaxEvals/4)
+		if jb <= e.objective() {
+			for k, v := range part {
+				e.set(v, selB[k])
+			}
+		}
+	}
+}
+
+// canonIn reports whether a partition offers canonical options (B8).
+func (g *rgGraph) canonIn(part []int32) bool {
+	for _, v := range part {
+		for _, o := range g.nodes[v].opts {
+			if o.canon {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func snapshotSel(e *rgEval, part []int32) []int32 {
+	out := slices.Clone(e.sel)
+	_ = part
+	return out
+}
+
+func restoreSel(e *rgEval, part []int32, sel []int32) {
+	for _, v := range part {
+		e.set(v, sel[v])
+	}
+}
+
+// searchGroups (B8) adds starts the single-node moves cannot reach: options that pay only together, every
+// member of a group moved at once and then improved by local search — all representation options sharing
+// components, all canonical options — and an exact search of small partitions. A start replaces the
+// selection only when it is better and feasible.
+func (g *rgGraph) searchGroups(e *rgEval, part []int32) {
+	try := func(pick func(*rgOpt) bool) {
+		j0, sel0 := e.objective(), snapshotSel(e, part)
+		moved := false
+		for _, v := range part {
+			for o, opt := range g.nodes[v].opts {
+				if pick(opt) && e.allowed(v, int32(o)) {
+					e.set(v, int32(o))
+					moved = true
+					break
+				}
+			}
+		}
+		if !moved {
+			return
+		}
+		e.localSearch(part, g.pol.MaxEvals/8)
+		if !(e.objective() < j0-1) || !e.feasibleAll(part) {
+			restoreSel(e, part, sel0)
+		}
+	}
+	if !e.noCanon {
+		try(func(o *rgOpt) bool { return o.canon })
+	}
+	try(func(o *rgOpt) bool { return o.kind == rgRep && !o.canon })
+	// read-priced objectives re-evaluate reads on every move: a smaller exhaustive budget
+	limit := int64(1 << 14)
+	if g.pol.ReadWeight > 0 || g.pol.WholeWeight > 0 {
+		limit = 1 << 10
+	}
+	j0, sel0 := e.objective(), snapshotSel(e, part)
+	if e.oracle(part, limit) && (!(e.objective() <= j0) || !e.feasibleAll(part)) {
+		restoreSel(e, part, sel0)
+	}
 }
 
 // multiIn reports whether any node of part has a multi-base option.
@@ -63135,7 +63592,12 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	if err != nil {
 		return rep, err
 	}
-	if err := g.generate(ctx); err != nil {
+	defer g.close()
+	err = g.generate(ctx)
+	if pol.Canonical {
+		rep.Canon = &g.canonSt
+	}
+	if err != nil {
 		return rep, err
 	}
 	rep.Model = g.model
@@ -63304,11 +63766,17 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 		}
 		return 1
 	}
+	matCDC := func(nd *rgNode) error {
+		if nd.canon != nil {
+			return g.canonMaterialize(nd)
+		}
+		return s.materializeCDC(nd.obj.man)
+	}
 	pinOf := func(nd *rgNode) error {
 		if nd.obj == nil {
 			return fmt.Errorf("optimize: %x has no manifest to pin", nd.sha[:6])
 		}
-		if err := s.materializeCDC(nd.obj.man); err != nil {
+		if err := matCDC(nd); err != nil {
 			return err
 		}
 		ps, err := chunkPieces(nd.obj.man)
@@ -63318,7 +63786,7 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 		return publish(&authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormPin, Pieces: ps})
 	}
 	finalDepth := func(v int32) int {
-		if o := e.opt(v); o.kind == rgDelta {
+		if o := e.opt(v); o.kind == rgDelta || o.kind == rgRep && len(o.bases) > 0 {
 			return e.depth(v)
 		}
 		return 0
@@ -63354,6 +63822,11 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 				if g.nodes[b].obj == nil {
 					return fail(fmt.Errorf("base %x has no record", g.nodes[b].sha[:6]))
 				}
+				if g.nodes[b].canon != nil { // a canonical stream kept as CDC: its chunks first
+					if err := g.canonMaterialize(g.nodes[b]); err != nil {
+						return err
+					}
+				}
 				if err := s.authEnsurePin(g.nodes[b].obj); err != nil {
 					return err
 				}
@@ -63371,7 +63844,7 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 				setStatus(v, "done")
 				return nil
 			}
-			if err := s.materializeCDC(nd.obj.man); err != nil {
+			if err := matCDC(nd); err != nil {
 				return err
 			}
 			if recs[nd.sha].Form == authFormPin {
@@ -63400,6 +63873,25 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 			}
 		case rgRep:
 			root := o.rep.root
+			if o.canon {
+				r2, c2, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, nil)
+				if err == nil {
+					c2.close()
+					if r2.Rep != root.Rep || c2.SHA != g.nodes[o.bases[0]].sha {
+						err = errors.New("canonical re-construction differs from the plan")
+					}
+				}
+				if err != nil {
+					if cerr := ctx.Err(); cerr != nil {
+						return cerr
+					}
+					return fail(err)
+				}
+				b := g.nodes[o.bases[0]]
+				rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormRep, Depth: byte(finalDepth(v)), Sketch: nd.sk, Root: r2,
+					Bases: []xdBaseRef{{b.sha, b.size}}}
+				break
+			}
 			if o.rep.lazy {
 				r2, _, err := s.repConstructAt(nd.obj.man, nil, func() bool { return ctx.Err() == nil }, g.pol.ReserveFreeBytes, true)
 				if err == nil && r2.Rep != root.Rep {
@@ -64044,7 +64536,10 @@ func (g *rgGraph) regionCands(m *authMigrator, v int32, byKey map[string][]int32
 	nd := g.nodes[v]
 	ds := g.disc
 	t0 := time.Now()
-	ok := func(u int32) bool { un := g.nodes[u]; return un.live && un.obj != nil && un.sha != nd.sha }
+	ok := func(u int32) bool {
+		un := g.nodes[u]
+		return (un.live || un.canon != nil) && un.obj != nil && un.sha != nd.sha && g.canonOrderOK(v, u)
+	}
 	cands := g.rs.rank(v, nd.size, ok, byKey[nd.obj.bucket+"\x00"+nd.obj.key], g.rsShare(v))
 	cands = slices.DeleteFunc(cands, func(c rsCand) bool { return c.cov < rsMinCover(nd.size) })
 	ds.RankSeconds += time.Since(t0).Seconds()
@@ -64190,6 +64685,859 @@ func (g *rgGraph) regionCands(m *authMigrator, v int32, byKey map[string][]int32
 	}
 	ds.Multi += len(cs.multi)
 	return cs
+}
+
+// =============================================================================
+// 16e3. Cross-format canonical representations (B8, `authority optimize -canonical`)
+//
+// A codec container (gzip, zstd, ZIP) splits into its exact replay recipe and its decoded plaintext, the
+// canonical stream, which becomes a body of its own: a record keyed by the plaintext's SHA-256 that no
+// namespace entry names. The container's record is a rep whose representation references that body (member
+// role BODY) and declares it as its only base. Containers of one plaintext share one body; a raw object whose
+// bytes are the plaintext is that body; and the body takes any form the graph offers (CDC, a delta against
+// another stream or object, a structural rep), so containers whose bytes share nothing still share content.
+// Identity is the SHA-256 of the decoded bytes computed while the container is replayed, never a name or
+// header the format reports. While planning, a stream lives in a temp file served for a synthetic manifest.
+// =============================================================================
+
+const canonUUIDPrefix = "canon-"
+
+// canonOverlay serves the planning copies of canonical streams to the readers of synthetic manifests.
+type canonOverlay struct {
+	mu  sync.RWMutex
+	src map[[32]byte]*os.File
+}
+
+func (o *canonOverlay) lookup(man manifestV1) io.ReaderAt {
+	if !strings.HasPrefix(man.ManifestUUID, canonUUIDPrefix) {
+		return nil
+	}
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if f := o.src[sha]; f != nil {
+		return f
+	}
+	return nil
+}
+
+func (o *canonOverlay) set(sha [32]byte, f *os.File) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if f == nil {
+		delete(o.src, sha)
+		return
+	}
+	if o.src == nil {
+		o.src = map[[32]byte]*os.File{}
+	}
+	o.src[sha] = f
+}
+
+// canonReader is the objectReader of a planning stream.
+type canonReader struct {
+	ra       io.ReaderAt
+	off, end int64
+}
+
+func (r *canonReader) next() ([]byte, error) {
+	if r.off >= r.end {
+		return nil, io.EOF
+	}
+	n := min(r.end-r.off, 1<<20)
+	buf := make([]byte, n)
+	if k, _ := r.ra.ReadAt(buf, r.off); int64(k) != n {
+		return nil, fmt.Errorf("%w: canonical stream short at %d", errAuthMismatch, r.off)
+	}
+	r.off += n
+	return buf, nil
+}
+
+func (r *canonReader) close() {}
+
+// Replay kinds of a representation option, for the read model.
+const (
+	rgReplayNone = byte(iota)
+	rgReplayGzip
+	rgReplayZstd
+	rgReplayZip
+)
+
+// rgReplayCost prices exact codec replay per read (µs): a restart (fixed: predictor warm-up, tables) plus
+// per output byte, and per output byte of a whole read; warm is the plaintext before a restart a sparse read
+// fetches. Fitted to B2/B8 production-reader measurements (testing-harnesses/next/b8).
+var rgReplayCost = [...]struct {
+	Fixed, Byte, Whole float64
+	Warm               int64
+}{{}, {15000, 0.11, 0.11, 128 << 10}, {45000, 0.17, 0.10, 2 << 20}, {3000, 0.11, 0.11, 0}}
+
+func rgReplayOf(k repKind) byte {
+	switch k {
+	case repKindGzip:
+		return rgReplayGzip
+	case repKindZstd:
+		return rgReplayZstd
+	case repKindZip:
+		return rgReplayZip
+	}
+	return rgReplayNone
+}
+
+// replayUS is the modeled CPU of replaying output [a, b) of option o (0 unless o replays a codec).
+func (g *rgGraph) replayUS(o *rgOpt, a, b int64, whole bool) float64 {
+	if o.replay == rgReplayNone {
+		return 0
+	}
+	c := rgReplayCost[o.replay]
+	if whole {
+		return c.Whole * float64(b-a)
+	}
+	return c.Fixed + c.Byte*float64(b-a)
+}
+
+// canonTouch maps a read of a canonical wrapper onto its stream: output [a, b) needs plaintext from a warm-up
+// before the proportional position through the end of the unit.
+func (g *rgGraph) canonTouch(e *rgEval, v int32, o *rgOpt, a, b int64, t rgTouch, depth int) {
+	size := max(g.nodes[v].size, 1)
+	pa, pb := a*o.plain/size, (b*o.plain+size-1)/size
+	pa = max(0, pa-rgReplayCost[o.replay].Warm)
+	pb = min(o.plain, pb+64<<10)
+	if a == 0 && b >= size {
+		pa, pb = 0, o.plain
+	}
+	g.touch(e, o.bases[0], pa, pb, t, depth+1)
+}
+
+// CanonStats reports canonical analysis (B8).
+type CanonStats struct {
+	Containers   int     `json:"containers"`   // codec containers analyzed
+	Rejected     int     `json:"rejected"`     // not replayable exactly within limits
+	Streams      int     `json:"streams"`      // distinct canonical streams
+	Shared       int     `json:"shared"`       // containers whose stream another container or object already had
+	PlainBytes   int64   `json:"plain_bytes"`  // decoded bytes of the distinct streams
+	RecipeBytes  int64   `json:"recipe_bytes"` // priced bytes of the containers' own components
+	Seconds      float64 `json:"seconds"`      // analysis and proof
+	TempPeak     int64   `json:"temp_peak"`    // planning stream bytes held in temp files
+	Materialized int     `json:"materialized"` // streams whose chunks apply wrote
+}
+
+// canonKind sniffs a container kind the canonical builder handles.
+func canonKind(ra io.ReaderAt, size int64) repKind {
+	var hd [4]byte
+	if n, _ := ra.ReadAt(hd[:], 0); n < 4 || size < 18 {
+		return 0
+	}
+	switch {
+	case hd[0] == 0x1f && hd[1] == 0x8b && hd[2] == 8:
+		return repKindGzip
+	case bytes.Equal(hd[:], []byte{0x28, 0xb5, 0x2f, 0xfd}):
+		return repKindZstd
+	case bytes.Equal(hd[:], []byte("PK\x03\x04")):
+		return repKindZip
+	}
+	return 0
+}
+
+// canonOpts builds the canonical option of every eligible codec container and the node of its stream; the
+// returned stream nodes join discovery as targets and bases.
+func (g *rgGraph) canonOpts(ctx context.Context, m *authMigrator, eligible []int32) ([]int32, error) {
+	s := g.s
+	t0 := time.Now()
+	defer func() { g.canonSt.Seconds += time.Since(t0).Seconds() }()
+	var added []int32
+	for _, v := range eligible {
+		if err := ctx.Err(); err != nil {
+			return added, err
+		}
+		nd := g.nodes[v]
+		if nd.obj == nil || nd.size > repMaxInspect || nd.canon != nil {
+			continue
+		}
+		ra := s.newManifestReaderAt(nd.obj.man)
+		kind := canonKind(ra, nd.size)
+		ra.close()
+		if kind == 0 || kind == repKindZip && g.pol.noZip {
+			continue
+		}
+		g.canonSt.Containers++
+		if err := s.checkAuthDiskReserve(g.pol.ReserveFreeBytes, 0, 0); err != nil {
+			return added, err
+		}
+		mem := map[[32]byte][]byte{}
+		root, canon, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, mem)
+		if errors.Is(err, syscall.ENOSPC) {
+			return added, err
+		}
+		if err != nil {
+			g.canonSt.Rejected++
+			continue
+		}
+		cl, err := s.repClosureMem(root, mem)
+		if err != nil {
+			canon.close()
+			g.canonSt.Rejected++
+			continue
+		}
+		for sum, d := range mem {
+			if _, ok := m.phys[sum]; !ok {
+				if _, err := s.casStat(sum); err != nil {
+					m.phys[sum] = packPriceLen(d) + packRecordBytes
+				}
+			}
+		}
+		u, fresh, err := g.canonNode(nd, canon)
+		if err != nil {
+			return added, err
+		}
+		if fresh {
+			added = append(added, u)
+		} else {
+			g.canonSt.Shared++
+		}
+		o := &rgOpt{kind: rgRep, label: "canon-" + repKindName(kind), bases: []int32{u}, enc: []int32{u},
+			rep: &authRepCand{kind: kind, root: root, chunks: cl.chunks, lazy: true}, replay: rgReplayOf(kind), plain: g.nodes[u].size, canon: true}
+		rec := authRecord{SHA: nd.sha, Size: nd.size, Gen: 1, Form: authFormRep, Depth: 1, Bases: []xdBaseRef{{g.nodes[u].sha, g.nodes[u].size}}, Root: root, Sketch: make([]uint64, 16)}
+		if b, err := rec.marshal(); err == nil {
+			o.meta = g.roundMeta(int64(len(b)))
+		}
+		o.write = o.meta
+		seen := map[int32]bool{}
+		for _, c := range cl.chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			id, ok := g.cid[sum]
+			if !ok {
+				id = g.comp(sum, c.Length, s.physChunk(sum, c.Length, m.phys, g.pol.PriceCurrentStorage))
+			}
+			o.pieces = append(o.pieces, id)
+			if !seen[id] {
+				seen[id] = true
+				o.comps = append(o.comps, id)
+				g.canonSt.RecipeBytes += g.cphys[id]
+				if n, err := s.casStat(sum); err != nil || n != c.Length {
+					o.write += g.cphys[id]
+				}
+			}
+		}
+		g.codecLayout(o, root, mem, nd.size)
+		nd.opts = append(nd.opts, o)
+	}
+	return added, nil
+}
+
+// canonNode returns the node of a container's canonical stream, creating it (fresh) when no node has that
+// content; a node that already has the bytes (a live object, another container's stream) keeps its own source.
+func (g *rgGraph) canonNode(wrap *rgNode, c *repCanon) (int32, bool, error) {
+	if u, ok := g.idx[c.SHA]; ok {
+		un := g.nodes[u]
+		if un.obj != nil {
+			c.close()
+			return u, false, nil
+		}
+		// a stream an earlier run committed: give it its bytes back so it can change form
+		if err := g.canonAttach(un, wrap, c); err != nil {
+			return 0, false, err
+		}
+		un.fixed = false
+		return u, true, nil
+	}
+	nd := &rgNode{sha: c.SHA, size: c.Size}
+	if err := g.canonAttach(nd, wrap, c); err != nil {
+		return 0, false, err
+	}
+	u := int32(len(g.nodes))
+	g.idx[c.SHA] = u
+	g.nodes = append(g.nodes, nd)
+	return u, true, nil
+}
+
+// canonAttach gives a stream node its planning source: the synthetic manifest (production CDC chunk list of
+// the decoded bytes, priced as the pack writer would store them) and its CDC option.
+func (g *rgGraph) canonAttach(nd, wrap *rgNode, c *repCanon) error {
+	man := manifestV1{ManifestUUID: canonUUIDPrefix + hex.EncodeToString(c.SHA[:8]), ObjectSHA256: hex.EncodeToString(c.SHA[:]),
+		TotalLength: c.Size, CreatedAt: wrap.obj.t}
+	h := sha256.New()
+	ch := newCDCChunker(io.NewSectionReader(c.File, 0, c.Size))
+	for {
+		chunk, err := ch.nextView()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		h.Write(chunk)
+		sum := sha256.Sum256(chunk)
+		man.Chunks = append(man.Chunks, chunkRef{SHA256: hex.EncodeToString(sum[:]), Length: int64(len(chunk))})
+		if _, ok := g.cid[sum]; ok {
+			continue
+		}
+		phys := packPriceLen(chunk) + packRecordBytes
+		if n, err := g.s.casStat(sum); err == nil && n == int64(len(chunk)) {
+			phys = g.s.physChunk(sum, n, map[[32]byte]int64{}, g.pol.PriceCurrentStorage)
+		}
+		g.comp(sum, int64(len(chunk)), phys)
+	}
+	if [32]byte(h.Sum(nil)) != c.SHA {
+		return fmt.Errorf("%w: canonical stream %x changed while planning", errAuthMismatch, c.SHA[:6])
+	}
+	nd.obj = &authObj{sha: c.SHA, man: man, bucket: wrap.obj.bucket, key: wrap.obj.key + "#canon", t: wrap.obj.t}
+	nd.canon = c
+	g.s.canon.set(c.SHA, c.File)
+	g.canonSt.Streams++
+	g.canonSt.PlainBytes += c.Size
+	g.canonSt.TempPeak += c.Size
+	o, err := g.cdcOpt(nd, nil)
+	if err != nil {
+		return err
+	}
+	if nd.cur == nil {
+		nd.opts, nd.curOpt = []*rgOpt{o}, 0
+	} else {
+		nd.opts = append(nd.opts, o)
+	}
+	return nil
+}
+
+// canonMaterialize writes a stream's CDC chunks the store lacks (before its pin is published).
+func (g *rgGraph) canonMaterialize(nd *rgNode) error {
+	if nd.canon == nil || nd.canon.File == nil {
+		return fmt.Errorf("optimize: stream %x has no planning source", nd.sha[:6])
+	}
+	b := g.s.newCASBatch()
+	defer b.Abort()
+	var off int64
+	for _, c := range nd.obj.man.Chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if n, err := g.s.casStat(sum); err != nil || n != c.Length {
+			data := make([]byte, c.Length)
+			if _, err := nd.canon.File.ReadAt(data, off); err != nil {
+				return err
+			}
+			got, err := b.Add(data)
+			if err != nil {
+				return err
+			}
+			if got != sum {
+				return fmt.Errorf("%w: canonical chunk at %d", errAuthMismatch, off)
+			}
+		}
+		off += c.Length
+	}
+	if err := b.Flush(); err != nil {
+		return err
+	}
+	g.canonSt.Materialized++
+	return nil
+}
+
+// codecLayout splits a codec option's pieces: the representation and its table members, which every read
+// loads, and the replay units, spread over the output (a read loads the few around its restart).
+func (g *rgGraph) codecLayout(o *rgOpt, root *repRoot, mem map[[32]byte][]byte, size int64) {
+	src := g.s.newRepSource(root.Descs, nil)
+	src.mem = mem
+	defer src.close()
+	head := map[[32]byte]bool{root.Rep: true}
+	if rep, err := (&repEnv{Src: src, Limits: repProdLimits}).loadRep(root.Rep); err == nil {
+		for _, m := range rep.Members {
+			if m.Role == repStored {
+				head[m.SHA] = true
+				if d := root.Descs[m.SHA]; d != nil {
+					for _, r := range d.Refs {
+						head[r.SHA] = true
+					}
+				}
+			}
+		}
+	}
+	var rest []int32
+	o.hdr = nil
+	for _, p := range o.pieces {
+		if head[g.csha[p]] {
+			o.hdr = append(o.hdr, p)
+		} else {
+			rest = append(rest, p)
+		}
+	}
+	o.pieces, o.units = rest, nil
+	g.layoutLinear(o, size)
+	o.pieces = append(rest, o.hdr...)
+}
+
+// canonOrderOK reports whether target v may use base u: a stream builds on another stream only in the policy's
+// version order (oldest: an older one; newest: a newer one), so streams, which nothing requires but their
+// users, never form a cycle that would keep itself required.
+func (g *rgGraph) canonOrderOK(v, u int32) bool {
+	a, b := g.nodes[v], g.nodes[u]
+	if a.live || b.live || a.obj == nil || b.obj == nil {
+		return true
+	}
+	c := cmp.Or(a.obj.t.Compare(b.obj.t), cmp.Compare(v, u))
+	if g.pol.Order == "newest" {
+		return c < 0
+	}
+	return c > 0
+}
+
+// close drops the planning streams.
+func (g *rgGraph) close() {
+	for _, nd := range g.nodes {
+		if nd.canon != nil {
+			g.s.canon.set(nd.sha, nil)
+			nd.canon.close()
+		}
+	}
+}
+
+// ---- ZIP (kind 14) ---------------------------------------------------------------
+//
+// A ZIP is a sequence of segments: RAW bytes kept verbatim (local headers, descriptors, gaps, the central
+// directory), STORED entry data (its bytes are canonical plaintext), and DEFLATE entry data replayed exactly
+// from its decoded contents by the gzip IR (skeleton and units in the table). The canonical stream is the
+// concatenation of every STORED and DEFLATE entry's decoded bytes in file order: the representation's last
+// member, always a body reference. Entries that do not replay exactly (other methods, encryption, Zip64)
+// stay RAW, so the archive is reproduced whatever it holds. Table: varint count, then per segment a type byte
+// and RAW: len, bytes | STORED: len | DEFLATE: plain len, stream len, skeleton len, skeleton, units, per unit
+// len and bytes. Recipe: varint table member count.
+
+const (
+	zipSegRaw     = 1
+	zipSegStored  = 2
+	zipSegDeflate = 3
+	zipMaxEntries = 1 << 20
+	zipMaxTable   = 256 << 20
+)
+
+type zipSeg struct {
+	kind            byte
+	out, outLen     int64 // position and length in the archive
+	plain, plainLen int64 // position and length in the canonical stream
+	raw             []byte
+	skel            []byte
+	units           [][]byte
+}
+
+type zipEntry struct{ lh, csize, usize, method, flags int64 }
+
+// zipEntries reads the central directory (no Zip64, one disk) and returns the entries by local header offset.
+func zipEntries(src io.ReaderAt, size int64) ([]zipEntry, int64, error) {
+	tail := min(size, 65535+22)
+	buf := make([]byte, tail)
+	if err := repReadFullAt(src, buf, size-tail); err != nil {
+		return nil, 0, err
+	}
+	eo := bytes.LastIndex(buf, []byte("PK\x05\x06"))
+	if eo < 0 || len(buf)-eo < 22 {
+		return nil, 0, fmt.Errorf("%w: zip end record", errRepUnsupported)
+	}
+	e := buf[eo:]
+	le16 := func(b []byte) int64 { return int64(binary.LittleEndian.Uint16(b)) }
+	le32 := func(b []byte) int64 { return int64(binary.LittleEndian.Uint32(b)) }
+	n, cdSize, cdOff := le16(e[10:]), le32(e[12:]), le32(e[16:])
+	if le16(e[4:]) != 0 || le16(e[6:]) != 0 || le16(e[8:]) != n || int64(len(e)) != 22+le16(e[20:]) ||
+		n == 0xffff || cdSize == 0xffffffff || cdOff == 0xffffffff || n > zipMaxEntries || cdOff+cdSize > size-int64(len(e)) {
+		return nil, 0, fmt.Errorf("%w: zip end record fields", errRepUnsupported)
+	}
+	if cdSize > zipMaxTable {
+		return nil, 0, fmt.Errorf("%w: zip central directory", errRepLimit)
+	}
+	cd := make([]byte, cdSize)
+	if err := repReadFullAt(src, cd, cdOff); err != nil {
+		return nil, 0, err
+	}
+	out := make([]zipEntry, 0, n)
+	for p := int64(0); int64(len(out)) < n; {
+		if cdSize-p < 46 || string(cd[p:p+4]) != "PK\x01\x02" {
+			return nil, 0, fmt.Errorf("%w: zip central directory entry", errRepUnsupported)
+		}
+		h := cd[p:]
+		z := zipEntry{flags: le16(h[8:]), method: le16(h[10:]), csize: le32(h[20:]), usize: le32(h[24:]), lh: le32(h[42:])}
+		if z.csize == 0xffffffff || z.usize == 0xffffffff || z.lh == 0xffffffff || le16(h[34:]) != 0 {
+			return nil, 0, fmt.Errorf("%w: zip64 or multi-disk entry", errRepUnsupported)
+		}
+		out = append(out, z)
+		p += 46 + le16(h[28:]) + le16(h[30:]) + le16(h[32:])
+		if p > cdSize {
+			return nil, 0, fmt.Errorf("%w: zip central directory entry", errRepUnsupported)
+		}
+	}
+	slices.SortFunc(out, func(a, b zipEntry) int { return cmp.Compare(a.lh, b.lh) })
+	return out, cdOff, nil
+}
+
+// zipPlainSink collects one entry's decoded bytes for the canonical stream.
+type zipPlainSink struct {
+	plain []byte
+	units [][]byte
+}
+
+func (s *zipPlainSink) Plain(p []byte) error { s.plain = append(s.plain, p...); return nil }
+func (s *zipPlainSink) Unit(i int, d []byte) error {
+	for len(s.units) <= i {
+		s.units = append(s.units, nil)
+	}
+	s.units[i] = append([]byte(nil), d...)
+	return nil
+}
+
+// encodeZip builds the canonical ZIP representation (top level of a canonical build only).
+func (b *repBuilder) encodeZip(src io.ReaderAt, size int64) (*repObject, error) {
+	if b.canon == nil || b.depth != 1 {
+		return nil, fmt.Errorf("%w: zip outside a canonical build", errRepUnsupported)
+	}
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	ents, cdOff, err := zipEntries(src, size)
+	if err != nil {
+		return nil, err
+	}
+	f, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			repRemoveTemp(f)
+		}
+	}()
+	digest := sha256.New()
+	pw := bufio.NewWriterSize(io.MultiWriter(f, digest), 1<<20)
+	var table []byte
+	var segs int64
+	var cur, plain int64
+	raw := func(to int64) error {
+		if to <= cur {
+			return nil
+		}
+		buf := make([]byte, to-cur)
+		if err := repReadFullAt(src, buf, cur); err != nil {
+			return err
+		}
+		table = append(binary.AppendUvarint(append(table, zipSegRaw), uint64(len(buf))), buf...)
+		segs++
+		cur = to
+		return nil
+	}
+	// Layout first (cheap, sequential), then entries analyzed by a few workers in bounded batches.
+	type job struct {
+		z          zipEntry
+		data       int64
+		plain      []byte
+		skel       []byte
+		units      [][]byte
+		ok, stored bool
+	}
+	var hdr [30]byte
+	var jobs []*job
+	for _, z := range ents {
+		if z.lh < cur || z.lh+30 > cdOff {
+			return nil, fmt.Errorf("%w: zip entries overlap", errRepUnsupported)
+		}
+		if err := repReadFullAt(src, hdr[:], z.lh); err != nil {
+			return nil, err
+		}
+		if string(hdr[:4]) != "PK\x03\x04" {
+			return nil, fmt.Errorf("%w: zip local header", errRepUnsupported)
+		}
+		data := z.lh + 30 + int64(binary.LittleEndian.Uint16(hdr[26:])) + int64(binary.LittleEndian.Uint16(hdr[28:]))
+		if data+z.csize > cdOff {
+			return nil, fmt.Errorf("%w: zip entry data", errRepUnsupported)
+		}
+		if z.flags&1 != 0 || z.csize == 0 || (z.method != 0 && z.method != 8) || z.method == 0 && z.csize != z.usize {
+			continue // left inside the next RAW segment
+		}
+		jobs = append(jobs, &job{z: z, data: data, stored: z.method == 0})
+		cur = data + z.csize
+	}
+	cur = 0
+	workers := min(runtime.GOMAXPROCS(0), 4)
+	for lo := 0; lo < len(jobs); {
+		hi, batch := lo, int64(0)
+		for hi < len(jobs) && (hi == lo || batch+jobs[hi].z.usize < 64<<20 && hi-lo < 256) {
+			batch += jobs[hi].z.usize
+			hi++
+		}
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, workers)
+		var rerr error
+		var emu sync.Mutex
+		for _, j := range jobs[lo:hi] {
+			buf := make([]byte, j.z.csize)
+			if err := repReadFullAt(src, buf, j.data); err != nil {
+				return nil, err
+			}
+			if j.stored {
+				j.plain, j.ok = buf, true
+				continue
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(j *job, buf []byte) {
+				defer func() { <-sem; wg.Done() }()
+				sink := &zipPlainSink{}
+				st, _, err := repIREncodeStream(bytes.NewReader(buf), repIRStreamConfig{Target: 16 << 10, Profile: repIRAutoProfile, Workers: 1}, sink)
+				if errors.Is(err, syscall.ENOSPC) {
+					emu.Lock()
+					rerr = err
+					emu.Unlock()
+				}
+				if err != nil || st.StreamLen != j.z.csize || int64(len(sink.plain)) != j.z.usize || len(sink.units) != st.Units {
+					return // not exactly replayable: RAW
+				}
+				j.plain, j.skel, j.units, j.ok = sink.plain, st.Skeleton, sink.units, true
+			}(j, buf)
+		}
+		wg.Wait()
+		if rerr != nil {
+			return nil, rerr
+		}
+		for _, j := range jobs[lo:hi] {
+			if !j.ok {
+				continue
+			}
+			if err := raw(j.data); err != nil {
+				return nil, err
+			}
+			if _, err := pw.Write(j.plain); err != nil {
+				return nil, err
+			}
+			if j.stored {
+				table = binary.AppendUvarint(append(table, zipSegStored), uint64(j.z.csize))
+			} else {
+				table = binary.AppendUvarint(append(table, zipSegDeflate), uint64(j.z.usize))
+				table = binary.AppendUvarint(table, uint64(j.z.csize))
+				table = append(binary.AppendUvarint(table, uint64(len(j.skel))), j.skel...)
+				table = binary.AppendUvarint(table, uint64(len(j.units)))
+				for _, u := range j.units {
+					table = append(binary.AppendUvarint(table, uint64(len(u))), u...)
+				}
+			}
+			segs++
+			plain += j.z.usize
+			cur = j.data + j.z.csize
+			j.plain, j.units = nil, nil
+			if len(table) > zipMaxTable {
+				return nil, fmt.Errorf("%w: zip table", errRepLimit)
+			}
+		}
+		lo = hi
+	}
+	if err := raw(size); err != nil {
+		return nil, err
+	}
+	if err := pw.Flush(); err != nil {
+		return nil, err
+	}
+	if plain == 0 {
+		return nil, fmt.Errorf("%w: zip without replayable entries", errRepUnsupported)
+	}
+	members, err := b.codecTable(append(binary.AppendUvarint(nil, uint64(segs)), table...))
+	if err != nil {
+		return nil, err
+	}
+	body, ok := b.canonPlain(f, [32]byte(digest.Sum(nil)), plain)
+	if !ok {
+		return nil, fmt.Errorf("%w: zip plaintext", errRepUnsupported)
+	}
+	keep = true
+	out := &repObject{Kind: repKindZip, Size: size, Members: append(members, body), Recipe: binary.AppendUvarint(nil, uint64(len(members)))}
+	return out, nil
+}
+
+// zipParse reads and checks a ZIP representation's table against the output and plaintext sizes.
+func zipParse(c *repCall) ([]zipSeg, error) {
+	if c.env.Cache != nil {
+		if v, ok := c.env.Cache.getDerived(c.ID).([]zipSeg); ok {
+			return v, nil
+		}
+	}
+	r := c.Rep.Recipe
+	nt, k := binary.Uvarint(r)
+	if k != len(r) || nt < 1 || nt+1 != uint64(len(c.Rep.Members)) || c.Rep.Members[nt].Role != repBody {
+		return nil, repCorrupt("zip recipe members")
+	}
+	t, err := readTable(c, int(nt), zipMaxTable+16)
+	if err != nil {
+		return nil, err
+	}
+	bad := func(what string) error { return repCorrupt("zip table %s", what) }
+	uv := func() (int64, bool) {
+		v, k := binary.Uvarint(t)
+		if k <= 0 || v > uint64(c.Rep.Size)+uint64(c.Rep.Members[nt].Size) {
+			return 0, false
+		}
+		t = t[k:]
+		return int64(v), true
+	}
+	n, ok := uv()
+	if !ok || n > 2*zipMaxEntries+1 {
+		return nil, bad("count")
+	}
+	segs := make([]zipSeg, 0, n)
+	var out, plain, cost int64
+	for range n {
+		if len(t) == 0 {
+			return nil, bad("truncated")
+		}
+		s := zipSeg{kind: t[0], out: out, plain: plain}
+		t = t[1:]
+		switch s.kind {
+		case zipSegRaw:
+			l, ok := uv()
+			if !ok || l < 1 || l > int64(len(t)) {
+				return nil, bad("raw")
+			}
+			s.raw, s.outLen, t = t[:l], l, t[l:]
+		case zipSegStored:
+			l, ok := uv()
+			if !ok || l < 1 {
+				return nil, bad("stored")
+			}
+			s.outLen, s.plainLen = l, l
+		case zipSegDeflate:
+			pl, ok1 := uv()
+			cl, ok2 := uv()
+			sl, ok3 := uv()
+			if !ok1 || !ok2 || !ok3 || cl < 1 || sl > int64(len(t)) {
+				return nil, bad("deflate")
+			}
+			s.plainLen, s.outLen, s.skel, t = pl, cl, t[:sl], t[sl:]
+			sk, err := repIRParseSkeleton(s.skel, int(max(pl, 1)))
+			if err != nil || int64(sk.StreamLen) != cl {
+				return nil, bad("skeleton")
+			}
+			var sum int64
+			for _, u := range sk.Units {
+				sum += int64(u.PlainLen)
+			}
+			nu, ok := uv()
+			if !ok || nu != int64(len(sk.Units)) || sum > pl {
+				return nil, bad("units")
+			}
+			for range nu {
+				l, ok := uv()
+				if !ok || l > int64(len(t)) {
+					return nil, bad("unit")
+				}
+				s.units, t = append(s.units, t[:l]), t[l:]
+			}
+		default:
+			return nil, bad("segment type")
+		}
+		out, plain = out+s.outLen, plain+s.plainLen
+		cost += int64(len(s.raw)+len(s.skel)) + 64
+		segs = append(segs, s)
+	}
+	if len(t) != 0 || out != c.Rep.Size || plain != c.Rep.Members[nt].Size {
+		return nil, bad("totals")
+	}
+	if c.env.Cache != nil {
+		c.env.Cache.putDerived(c.ID, segs, cost+int64(cap(segs))*120)
+	}
+	return segs, nil
+}
+
+// zipWrite writes segment s's archive bytes [lo, hi) (relative to the segment) from the canonical stream.
+func zipWrite(s *zipSeg, plain io.ReaderAt, lo, hi int64, w io.Writer) error {
+	switch s.kind {
+	case zipSegRaw:
+		_, err := w.Write(s.raw[lo:hi])
+		return err
+	case zipSegStored:
+		buf := make([]byte, hi-lo)
+		if k, _ := plain.ReadAt(buf, s.plain+lo); int64(k) != hi-lo {
+			return fmt.Errorf("%w: zip plaintext short at %d", errRepShort, s.plain+lo)
+		}
+		_, err := w.Write(buf)
+		return err
+	}
+	cw := &repClip{w: w, a: lo, b: hi}
+	units := func(i int) ([]byte, error) {
+		if i < 0 || i >= len(s.units) {
+			return nil, repCorrupt("zip unit %d of %d", i, len(s.units))
+		}
+		return s.units[i], nil
+	}
+	err := repIRReconstructStream(cw, s.skel, units, io.NewSectionReader(plain, s.plain, s.plainLen), repIRStreamDecodeOptions{Workers: 1})
+	if err == nil && cw.pos != s.outLen {
+		err = repCorrupt("zip entry replayed %d of %d bytes", cw.pos, s.outLen)
+	}
+	return err
+}
+
+type repZipDecoder struct{}
+
+func (repZipDecoder) Decode(c *repCall) error { return zipReadRange(c, 0, c.Rep.Size, c.W) }
+
+func (repZipDecoder) Expand(c *repCall, emit func([32]byte)) error { return nil }
+
+// zipReadRange writes archive bytes [off, off+n): only the segments the range overlaps are produced (a DEFLATE
+// entry is replayed from its start).
+func zipReadRange(c *repCall, off, n int64, w io.Writer) error {
+	segs, err := zipParse(c)
+	if err != nil {
+		return err
+	}
+	nt := len(c.Rep.Members) - 1
+	plain, err := c.bodyAt(&c.Rep.Members[nt])
+	if err != nil {
+		return err
+	}
+	end := off + n
+	i, _ := slices.BinarySearchFunc(segs, off, func(s zipSeg, x int64) int { return cmp.Compare(s.out+s.outLen, x+1) })
+	j, _ := slices.BinarySearchFunc(segs, end, func(s zipSeg, x int64) int { return cmp.Compare(s.out, x) })
+	if err := c.decodeWork().step(int64(j - i)); err != nil {
+		return err
+	}
+	clip := func(k int, w io.Writer) error {
+		s := &segs[k]
+		return zipWrite(s, plain, max(off, s.out)-s.out, min(end, s.out+s.outLen)-s.out, w)
+	}
+	workers := min(runtime.GOMAXPROCS(0), 4)
+	if j-i < 8 || workers < 2 {
+		for k := i; k < j; k++ {
+			if err := clip(k, w); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// several entries: replayed concurrently in bounded batches, written in order
+	for lo := i; lo < j; {
+		hi, batch := lo, int64(0)
+		for hi < j && (hi == lo || batch+segs[hi].outLen < 16<<20 && hi-lo < 256) {
+			batch += segs[hi].outLen
+			hi++
+		}
+		outs, errs := make([][]byte, hi-lo), make([]error, hi-lo)
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, workers)
+		for k := lo; k < hi; k++ {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(k int) {
+				defer func() { <-sem; wg.Done() }()
+				var b bytes.Buffer
+				errs[k-lo] = clip(k, &b)
+				outs[k-lo] = b.Bytes()
+			}(k)
+		}
+		wg.Wait()
+		for k := range outs {
+			if errs[k] != nil {
+				return errs[k]
+			}
+			if _, err := w.Write(outs[k]); err != nil {
+				return err
+			}
+		}
+		lo = hi
+	}
+	return nil
 }
 
 // =============================================================================
@@ -73190,6 +74538,9 @@ const (
 	// zstd recipes with a per-block model reach after the seek index: a cxseek-only
 	// build would open the store and then reject those recipes on every read.
 	authReachFeature = "cxreach"
+	// B8: rep records whose representations reference bodies (canonical streams) as their bases, and the
+	// ZIP kind. Builds without it would read such records as corrupt.
+	authCanonFeature = "canon"
 	authZN7MaxAux    = 64 << 20
 	authZN7ReadChunk = 4 << 20 // decoded span a body keeps between ReadAt calls
 )
@@ -73764,7 +75115,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != packBlockedFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature {
 			return x
 		}
 	}
@@ -73796,7 +75147,7 @@ func (s *Store) authRecordFeatures(rec *authRecord) ([]string, error) {
 		for _, f := range []struct {
 			on   bool
 			name string
-		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}} {
+		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}} {
 			if f.on {
 				out = append(out, f.name)
 			}
@@ -82275,6 +83626,7 @@ type repReplayNeeds struct {
 	codec        bool // the root itself is a gzip or zstd representation
 	seek         bool // a gzip or zstd recipe carries a seek index
 	reach        bool // a zstd recipe carries the per-block model reach (after its seek index)
+	canon        bool // B8: body references or ZIP representations
 }
 
 func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
@@ -82285,6 +83637,7 @@ func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
 	if err != nil {
 		return need, err
 	}
+	need.canon = len(reach.Bodies) > 0
 	for id, role := range reach.Role {
 		if role != repDepRep {
 			continue
@@ -82298,8 +83651,9 @@ func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
 			need.stream = need.stream || obj.Kind == repKindParquet && obj.Recipe[0] == repPQrecipeVersionStream
 		}
 		if id == r.Rep {
-			need.codec = obj.Kind == repKindGzip || obj.Kind == repKindZstd
+			need.codec = obj.Kind == repKindGzip || obj.Kind == repKindZstd || obj.Kind == repKindZip
 		}
+		need.canon = need.canon || obj.Kind == repKindZip
 		switch obj.Kind {
 		case repKindGzip:
 			g, err := gzipRecipe(obj)
@@ -82333,7 +83687,7 @@ func repFloorOf(env *repEnv, reach *repReach) (int, error) {
 			return 0, err
 		}
 		switch obj.Kind {
-		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd:
+		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd, repKindZip: // zip: gated by the authority "canon" feature
 		case repKindModel:
 			floor = max(floor, storeFormatVersionModel)
 		case repKindSST, repKindParquet:
