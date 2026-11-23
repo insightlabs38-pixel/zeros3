@@ -60257,6 +60257,7 @@ func runAuthority(args []string) {
 	algorithm := fs.String("algorithm", "global", "optimize: global, local (the sequential rule on the same candidates), oracle or current")
 	pareto := fs.String("pareto", "", "optimize: comma-separated read weights of a frontier reported beside the plan")
 	cands := fs.Int("candidates", 4, "migrate/optimize: trial bases per target (max 8)")
+	discovery := fs.String("discovery", "", "optimize: candidate discovery, region (B7 positional fingerprints, complementary bases) or sketch (B6)")
 	fs.Parse(args[1:])
 	if sub == "recover" {
 		applyCredentialEnvFallback(fs, accessKey, secretKey, region)
@@ -60418,7 +60419,8 @@ func runAuthority(args []string) {
 		defer stop()
 		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
-			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm}
+			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
+			Discovery: *discovery}
 		pol.Locality = []int{}
 		for _, f := range strings.Split(*locality, ",") {
 			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
@@ -60519,19 +60521,24 @@ func runAuthority(args []string) {
 // objective of the global optimizer.
 type OptimizePolicy struct {
 	AuthPolicy
-	Profile         string    `json:"profile"`           // archive | mixed | hot: default weights below
-	ReadWeight      float64   `json:"read_weight"`       // retained bytes one modeled µs of a content's sparse cold read is worth
-	ReadBudget      float64   `json:"read_budget"`       // modeled sparse read at most this multiple of the content's CDC read (0 = none)
-	WholeWeight     float64   `json:"whole_weight"`      // retained bytes one modeled µs of a content's whole-object read is worth
-	WholeBudget     float64   `json:"whole_budget"`      // modeled whole read at most this multiple of the content's CDC whole read (0 = none)
-	MigrationWeight float64   `json:"migration_weight"`  // retained-byte equivalent of one byte a transition writes
-	MinGain         float64   `json:"min_gain"`          // a partition changes only for this fraction of its stored bytes
-	Locality        []int     `json:"locality"`          // COPY locality slacks programs are generated with (0 = the plain matcher)
-	Algorithm       string    `json:"algorithm"`         // global | local | oracle | current (ablations: single, edmonds)
-	Pareto          []float64 `json:"pareto,omitempty"`  // read weights of a frontier sweep reported beside the plan
-	MaxEvals        int64     `json:"max_evals"`         // move evaluations per partition
-	Blocked         *bool     `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
-	Oracle          bool      `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
+	Profile           string                              `json:"profile"`           // archive | mixed | hot: default weights below
+	ReadWeight        float64                             `json:"read_weight"`       // retained bytes one modeled µs of a content's sparse cold read is worth
+	ReadBudget        float64                             `json:"read_budget"`       // modeled sparse read at most this multiple of the content's CDC read (0 = none)
+	WholeWeight       float64                             `json:"whole_weight"`      // retained bytes one modeled µs of a content's whole-object read is worth
+	WholeBudget       float64                             `json:"whole_budget"`      // modeled whole read at most this multiple of the content's CDC whole read (0 = none)
+	MigrationWeight   float64                             `json:"migration_weight"`  // retained-byte equivalent of one byte a transition writes
+	MinGain           float64                             `json:"min_gain"`          // a partition changes only for this fraction of its stored bytes
+	Locality          []int                               `json:"locality"`          // COPY locality slacks programs are generated with (0 = the plain matcher)
+	Algorithm         string                              `json:"algorithm"`         // global | local | oracle | current (ablations: single, edmonds)
+	Pareto            []float64                           `json:"pareto,omitempty"`  // read weights of a frontier sweep reported beside the plan
+	MaxEvals          int64                               `json:"max_evals"`         // move evaluations per partition
+	Blocked           *bool                               `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
+	Oracle            bool                                `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
+	Discovery         string                              `json:"discovery"`         // candidate discovery: region (B7) | sketch (B6)
+	Region            rsParams                            `json:"-"`
+	discover          func(g *rgGraph, v int32) rgCandSet // research hook: replaces discovery (oracles)
+	recordBlock       int64                               // research: price record files in this allocation unit
+	noRestrictedStart bool                                // ablation: the B6 search without the single-base start
 }
 
 // rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
@@ -60584,6 +60591,12 @@ func (p OptimizePolicy) norm() OptimizePolicy {
 	if p.MaxEvals <= 0 {
 		p.MaxEvals = 400000
 	}
+	if p.Discovery == "" {
+		p.Discovery = "sketch"
+	}
+	if p.Region.MinLevel == 0 {
+		p.Region = rsDefaultParams()
+	}
 	return p
 }
 
@@ -60621,6 +60634,7 @@ type rgOpt struct {
 	depth  int   // recorded depth of a kept delta (dependents' bases must stay below it)
 	loc    int   // locality slack of the encoder
 	win    bool  // windowed codec
+	union  bool  // multi-base program matched over the union of its bases (B7), else refined base by base
 	sum    [32]byte
 	rep    *authRepCand
 	cur    bool
@@ -60658,23 +60672,34 @@ type rgModel struct {
 var rgDefaultModel = rgModel{Fixed: 164, Node: 209, Rec: 128, Byte: 0.0064, RecB: 128, ByteB: 0.0064, RawByte: 0.0018, Copy: 0.0004, WRec: 340, WByte: 0.0018, WCopy: 0.0064}
 
 type rgGraph struct {
-	s      *Store
-	pol    OptimizePolicy
-	nodes  []*rgNode
-	idx    map[[32]byte]int32
-	cid    map[[32]byte]int32
-	cphys  []int64
-	clen   []int64
-	craw   []bool // stored (or priced) without compression
-	ext    []int32
-	block  int64
-	model  rgModel
-	encs   int
-	encNS  int64
-	parts  [][]int32
-	partOf []int32
-	wc     *authWinCache // decoded windows shared by the windowed encoders of planning and transitions
-	score  map[int32]int // candidate scoring scratch
+	s         *Store
+	pol       OptimizePolicy
+	nodes     []*rgNode
+	idx       map[[32]byte]int32
+	cid       map[[32]byte]int32
+	cphys     []int64
+	clen      []int64
+	craw      []bool // stored (or priced) without compression
+	ext       []int32
+	block     int64
+	model     rgModel
+	encs      int
+	encNS     int64
+	parts     [][]int32
+	partOf    []int32
+	wc        *authWinCache // decoded windows shared by the windowed encoders of planning and transitions
+	score     map[int32]int // candidate scoring scratch
+	rs        *rsIndex      // B7 region fingerprints (discovery region)
+	disc      *DiscoveryStats
+	vops      map[int32]map[int32][]dwDcoreOp // plain programs discovery verified (target -> base), reused by the encoder
+	chunkRefs map[[32]byte]int32              // eligible contents holding each CDC chunk (B7 share discount)
+}
+
+// rgCandSet is what discovery hands the encoders for one target: single bases, best first, and
+// complementary base sets (each encoded as one program over the union of its bases).
+type rgCandSet struct {
+	singles []int32
+	multi   [][]int32
 }
 
 func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
@@ -60704,27 +60729,28 @@ func (g *rgGraph) roundMeta(n int64) int64 {
 // outside the model) references it. Every quantity is a function of sel, so a trial move is undone by
 // setting the old option again.
 type rgEval struct {
-	g      *rgGraph
-	sel    []int32
-	req    []int32
-	ref    []int32
-	users  [][]int32
-	metaOf []int64
-	bytes  int64 // components + record files
-	meta   int64
-	writes int64
-	rc     []float64
-	rcOK   []bool
-	wh     []float64 // whole-read cost cache, valid with rcOK
-	rsum   float64
-	wsum   float64
-	dirty  []int32
-	queued []bool
-	dep    []int8
-	depOK  []bool
-	evals  int64
-	tmp    rgTouch
-	single bool // ablation: single-node moves only
+	g        *rgGraph
+	sel      []int32
+	req      []int32
+	ref      []int32
+	users    [][]int32
+	metaOf   []int64
+	bytes    int64 // components + record files
+	meta     int64
+	writes   int64
+	rc       []float64
+	rcOK     []bool
+	wh       []float64 // whole-read cost cache, valid with rcOK
+	rsum     float64
+	wsum     float64
+	dirty    []int32
+	queued   []bool
+	dep      []int8
+	depOK    []bool
+	evals    int64
+	tmp      rgTouch
+	single   bool // ablation: single-node moves only
+	maxBases int  // restricted start: options with at most this many bases (0 = any)
 }
 
 func newRGEval(g *rgGraph, sel []int32) *rgEval {
@@ -61253,6 +61279,9 @@ func (s *Store) rgBuild(ctx context.Context, pol OptimizePolicy) (*rgGraph, erro
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(s.root, &st); err == nil && st.Bsize > 0 {
 		g.block = int64(st.Bsize)
+	}
+	if pol.recordBlock > 0 {
+		g.block = pol.recordBlock
 	}
 	s.formatMu.Lock()
 	blocked := slices.Contains(s.format.Features, packBlockedFeature)
@@ -61794,6 +61823,17 @@ func (g *rgGraph) generate(ctx context.Context) error {
 	// Sketches (one read per node); CDC alternatives of record-holding nodes are priced from the bytes.
 	inv := map[uint64][]int32{}
 	byKey := map[string][]int32{}
+	region := pol.Discovery == "region" && pol.discover == nil
+	g.disc = &DiscoveryStats{Method: pol.Discovery, Contents: len(eligible)}
+	if pol.discover != nil {
+		g.disc.Method = "hook"
+	}
+	var feats [][]rsFeat
+	var lvls []uint8
+	if region {
+		feats, lvls = make([][]rsFeat, len(g.nodes)), make([]uint8, len(g.nodes))
+	}
+	tx := time.Now()
 	for _, v := range eligible {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -61807,9 +61847,18 @@ func (g *rgGraph) generate(ctx context.Context) error {
 			}
 			data = b
 			nd.sk = authFeatures(b, 16)
+			if region {
+				feats[v], lvls[v] = pol.Region.features(b)
+			}
 		} else {
 			r := s.newAuthObjAtC(nd.obj.man, g.wc)
-			sk, err := authSketchAt(r, nd.size, 16)
+			var sk []uint64
+			var err error
+			if region {
+				sk, feats[v], lvls[v], err = pol.Region.sketchFeaturesAt(r, nd.size, 16)
+			} else {
+				sk, err = authSketchAt(r, nd.size, 16)
+			}
 			r.close()
 			if err != nil {
 				continue
@@ -61829,6 +61878,22 @@ func (g *rgGraph) generate(ctx context.Context) error {
 		k := nd.obj.bucket + "\x00" + nd.obj.key
 		byKey[k] = append(byKey[k], v)
 	}
+	g.vops = map[int32]map[int32][]dwDcoreOp{}
+	if region {
+		g.chunkRefs = map[[32]byte]int32{}
+		for _, v := range eligible {
+			seen := map[[32]byte]bool{}
+			for _, c := range g.nodes[v].obj.man.Chunks {
+				if sum, err := decodeHexSHA256(c.SHA256); err == nil && !seen[sum] {
+					seen[sum] = true
+					g.chunkRefs[sum]++
+				}
+			}
+		}
+		g.rs = newRSIndex(pol.Region, feats, lvls)
+		g.disc.Features, g.disc.IndexBytes = int64(len(g.rs.post)), g.rs.Bytes()
+	}
+	g.disc.ExtractSeconds = time.Since(tx).Seconds()
 	comp := newCompressor(!pol.PriceCurrentStorage)
 	if pol.AllowDelta {
 		for _, v := range eligible {
@@ -61839,15 +61904,33 @@ func (g *rgGraph) generate(ctx context.Context) error {
 			if nd.sk == nil || pol.Order == "newest" && nd.newest {
 				continue
 			}
-			cands := g.rgCandidates(v, inv, byKey)
-			if len(cands) == 0 {
+			var cs rgCandSet
+			switch {
+			case pol.discover != nil:
+				cs = pol.discover(g, v)
+			case region:
+				cs = g.regionCands(m, v, byKey)
+				if pol.Region.Union {
+					for _, u := range g.rgCandidates(v, inv, byKey) {
+						if !slices.Contains(cs.singles, u) {
+							cs.singles = append(cs.singles, u)
+						}
+					}
+				}
+			default:
+				t0 := time.Now()
+				cs.singles = g.rgCandidates(v, inv, byKey)
+				g.disc.RankSeconds += time.Since(t0).Seconds()
+				g.disc.Singles += len(cs.singles)
+			}
+			if len(cs.singles) == 0 && len(cs.multi) == 0 {
 				continue
 			}
 			var err error
 			if nd.size > authWindowMin {
-				err = g.windowedOpts(ctx, m, v, cands, comp)
+				err = g.windowedOpts(ctx, m, v, cs.singles, comp)
 			} else {
-				err = g.memOpts(ctx, m, v, cands, comp)
+				err = g.memOpts(ctx, m, v, cs, comp)
 			}
 			if err != nil {
 				return err
@@ -61864,8 +61947,9 @@ func (g *rgGraph) generate(ctx context.Context) error {
 
 // memOpts encodes in-memory deltas of v against each candidate (plain and locality-aware programs) and
 // refines the best single-base program with a second base.
-func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands []int32, comp *packCompressor) error {
+func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cs rgCandSet, comp *packCompressor) error {
 	nd := g.nodes[v]
+	cands := cs.singles
 	target, err := m.source(nd.obj.man)
 	if err != nil {
 		return nil
@@ -61879,7 +61963,7 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands [
 		est int64
 	}
 	var singles []single
-	enc := func(srcs []xdSrc, bases []int32, ops []dwDcoreOp, loc int) error {
+	enc := func(srcs []xdSrc, bases []int32, ops []dwDcoreOp, loc int, union bool) error {
 		t0 := time.Now()
 		blob, refs, err := xdEncodeOpsSum(srcs, xdFromDw(ops), target, nd.sha, g.pol.FrameSpan)
 		g.encs++
@@ -61901,7 +61985,7 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands [
 		if err != nil {
 			return nil
 		}
-		o.enc = bases
+		o.enc, o.union = bases, union
 		for _, p := range nd.opts {
 			if p.kind == rgDelta && p.sum == o.sum {
 				return nil
@@ -61928,11 +62012,14 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands [
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			ops := x.MatchLocal(target, loc)
+			ops, ok := g.vops[v][u]
+			if !ok || loc != 0 {
+				ops = x.MatchLocal(target, loc)
+			}
 			if loc == 0 {
 				best = ops
 			}
-			if err := enc([]xdSrc{{un.sha, b}}, []int32{u}, ops, loc); err != nil {
+			if err := enc([]xdSrc{{un.sha, b}}, []int32{u}, ops, loc, false); err != nil {
 				return err
 			}
 		}
@@ -61941,7 +62028,35 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands [
 		}
 		singles = append(singles, single{u, xdSrc{un.sha, b}, x, best, dwDcoreEstimateProgram(best, dwDcoreEstimateOpts{}).Est})
 	}
-	if len(singles) > 1 && g.pol.MaxBases >= 2 {
+	// B7: complementary sets matched over the union of their bases, at every locality
+	for _, set := range cs.multi {
+		var srcs []xdSrc
+		var xs [][]byte
+		for _, u := range set {
+			b, err := m.source(g.nodes[u].obj.man)
+			if err != nil {
+				break
+			}
+			srcs, xs = append(srcs, xdSrc{g.nodes[u].sha, b}), append(xs, b)
+		}
+		if len(xs) != len(set) {
+			continue
+		}
+		x, err := dwDcoreBuildIndex(xs, prm)
+		if err != nil {
+			continue
+		}
+		for _, loc := range g.pol.Locality {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := enc(srcs, slices.Clone(set), x.MatchLocal(target, loc), loc, true); err != nil {
+				return err
+			}
+		}
+	}
+	delete(g.vops, v)
+	if cs.multi == nil && len(singles) > 1 && g.pol.MaxBases >= 2 && g.pol.Discovery != "region" {
 		slices.SortStableFunc(singles, func(a, b single) int { return cmp.Compare(a.est, b.est) })
 		ops := singles[0].ops
 		lit := dwDcoreEstimateProgram(ops, dwDcoreEstimateOpts{}).Stats.LitBytes
@@ -61953,7 +62068,7 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands [
 			if r, saved := authRefine(ops, sg.x, len(srcs)); saved > 0 && saved*50 >= lit {
 				ops, lit = r, lit-saved
 				srcs, bases = append(srcs, sg.src), append(bases, sg.u)
-				if err := enc(slices.Clone(srcs), slices.Clone(bases), ops, 0); err != nil {
+				if err := enc(slices.Clone(srcs), slices.Clone(bases), ops, 0, false); err != nil {
 					return err
 				}
 			}
@@ -62168,7 +62283,7 @@ func (e *rgEval) allowed(v, o int32) bool {
 	if e.g.pol.Order == "newest" && nd.newest && opt.kind != rgCDC && !opt.cur {
 		return false
 	}
-	return true
+	return e.maxBases == 0 || len(opt.bases) <= e.maxBases || opt.cur
 }
 
 // localSearch applies improving single moves, depth-cascade pairs and joint group moves until none
@@ -62782,6 +62897,7 @@ type OptimizeReport struct {
 	WholeWeight      float64          `json:"whole_weight"`
 	WholeBudget      float64          `json:"whole_budget"`
 	Model            rgModel          `json:"model"`
+	Discovery        *DiscoveryStats  `json:"discovery,omitempty"`
 	Nodes            int              `json:"nodes"`
 	Live             int              `json:"live"`
 	Partitions       int              `json:"partitions"`
@@ -62873,6 +62989,25 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 					e.set(v, selA[k])
 				}
 			}
+			// B7: multi-base options can lead single moves into a worse optimum than the single-base
+			// options alone reach; a start searched over single-base options, then over all, bounds that.
+			if g.multiIn(part) && !g.pol.noRestrictedStart {
+				jb, selB := e.objective(), make([]int32, len(part))
+				for k, v := range part {
+					selB[k] = e.sel[v]
+					e.set(v, saved[v])
+				}
+				e.maxBases = 1
+				e.arborescence(part)
+				e.localSearch(part, g.pol.MaxEvals/4)
+				e.maxBases = 0
+				e.localSearch(part, g.pol.MaxEvals/4)
+				if jb <= e.objective() {
+					for k, v := range part {
+						e.set(v, selB[k])
+					}
+				}
+			}
 		}
 		// MinGain: a partition is rewritten only for a real improvement over its current form.
 		var stored int64
@@ -62888,6 +63023,18 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 		}
 	}
 	return e, oracled
+}
+
+// multiIn reports whether any node of part has a multi-base option.
+func (g *rgGraph) multiIn(part []int32) bool {
+	for _, v := range part {
+		for _, o := range g.nodes[v].opts {
+			if len(o.bases) > 1 && !o.cur {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AuthorityOptimize plans (and with Apply publishes) a jointly chosen representation graph.
@@ -62909,6 +63056,7 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 		return rep, err
 	}
 	rep.Model = g.model
+	rep.Discovery = g.disc
 	rep.CandidateSeconds = time.Since(t0).Seconds()
 	rep.Encodes, rep.EncodeSeconds = g.encs, float64(g.encNS)/1e9
 	g.partition()
@@ -63342,7 +63490,7 @@ func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt) ([]authPi
 	}
 	prm := dwDcoreDefaultParams()
 	var ops []dwDcoreOp
-	if len(srcs) == 1 {
+	if len(srcs) == 1 || o.union {
 		x, err := dwDcoreBuildIndex(xs, prm)
 		if err != nil {
 			return nil, err
@@ -63392,6 +63540,549 @@ func (g *rgGraph) writeBlob(ctx context.Context, blob []byte, ends []int) ([]aut
 		off = end
 	}
 	return ps, b.Flush()
+}
+
+// =============================================================================
+// 16e2. Region-aware similarity discovery (B7, `authority optimize -discovery region`)
+//
+// B6 ranks bases by shared bottom-16 whole-object sketch features: a base that supplies a modest but
+// unique region, or that complements the best base, is rarely among the four it encodes. Here every
+// content contributes sparse positional fingerprints: 32-byte windows whose sampling hash has at least
+// `level` leading zero bits, the level rising with size so a content keeps at most ~MaxFeat. Levels nest
+// (a window kept at level l is kept at every lower level), so two contents compare at the larger of
+// theirs. A sorted posting index maps fingerprints to contents. Retrieval ranks bases by rare-fingerprint
+// coverage, measures each shortlisted base's coverage of the target over every fingerprint (common ones
+// included), verifies the best with the real matcher, and grows complementary base sets by greedy
+// marginal coverage, kept only when the union program's estimate pays for the extra base. Fingerprints
+// are filters: a wrong, missing or stale one can only cost compression, never bytes.
+// =============================================================================
+
+// rsParams tunes discovery; the zero value is replaced by rsDefaultParams.
+type rsParams struct {
+	MinLevel uint8                          // densest sampling: one window in 2^MinLevel
+	MaxFeat  int                            // fingerprints a content keeps (its level rises until it fits)
+	Rare     int                            // postings a fingerprint may have and still rank bases on its own
+	Short    int                            // bases whose coverage is measured over every target fingerprint
+	Verify   int                            // shortlisted bases matched exactly (in-memory targets)
+	Multi    bool                           // grow complementary multi-base sets
+	Union    bool                           // also encode the B6 sketch shortlist (research: candidate-set superset)
+	gen      func([]byte) ([]rsFeat, uint8) // research: an alternative fingerprint generator
+}
+
+func rsDefaultParams() rsParams {
+	return rsParams{MinLevel: 7, MaxFeat: 1 << 14, Rare: 16, Short: 24, Verify: 8, Multi: true}
+}
+
+const (
+	rsWindow   = 32 // bytes per fingerprinted window
+	rsPosShift = 4  // positions are kept in 16-byte units
+	rsSampleK  = 0x9e3779b97f4a7c15
+)
+
+// rsFeat is one sampled window: its fingerprint, position (16-byte units) and level (leading zero bits).
+type rsFeat struct {
+	h   uint64
+	pos uint32
+	lvl uint8
+}
+
+func (p rsParams) level(n int64) uint8 {
+	l := p.MinLevel
+	for n>>l > int64(p.MaxFeat) && l < 48 {
+		l++
+	}
+	return l
+}
+
+// rsScan appends the sampled windows of b starting in [a, e) at level *lvl or above; b[0] is content
+// offset base. Adversarial input that samples too densely raises *lvl (memory stays O(limit)).
+func rsScan(out []rsFeat, b []byte, a, e int, base int64, lvl *uint8, limit int) []rsFeat {
+	if e <= a || len(b) < a+rsWindow {
+		return out
+	}
+	h := dwDcore_rollInit(b[a : a+rsWindow])
+	for i := a; ; i++ {
+		if z := bits.LeadingZeros64(h * rsSampleK); z >= int(*lvl) {
+			out = append(out, rsFeat{dwDcore_mix64(h), uint32(min((base+int64(i))>>rsPosShift, math.MaxUint32)), uint8(z)})
+			if len(out) > limit {
+				*lvl++
+				out = slices.DeleteFunc(out, func(f rsFeat) bool { return f.lvl < *lvl })
+			}
+		}
+		if i+1 >= e {
+			return out
+		}
+		h = dwDcore_rollNext(h, b[i], b[i+rsWindow], rsWindow)
+	}
+}
+
+// rsNorm keeps the fingerprints at lvl or above, sorted by fingerprint, first position of a repeat.
+func rsNorm(fs []rsFeat, lvl uint8) []rsFeat {
+	fs = slices.DeleteFunc(fs, func(f rsFeat) bool { return f.lvl < lvl })
+	slices.SortFunc(fs, func(a, b rsFeat) int { return cmp.Or(cmp.Compare(a.h, b.h), cmp.Compare(a.pos, b.pos)) })
+	return slices.Clip(slices.CompactFunc(fs, func(a, b rsFeat) bool { return a.h == b.h }))
+}
+
+// rsFeatures fingerprints an in-memory content (slices in parallel; the result is independent of them).
+func (p rsParams) features(b []byte) ([]rsFeat, uint8) {
+	if p.gen != nil {
+		return p.gen(b)
+	}
+	n := len(b) - rsWindow + 1
+	if n <= 0 {
+		return nil, p.MinLevel
+	}
+	lvl0 := p.level(int64(len(b)))
+	const slice = 4 << 20
+	parts := (n + slice - 1) / slice
+	outs := make([][]rsFeat, parts)
+	lvls := make([]uint8, parts)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, min(runtime.GOMAXPROCS(0), 4))
+	for k := range parts {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			lvls[k] = lvl0
+			outs[k] = rsScan(nil, b, k*slice, min((k+1)*slice, n), 0, &lvls[k], 2*p.MaxFeat/parts+64)
+		}()
+	}
+	wg.Wait()
+	lvl := slices.Max(lvls)
+	return rsNorm(slices.Concat(outs...), lvl), lvl
+}
+
+// sketchFeaturesAt streams a content once for both its B6 sketch (bottom-k) and its fingerprints.
+func (p rsParams) sketchFeaturesAt(r io.ReaderAt, size int64, k int) ([]uint64, []rsFeat, uint8, error) {
+	sk := authSketch{k: k}
+	var ring [xdWindow]byte
+	var h uint64
+	n := 0
+	lvl := p.level(size)
+	var fs []rsFeat
+	buf := make([]byte, rsWindow-1+1<<20)
+	tail := 0
+	for off := int64(0); off < size; {
+		m, err := r.ReadAt(buf[tail:tail+int(min(1<<20, size-off))], off)
+		if m == 0 && err != nil {
+			return nil, nil, 0, err
+		}
+		for _, c := range buf[tail : tail+m] {
+			if n >= xdWindow {
+				h = (h-(uint64(ring[n%xdWindow])+1)*xdPow)*xdP + uint64(c) + 1
+			} else {
+				h = h*xdP + uint64(c) + 1
+			}
+			ring[n%xdWindow] = c
+			n++
+			if n >= xdWindow {
+				sk.add(xdMix(h))
+			}
+		}
+		w := buf[:tail+m]
+		fs = rsScan(fs, w, 0, len(w)-rsWindow+1, off-int64(tail), &lvl, 2*p.MaxFeat)
+		off += int64(m)
+		tail = min(rsWindow-1, len(w))
+		copy(buf, w[len(w)-tail:])
+	}
+	return sk.out, rsNorm(fs, lvl), lvl, nil
+}
+
+// rsPost is one posting: a fingerprint and a content holding it.
+type rsPost struct {
+	h    uint64
+	node int32
+}
+
+// rsIndex is the posting index of one planning pass: postings sorted by fingerprint then content, a
+// directory over the top 16 fingerprint bits, and each content's own fingerprints.
+type rsIndex struct {
+	p     rsParams
+	post  []rsPost
+	dir   []uint32
+	feats [][]rsFeat
+	lvl   []uint8
+}
+
+func newRSIndex(p rsParams, feats [][]rsFeat, lvl []uint8) *rsIndex {
+	n := 0
+	for _, f := range feats {
+		n += len(f)
+	}
+	x := &rsIndex{p: p, post: make([]rsPost, 0, n), dir: make([]uint32, 1<<16+1), feats: feats, lvl: lvl}
+	for v, fs := range feats {
+		for _, f := range fs {
+			x.post = append(x.post, rsPost{f.h, int32(v)})
+		}
+	}
+	slices.SortFunc(x.post, func(a, b rsPost) int { return cmp.Or(cmp.Compare(a.h, b.h), cmp.Compare(a.node, b.node)) })
+	j := 0
+	for b := range x.dir {
+		for j < len(x.post) && int(x.post[j].h>>48) < b {
+			j++
+		}
+		x.dir[b] = uint32(j)
+	}
+	return x
+}
+
+// Bytes is the index's retained size.
+func (x *rsIndex) Bytes() int64 {
+	return int64(cap(x.post))*16 + int64(len(x.dir))*4 + int64(len(x.post))*16 + int64(len(x.feats))*25
+}
+
+func (x *rsIndex) postings(h uint64) []rsPost {
+	b := h >> 48
+	ps := x.post[x.dir[b]:x.dir[b+1]]
+	i := sort.Search(len(ps), func(k int) bool { return ps[k].h >= h })
+	j := i
+	for j < len(ps) && ps[j].h == h {
+		j++
+	}
+	return ps[i:j]
+}
+
+func rsHolds(ps []rsPost, u int32) bool {
+	_, ok := slices.BinarySearchFunc(ps, u, func(q rsPost, u int32) int { return cmp.Compare(q.node, u) })
+	return ok
+}
+
+// rsCand is a base, the target fingerprints it holds (a bitset over the target's fingerprints) and the
+// target bytes they stand for.
+type rsCand struct {
+	u     int32
+	cov   int64
+	bits  []uint64
+	w     int64 // bytes one held fingerprint stands for: 2^max(target level, base level)
+	lvl   uint8
+	share []int32 // per target fingerprint: contents holding its CDC chunk (nil = 1)
+}
+
+// rank shortlists bases for target v: rare fingerprints score every holder, a common one only its first
+// Rare holders (contents in index order, so one stable set represents shared boilerplate), extra (same
+// key) bases always qualify; then each shortlisted base's coverage is measured over every fingerprint.
+// share (optional, per target fingerprint) discounts bytes in CDC chunks other contents also hold:
+// supplying them frees nothing while those holders keep them.
+func (x *rsIndex) rank(v int32, size int64, ok func(int32) bool, extra []int32, share []int32) []rsCand {
+	tf := x.feats[v]
+	if len(tf) == 0 {
+		return nil
+	}
+	lt := x.lvl[v]
+	pl := make([][]rsPost, len(tf))
+	rare, common := map[int32]int64{}, map[int32]int64{}
+	for i, f := range tf {
+		ps := x.postings(f.h)
+		pl[i] = ps
+		n := 0
+		for _, q := range ps {
+			if q.node == v || f.lvl < x.lvl[q.node] {
+				continue
+			}
+			w := int64(1) << max(lt, x.lvl[q.node])
+			if len(ps) <= x.p.Rare+1 {
+				rare[q.node] += w
+			} else if n++; n <= x.p.Rare {
+				common[q.node] += w
+			} else {
+				break
+			}
+		}
+	}
+	type sc struct {
+		u int32
+		s int64
+	}
+	top := func(m map[int32]int64, k int) []int32 {
+		var all []sc
+		for u, s := range m {
+			if ok(u) {
+				all = append(all, sc{u, s})
+			}
+		}
+		slices.SortFunc(all, func(a, b sc) int { return cmp.Or(cmp.Compare(b.s, a.s), cmp.Compare(a.u, b.u)) })
+		var out []int32
+		for _, c := range all[:min(len(all), k)] {
+			out = append(out, c.u)
+		}
+		return out
+	}
+	short := top(rare, x.p.Short)
+	short = append(short, top(common, max(2, x.p.Short/6))...)
+	for _, u := range extra {
+		if u != v && ok(u) {
+			short = append(short, u)
+		}
+	}
+	slices.Sort(short)
+	short = slices.Compact(short)
+	var out []rsCand
+	for _, u := range short {
+		l := max(lt, x.lvl[u])
+		c := rsCand{u: u, bits: make([]uint64, (len(tf)+63)/64), w: int64(1) << l, lvl: l, share: share}
+		for i, f := range tf {
+			if f.lvl >= l && rsHolds(pl[i], u) {
+				c.bits[i/64] |= 1 << (i % 64)
+				c.cov += c.weight(i)
+			}
+		}
+		c.cov = min(c.cov, size)
+		if c.cov > 0 {
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b rsCand) int { return cmp.Or(cmp.Compare(b.cov, a.cov), cmp.Compare(a.u, b.u)) })
+	return out
+}
+
+func (c *rsCand) weight(i int) int64 {
+	if c.share == nil || c.share[i] <= 1 {
+		return c.w
+	}
+	return c.w / int64(c.share[i])
+}
+
+// marginal is the (share-discounted) target bytes c holds that no fingerprint of covered holds.
+func (c *rsCand) marginal(covered []uint64) int64 {
+	var n int64
+	for i, b := range c.bits {
+		for m := b &^ covered[i]; m != 0; m &= m - 1 {
+			n += c.weight(i*64 + bits.TrailingZeros64(m))
+		}
+	}
+	return n
+}
+
+// overlap is the fraction of c's fingerprints that d also holds.
+func (c *rsCand) overlap(d *rsCand) float64 {
+	var both, n int
+	for i, b := range c.bits {
+		n += bits.OnesCount64(b)
+		both += bits.OnesCount64(b & d.bits[i])
+	}
+	if n == 0 {
+		return 1
+	}
+	return float64(both) / float64(n)
+}
+
+// greedy grows a complementary base set from first: each step adds the base holding the most target
+// bytes not yet held, while that adds at least minGain bytes.
+func rsGreedy(cands []rsCand, first int, maxBases int, minGain int64) []int {
+	if first < 0 || first >= len(cands) {
+		return nil
+	}
+	covered := slices.Clone(cands[first].bits)
+	set := []int{first}
+	for len(set) < maxBases {
+		best, bm := -1, minGain-1
+		for k := range cands {
+			if slices.Contains(set, k) {
+				continue
+			}
+			if m := cands[k].marginal(covered); m > bm {
+				best, bm = k, m
+			}
+		}
+		if best < 0 {
+			break
+		}
+		set = append(set, best)
+		for i, b := range cands[best].bits {
+			covered[i] |= b
+		}
+	}
+	return set
+}
+
+// DiscoveryStats reports the cost and yield of candidate discovery in one planning pass.
+type DiscoveryStats struct {
+	Method         string  `json:"method"`
+	Contents       int     `json:"contents"`
+	Features       int64   `json:"features"`
+	IndexBytes     int64   `json:"index_bytes"`
+	ExtractSeconds float64 `json:"extract_seconds"`
+	RankSeconds    float64 `json:"rank_seconds"`
+	VerifySeconds  float64 `json:"verify_seconds"`
+	Verified       int     `json:"verified_matches"`
+	Singles        int     `json:"singles"`
+	Multi          int     `json:"multi_sets"`
+	MultiGain      int64   `json:"multi_estimated_gain"`  // estimated bytes multi-base programs save over the best single
+	WindowedCover  int64   `json:"windowed_second_cover"` // windowed targets: bytes a second base would add (not encodable)
+}
+
+// rsShare is, per fingerprint of v, how many eligible contents hold the CDC chunk containing it.
+func (g *rgGraph) rsShare(v int32) []int32 {
+	tf := g.rs.feats[v]
+	nd := g.nodes[v]
+	if g.chunkRefs == nil || nd.obj == nil || len(tf) == 0 {
+		return nil
+	}
+	ends := make([]int64, 0, len(nd.obj.man.Chunks))
+	refs := make([]int32, 0, len(nd.obj.man.Chunks))
+	var off int64
+	for _, c := range nd.obj.man.Chunks {
+		off += c.Length
+		ends = append(ends, off)
+		sum, _ := decodeHexSHA256(c.SHA256)
+		refs = append(refs, g.chunkRefs[sum])
+	}
+	out := make([]int32, len(tf))
+	for i, f := range tf {
+		pos := int64(f.pos) << rsPosShift
+		k, _ := slices.BinarySearch(ends, pos+1)
+		if k < len(refs) {
+			out[i] = refs[k]
+		}
+	}
+	return out
+}
+
+// rsMinCover is the coverage a base needs to be a candidate at all: a few shared windows (headers,
+// boilerplate in compressed data) are not worth an encode.
+func rsMinCover(size int64) int64 { return max(1<<10, size/32) }
+
+// regionCands is B7's candidate set for v: singles ordered by verified estimate (coverage when the
+// shortlist fits the encode budget, and for windowed targets; a near-copy of an earlier single's
+// coverage goes last) and complementary sets whose union program pays for each extra base.
+func (g *rgGraph) regionCands(m *authMigrator, v int32, byKey map[string][]int32) rgCandSet {
+	nd := g.nodes[v]
+	ds := g.disc
+	t0 := time.Now()
+	ok := func(u int32) bool { un := g.nodes[u]; return un.live && un.obj != nil && un.sha != nd.sha }
+	cands := g.rs.rank(v, nd.size, ok, byKey[nd.obj.bucket+"\x00"+nd.obj.key], g.rsShare(v))
+	cands = slices.DeleteFunc(cands, func(c rsCand) bool { return c.cov < rsMinCover(nd.size) })
+	ds.RankSeconds += time.Since(t0).Seconds()
+	if len(cands) == 0 {
+		return rgCandSet{}
+	}
+	p := g.rs.p
+	var cs rgCandSet
+	if nd.size > authWindowMin {
+		for k := range cands[:min(len(cands), 2)] {
+			cs.singles = append(cs.singles, cands[k].u)
+		}
+		if set := rsGreedy(cands, 0, 2, max(1<<20, nd.size/100)); len(set) == 2 {
+			ds.WindowedCover += cands[set[1]].marginal(cands[0].bits)
+		}
+		ds.Singles += len(cs.singles)
+		return cs
+	}
+	t1 := time.Now()
+	defer func() { ds.VerifySeconds += time.Since(t1).Seconds() }()
+	target, err := m.source(nd.obj.man)
+	if err != nil {
+		return rgCandSet{}
+	}
+	prm := dwDcoreDefaultParams()
+	srcs := map[int32][]byte{}
+	src := func(u int32) ([]byte, bool) {
+		if b, ok := srcs[u]; ok {
+			return b, true
+		}
+		un := g.nodes[u]
+		if un.size > xdMaxObject {
+			return nil, false
+		}
+		b, err := m.source(un.obj.man)
+		if err != nil {
+			return nil, false
+		}
+		srcs[u] = b
+		return b, true
+	}
+	est := make([]int64, len(cands))
+	estimate := func(k int) int64 {
+		if est[k] != 0 {
+			return est[k]
+		}
+		est[k] = math.MaxInt64
+		u := cands[k].u
+		if b, ok := src(u); ok {
+			if x, err := m.idx.get(g.nodes[u].sha, b, prm); err == nil {
+				ops := x.Match(target)
+				est[k] = dwDcoreEstimateProgram(ops, dwDcoreEstimateOpts{}).Est
+				if g.vops[v] == nil {
+					g.vops[v] = map[int32][]dwDcoreOp{}
+				}
+				g.vops[v][u] = ops
+				ds.Verified++
+			}
+		}
+		return est[k]
+	}
+	order := make([]int, len(cands))
+	for k := range order {
+		order[k] = k
+	}
+	// Order stays by share-discounted coverage (an estimate counts bytes deduplicated chunks already
+	// share); verification drops shortlisted bases whose program would not beat standalone storage.
+	if len(cands) > g.pol.Candidates && p.Verify > 0 {
+		order = order[:min(len(cands), max(p.Verify, g.pol.Candidates))]
+		e0 := dwDcoreEstimateProgram([]dwDcoreOp{{N: int64(len(target)), Base: -1, Lit: target}}, dwDcoreEstimateOpts{}).Est
+		order = slices.DeleteFunc(order, func(k int) bool { return estimate(k) >= e0*98/100 })
+	}
+	// diversity: a single whose fingerprints an earlier single (nearly) all holds, and vice versa, goes last
+	var lead, late []int
+	for _, k := range order {
+		if est[k] == math.MaxInt64 {
+			continue
+		}
+		dup := false
+		for _, j := range lead {
+			if cands[k].overlap(&cands[j]) >= 0.98 && cands[j].overlap(&cands[k]) >= 0.98 {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			late = append(late, k)
+		} else {
+			lead = append(lead, k)
+		}
+	}
+	for _, k := range append(lead, late...)[:min(len(lead)+len(late), g.pol.Candidates)] {
+		cs.singles = append(cs.singles, cands[k].u)
+	}
+	ds.Singles += len(cs.singles)
+	if !p.Multi || g.pol.MaxBases < 2 || len(lead) == 0 {
+		return cs
+	}
+	best := lead[0]
+	set := rsGreedy(cands, best, g.pol.MaxBases, max(1<<10, nd.size/100)/2)
+	if len(set) < 2 {
+		return cs
+	}
+	// keep each prefix whose union program pays for its extra base
+	cur := estimate(best)
+	for n := 2; n <= len(set); n++ {
+		var xs [][]byte
+		var bases []int32
+		for _, k := range set[:n] {
+			if b, ok := src(cands[k].u); ok {
+				xs, bases = append(xs, b), append(bases, cands[k].u)
+			}
+		}
+		if len(bases) != n {
+			break
+		}
+		x, err := dwDcoreBuildIndex(xs, prm)
+		if err != nil {
+			break
+		}
+		e := dwDcoreEstimateProgram(x.Match(target), dwDcoreEstimateOpts{}).Est
+		ds.Verified++
+		gain := cur - e
+		if gain < max(64, cur/200)+dwDcoreBaseRefBytes {
+			break
+		}
+		ds.MultiGain += gain
+		cur = e
+		cs.multi = append(cs.multi, bases)
+	}
+	ds.Multi += len(cs.multi)
+	return cs
 }
 
 // =============================================================================
