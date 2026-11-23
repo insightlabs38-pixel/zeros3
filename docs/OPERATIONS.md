@@ -420,6 +420,27 @@ and wait at most `-maintenance-wait` for in-flight requests before deferring.
 A crash during a pass leaves redundant packs or files, never a missing one; the
 next pass collects them. Offline `gc`, `repack` and `compact` are unchanged.
 
+### Global representation-graph optimization (research, B6)
+
+`authority optimize` plans every in-scope content's representation jointly
+(exact shared-closure storage, record-file blocks, a calibrated read-cost
+model) and, with `-apply`, publishes the changed records through the ordinary
+authority path: each record is proven against the durable store first, bases
+before dependents. It needs the exclusive store lock like `migrate`; an
+interrupted run leaves a valid graph and a rerun converges. Run `gc` first
+(orphan records are treated as dependents) and `gc`/`repack` after to reclaim.
+No store format or feature changes. Results: `testing-harnesses/next/b6/README.md`.
+
+```sh
+./zeros3 authority optimize -store /srv/zeros3 -profile archive -order oldest   # plan (JSON report)
+./zeros3 authority optimize -store /srv/zeros3 -profile mixed -apply -pareto 0,20,400
+```
+
+Profiles: `archive` (bytes only), `mixed` (sparse and whole reads priced),
+`hot` (reads at most 2.5x / 2x the CDC read, depth 1). `-read-weight`,
+`-read-budget` and `-locality` override them; the newest version of each
+multi-version key stays CDC unless `-order oldest` or `-archive`.
+
 ### Restartable records and reconstruction layout (research, B5)
 
 Both are opt-in and change only physical placement; reads stay byte-exact and

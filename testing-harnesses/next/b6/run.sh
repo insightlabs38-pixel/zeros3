@@ -1,6 +1,6 @@
 #!/bin/bash
-# B6 reproduction: corpus, CDC fixtures, matched lanes (materialized and reclaimed), paired reads, concurrency, scale.
-# usage: run.sh WORK   (needs root for drop_caches; ~3 GB of scratch)
+# B6 reproduction: corpus, CDC fixtures, calibration, matched lanes (materialized and reclaimed), paired reads,
+# concurrency, locality sweep, scale. usage: run.sh WORK   (needs root for drop_caches; ~3 GB of scratch)
 set -euo pipefail
 W=$(realpath -m "${1:?work dir}"); mkdir -p "$W"
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd); R="$ROOT/testing-harnesses/next/b6/results"; mkdir -p "$R"
@@ -17,8 +17,18 @@ cd "$ROOT"
 T="-tags b6bench,b5locality,b1rangeexperiment -count=1 -timeout 6h"
 E="ZEROS3_B6_FX=$W/fx ZEROS3_B6_CORPUS=$C"
 env $E go test $T -run '^TestB6Build$' .
+# calibration: baseline lanes, their cold reads, the model's features of each read, the fit (rgDefaultModel)
+env $E ZEROS3_B6_OUT=$R/lanes.jsonl ZEROS3_B6_LANES=cdc,local,local-archive go test $T -run '^TestB6Lanes$' .
+env $E ZEROS3_B6_OUT=$W/calib.jsonl ZEROS3_B5_COLD=1 ZEROS3_B6_LANES=cdc,local,local-archive go test $T -run '^TestB6Reads$' .
+env $E ZEROS3_B6_ROWS=$W/calib.jsonl ZEROS3_B6_OUT=$W/features.jsonl go test $T -run '^TestB6Refit$' .
+python3 "$ROOT/testing-harnesses/next/b6/fit.py" "$W/features.jsonl"
+# optimizer lanes, then session 1 (every lane) and session 2 ({0,32,256} confirmation) reads
 env $E ZEROS3_B6_OUT=$R/lanes.jsonl go test $T -run '^TestB6Lanes$' .
 env $E ZEROS3_B6_OUT=$R/reads.jsonl ZEROS3_B5_COLD=1 ZEROS3_B6_N=12 go test $T -run '^TestB6Reads$' .
-env $E ZEROS3_B6_OUT=$R/concurrent.jsonl ZEROS3_B6_FAMILIES=coreutils,go,sqlite ZEROS3_B6_LANES=cdc,local,global-loc,global-hot go test $T -run '^TestB6Concurrent$' .
+env $E ZEROS3_B6_OUT=$R/reads3.jsonl ZEROS3_B5_COLD=1 ZEROS3_B6_N=12 ZEROS3_B6_FAMILIES=coreutils,go,bundle,git \
+  ZEROS3_B6_LANES=cdc,local-archive,global-loc,global-archive,global-loc3,global-archive3 go test $T -run '^TestB6Reads$' .
+env $E ZEROS3_B6_OUT=$R/concurrent.jsonl ZEROS3_B6_FAMILIES=coreutils,go,sqlite,cu-files \
+  ZEROS3_B6_LANES=cdc,local-archive,global-loc,global-archive go test $T -run '^TestB6Concurrent$' .
+env $E ZEROS3_B6_OUT=$R/locality.jsonl ZEROS3_B6_FAMILIES=coreutils,go,sqlite,git,bundle go test $T -run '^TestB6LocalitySweep$' .
 ZEROS3_B6_OUT=$R/scale.jsonl go test $T -run '^TestB6Scale$' .
-python3 "$ROOT/testing-harnesses/next/b6/tables.py" "$R"/*.jsonl
+python3 "$ROOT/testing-harnesses/next/b6/tables.py" "$R/lanes.jsonl" "$R/reads.jsonl" "$R/concurrent.jsonl" "$R/scale.jsonl"

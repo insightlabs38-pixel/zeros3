@@ -125,10 +125,10 @@ import (
 //    34229    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    52617    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
 //    60501    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    63413    Windowed and estimated similarity deltas (extracted dcore)
-//    65250    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    73103    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    79375    CLI dispatch, HTTP server/startup, and main
+//    63398    Windowed and estimated similarity deltas (extracted dcore)
+//    65235    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    73088    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    79360    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -60253,7 +60253,7 @@ func runAuthority(args []string) {
 	profile := fs.String("profile", "mixed", "optimize: archive, mixed or hot (read weight, read budget and depth defaults)")
 	readWeight := fs.Float64("read-weight", 0, "optimize: retained bytes one modeled microsecond of a content's sparse cold read is worth (0: the profile's)")
 	readBudget := fs.Float64("read-budget", 0, "optimize: modeled sparse read at most this multiple of the content's CDC read (0: the profile's)")
-	locality := fs.String("locality", "0,256", "optimize: COPY locality slacks to generate programs with (0 = the plain matcher)")
+	locality := fs.String("locality", "0,32,256", "optimize: COPY locality slacks to generate programs with (0 = the plain matcher)")
 	algorithm := fs.String("algorithm", "global", "optimize: global, local (the sequential rule on the same candidates), oracle or current")
 	pareto := fs.String("pareto", "", "optimize: comma-separated read weights of a frontier reported beside the plan")
 	cands := fs.Int("candidates", 4, "migrate/optimize: trial bases per target (max 8)")
@@ -60576,7 +60576,7 @@ func (p OptimizePolicy) norm() OptimizePolicy {
 		p.MinGain = 0.01
 	}
 	if p.Locality == nil {
-		p.Locality = []int{0, 256}
+		p.Locality = []int{0, 32, 256} // the B6 sweep: 32 never cost bytes, 256 paid on text histories
 	}
 	if p.Algorithm == "" {
 		p.Algorithm = "global"
@@ -60674,6 +60674,7 @@ type rgGraph struct {
 	parts  [][]int32
 	partOf []int32
 	wc     *authWinCache // decoded windows shared by the windowed encoders of planning and transitions
+	score  map[int32]int // candidate scoring scratch
 }
 
 func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
@@ -61730,10 +61731,14 @@ func (g *rgGraph) deltaOpt(nd *rgNode, blob []byte, ends []int, bases []int32, l
 
 // ---- candidate generation -----------------------------------------------------
 
-// rgCandidates scores every other node by shared sketch features (plus same-key neighbours and current bases).
+// rgCandidates ranks the other live nodes by shared sketch features (same-key neighbours get a bonus).
 func (g *rgGraph) rgCandidates(v int32, inv map[uint64][]int32, byKey map[string][]int32) []int32 {
 	nd := g.nodes[v]
-	score := map[int32]int{}
+	if g.score == nil {
+		g.score = map[int32]int{}
+	}
+	score := g.score
+	clear(score)
 	for _, f := range nd.sk {
 		for _, u := range inv[f] {
 			if u != v {
@@ -62434,24 +62439,21 @@ func rgEdmonds(n, root int, edges []rgEdge) []int {
 	type ce struct {
 		from, to int
 		w        float64
-		id       int
+		id       int // index into the previous level's list (the input list at level 0)
 	}
 	cur := make([]ce, len(edges))
 	for i, e := range edges {
 		cur[i] = ce{e.from, e.to, e.w, i}
 	}
-	// Each contraction level remembers its in-edges and cycles to expand afterwards.
+	// Each level contracts every cycle of its cheapest in-edges and is remembered for the expansion.
 	type level struct {
-		in    []int // chosen edge (index into this level's edge list) per vertex
+		in    []int // chosen in-edge (index into edges) per vertex
 		edges []ce
 		comp  []int // vertex -> contracted vertex
 		cyc   []bool
-		cycID int
-		n     int
 	}
 	var levels []level
-	N := n
-	r := root
+	N, r := n, root
 	for {
 		in := make([]int, N)
 		inW := make([]float64, N)
@@ -62463,67 +62465,49 @@ func rgEdmonds(n, root int, edges []rgEdge) []int {
 				in[e.to], inW[e.to] = k, e.w
 			}
 		}
-		for v := 0; v < N; v++ {
+		for v := range N {
 			if v != r && in[v] < 0 {
 				return nil
 			}
 		}
-		comp := make([]int, N)
+		comp, vis := make([]int, N), make([]int, N)
 		for i := range comp {
-			comp[i] = -1
+			comp[i], vis[i] = -1, -1
 		}
-		mark := make([]int, N)
-		for i := range mark {
-			mark[i] = -1
-		}
-		nc := 0
 		cyc := make([]bool, N)
-		cycID := -1
-		for v := 0; v < N; v++ {
+		nc := 0
+		for v := range N {
 			x := v
-			for x != r && mark[x] != v && comp[x] < 0 {
-				mark[x] = v
+			for x != r && vis[x] < 0 && comp[x] < 0 {
+				vis[x] = v
 				x = cur[in[x]].from
 			}
-			if x != r && comp[x] < 0 && mark[x] == v {
-				// cycle through x
-				cycID = nc
+			if x != r && comp[x] < 0 && vis[x] == v {
 				for y := cur[in[x]].from; y != x; y = cur[in[y]].from {
-					comp[y] = nc
-					cyc[y] = true
+					comp[y], cyc[y] = nc, true
 				}
-				comp[x] = nc
-				cyc[x] = true
+				comp[x], cyc[x] = nc, true
 				nc++
-				break
 			}
 		}
-		if cycID < 0 {
-			// no cycle: expand
-			sel := make([]int, 0, N)
-			for v := 0; v < N; v++ {
+		if nc == 0 {
+			ids := make([]int, 0, N)
+			for v := range N {
 				if v != r {
-					sel = append(sel, in[v])
+					ids = append(ids, cur[in[v]].id)
 				}
-			}
-			// sel holds edge indexes of the last level; map back through levels
-			ids := make([]int, len(sel))
-			for i, k := range sel {
-				ids[i] = cur[k].id
 			}
 			for li := len(levels) - 1; li >= 0; li-- {
 				lv := levels[li]
-				// ids are indexes into lv.edges (the parent level's list)
-				entered := -1
-				var out []int
+				entered := map[int]int{} // contracted cycle -> the vertex its chosen in-edge enters
+				out := slices.Clone(ids)
 				for _, k := range ids {
-					out = append(out, k)
-					if lv.comp[lv.edges[k].to] == lv.cycID && lv.cyc[lv.edges[k].to] {
-						entered = lv.edges[k].to
+					if t := lv.edges[k].to; lv.cyc[t] {
+						entered[lv.comp[t]] = t
 					}
 				}
-				for v := 0; v < lv.n; v++ {
-					if lv.cyc[v] && v != entered {
+				for v := range lv.cyc {
+					if lv.cyc[v] && entered[lv.comp[v]] != v {
 						out = append(out, lv.in[v])
 					}
 				}
@@ -62534,14 +62518,14 @@ func rgEdmonds(n, root int, edges []rgEdge) []int {
 			}
 			return ids
 		}
-		for v := 0; v < N; v++ {
+		for v := range N {
 			if comp[v] < 0 {
 				comp[v] = nc
 				nc++
 			}
 		}
-		levels = append(levels, level{in: in, edges: cur, comp: comp, cyc: cyc, cycID: cycID, n: N})
-		var next []ce
+		levels = append(levels, level{in: in, edges: cur, comp: comp, cyc: cyc})
+		next := make([]ce, 0, len(cur))
 		for k, e := range cur {
 			u, v := comp[e.from], comp[e.to]
 			if u == v {
@@ -63006,8 +62990,9 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 		}
 	}
 	var ms runtime.MemStats
+	runtime.GC()
 	runtime.ReadMemStats(&ms)
-	rep.HeapMiB = int(ms.HeapInuse >> 20)
+	rep.HeapMiB = int(ms.HeapAlloc >> 20) // live: the graph, its options and the caches are still referenced
 	rep.Seconds = time.Since(t0).Seconds()
 	return rep, ctx.Err()
 }

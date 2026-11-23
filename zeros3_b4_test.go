@@ -874,7 +874,12 @@ func TestB4ConcurrentWorkloadDuringPasses(t *testing.T) {
 		defer close(passErr)
 		opt := b4Opts()
 		opt.TargetBytes = 512 << 10
-		for range 32 {
+		for i := range 32 {
+			// Pace the passes behind the writers: under CPU contention they can otherwise all run before any
+			// overwrite has made data dead (both this tree and B5 failed 9-12 of 30 runs with three busy loops).
+			for deadline := time.Now().Add(10 * time.Second); writes.Load() < int64(i*6) && time.Now().Before(deadline); {
+				time.Sleep(time.Millisecond)
+			}
 			one := 1
 			res, err := s.PlanHistoryPrune(historyPruneOptions{Bucket: "b", KeepLast: &one})
 			if err == nil {

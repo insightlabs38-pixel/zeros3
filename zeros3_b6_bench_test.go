@@ -186,6 +186,8 @@ func b6Lanes() []b6Lane {
 		{"global-loc", b6Opt(OptimizePolicy{AuthPolicy: np, Profile: "mixed", Locality: []int{0, 256}}), ""},
 		{"global-archive", b6Opt(OptimizePolicy{AuthPolicy: op, Profile: "archive", Locality: []int{0, 256}}), ""},
 		{"global-hot", b6Opt(OptimizePolicy{AuthPolicy: np, Profile: "hot", Locality: []int{0, 256}}), ""},
+		{"global-loc3", b6Opt(OptimizePolicy{AuthPolicy: np, Profile: "mixed", Locality: []int{0, 32, 256}}), ""},
+		{"global-archive3", b6Opt(OptimizePolicy{AuthPolicy: op, Profile: "archive", Locality: []int{0, 32, 256}}), ""},
 		{"reopt", b6Opt(OptimizePolicy{AuthPolicy: np, Profile: "mixed", Locality: []int{0, 256}}), "local"},
 		{"reopt-archive", b6Opt(OptimizePolicy{AuthPolicy: op, Profile: "archive", Locality: []int{0, 256}}), "local-archive"},
 	}
@@ -532,7 +534,7 @@ func TestB6Concurrent(t *testing.T) {
 	}
 }
 
-// TestB6Scale times planning on a synthetic graph of n contents in k-version histories with shared boilerplate
+// TestB6Scale times planning on a synthetic graph of n contents (40-90 KB) in 4-version histories with shared boilerplate
 // (candidate generation, partitioning, search and memory), the bounded-search check beyond the real corpora.
 func TestB6Scale(t *testing.T) {
 	ns := []int{200, 800, 3200}
@@ -547,10 +549,10 @@ func TestB6Scale(t *testing.T) {
 		l := newAuthLab(t)
 		hdr := b5Text(7, 2000)
 		for i := range n / 4 {
-			v := append(slices.Clone(hdr), b5Text(uint64(1000+i), 6000+i%7*1000)...)
+			v := append(slices.Clone(hdr), b5Text(uint64(1000+i), 40000+i%7*8000)...)
 			for k := range 4 {
 				l.s.PutObject("b", fmt.Sprintf("f%05d", i), v, "", nil)
-				v = b5Mutate(v, uint64(i*4+k), 2)
+				v = b5Mutate(v, uint64(i*4+k), 3)
 			}
 		}
 		l.reclaim()

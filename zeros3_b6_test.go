@@ -157,8 +157,8 @@ func TestB6JointMoveOnly(t *testing.T) {
 // TestB6EdmondsBruteForce: the arborescence matches exhaustive search on random small graphs.
 func TestB6EdmondsBruteForce(t *testing.T) {
 	r := rand.New(rand.NewPCG(3, 4))
-	for trial := range 300 {
-		n := 2 + r.IntN(5)
+	for trial := range 600 {
+		n := 2 + r.IntN(6)
 		root := n - 1
 		var es []rgEdge
 		for v := 0; v < n-1; v++ {

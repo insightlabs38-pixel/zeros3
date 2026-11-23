@@ -13,7 +13,7 @@ lanes = defaultdict(dict)
 for r in rows:
     if r['kind'] == 'lane':
         lanes[r['family']][r['lane']] = r
-ORDER = ['cdc', 'local', 'local-archive', 'seq-loc', 'global', 'global-loc', 'global-archive', 'global-hot', 'reopt', 'reopt-archive']
+ORDER = ['cdc', 'local', 'local-archive', 'seq-loc', 'global', 'global-loc', 'global-archive', 'global-hot', 'reopt', 'reopt-archive', 'global-loc3', 'global-archive3']
 fams = [f for f in ['coreutils', 'cu-files', 'go', 'sqlite', 'bundle', 'git', 'ts', 'random'] if f in lanes]
 
 def med(x):
