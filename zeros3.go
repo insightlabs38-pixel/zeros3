@@ -86,48 +86,49 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      542    Content-defined chunking (CDC)
-//      729    Content-addressed chunk storage (CAS)
-//     2524    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5312    Small-object segments (inline manifests, store level 11)
-//     6562    Manifests (immutable, JSON)
-//     7360    Visibility journal (append-only, checksummed)
-//     7882    Store: format, namespace, and object CRUD
-//     8394    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12046    Version history/restore, history pruning, ListObjectsV2
-//    12652    SigV4 authentication (header and presigned-URL)
-//    13629    Request payload checksums and S3-shaped XML error/response types
-//    13846    HTTP routing and S3 operation handlers
-//    14278    Conditional operations (PUT/GET/HEAD preconditions)
-//    14973    CopyObject
-//    15278    Multipart upload
-//    16222    Stats and reachability scanning
-//    17810    Verify
-//    18025    Store locking and safe offline GC
-//    18328    Offline compaction (`zeros3 compact`)
-//    19511    Pack reclamation and repacking (`zeros3 repack`)
-//    20099    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20559    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21863    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22376    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23441    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24292    Delta sync client, credentials, and parallel transfer
-//    26597    Bulk logical-chunk transport (v2)
-//    27508    Recursive directory sync
-//    27813    Remote replication (`zeros3 replicate`)
-//    28726    Peer-assisted corruption repair (`zeros3 repair`)
-//    29298    Namespace (prefix/bucket) replication
-//    29614    Copy-on-write namespace fork (`zeros3 fork`)
-//    29822    Snapshots and restore
-//    30984    Structural diff and inspect (introspection)
-//    32396    Portable snapshot bundles (`zeros3 bundle`)
-//    33593    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34228    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52616    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60464    Windowed and estimated similarity deltas (extracted dcore)
-//    62211    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    70064    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    76336    CLI dispatch, HTTP server/startup, and main
+//      543    Content-defined chunking (CDC)
+//      730    Content-addressed chunk storage (CAS)
+//     2525    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5313    Small-object segments (inline manifests, store level 11)
+//     6563    Manifests (immutable, JSON)
+//     7361    Visibility journal (append-only, checksummed)
+//     7883    Store: format, namespace, and object CRUD
+//     8395    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12047    Version history/restore, history pruning, ListObjectsV2
+//    12653    SigV4 authentication (header and presigned-URL)
+//    13630    Request payload checksums and S3-shaped XML error/response types
+//    13847    HTTP routing and S3 operation handlers
+//    14279    Conditional operations (PUT/GET/HEAD preconditions)
+//    14974    CopyObject
+//    15279    Multipart upload
+//    16223    Stats and reachability scanning
+//    17811    Verify
+//    18026    Store locking and safe offline GC
+//    18329    Offline compaction (`zeros3 compact`)
+//    19512    Pack reclamation and repacking (`zeros3 repack`)
+//    20100    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20560    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21864    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22377    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23442    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24293    Delta sync client, credentials, and parallel transfer
+//    26598    Bulk logical-chunk transport (v2)
+//    27509    Recursive directory sync
+//    27814    Remote replication (`zeros3 replicate`)
+//    28727    Peer-assisted corruption repair (`zeros3 repair`)
+//    29299    Namespace (prefix/bucket) replication
+//    29615    Copy-on-write namespace fork (`zeros3 fork`)
+//    29823    Snapshots and restore
+//    30985    Structural diff and inspect (introspection)
+//    32397    Portable snapshot bundles (`zeros3 bundle`)
+//    33594    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34229    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52617    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    60501    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    63236    Windowed and estimated similarity deltas (extracted dcore)
+//    65073    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    72926    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    79198    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -53065,6 +53066,7 @@ const (
 	hookAuthBeforeRetire      = "auth-before-retire"
 	hookAuthAfterRetire       = "auth-after-retire"
 	hookAuthRevertMaterial    = "auth-revert-materialized"
+	hookOptimizeBeforePublish = "optimize-before-publish"
 )
 
 // authFault is a test-only I/O failure seam (nil in production): it can fail
@@ -60195,7 +60197,7 @@ func (q *authSimilarityQuery) postingWindow(feature uint64, limit int) ([]uint32
 // runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, status, features, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, optimize, status, features, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -60248,6 +60250,13 @@ func runAuthority(args []string) {
 	segmentKiB := fs.Int64("segment-kib", 0, "migrate: restartable program segment in KiB (16–1024, 0 uses the default 128, -1 writes unsegmented ZW1)")
 	priceCurrent := fs.Bool("price-current-storage", false, "migrate: price existing pack sizes and raw new components instead of assuming recompression")
 	reserveMiB := fs.Uint64("reserve-free-mib", 0, "migrate: require this much free space after estimated staging (0 disables the reserve)")
+	profile := fs.String("profile", "mixed", "optimize: archive, mixed or hot (read weight, read budget and depth defaults)")
+	readWeight := fs.Float64("read-weight", 0, "optimize: retained bytes one modeled microsecond of a content's sparse cold read is worth (0: the profile's)")
+	readBudget := fs.Float64("read-budget", 0, "optimize: modeled sparse read at most this multiple of the content's CDC read (0: the profile's)")
+	locality := fs.String("locality", "0,256", "optimize: COPY locality slacks to generate programs with (0 = the plain matcher)")
+	algorithm := fs.String("algorithm", "global", "optimize: global, local (the sequential rule on the same candidates), oracle or current")
+	pareto := fs.String("pareto", "", "optimize: comma-separated read weights of a frontier reported beside the plan")
+	cands := fs.Int("candidates", 4, "migrate/optimize: trial bases per target (max 8)")
 	fs.Parse(args[1:])
 	if sub == "recover" {
 		applyCredentialEnvFallback(fs, accessKey, secretKey, region)
@@ -60404,6 +60413,34 @@ func runAuthority(args []string) {
 		rep.SimilarityOpenNanos = similarityOpenNanos
 		rep.SimilarityFallback = *indexedDiscovery && pol.AllowDelta && (pol.similarity == nil || pol.similarity.failed)
 		enc.Encode(rep)
+	case "optimize":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
+			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
+			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm}
+		pol.Locality = []int{}
+		for _, f := range strings.Split(*locality, ",") {
+			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
+				pol.Locality = append(pol.Locality, n)
+			}
+		}
+		if len(pol.Locality) == 0 {
+			pol.Locality = []int{0}
+		}
+		for _, f := range strings.Split(*pareto, ",") {
+			if w, err := strconv.ParseFloat(strings.TrimSpace(f), 64); err == nil {
+				pol.Pareto = append(pol.Pareto, w)
+			}
+		}
+		if *archive {
+			pol.Order, pol.Profile = "oldest", "archive"
+		}
+		rep, err := store.AuthorityOptimize(ctx, pol)
+		if err != nil {
+			log.Fatalf("zeros3: authority optimize: %v", err)
+		}
+		enc.Encode(rep)
 	case "features":
 		rep, err := store.authorityFeatureUpgrade(*apply)
 		if err != nil {
@@ -60458,6 +60495,2750 @@ func runAuthority(args []string) {
 		fmt.Fprintf(os.Stderr, "zeros3: authority: unknown subcommand %q\n", sub)
 		os.Exit(2)
 	}
+}
+
+// =============================================================================
+// 16e1. Global representation-graph optimization (B6, `zeros3 authority optimize`)
+//
+// The migrator above decides one content at a time, in version order, against
+// bases already decided, and prices it by the chunks it alone owns. Here every
+// in-scope content and its candidate representations form one graph and are
+// chosen jointly. A selection's storage is exact closure accounting: the union
+// of the components the required records reach (a shared chunk or base is paid
+// once; a record nothing requires costs nothing and gc retires it) plus the
+// allocated blocks of each record file. A modeled cold read cost (records and
+// decoded bytes of sparse reads, composed through the delta programs and the
+// bases' own selections) and the bytes a transition writes are priced beside
+// it. The search runs per interaction partition: an arborescence start
+// (Chu-Liu/Edmonds), exact single and joint moves, an exhaustive oracle for
+// small partitions. Transitions publish through the ordinary authority path,
+// bases first, each record proven before it becomes authoritative.
+// =============================================================================
+
+// OptimizePolicy extends the migration policy (scope, depth, bases, candidates, order, apply) with the
+// objective of the global optimizer.
+type OptimizePolicy struct {
+	AuthPolicy
+	Profile         string    `json:"profile"`           // archive | mixed | hot: default weights below
+	ReadWeight      float64   `json:"read_weight"`       // retained bytes one modeled µs of a content's sparse cold read is worth
+	ReadBudget      float64   `json:"read_budget"`       // modeled sparse read at most this multiple of the content's CDC read (0 = none)
+	MigrationWeight float64   `json:"migration_weight"`  // retained-byte equivalent of one byte a transition writes
+	MinGain         float64   `json:"min_gain"`          // a partition changes only for this fraction of its stored bytes
+	Locality        []int     `json:"locality"`          // COPY locality slacks programs are generated with (0 = the plain matcher)
+	Algorithm       string    `json:"algorithm"`         // global | local | oracle | current
+	Pareto          []float64 `json:"pareto,omitempty"`  // read weights of a frontier sweep reported beside the plan
+	MaxEvals        int64     `json:"max_evals"`         // move evaluations per partition
+	Blocked         *bool     `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
+	Oracle          bool      `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
+}
+
+// rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
+var rgProfiles = map[string]struct {
+	weight, budget float64
+	depth          int
+}{
+	"archive": {0, 0, 0},
+	"mixed":   {20, 0, 0},
+	"hot":     {400, 2, 1},
+}
+
+func (p OptimizePolicy) norm() OptimizePolicy {
+	if p.Profile == "" {
+		p.Profile = "mixed"
+	}
+	if pr, ok := rgProfiles[p.Profile]; ok {
+		if p.ReadWeight == 0 {
+			p.ReadWeight = pr.weight
+		}
+		if p.ReadBudget == 0 {
+			p.ReadBudget = pr.budget
+		}
+		if pr.depth > 0 && (p.MaxDepth <= 0 || p.MaxDepth > pr.depth) {
+			p.MaxDepth = pr.depth
+		}
+	}
+	if !p.AllowDelta && !p.AllowRep {
+		p.AllowDelta = true
+	}
+	p.AuthPolicy = p.AuthPolicy.norm()
+	if p.MigrationWeight == 0 {
+		p.MigrationWeight = 0.1
+	}
+	if p.MinGain == 0 {
+		p.MinGain = 0.01
+	}
+	if p.Locality == nil {
+		p.Locality = []int{0, 256}
+	}
+	if p.Algorithm == "" {
+		p.Algorithm = "global"
+	}
+	if p.MaxEvals <= 0 {
+		p.MaxEvals = 400000
+	}
+	return p
+}
+
+const (
+	rgCDC   = byte(iota) // the manifest's chunks (a pin record while something depends on it)
+	rgDelta              // a delta record against other nodes
+	rgRep                // a structural representation record
+	rgKeep               // the content's current record, unchanged
+)
+
+// rgUnit is a target span of an option and the own pieces [p0,p1) a read of it fetches.
+type rgUnit struct {
+	tpos, tend int64
+	p0, p1     int32
+}
+
+// rgCopy is a COPY span: target [tpos, tpos+n) from base slot base at off.
+type rgCopy struct {
+	tpos, n, off int64
+	base         int32
+}
+
+type rgOpt struct {
+	kind   byte
+	label  string
+	bases  []int32 // node indexes
+	enc    []int32 // bases in the encoder's order (a multi-base program is refined in this order)
+	pieces []int32 // own components in record order
+	comps  []int32 // distinct components
+	hdr    []int32 // own pieces every read fetches (envelope header, frame table)
+	units  []rgUnit
+	copies []rgCopy
+	meta   int64 // allocated bytes of the record file (CDC: of a pin, charged while it has dependents)
+	write  int64 // bytes a transition to the option writes
+	depth  int   // recorded depth of a kept delta (dependents' bases must stay below it)
+	loc    int   // locality slack of the encoder
+	win    bool  // windowed codec
+	sum    [32]byte
+	rep    *authRepCand
+	cur    bool
+	chunky bool // pieces are CDC chunks (restartable blocks apply)
+}
+
+type rgNode struct {
+	sha     [32]byte
+	size    int64
+	obj     *authObj // nil: a record no live manifest in scope names
+	cur     *authRecord
+	live    bool
+	fixed   bool // out of scope: only its current form
+	newest  bool // newest version of its key (stays CDC under the default order)
+	extDep  int  // smallest depth of a record outside the model that names it as a base (0 = none)
+	opts    []*rgOpt
+	curOpt  int32
+	sk      []uint64
+	cdcRead float64
+}
+
+// rgModel is the calibrated read-cost model (µs): a cold record fetch and a decoded byte.
+type rgModel struct {
+	Rec, Byte, Copy float64
+	Block           int64 // restartable record block (0: records decode whole)
+}
+
+// rgDefaultModel is fitted to the B5 cold reads on this class of storage (testing-harnesses/next/b6).
+var rgDefaultModel = rgModel{Rec: 120, Byte: 0.0052, Copy: 0.0004}
+
+type rgGraph struct {
+	s      *Store
+	pol    OptimizePolicy
+	nodes  []*rgNode
+	idx    map[[32]byte]int32
+	cid    map[[32]byte]int32
+	cphys  []int64
+	clen   []int64
+	ext    []int32
+	block  int64
+	model  rgModel
+	encs   int
+	encNS  int64
+	parts  [][]int32
+	partOf []int32
+}
+
+func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
+	if id, ok := g.cid[sha]; ok {
+		return id
+	}
+	id := int32(len(g.cphys))
+	g.cid[sha] = id
+	g.cphys = append(g.cphys, phys)
+	g.clen = append(g.clen, logical)
+	g.ext = append(g.ext, 0)
+	return id
+}
+
+func (g *rgGraph) roundMeta(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return (n + g.block - 1) / g.block * g.block
+}
+
+// ---- evaluation --------------------------------------------------------------
+
+// rgEval is a selection and its exact closure cost, maintained incrementally: a node is required while it is
+// live or a required node's selection names it; a component is paid while a required selection (or anything
+// outside the model) references it. Every quantity is a function of sel, so a trial move is undone by
+// setting the old option again.
+type rgEval struct {
+	g      *rgGraph
+	sel    []int32
+	req    []int32
+	ref    []int32
+	users  [][]int32
+	metaOf []int64
+	bytes  int64 // components + record files
+	meta   int64
+	writes int64
+	rc     []float64
+	rcOK   []bool
+	rsum   float64
+	dirty  []int32
+	queued []bool
+	dep    []int8
+	depOK  []bool
+	evals  int64
+	tmp    map[int32]uint64
+}
+
+func newRGEval(g *rgGraph, sel []int32) *rgEval {
+	n := len(g.nodes)
+	e := &rgEval{g: g, sel: make([]int32, n), req: make([]int32, n), ref: slices.Clone(g.ext), users: make([][]int32, n),
+		metaOf: make([]int64, n), rc: make([]float64, n), rcOK: make([]bool, n), queued: make([]bool, n), dep: make([]int8, n), depOK: make([]bool, n), tmp: map[int32]uint64{}}
+	for c, r := range e.ref {
+		if r > 0 {
+			e.bytes += g.cphys[c]
+		}
+	}
+	for i := range e.sel {
+		e.sel[i] = -1
+	}
+	for i, nd := range g.nodes {
+		if nd.live || nd.extDep > 0 {
+			e.req[i]++ // a permanent requirement; its selection's closure is added below
+		}
+	}
+	for i := range g.nodes {
+		e.setRaw(int32(i), sel[i])
+	}
+	for i := range g.nodes {
+		e.dirty, e.queued[i] = append(e.dirty, int32(i)), true
+	}
+	return e
+}
+
+func (e *rgEval) opt(v int32) *rgOpt { return e.g.nodes[v].opts[e.sel[v]] }
+
+func (e *rgEval) addComps(o *rgOpt, d int32) {
+	for _, c := range o.comps {
+		if d > 0 {
+			if e.ref[c] == 0 {
+				e.bytes += e.g.cphys[c]
+			}
+			e.ref[c]++
+		} else {
+			e.ref[c]--
+			if e.ref[c] == 0 {
+				e.bytes -= e.g.cphys[c]
+			}
+		}
+	}
+}
+
+// require changes v's requirement count; crossing zero adds or removes its selection's closure.
+func (e *rgEval) require(v int32, d int32) {
+	was := e.req[v] > 0
+	e.req[v] += d
+	now := e.req[v] > 0
+	if was != now && e.sel[v] >= 0 {
+		o := e.opt(v)
+		if now {
+			e.addComps(o, 1)
+		} else {
+			e.addComps(o, -1)
+		}
+		for _, b := range o.bases {
+			e.require(b, d)
+		}
+	}
+	e.updMeta(v)
+}
+
+// updMeta charges v's record file: a pin only while it has dependents (or an outside one) and is required.
+func (e *rgEval) updMeta(v int32) {
+	var m int64
+	nd := e.g.nodes[v]
+	if e.req[v] > 0 && e.sel[v] >= 0 {
+		o := e.opt(v)
+		if o.kind != rgCDC || e.req[v] > 1 || !nd.live && e.req[v] > 0 || nd.extDep > 0 {
+			m = o.meta
+		}
+	}
+	e.bytes += m - e.metaOf[v]
+	e.meta += m - e.metaOf[v]
+	e.metaOf[v] = m
+}
+
+func (e *rgEval) setRaw(v int32, o int32) {
+	old := e.sel[v]
+	if old == o {
+		return
+	}
+	nd := e.g.nodes[v]
+	if old >= 0 {
+		po := nd.opts[old]
+		if !po.cur {
+			e.writes -= po.write
+		}
+		if e.req[v] > 0 {
+			e.addComps(po, -1)
+		}
+		for _, b := range po.bases {
+			e.users[b] = slices.DeleteFunc(e.users[b], func(u int32) bool { return u == v })
+			if e.req[v] > 0 {
+				e.require(b, -1)
+			}
+		}
+	}
+	e.sel[v] = o
+	if o >= 0 {
+		no := nd.opts[o]
+		if !no.cur {
+			e.writes += no.write
+		}
+		if e.req[v] > 0 {
+			e.addComps(no, 1)
+		}
+		for _, b := range no.bases {
+			e.users[b] = append(e.users[b], v)
+			if e.req[v] > 0 {
+				e.require(b, 1)
+			}
+		}
+	}
+	e.updMeta(v)
+}
+
+// set changes v's option and invalidates the read costs and depths of v and everything built on it.
+func (e *rgEval) set(v int32, o int32) {
+	if e.sel[v] == o {
+		return
+	}
+	e.evals++
+	e.setRaw(v, o)
+	e.invalidate(v)
+}
+
+func (e *rgEval) invalidate(v int32) {
+	stack := []int32{v}
+	seen := map[int32]bool{}
+	for len(stack) > 0 {
+		x := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[x] {
+			continue
+		}
+		seen[x] = true
+		if e.rcOK[x] {
+			e.rcOK[x] = false
+			e.rsum -= e.weight(x) * e.rc[x]
+		}
+		if !e.queued[x] {
+			e.dirty, e.queued[x] = append(e.dirty, x), true
+		}
+		e.depOK[x] = false
+		stack = append(stack, e.users[x]...)
+	}
+}
+
+func (e *rgEval) weight(v int32) float64 {
+	if e.g.nodes[v].live {
+		return 1
+	}
+	return 0
+}
+
+// depth is the delta nesting of v's selection (-1: a cycle).
+func (e *rgEval) depth(v int32) int {
+	return e.depthWalk(v, 0)
+}
+
+func (e *rgEval) depthWalk(v int32, guard int) int {
+	if e.depOK[v] {
+		return int(e.dep[v])
+	}
+	if guard > authHardDepth+1 {
+		return -1
+	}
+	o := e.opt(v)
+	d := 0
+	if o.kind == rgDelta || o.kind == rgKeep && len(o.bases) > 0 {
+		for _, b := range o.bases {
+			bd := e.depthWalk(b, guard+1)
+			if bd < 0 {
+				return -1
+			}
+			d = max(d, bd+1)
+		}
+	}
+	e.dep[v], e.depOK[v] = int8(d), true
+	return d
+}
+
+// feasible checks depth, cycles, kept records' recorded depths, outside dependents and the read budget
+// for v and everything built on it.
+func (e *rgEval) feasible(v int32) bool {
+	stack := []int32{v}
+	seen := map[int32]bool{}
+	for len(stack) > 0 {
+		x := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[x] {
+			continue
+		}
+		seen[x] = true
+		if !e.nodeOK(x) {
+			return false
+		}
+		stack = append(stack, e.users[x]...)
+	}
+	return true
+}
+
+// nodeOK checks one required node's own constraints.
+func (e *rgEval) nodeOK(x int32) bool {
+	g := e.g
+	if e.req[x] == 0 {
+		return true
+	}
+	d := e.depth(x)
+	if d < 0 || d > authHardDepth {
+		return false
+	}
+	nd, o := g.nodes[x], e.opt(x)
+	if o.kind != rgKeep && d > g.pol.MaxDepth {
+		return false
+	}
+	if o.kind == rgKeep && len(o.bases) > 0 {
+		for _, b := range o.bases {
+			if e.depth(b) >= o.depth {
+				return false
+			}
+		}
+	}
+	if nd.extDep > 0 && d >= nd.extDep {
+		return false
+	}
+	return !(g.pol.ReadBudget > 0 && nd.live && o.kind != rgCDC && e.readCost(x) > g.pol.ReadBudget*nd.cdcRead)
+}
+
+// lift tries options of v that are infeasible because of what is built on it, repairing each dependent
+// that breaks with its cheapest option that holds (outward), and keeps the whole change if it pays.
+func (e *rgEval) lift(part []int32, budget int64) bool {
+	start := e.evals
+	for _, v := range part {
+		nd := e.g.nodes[v]
+		for o := range int32(len(nd.opts)) {
+			if e.evals-start > budget {
+				return false
+			}
+			if o == e.sel[v] || !e.allowed(v, o) || len(e.users[v]) == 0 || !math.IsInf(e.try(v, o), 1) {
+				continue
+			}
+			j0 := e.objective()
+			type ch struct{ v, old int32 }
+			trail := []ch{{v, e.sel[v]}}
+			e.set(v, o)
+			ok := e.nodeOK(v)
+			queue := slices.Clone(e.users[v])
+			seen := map[int32]bool{v: true}
+			for len(queue) > 0 && ok {
+				u := queue[0]
+				queue = queue[1:]
+				if seen[u] {
+					continue
+				}
+				seen[u] = true
+				if !e.nodeOK(u) {
+					old := e.sel[u]
+					bestJ, bestO := math.Inf(1), int32(-1)
+					for ou := range int32(len(e.g.nodes[u].opts)) {
+						if !e.allowed(u, ou) {
+							continue
+						}
+						e.set(u, ou)
+						if e.nodeOK(u) {
+							if j := e.objective(); j < bestJ {
+								bestJ, bestO = j, ou
+							}
+						}
+					}
+					e.set(u, old)
+					if bestO < 0 {
+						ok = false
+						break
+					}
+					trail = append(trail, ch{u, old})
+					e.set(u, bestO)
+				}
+				queue = append(queue, e.users[u]...)
+			}
+			if ok && e.feasible(v) && e.objective() < j0-1 {
+				return true
+			}
+			for i := len(trail) - 1; i >= 0; i-- {
+				e.set(trail[i].v, trail[i].old)
+			}
+		}
+	}
+	return false
+}
+
+func (e *rgEval) readCost(v int32) float64 {
+	if !e.rcOK[v] {
+		e.rc[v] = e.g.sparseCost(e, v)
+		e.rcOK[v] = true
+		e.rsum += e.weight(v) * e.rc[v]
+	}
+	return e.rc[v]
+}
+
+func (e *rgEval) readSum() float64 {
+	for _, v := range e.dirty {
+		e.queued[v] = false
+		if !e.rcOK[v] {
+			e.readCost(v)
+		}
+	}
+	e.dirty = e.dirty[:0]
+	return e.rsum
+}
+
+// objective is storage plus priced reads and migration writes.
+func (e *rgEval) objective() float64 {
+	p := e.g.pol
+	j := float64(e.bytes) + p.MigrationWeight*float64(e.writes)
+	if p.ReadWeight > 0 {
+		j += p.ReadWeight * e.readSum()
+	}
+	return j
+}
+
+// ---- read model ----------------------------------------------------------------
+
+// rgTouch collects the records one read fetches: component -> bitmask of restartable blocks (all ones: whole).
+type rgTouch map[int32]uint64
+
+func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
+	if a >= b || depth > authHardDepth+1 {
+		return
+	}
+	o := e.opt(v)
+	for _, p := range o.hdr {
+		t[p] = ^uint64(0)
+	}
+	k, _ := slices.BinarySearchFunc(o.units, a, func(u rgUnit, x int64) int { return cmp.Compare(u.tend, x+1) })
+	for ; k < len(o.units) && o.units[k].tpos < b; k++ {
+		u := o.units[k]
+		for p := u.p0; p < u.p1; p++ {
+			if o.chunky && g.model.Block > 0 && g.clen[o.pieces[p]] > g.model.Block {
+				lo, hi := max(a, u.tpos)-u.tpos, min(b, u.tend)-u.tpos
+				blk := g.model.Block
+				var m uint64
+				for x := lo / blk; x <= (hi-1)/blk && x < 63; x++ {
+					m |= 1 << x
+				}
+				if (hi-1)/blk >= 63 {
+					m = ^uint64(0)
+				}
+				t[o.pieces[p]] |= m
+			} else {
+				t[o.pieces[p]] = ^uint64(0)
+			}
+		}
+	}
+	c, _ := slices.BinarySearchFunc(o.copies, a, func(x rgCopy, y int64) int { return cmp.Compare(x.tpos+x.n, y+1) })
+	for ; c < len(o.copies) && o.copies[c].tpos < b; c++ {
+		cp := o.copies[c]
+		lo, hi := max(a, cp.tpos), min(b, cp.tpos+cp.n)
+		g.touch(e, o.bases[cp.base], cp.off+lo-cp.tpos, cp.off+hi-cp.tpos, t, depth+1)
+	}
+}
+
+// cost prices a touch set: one fetch per record (two for a partial restartable read: table, blocks) and
+// its decoded bytes.
+func (g *rgGraph) cost(t rgTouch) (us float64, recs int, decoded int64) {
+	for c, m := range t {
+		n := g.clen[c]
+		if m != ^uint64(0) && g.model.Block > 0 {
+			n = min(n, int64(bits.OnesCount64(m))*g.model.Block)
+			recs++
+		}
+		recs++
+		decoded += n
+	}
+	return float64(recs)*g.model.Rec + float64(decoded)*g.model.Byte, recs, decoded
+}
+
+// rgProbes are the read offsets of the sparse model: 8 of 4 KiB, 4 of 64 KiB, spread over the content.
+func rgProbes(size int64) [][2]int64 {
+	var out [][2]int64
+	for _, s := range []struct {
+		n   int
+		len int64
+	}{{8, 4 << 10}, {4, 64 << 10}} {
+		l := min(s.len, size)
+		for k := range s.n {
+			off := (int64(2*k+1) * (size - l)) / int64(2*s.n)
+			out = append(out, [2]int64{off, off + l})
+		}
+	}
+	return out
+}
+
+// sparseCost is the mean of the 4 KiB and 64 KiB probe costs (µs) plus the copy work of reconstruction.
+func (g *rgGraph) sparseCost(e *rgEval, v int32) float64 {
+	nd := g.nodes[v]
+	if !nd.live || nd.size == 0 {
+		return 0
+	}
+	var c4, c64 float64
+	for k, p := range rgProbes(nd.size) {
+		clear(e.tmp)
+		g.touch(e, v, p[0], p[1], e.tmp, 0)
+		us, _, _ := g.cost(e.tmp)
+		us += float64(p[1]-p[0]) * g.model.Copy * float64(1+max(e.depth(v), 0))
+		if k < 8 {
+			c4 += us / 8
+		} else {
+			c64 += us / 4
+		}
+	}
+	return (c4 + c64) / 2
+}
+
+// rgReadStats is the modeled physical work of a read.
+type rgReadStats struct {
+	US      float64 `json:"us"`
+	Records int     `json:"records"`
+	Decoded int64   `json:"decoded"`
+}
+
+func (g *rgGraph) readStats(e *rgEval, v int32, a, b int64) rgReadStats {
+	t := rgTouch{}
+	g.touch(e, v, a, b, t, 0)
+	us, r, d := g.cost(t)
+	return rgReadStats{us + float64(b-a)*g.model.Copy*float64(1+max(e.depth(v), 0)), r, d}
+}
+
+// ---- graph construction ---------------------------------------------------------
+
+func (s *Store) rgBuild(ctx context.Context, pol OptimizePolicy) (*rgGraph, error) {
+	g := &rgGraph{s: s, pol: pol, idx: map[[32]byte]int32{}, cid: map[[32]byte]int32{}, block: 4096, model: rgDefaultModel}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(s.root, &st); err == nil && st.Bsize > 0 {
+		g.block = int64(st.Bsize)
+	}
+	s.formatMu.Lock()
+	blocked := slices.Contains(s.format.Features, packBlockedFeature)
+	s.formatMu.Unlock()
+	if pol.Blocked != nil {
+		blocked = *pol.Blocked
+	}
+	if blocked {
+		g.model.Block = 32 << 10
+	}
+	scoped := pol.Bucket != "" || pol.Prefix != ""
+	inScope := func(bucket, key string) bool {
+		return (pol.Bucket == "" || bucket == pol.Bucket) && strings.HasPrefix(key, pol.Prefix)
+	}
+	var outside []manifestV1
+	newestT := map[string]time.Time{}
+	err := s.eachLiveManifest(nil, func(lm liveMan) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+		if err != nil || lm.man.TotalLength < 1 {
+			return nil
+		}
+		if scoped && !inScope(lm.bucket, lm.key) {
+			outside = append(outside, lm.man)
+			return nil
+		}
+		k := lm.bucket + "\x00" + lm.key
+		if t, ok := newestT[k]; !ok || lm.man.CreatedAt.After(t) {
+			newestT[k] = lm.man.CreatedAt
+		}
+		if i, ok := g.idx[sha]; ok {
+			if lm.man.CreatedAt.Before(g.nodes[i].obj.t) {
+				g.nodes[i].obj.t = lm.man.CreatedAt
+			}
+			return nil
+		}
+		g.idx[sha] = int32(len(g.nodes))
+		g.nodes = append(g.nodes, &rgNode{sha: sha, size: lm.man.TotalLength, live: true,
+			obj: &authObj{sha: sha, man: lm.man, bucket: lm.bucket, key: lm.key, t: lm.man.CreatedAt}})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The newest version of each history (a key with several contents) keeps CDC under the default order.
+	if pol.Order == "newest" {
+		latest := map[string]int32{}
+		lt := map[string]time.Time{}
+		versions := map[string]map[int32]bool{}
+		_ = s.eachLiveManifest(func(bucket, key string) bool { return !scoped || inScope(bucket, key) }, func(lm liveMan) error {
+			k := lm.bucket + "\x00" + lm.key
+			sha, err := decodeHexSHA256(lm.man.ObjectSHA256)
+			if err != nil {
+				return nil
+			}
+			i, ok := g.idx[sha]
+			if !ok {
+				return nil
+			}
+			if versions[k] == nil {
+				versions[k] = map[int32]bool{}
+			}
+			versions[k][i] = true
+			if t, ok := lt[k]; !ok || lm.man.CreatedAt.After(t) {
+				latest[k], lt[k] = i, lm.man.CreatedAt
+			}
+			return nil
+		})
+		for k, i := range latest {
+			if len(versions[k]) > 1 {
+				g.nodes[i].newest = true
+			}
+		}
+	}
+	// Records: current forms, and the records only other records name (pure intermediates).
+	files, err := s.authFiles()
+	if err != nil {
+		return nil, err
+	}
+	recs := map[[32]byte]*authRecord{}
+	for _, f := range files {
+		r, err := s.authLoad(f)
+		if err != nil {
+			return nil, err
+		}
+		if r != nil {
+			recs[f] = r
+		}
+	}
+	for _, nd := range g.nodes {
+		nd.cur = recs[nd.sha]
+	}
+	// Close over bases: a record a modeled record names is a node (fixed when outside the scope).
+	for k := 0; k < len(g.nodes); k++ {
+		nd := g.nodes[k]
+		if nd.cur == nil {
+			continue
+		}
+		for _, b := range nd.cur.Bases {
+			if _, ok := g.idx[b.SHA]; ok {
+				continue
+			}
+			br := recs[b.SHA]
+			if br == nil {
+				return nil, fmt.Errorf("optimize: base %x of %x has no record", b.SHA[:6], nd.sha[:6])
+			}
+			g.idx[b.SHA] = int32(len(g.nodes))
+			g.nodes = append(g.nodes, &rgNode{sha: b.SHA, size: br.Size, cur: br, fixed: scoped})
+		}
+	}
+	// Records outside the model that name a node keep it required below their depth.
+	modeled := map[[32]byte]bool{}
+	for _, nd := range g.nodes {
+		modeled[nd.sha] = true
+	}
+	for sha, r := range recs {
+		if modeled[sha] {
+			continue
+		}
+		for _, b := range r.Bases {
+			if i, ok := g.idx[b.SHA]; ok {
+				nd := g.nodes[i]
+				if nd.extDep == 0 || int(r.Depth) < nd.extDep {
+					nd.extDep = int(r.Depth)
+				}
+			}
+		}
+	}
+	// Current forms of every node; scope-external roots are fixed references.
+	for _, nd := range g.nodes {
+		if err := g.addCurrent(nd); err != nil {
+			return nil, err
+		}
+	}
+	for _, man := range outside {
+		sha, _ := decodeHexSHA256(man.ObjectSHA256)
+		if _, ok := g.idx[sha]; ok {
+			continue
+		}
+		if r := recs[sha]; r != nil {
+			chunks, err := s.authRecordChunks(r)
+			if err != nil {
+				return nil, err
+			}
+			g.extRefs(chunks)
+		} else {
+			g.extRefs(man.Chunks)
+		}
+	}
+	return g, nil
+}
+
+func (g *rgGraph) extRefs(chunks []chunkRef) {
+	seen := map[[32]byte]bool{}
+	for _, c := range chunks {
+		sum, err := decodeHexSHA256(c.SHA256)
+		if err != nil || seen[sum] {
+			continue
+		}
+		seen[sum] = true
+		if id, ok := g.cid[sum]; ok {
+			g.ext[id]++
+		} else {
+			id := g.comp(sum, c.Length, g.s.physChunk(sum, c.Length, map[[32]byte]int64{}, g.pol.PriceCurrentStorage))
+			g.ext[id]++
+		}
+	}
+}
+
+// cdcOpt is the manifest's chunk list; data, when known, prices chunks that are not stored.
+func (g *rgGraph) cdcOpt(nd *rgNode, data []byte) (*rgOpt, error) {
+	o := &rgOpt{kind: rgCDC, label: "cdc", chunky: true}
+	ps, err := chunkPieces(nd.obj.man)
+	if err != nil {
+		return nil, err
+	}
+	pin := authRecord{SHA: nd.sha, Size: nd.size, Gen: 1, Form: authFormPin, Pieces: ps}
+	if b, err := pin.marshal(); err == nil {
+		o.meta = g.roundMeta(int64(len(b)))
+	}
+	var off int64
+	seen := map[int32]bool{}
+	for _, p := range ps {
+		id, ok := g.cid[p.SHA]
+		if !ok {
+			var phys int64
+			if n, err := g.s.casStat(p.SHA); err == nil && n == p.Len {
+				phys = g.s.physChunk(p.SHA, p.Len, map[[32]byte]int64{}, g.pol.PriceCurrentStorage)
+			} else {
+				switch {
+				case data != nil && off+p.Len <= int64(len(data)):
+					phys = packPriceLen(data[off:off+p.Len]) + packRecordBytes
+				default:
+					phys = p.Len + packRecordBytes
+				}
+				o.write += phys
+			}
+			id = g.comp(p.SHA, p.Len, phys)
+		} else if n, err := g.s.casStat(p.SHA); err != nil || n != p.Len {
+			if !seen[id] {
+				o.write += g.cphys[id]
+			}
+		}
+		k := int32(len(o.pieces))
+		o.pieces = append(o.pieces, id)
+		o.units = append(o.units, rgUnit{off, off + p.Len, k, k + 1})
+		if !seen[id] {
+			seen[id] = true
+			o.comps = append(o.comps, id)
+		}
+		off += p.Len
+	}
+	return o, nil
+}
+
+// addCurrent adds the node's current form as option 0 (CDC, or its kept record) and, for a live node
+// with a record, its CDC alternative.
+func (g *rgGraph) addCurrent(nd *rgNode) error {
+	if nd.cur == nil {
+		o, err := g.cdcOpt(nd, nil)
+		if err != nil {
+			return err
+		}
+		o.cur, o.write = true, 0
+		nd.opts, nd.curOpt = []*rgOpt{o}, 0
+		return nil
+	}
+	o, err := g.keepOpt(nd)
+	if err != nil {
+		return err
+	}
+	nd.opts, nd.curOpt = []*rgOpt{o}, 0
+	return nil
+}
+
+// keepOpt models the node's committed record: its components, bases and read layout.
+func (g *rgGraph) keepOpt(nd *rgNode) (*rgOpt, error) {
+	r := nd.cur
+	o := &rgOpt{kind: rgKeep, label: "keep-" + authFormName(r.Form), cur: true, depth: int(r.Depth)}
+	if b, err := r.marshal(); err == nil {
+		o.meta = g.roundMeta(int64(len(b)))
+	}
+	for _, b := range r.Bases {
+		o.bases = append(o.bases, g.idx[b.SHA])
+	}
+	chunks, err := g.s.authRecordChunks(r)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[int32]bool{}
+	for _, c := range chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		id, ok := g.cid[sum]
+		if !ok {
+			id = g.comp(sum, c.Length, g.s.physChunk(sum, c.Length, map[[32]byte]int64{}, g.pol.PriceCurrentStorage))
+		}
+		o.pieces = append(o.pieces, id)
+		if !seen[id] {
+			seen[id] = true
+			o.comps = append(o.comps, id)
+		}
+	}
+	switch r.Form {
+	case authFormPin:
+		o.chunky = true
+		var off int64
+		for k, p := range r.Pieces {
+			o.units = append(o.units, rgUnit{off, off + p.Len, int32(k), int32(k + 1)})
+			off += p.Len
+		}
+	case authFormDelta:
+		blob, err := g.s.authRecordBlob(r)
+		if err != nil {
+			return nil, err
+		}
+		if err := g.layoutDelta(o, blob, r.Size); err != nil {
+			return nil, err
+		}
+	default:
+		g.layoutLinear(o, nd.size)
+	}
+	return o, nil
+}
+
+func authFormName(f byte) string {
+	switch f {
+	case authFormPin:
+		return "pin"
+	case authFormRep:
+		return "rep"
+	}
+	return "delta"
+}
+
+// authRecordBlob reads a delta record's envelope.
+func (s *Store) authRecordBlob(r *authRecord) ([]byte, error) {
+	var out []byte
+	for _, p := range r.Pieces {
+		b, err := s.casRead(p.SHA)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b...)
+	}
+	return out, nil
+}
+
+// layoutLinear spreads an option's pieces evenly over the content (representations: approximate).
+func (g *rgGraph) layoutLinear(o *rgOpt, size int64) {
+	var tot int64
+	for _, p := range o.pieces {
+		tot += g.clen[p]
+	}
+	var acc int64
+	for k, p := range o.pieces {
+		a := acc * size / max(tot, 1)
+		acc += g.clen[p]
+		o.units = append(o.units, rgUnit{a, acc * size / max(tot, 1), int32(k), int32(k + 1)})
+	}
+}
+
+// layoutDelta derives an envelope's read layout (header pieces, per-frame or per-segment pieces) and its
+// COPY spans. Piece k of o.pieces covers blob bytes [ends[k-1], ends[k]).
+func (g *rgGraph) layoutDelta(o *rgOpt, blob []byte, size int64) error {
+	ends := make([]int64, len(o.pieces))
+	var acc int64
+	for k, p := range o.pieces {
+		acc += g.clen[p]
+		ends[k] = acc
+	}
+	pr := func(a, b int64) (int32, int32) {
+		p0, _ := slices.BinarySearch(ends, a+1)
+		p1, _ := slices.BinarySearch(ends, b)
+		return int32(p0), int32(min(p1+1, len(ends)))
+	}
+	add := func(ops []xdOp) {
+		for _, op := range ops {
+			if op.base >= 0 {
+				o.copies = append(o.copies, rgCopy{op.tpos, op.n, op.off, int32(op.base)})
+			}
+		}
+	}
+	if h, more, err := xdParseHeader(blob); err == nil && !more && h.total == int64(len(blob)) {
+		p0, p1 := pr(0, h.hdrLen)
+		for p := p0; p < p1; p++ {
+			o.hdr = append(o.hdr, o.pieces[p])
+		}
+		for i, f := range h.frames {
+			p0, p1 := pr(f.poff, f.poff+max(f.plen, 1))
+			o.units = append(o.units, rgUnit{f.tpos, f.tpos + f.span, p0, p1})
+			ops, err := xdDecodeFrame(&h, i, blob[f.poff:f.poff+f.plen])
+			if err != nil {
+				return err
+			}
+			add(ops)
+		}
+	} else {
+		w, err := dwDcoreOpenWRecord(bytes.NewReader(blob), int64(len(blob)))
+		if err != nil {
+			return err
+		}
+		p0, p1 := pr(int64(len(blob))-min(int64(len(blob)), 64<<10), int64(len(blob)))
+		for p := p0; p < p1; p++ {
+			o.hdr = append(o.hdr, o.pieces[p])
+		}
+		for i := range w.Frames() {
+			segs, err := w.segments(i)
+			if err != nil {
+				return err
+			}
+			for _, sg := range segs {
+				p0, p1 := pr(sg.poff, sg.poff+max(sg.plen, 1))
+				o.units = append(o.units, rgUnit{sg.tpos, sg.tpos + sg.tlen, p0, p1})
+			}
+			ops, err := w.program(i)
+			if err != nil {
+				return err
+			}
+			add(ops)
+		}
+	}
+	slices.SortFunc(o.copies, func(a, b rgCopy) int { return cmp.Compare(a.tpos, b.tpos) })
+	slices.SortFunc(o.units, func(a, b rgUnit) int { return cmp.Compare(a.tpos, b.tpos) })
+	return nil
+}
+
+// rgBlob buffers an envelope and records the piece boundaries authPieceWriter would cut.
+type rgBlob struct {
+	b     []byte
+	ends  []int
+	start int
+}
+
+func (w *rgBlob) Write(p []byte) (int, error) {
+	for len(p) > 0 {
+		k := min(len(p), w.start+xdPieceSize-len(w.b))
+		w.b = append(w.b, p[:k]...)
+		p = p[k:]
+		if len(w.b)-w.start == xdPieceSize {
+			w.ends = append(w.ends, len(w.b))
+			w.start = len(w.b)
+		}
+	}
+	return len(p), nil
+}
+
+func (w *rgBlob) align(n int64) {
+	if fill := int64(len(w.b) - w.start); fill > 0 && (n < 0 || fill+n > xdPieceSize || fill >= authAlignFill) {
+		w.ends = append(w.ends, len(w.b))
+		w.start = len(w.b)
+	}
+}
+
+func (w *rgBlob) finish() []int {
+	if len(w.b) > w.start {
+		w.ends = append(w.ends, len(w.b))
+		w.start = len(w.b)
+	}
+	return w.ends
+}
+
+// deltaOpt prices an envelope as an option: its pieces become components at the pack writer's price.
+func (g *rgGraph) deltaOpt(nd *rgNode, blob []byte, ends []int, bases []int32, loc int, win bool, comp *packCompressor) (*rgOpt, error) {
+	o := &rgOpt{kind: rgDelta, bases: bases, loc: loc, win: win, sum: sha256.Sum256(blob)}
+	o.label = "delta"
+	if loc > 0 {
+		o.label = fmt.Sprintf("delta-local%d", loc)
+	}
+	if win {
+		o.label = "w" + o.label
+	}
+	start := 0
+	seen := map[int32]bool{}
+	var ps []authPiece
+	for _, end := range ends {
+		piece := blob[start:end]
+		sum := sha256.Sum256(piece)
+		id, ok := g.cid[sum]
+		if !ok {
+			data, _ := comp.encode(piece)
+			id = g.comp(sum, int64(len(piece)), int64(len(data))+packRecordBytes)
+		}
+		if !seen[id] {
+			seen[id] = true
+			o.comps = append(o.comps, id)
+			if n, err := g.s.casStat(sum); err != nil || n != int64(len(piece)) {
+				o.write += g.cphys[id]
+			}
+		}
+		o.pieces = append(o.pieces, id)
+		ps = append(ps, authPiece{sum, int64(len(piece))})
+		start = end
+	}
+	rec := authRecord{SHA: nd.sha, Size: nd.size, Gen: 1, Form: authFormDelta, Depth: 1, Sketch: make([]uint64, 16), Pieces: ps}
+	for _, b := range bases {
+		rec.Bases = append(rec.Bases, xdBaseRef{g.nodes[b].sha, g.nodes[b].size})
+	}
+	if b, err := rec.marshal(); err == nil {
+		o.meta = g.roundMeta(int64(len(b)))
+	} else {
+		return nil, err
+	}
+	o.write += o.meta
+	if err := g.layoutDelta(o, blob, nd.size); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+// ---- candidate generation -----------------------------------------------------
+
+// rgCandidates scores every other node by shared sketch features (plus same-key neighbours and current bases).
+func (g *rgGraph) rgCandidates(v int32, inv map[uint64][]int32, byKey map[string][]int32) []int32 {
+	nd := g.nodes[v]
+	score := map[int32]int{}
+	for _, f := range nd.sk {
+		for _, u := range inv[f] {
+			if u != v {
+				score[u] += 2
+			}
+		}
+	}
+	for _, u := range byKey[nd.obj.bucket+"\x00"+nd.obj.key] {
+		if u != v && score[u] > 0 {
+			score[u]++
+		}
+	}
+	type cs struct {
+		u int32
+		n int
+	}
+	var all []cs
+	for u, n := range score {
+		un := g.nodes[u]
+		if !un.live || un.obj == nil {
+			continue
+		}
+		all = append(all, cs{u, n})
+	}
+	slices.SortFunc(all, func(a, b cs) int {
+		return cmp.Or(cmp.Compare(b.n, a.n), bytes.Compare(g.nodes[a.u].sha[:], g.nodes[b.u].sha[:]))
+	})
+	var out []int32
+	for _, c := range all {
+		if len(out) == g.pol.Candidates {
+			break
+		}
+		out = append(out, c.u)
+	}
+	return out
+}
+
+// generate adds delta (and representation) options for every eligible live node.
+func (g *rgGraph) generate(ctx context.Context) error {
+	s, pol := g.s, g.pol
+	m := &authMigrator{ctx: ctx, s: s, pol: pol.AuthPolicy, wc: newAuthWinCache(authPlanWinCacheMax), refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
+		objs: map[[32]byte]*authObj{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, groups: map[int]*AuthGroup{}, byKey: map[string][]int{}, index: map[uint64][]int{}, sketch: map[int][]uint64{}}
+	m.idx = &authIdxCache{budget: authIdxCacheBytes, m: map[[32]byte]*authIdxEnt{}}
+	var eligible []int32
+	for i, nd := range g.nodes {
+		if nd.live && !nd.fixed && nd.size >= pol.MinObject {
+			eligible = append(eligible, int32(i))
+		}
+	}
+	// Sketches (one read per node); CDC alternatives of record-holding nodes are priced from the bytes.
+	inv := map[uint64][]int32{}
+	byKey := map[string][]int32{}
+	for _, v := range eligible {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		nd := g.nodes[v]
+		var data []byte
+		if nd.size <= authWindowMin {
+			b, err := m.source(nd.obj.man)
+			if err != nil {
+				continue
+			}
+			data = b
+			nd.sk = authFeatures(b, 16)
+		} else {
+			r := s.newAuthObjAtC(nd.obj.man, nil)
+			sk, err := authSketchAt(r, nd.size, 16)
+			r.close()
+			if err != nil {
+				continue
+			}
+			nd.sk = sk
+		}
+		if nd.cur != nil {
+			o, err := g.cdcOpt(nd, data)
+			if err != nil {
+				return err
+			}
+			nd.opts = append(nd.opts, o)
+		}
+		for _, f := range nd.sk {
+			inv[f] = append(inv[f], v)
+		}
+		k := nd.obj.bucket + "\x00" + nd.obj.key
+		byKey[k] = append(byKey[k], v)
+	}
+	comp := newCompressor(!pol.PriceCurrentStorage)
+	if pol.AllowDelta {
+		for _, v := range eligible {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			nd := g.nodes[v]
+			if nd.sk == nil || pol.Order == "newest" && nd.newest {
+				continue
+			}
+			cands := g.rgCandidates(v, inv, byKey)
+			if len(cands) == 0 {
+				continue
+			}
+			var err error
+			if nd.size > authWindowMin {
+				err = g.windowedOpts(ctx, m, v, cands, comp)
+			} else {
+				err = g.memOpts(ctx, m, v, cands, comp)
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if pol.AllowRep {
+		if err := g.repOpts(ctx, m, eligible); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// memOpts encodes in-memory deltas of v against each candidate (plain and locality-aware programs) and
+// refines the best single-base program with a second base.
+func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands []int32, comp *packCompressor) error {
+	nd := g.nodes[v]
+	target, err := m.source(nd.obj.man)
+	if err != nil {
+		return nil
+	}
+	prm := dwDcoreDefaultParams()
+	type single struct {
+		u   int32
+		src xdSrc
+		x   *dwDcoreIndex
+		ops []dwDcoreOp
+		est int64
+	}
+	var singles []single
+	enc := func(srcs []xdSrc, bases []int32, ops []dwDcoreOp, loc int) error {
+		t0 := time.Now()
+		blob, refs, err := xdEncodeOpsSum(srcs, xdFromDw(ops), target, nd.sha, g.pol.FrameSpan)
+		g.encs++
+		g.encNS += time.Since(t0).Nanoseconds()
+		if err != nil || len(refs) == 0 {
+			return nil
+		}
+		// Only bases a COPY uses appear in the envelope.
+		var used []int32
+		for _, r := range refs {
+			for k, s := range srcs {
+				if s.sha == r.SHA {
+					used = append(used, bases[k])
+				}
+			}
+		}
+		ends := authPieceEnds(blob)
+		o, err := g.deltaOpt(nd, blob, ends, used, loc, false, comp)
+		if err != nil {
+			return nil
+		}
+		o.enc = bases
+		for _, p := range nd.opts {
+			if p.kind == rgDelta && p.sum == o.sum {
+				return nil
+			}
+		}
+		nd.opts = append(nd.opts, o)
+		return nil
+	}
+	for _, u := range cands {
+		un := g.nodes[u]
+		if un.size > xdMaxObject {
+			continue
+		}
+		b, err := m.source(un.obj.man)
+		if err != nil {
+			continue
+		}
+		x, err := m.idx.get(un.sha, b, prm)
+		if err != nil {
+			continue
+		}
+		var best []dwDcoreOp
+		for _, loc := range g.pol.Locality {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			ops := x.MatchLocal(target, loc)
+			if loc == 0 {
+				best = ops
+			}
+			if err := enc([]xdSrc{{un.sha, b}}, []int32{u}, ops, loc); err != nil {
+				return err
+			}
+		}
+		if best == nil {
+			best = x.MatchLocal(target, g.pol.Locality[0])
+		}
+		singles = append(singles, single{u, xdSrc{un.sha, b}, x, best, dwDcoreEstimateProgram(best, dwDcoreEstimateOpts{}).Est})
+	}
+	if len(singles) > 1 && g.pol.MaxBases >= 2 {
+		slices.SortStableFunc(singles, func(a, b single) int { return cmp.Compare(a.est, b.est) })
+		ops := singles[0].ops
+		lit := dwDcoreEstimateProgram(ops, dwDcoreEstimateOpts{}).Stats.LitBytes
+		srcs, bases := []xdSrc{singles[0].src}, []int32{singles[0].u}
+		for _, sg := range singles[1:] {
+			if len(srcs) >= g.pol.MaxBases {
+				break
+			}
+			if r, saved := authRefine(ops, sg.x, len(srcs)); saved > 0 && saved*50 >= lit {
+				ops, lit = r, lit-saved
+				srcs, bases = append(srcs, sg.src), append(bases, sg.u)
+				if err := enc(slices.Clone(srcs), slices.Clone(bases), ops, 0); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// windowedOpts encodes windowed single-base deltas of a large object against its two best candidates.
+func (g *rgGraph) windowedOpts(ctx context.Context, m *authMigrator, v int32, cands []int32, comp *packCompressor) error {
+	nd := g.nodes[v]
+	tgt := g.s.newAuthObjAtC(nd.obj.man, nil)
+	tgt.ctx = ctx
+	defer tgt.close()
+	for _, u := range cands[:min(len(cands), 2)] {
+		un := g.nodes[u]
+		base := g.s.newAuthObjAtC(un.obj.man, nil)
+		base.ctx = ctx
+		wp := authWParams(g.pol.workers(), un.size)
+		if g.pol.SegmentKiB > 0 {
+			wp.Segment = g.pol.SegmentKiB << 10
+		}
+		idx, err := dwDcoreBuildWIndex(base, un.size, wp.Anchor, wp.Workers, &un.sha)
+		if err != nil {
+			base.close()
+			continue
+		}
+		for _, loc := range g.pol.Locality {
+			if err := ctx.Err(); err != nil {
+				base.close()
+				return err
+			}
+			wp.Locality = loc
+			w := &rgBlob{}
+			t0 := time.Now()
+			_, err := dwDcoreWEncode(w, tgt, nd.size, base, un.size, idx, wp)
+			g.encs++
+			g.encNS += time.Since(t0).Nanoseconds()
+			if err != nil {
+				continue
+			}
+			o, err := g.deltaOpt(nd, w.b, w.finish(), []int32{u}, loc, true, comp)
+			if err == nil {
+				nd.opts = append(nd.opts, o)
+			}
+		}
+		base.close()
+		debug.FreeOSMemory()
+	}
+	return nil
+}
+
+// repOpts builds the structural representation candidates the migrator's group planner would build and
+// offers each as an option; their shared components are what the closure accounting amortizes.
+func (g *rgGraph) repOpts(ctx context.Context, m *authMigrator, eligible []int32) error {
+	m.pol.MinSaving = -1e9 // build every candidate: the graph, not the group rule, prices them
+	for _, v := range eligible {
+		nd := g.nodes[v]
+		if nd.cur == nil {
+			m.order = append(m.order, nd.obj)
+		}
+	}
+	for _, o := range m.order {
+		m.countChunks(o.man.Chunks)
+	}
+	if err := m.planRepGroups(); err != nil {
+		return err
+	}
+	for i, rc := range m.repC {
+		if rc == nil || rc.root == nil {
+			continue
+		}
+		v := g.idx[m.order[i].sha]
+		nd := g.nodes[v]
+		o := &rgOpt{kind: rgRep, label: "rep-" + repKindName(rc.kind), rep: rc}
+		rec := authRecord{SHA: nd.sha, Size: nd.size, Gen: 1, Form: authFormRep, Root: rc.root, Sketch: make([]uint64, 16)}
+		if b, err := rec.marshal(); err == nil {
+			o.meta = g.roundMeta(int64(len(b)))
+		}
+		seen := map[int32]bool{}
+		for _, c := range rc.chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			id, ok := g.cid[sum]
+			if !ok {
+				id = g.comp(sum, c.Length, g.s.physChunk(sum, c.Length, map[[32]byte]int64{}, g.pol.PriceCurrentStorage))
+			}
+			o.pieces = append(o.pieces, id)
+			if !seen[id] {
+				seen[id] = true
+				o.comps = append(o.comps, id)
+			}
+		}
+		o.write = o.meta
+		g.layoutLinear(o, nd.size)
+		nd.opts = append(nd.opts, o)
+	}
+	return nil
+}
+
+// ---- partitions and search -----------------------------------------------------
+
+// partition groups nodes that interact: a base relation or a component two options share.
+func (g *rgGraph) partition() {
+	n := len(g.nodes)
+	parent := make([]int32, n)
+	for i := range parent {
+		parent[i] = int32(i)
+	}
+	var find func(int32) int32
+	find = func(x int32) int32 {
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
+	union := func(a, b int32) {
+		ra, rb := find(a), find(b)
+		if ra != rb {
+			parent[max(ra, rb)] = min(ra, rb)
+		}
+	}
+	owner := make([]int32, len(g.cphys))
+	for i := range owner {
+		owner[i] = -1
+	}
+	for i, nd := range g.nodes {
+		for _, o := range nd.opts {
+			for _, b := range o.bases {
+				union(int32(i), b)
+			}
+			for _, c := range o.comps {
+				if owner[c] < 0 {
+					owner[c] = int32(i)
+				} else {
+					union(int32(i), owner[c])
+				}
+			}
+		}
+	}
+	byRoot := map[int32][]int32{}
+	g.partOf = make([]int32, n)
+	for i := range g.nodes {
+		r := find(int32(i))
+		byRoot[r] = append(byRoot[r], int32(i))
+	}
+	roots := slices.Sorted(maps.Keys(byRoot))
+	g.parts = nil
+	for k, r := range roots {
+		for _, v := range byRoot[r] {
+			g.partOf[v] = int32(k)
+		}
+		g.parts = append(g.parts, byRoot[r])
+	}
+}
+
+func (g *rgGraph) currentSel() []int32 {
+	sel := make([]int32, len(g.nodes))
+	for i, nd := range g.nodes {
+		sel[i] = nd.curOpt
+	}
+	return sel
+}
+
+// try evaluates setting v to o: the objective change, or +Inf when infeasible (the move is undone).
+func (e *rgEval) try(v, o int32) float64 {
+	old := e.sel[v]
+	if old == o {
+		return 0
+	}
+	j0 := e.objective()
+	e.set(v, o)
+	d := math.Inf(1)
+	if e.feasible(v) {
+		d = e.objective() - j0
+	}
+	e.set(v, old)
+	return d
+}
+
+func (e *rgEval) allowed(v, o int32) bool {
+	nd := e.g.nodes[v]
+	opt := nd.opts[o]
+	if nd.fixed && !opt.cur {
+		return false
+	}
+	if e.g.pol.Order == "newest" && nd.newest && opt.kind != rgCDC && !opt.cur {
+		return false
+	}
+	return true
+}
+
+// localSearch applies improving single moves, depth-cascade pairs and joint group moves until none
+// improves by more than eps or the evaluation budget is spent.
+func (e *rgEval) localSearch(part []int32, budget int64) {
+	const eps = 1.0
+	start := e.evals
+	for round := 0; round < 64; round++ {
+		improved := false
+		for _, v := range part {
+			if e.evals-start > budget {
+				return
+			}
+			bestD, bestO := -eps, int32(-1)
+			for o := range int32(len(e.g.nodes[v].opts)) {
+				if o == e.sel[v] || !e.allowed(v, o) {
+					continue
+				}
+				if d := e.try(v, o); d < bestD {
+					bestD, bestO = d, o
+				}
+			}
+			if bestO >= 0 {
+				e.set(v, bestO)
+				improved = true
+			}
+		}
+		if !improved && e.cascade(part, budget-(e.evals-start)) {
+			improved = true
+		}
+		if !improved && e.lift(part, budget-(e.evals-start)) {
+			improved = true
+		}
+		if !improved && e.jointMoves(part, budget-(e.evals-start)) {
+			improved = true
+		}
+		if !improved {
+			return
+		}
+	}
+}
+
+// cascade tries options of v that are infeasible only because a base is too deep, together with the best
+// shallower option of that base.
+func (e *rgEval) cascade(part []int32, budget int64) bool {
+	start := e.evals
+	for _, v := range part {
+		nd := e.g.nodes[v]
+		for o := range int32(len(nd.opts)) {
+			if e.evals-start > budget {
+				return false
+			}
+			opt := nd.opts[o]
+			if o == e.sel[v] || opt.kind != rgDelta || !e.allowed(v, o) {
+				continue
+			}
+			if !math.IsInf(e.try(v, o), 1) {
+				continue
+			}
+			for _, b := range opt.bases {
+				if e.depth(b) < e.g.pol.MaxDepth {
+					continue
+				}
+				j0 := e.objective()
+				ob, ov := e.sel[b], e.sel[v]
+				bestJ, bestB := math.Inf(1), int32(-1)
+				for bo := range int32(len(e.g.nodes[b].opts)) {
+					if bo == ob || !e.allowed(b, bo) {
+						continue
+					}
+					e.set(b, bo)
+					if e.depth(b) < e.g.pol.MaxDepth {
+						e.set(v, o)
+						if e.feasible(v) && e.feasible(b) {
+							if j := e.objective(); j < bestJ {
+								bestJ, bestB = j, bo
+							}
+						}
+						e.set(v, ov)
+					}
+					e.set(b, ob)
+				}
+				if bestB >= 0 && bestJ < j0-1 {
+					e.set(b, bestB)
+					e.set(v, o)
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// jointMoves switches the members of a shared-component group to non-CDC forms together, keeping the
+// best prefix: a shared chunk is freed only when every holder leaves it.
+func (e *rgEval) jointMoves(part []int32, budget int64) bool {
+	g := e.g
+	holders := map[int32][]int32{}
+	for _, v := range part {
+		if o := e.opt(v); o.kind == rgCDC || o.kind == rgKeep && len(o.bases) == 0 {
+			for _, c := range o.comps {
+				holders[c] = append(holders[c], v)
+			}
+		}
+	}
+	groups := map[string][]int32{}
+	for _, hs := range holders {
+		if len(hs) < 2 || len(hs) > 64 {
+			continue
+		}
+		k := fmt.Sprint(hs)
+		groups[k] = hs
+	}
+	keys := slices.Sorted(maps.Keys(groups))
+	start := e.evals
+	for _, k := range keys {
+		if e.evals-start > budget {
+			return false
+		}
+		grp := groups[k]
+		j0 := e.objective()
+		saved := make([]int32, len(grp))
+		for i, v := range grp {
+			saved[i] = e.sel[v]
+		}
+		bestJ, bestN := j0, 0
+		var trail []int32
+		for range grp {
+			// add the member whose best move hurts least
+			bv, bo, bj := int32(-1), int32(-1), math.Inf(1)
+			for _, v := range grp {
+				if slices.Contains(trail, v) {
+					continue
+				}
+				for o := range int32(len(g.nodes[v].opts)) {
+					opt := g.nodes[v].opts[o]
+					if o == e.sel[v] || opt.kind == rgCDC || !e.allowed(v, o) {
+						continue
+					}
+					if d := e.try(v, o); d < bj {
+						bv, bo, bj = v, o, d
+					}
+				}
+			}
+			if bv < 0 || math.IsInf(bj, 1) {
+				break
+			}
+			e.set(bv, bo)
+			trail = append(trail, bv)
+			if j := e.objective(); j < bestJ-1 {
+				bestJ, bestN = j, len(trail)
+			}
+		}
+		// keep the best prefix
+		for i := len(trail) - 1; i >= bestN; i-- {
+			v := trail[i]
+			e.set(v, saved[slices.Index(grp, v)])
+		}
+		if bestN > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// arborescence starts the search from a minimum spanning arborescence (Chu-Liu/Edmonds) over single-base
+// options priced standalone (shared chunks split among their holders), then repairs depth greedily.
+func (e *rgEval) arborescence(part []int32) {
+	g := e.g
+	local := map[int32]int{}
+	for i, v := range part {
+		local[v] = i
+	}
+	n := len(part)
+	holders := map[int32]int{}
+	for _, v := range part {
+		for _, c := range g.nodes[v].opts[0].comps {
+			holders[c]++
+		}
+	}
+	price := func(v int32, o *rgOpt) float64 {
+		var b float64
+		for _, c := range o.comps {
+			h := max(1, holders[c]+int(g.ext[c]))
+			if o.kind == rgCDC || o.kind == rgKeep && len(o.bases) == 0 {
+				b += float64(g.cphys[c]) / float64(h)
+			} else {
+				b += float64(g.cphys[c])
+			}
+		}
+		return b + float64(o.meta) + g.pol.MigrationWeight*float64(o.write)*b2f(!o.cur)
+	}
+	type edge struct {
+		from, to int // from = n: root
+		w        float64
+		v        int32
+		o        int32
+	}
+	var edges []edge
+	for i, v := range part {
+		nd := g.nodes[v]
+		for o, opt := range nd.opts {
+			if !e.allowed(v, int32(o)) {
+				continue
+			}
+			switch {
+			case opt.kind == rgCDC || opt.kind == rgRep || opt.kind == rgKeep && len(opt.bases) == 0:
+				edges = append(edges, edge{n, i, price(v, opt), v, int32(o)})
+			case len(opt.bases) >= 1:
+				if j, ok := local[opt.bases[0]]; ok {
+					edges = append(edges, edge{j, i, price(v, opt), v, int32(o)})
+				} else if opt.cur {
+					edges = append(edges, edge{n, i, price(v, opt), v, int32(o)})
+				}
+			}
+		}
+	}
+	es := make([]rgEdge, len(edges))
+	for k, ed := range edges {
+		es[k] = rgEdge{ed.from, ed.to, ed.w}
+	}
+	chosen := rgEdmonds(n+1, n, es)
+	if chosen == nil {
+		return
+	}
+	// Apply in root-outward order, keeping the current option where the arborescence's is infeasible.
+	sel := map[int32]int32{}
+	for _, k := range chosen {
+		sel[edges[k].v] = edges[k].o
+	}
+	order := slices.Clone(part)
+	for round := 0; round < authHardDepth+2; round++ {
+		for _, v := range order {
+			o, ok := sel[v]
+			if !ok || e.sel[v] == o {
+				continue
+			}
+			old := e.sel[v]
+			e.set(v, o)
+			if !e.feasible(v) {
+				e.set(v, old)
+			}
+		}
+	}
+}
+
+func b2f(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// rgEdmonds returns the indexes of a minimum arborescence rooted at root over n vertices (nil when some
+// vertex is unreachable): the O(VE) contraction algorithm, with the chosen original edges recovered.
+type rgEdge struct {
+	from, to int
+	w        float64
+}
+
+func rgEdmonds(n, root int, edges []rgEdge) []int {
+	type ce struct {
+		from, to int
+		w        float64
+		id       int
+	}
+	cur := make([]ce, len(edges))
+	for i, e := range edges {
+		cur[i] = ce{e.from, e.to, e.w, i}
+	}
+	// Each contraction level remembers its in-edges and cycles to expand afterwards.
+	type level struct {
+		in    []int // chosen edge (index into this level's edge list) per vertex
+		edges []ce
+		comp  []int // vertex -> contracted vertex
+		cyc   []bool
+		cycID int
+		n     int
+	}
+	var levels []level
+	N := n
+	r := root
+	for {
+		in := make([]int, N)
+		inW := make([]float64, N)
+		for i := range in {
+			in[i], inW[i] = -1, math.Inf(1)
+		}
+		for k, e := range cur {
+			if e.from != e.to && e.to != r && e.w < inW[e.to] {
+				in[e.to], inW[e.to] = k, e.w
+			}
+		}
+		for v := 0; v < N; v++ {
+			if v != r && in[v] < 0 {
+				return nil
+			}
+		}
+		comp := make([]int, N)
+		for i := range comp {
+			comp[i] = -1
+		}
+		mark := make([]int, N)
+		for i := range mark {
+			mark[i] = -1
+		}
+		nc := 0
+		cyc := make([]bool, N)
+		cycID := -1
+		for v := 0; v < N; v++ {
+			x := v
+			for x != r && mark[x] != v && comp[x] < 0 {
+				mark[x] = v
+				x = cur[in[x]].from
+			}
+			if x != r && comp[x] < 0 && mark[x] == v {
+				// cycle through x
+				cycID = nc
+				for y := cur[in[x]].from; y != x; y = cur[in[y]].from {
+					comp[y] = nc
+					cyc[y] = true
+				}
+				comp[x] = nc
+				cyc[x] = true
+				nc++
+				break
+			}
+		}
+		if cycID < 0 {
+			// no cycle: expand
+			sel := make([]int, 0, N)
+			for v := 0; v < N; v++ {
+				if v != r {
+					sel = append(sel, in[v])
+				}
+			}
+			// sel holds edge indexes of the last level; map back through levels
+			ids := make([]int, len(sel))
+			for i, k := range sel {
+				ids[i] = cur[k].id
+			}
+			for li := len(levels) - 1; li >= 0; li-- {
+				lv := levels[li]
+				// ids are indexes into lv.edges (the parent level's list)
+				entered := -1
+				var out []int
+				for _, k := range ids {
+					out = append(out, k)
+					if lv.comp[lv.edges[k].to] == lv.cycID && lv.cyc[lv.edges[k].to] {
+						entered = lv.edges[k].to
+					}
+				}
+				for v := 0; v < lv.n; v++ {
+					if lv.cyc[v] && v != entered {
+						out = append(out, lv.in[v])
+					}
+				}
+				for i, k := range out {
+					out[i] = lv.edges[k].id
+				}
+				ids = out
+			}
+			return ids
+		}
+		for v := 0; v < N; v++ {
+			if comp[v] < 0 {
+				comp[v] = nc
+				nc++
+			}
+		}
+		levels = append(levels, level{in: in, edges: cur, comp: comp, cyc: cyc, cycID: cycID, n: N})
+		var next []ce
+		for k, e := range cur {
+			u, v := comp[e.from], comp[e.to]
+			if u == v {
+				continue
+			}
+			w := e.w
+			if cyc[e.to] {
+				w -= cur[in[e.to]].w
+			}
+			next = append(next, ce{u, v, w, k})
+		}
+		cur, N, r = next, nc, comp[r]
+	}
+}
+
+// emulateLocal is the sequential planner's rule on the same candidates: in policy order, each content takes
+// its cheapest option whose bases were already decided, if the saving against the chunks it alone holds
+// reaches MinSaving; decisions are final.
+func (e *rgEval) emulateLocal(part []int32) {
+	g := e.g
+	order := slices.Clone(part)
+	slices.SortFunc(order, func(a, b int32) int {
+		na, nb := g.nodes[a], g.nodes[b]
+		var ta, tb time.Time
+		if na.obj != nil {
+			ta = na.obj.t
+		}
+		if nb.obj != nil {
+			tb = nb.obj.t
+		}
+		c := cmp.Or(ta.Compare(tb), bytes.Compare(na.sha[:], nb.sha[:]))
+		if g.pol.Order == "newest" {
+			return -c
+		}
+		return c
+	})
+	done := map[int32]bool{}
+	for _, v := range order {
+		nd := g.nodes[v]
+		if !nd.live || nd.opts[e.sel[v]].kind != rgCDC {
+			done[v] = true
+			continue
+		}
+		var unshared int64
+		for _, c := range nd.opts[e.sel[v]].comps {
+			if e.ref[c] == 1 {
+				unshared += g.cphys[c]
+			}
+		}
+		b0 := e.bytes
+		bestAdd, bestO := int64(math.MaxInt64), int32(-1)
+		for o := range int32(len(nd.opts)) {
+			opt := nd.opts[o]
+			if opt.kind == rgCDC || !e.allowed(v, o) || !all(opt.bases, func(b int32) bool { return done[b] }) {
+				continue
+			}
+			old := e.sel[v]
+			e.set(v, o)
+			ok := e.feasible(v)
+			added := e.bytes - b0 + unshared
+			e.set(v, old)
+			if ok && added < bestAdd {
+				bestAdd, bestO = added, o
+			}
+		}
+		if bestO >= 0 && unshared > 0 && float64(unshared-bestAdd)/float64(unshared) >= g.pol.MinSaving {
+			e.set(v, bestO)
+		}
+		done[v] = true
+	}
+}
+
+func all[T any](xs []T, f func(T) bool) bool {
+	for _, x := range xs {
+		if !f(x) {
+			return false
+		}
+	}
+	return true
+}
+
+// oracle enumerates every allowed combination of a partition (product of option counts <= limit) and
+// leaves the best feasible one selected; false when the partition is too large.
+func (e *rgEval) oracle(part []int32, limit int64) bool {
+	prod := int64(1)
+	for _, v := range part {
+		k := int64(0)
+		for o := range int32(len(e.g.nodes[v].opts)) {
+			if e.allowed(v, o) {
+				k++
+			}
+		}
+		prod *= max(k, 1)
+		if prod > limit {
+			return false
+		}
+	}
+	best := slices.Clone(e.sel)
+	bestJ := math.Inf(1)
+	if e.feasibleAll(part) {
+		bestJ = e.objective()
+	}
+	var rec func(k int)
+	rec = func(k int) {
+		if k == len(part) {
+			if j := e.objective(); j < bestJ-1e-6 && e.feasibleAll(part) {
+				bestJ = j
+				copy(best, e.sel)
+			}
+			return
+		}
+		v := part[k]
+		old := e.sel[v]
+		for o := range int32(len(e.g.nodes[v].opts)) {
+			if !e.allowed(v, o) {
+				continue
+			}
+			e.set(v, o)
+			rec(k + 1)
+		}
+		e.set(v, old)
+	}
+	rec(0)
+	for _, v := range part {
+		e.set(v, best[v])
+	}
+	return true
+}
+
+func (e *rgEval) feasibleAll(part []int32) bool {
+	for _, v := range part {
+		if !e.feasible(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// ---- reporting -------------------------------------------------------------------
+
+// OptimizeState summarizes a selection: storage is exact closure accounting at the pack writer's price
+// (an estimate of what a reclaimed, repacked store holds), reads are modeled.
+type OptimizeState struct {
+	Name           string  `json:"name,omitempty"`
+	ReadWeight     float64 `json:"read_weight,omitempty"`
+	Bytes          int64   `json:"bytes"`
+	ComponentBytes int64   `json:"component_bytes"`
+	MetaBytes      int64   `json:"meta_bytes"`
+	LogicalBytes   int64   `json:"logical_component_bytes"`
+	Components     int     `json:"components"`
+	Cold4KUS       float64 `json:"cold_4k_us"`
+	Cold64KUS      float64 `json:"cold_64k_us"`
+	SparseUS       float64 `json:"sparse_us"`
+	WholeUS        float64 `json:"whole_us"`
+	Records4K      float64 `json:"records_4k"`
+	Decoded4K      float64 `json:"decoded_4k"`
+	MaxDepth       int     `json:"max_depth"`
+	MeanDepth      float64 `json:"mean_depth"`
+	MaxFanout      int     `json:"max_fanout"`
+	Deltas         int     `json:"deltas"`
+	LocalDeltas    int     `json:"local_deltas"`
+	Reps           int     `json:"reps"`
+	Pins           int     `json:"pins"`
+	CDC            int     `json:"cdc"`
+	Required       int     `json:"required_nodes"`
+	WriteBytes     int64   `json:"write_bytes"`
+	Objective      float64 `json:"objective"`
+}
+
+func (e *rgEval) state(name string, whole bool) OptimizeState {
+	g := e.g
+	st := OptimizeState{Name: name, Bytes: e.bytes, MetaBytes: e.meta, ComponentBytes: e.bytes - e.meta, WriteBytes: e.writes, Objective: e.objective(), ReadWeight: g.pol.ReadWeight}
+	for c, r := range e.ref {
+		if r > 0 {
+			st.LogicalBytes += g.clen[c]
+			st.Components++
+		}
+	}
+	var live int
+	for i, nd := range g.nodes {
+		v := int32(i)
+		if e.req[v] == 0 {
+			continue
+		}
+		st.Required++
+		o := e.opt(v)
+		d := e.depth(v)
+		st.MaxDepth = max(st.MaxDepth, d)
+		st.MaxFanout = max(st.MaxFanout, len(e.users[v]))
+		switch {
+		case o.kind == rgCDC && e.req[v] > 1:
+			st.Pins++
+		case o.kind == rgCDC:
+			st.CDC++
+		case o.kind == rgRep || o.kind == rgKeep && nd.cur.Form == authFormRep:
+			st.Reps++
+		case o.kind == rgKeep && nd.cur.Form == authFormPin:
+			st.Pins++
+		default:
+			st.Deltas++
+			if o.loc > 0 {
+				st.LocalDeltas++
+			}
+		}
+		if !nd.live {
+			continue
+		}
+		live++
+		st.MeanDepth += float64(d)
+		ps := rgProbes(nd.size)
+		var c4, c64, r4, d4 float64
+		for k, p := range ps {
+			rs := g.readStats(e, v, p[0], p[1])
+			if k < 8 {
+				c4, r4, d4 = c4+rs.US/8, r4+float64(rs.Records)/8, d4+float64(rs.Decoded)/8
+			} else {
+				c64 += rs.US / 4
+			}
+		}
+		st.Cold4KUS += c4
+		st.Cold64KUS += c64
+		st.Records4K += r4
+		st.Decoded4K += d4
+		st.SparseUS += e.readCost(v)
+		if whole {
+			st.WholeUS += g.readStats(e, v, 0, nd.size).US
+		}
+	}
+	if live > 0 {
+		f := float64(live)
+		st.Cold4KUS, st.Cold64KUS, st.SparseUS, st.WholeUS, st.MeanDepth = st.Cold4KUS/f, st.Cold64KUS/f, st.SparseUS/f, st.WholeUS/f, st.MeanDepth/f
+		st.Records4K, st.Decoded4K = st.Records4K/f, st.Decoded4K/f
+	}
+	return st
+}
+
+// OptimizeChange is one content's transition.
+type OptimizeChange struct {
+	SHA    string   `json:"sha256"`
+	Key    string   `json:"key,omitempty"`
+	From   string   `json:"from"`
+	To     string   `json:"to"`
+	Bases  []string `json:"bases,omitempty"`
+	Depth  int      `json:"depth"`
+	Status string   `json:"status,omitempty"`
+}
+
+// OptimizeReport is the plan (and, with Apply, what was published).
+type OptimizeReport struct {
+	Algorithm        string           `json:"algorithm"`
+	Profile          string           `json:"profile"`
+	ReadWeight       float64          `json:"read_weight"`
+	ReadBudget       float64          `json:"read_budget"`
+	Model            rgModel          `json:"model"`
+	Nodes            int              `json:"nodes"`
+	Live             int              `json:"live"`
+	Partitions       int              `json:"partitions"`
+	LargestPartition int              `json:"largest_partition"`
+	Options          int              `json:"options"`
+	Components       int              `json:"components"`
+	Encodes          int              `json:"encodes"`
+	EncodeSeconds    float64          `json:"encode_seconds"`
+	CandidateSeconds float64          `json:"candidate_seconds"`
+	SearchSeconds    float64          `json:"search_seconds"`
+	Evals            int64            `json:"evals"`
+	CDCOnly          OptimizeState    `json:"cdc_only"`
+	Current          OptimizeState    `json:"current"`
+	Local            OptimizeState    `json:"local"`
+	Planned          OptimizeState    `json:"planned"`
+	Oracle           *OptimizeState   `json:"oracle,omitempty"`
+	OracleParts      int              `json:"oracle_partitions,omitempty"`
+	Frontier         []OptimizeState  `json:"frontier,omitempty"`
+	Changes          []OptimizeChange `json:"changes,omitempty"`
+	Applied          int              `json:"applied"`
+	Bridges          int              `json:"bridges"`
+	Retired          int              `json:"retired"`
+	Failed           int              `json:"failed"`
+	Written          int64            `json:"written"`
+	ApplySeconds     float64          `json:"apply_seconds"`
+	HeapMiB          int              `json:"heap_mib"`
+	Seconds          float64          `json:"seconds"`
+}
+
+// solve runs the policy's algorithm over every partition from the current selection.
+func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
+	saved := g.pol.ReadWeight
+	g.pol.ReadWeight = readWeight
+	defer func() { g.pol.ReadWeight = saved }()
+	e := newRGEval(g, g.currentSel())
+	oracled := 0
+	for _, part := range g.parts {
+		movable := false
+		for _, v := range part {
+			if len(g.nodes[v].opts) > 1 {
+				movable = true
+			}
+		}
+		if !movable {
+			continue
+		}
+		// a current graph the policy no longer allows is repaired toward CDC first
+		for _, v := range part {
+			if !e.feasible(v) {
+				for o, opt := range g.nodes[v].opts {
+					if opt.kind == rgCDC {
+						e.set(v, int32(o))
+					}
+				}
+			}
+		}
+		j0 := e.objective()
+		saved := slices.Clone(e.sel)
+		switch alg {
+		case "current":
+		case "local":
+			e.emulateLocal(part)
+		case "oracle":
+			if e.oracle(part, 1<<20) {
+				oracled++
+			} else {
+				e.localSearch(part, g.pol.MaxEvals)
+			}
+		default:
+			e.arborescence(part)
+			e.localSearch(part, g.pol.MaxEvals/2)
+			ja, selA := e.objective(), make([]int32, len(part))
+			for k, v := range part {
+				selA[k] = e.sel[v]
+			}
+			for _, v := range part {
+				e.set(v, saved[v])
+			}
+			e.localSearch(part, g.pol.MaxEvals/2)
+			if ja < e.objective() {
+				for k, v := range part {
+					e.set(v, selA[k])
+				}
+			}
+		}
+		// MinGain: a partition is rewritten only for a real improvement over its current form.
+		var stored int64
+		for _, v := range part {
+			for _, c := range e.opt(v).comps {
+				stored += g.cphys[c]
+			}
+		}
+		if alg != "local" && alg != "current" && j0-e.objective() < g.pol.MinGain*float64(stored) {
+			for _, v := range part {
+				e.set(v, saved[v])
+			}
+		}
+	}
+	return e, oracled
+}
+
+// AuthorityOptimize plans (and with Apply publishes) a jointly chosen representation graph.
+func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (OptimizeReport, error) {
+	pol = pol.norm()
+	t0 := time.Now()
+	rep := OptimizeReport{Algorithm: pol.Algorithm, Profile: pol.Profile, ReadWeight: pol.ReadWeight, ReadBudget: pol.ReadBudget}
+	if err := s.checkAuthDiskReserve(pol.ReserveFreeBytes, 0, 0); err != nil {
+		return rep, err
+	}
+	if pol.HardCodecs {
+		defer s.rep.hardCodecs.Store(s.rep.hardCodecs.Swap(true))
+	}
+	g, err := s.rgBuild(ctx, pol)
+	if err != nil {
+		return rep, err
+	}
+	if err := g.generate(ctx); err != nil {
+		return rep, err
+	}
+	rep.Model = g.model
+	rep.CandidateSeconds = time.Since(t0).Seconds()
+	rep.Encodes, rep.EncodeSeconds = g.encs, float64(g.encNS)/1e9
+	g.partition()
+	// CDC reads anchor the read budget: price each live node's CDC option alone.
+	cdc := g.currentSel()
+	for i, nd := range g.nodes {
+		for o, opt := range nd.opts {
+			if opt.kind == rgCDC {
+				cdc[i] = int32(o)
+			}
+		}
+		rep.Options += len(nd.opts)
+		if nd.live {
+			rep.Live++
+		}
+	}
+	ec := newRGEval(g, cdc)
+	for i, nd := range g.nodes {
+		if nd.live {
+			nd.cdcRead = ec.readCost(int32(i))
+		}
+	}
+	rep.Nodes, rep.Partitions, rep.Components = len(g.nodes), len(g.parts), len(g.cphys)
+	for _, p := range g.parts {
+		rep.LargestPartition = max(rep.LargestPartition, len(p))
+	}
+	rep.CDCOnly = ec.state("cdc", true)
+	t1 := time.Now()
+	cur, _ := g.solve("current", pol.ReadWeight)
+	rep.Current = cur.state("current", true)
+	loc, _ := g.solve("local", pol.ReadWeight)
+	rep.Local = loc.state("local", true)
+	e, oracled := g.solve(pol.Algorithm, pol.ReadWeight)
+	rep.Planned = e.state(pol.Algorithm, true)
+	rep.Evals = e.evals
+	if pol.Oracle {
+		oe, n := g.solve("oracle", pol.ReadWeight)
+		st := oe.state("oracle", false)
+		rep.Oracle, rep.OracleParts = &st, n
+	}
+	_ = oracled
+	rep.SearchSeconds = time.Since(t1).Seconds()
+	for _, w := range pol.Pareto {
+		fe, _ := g.solve(pol.Algorithm, w)
+		saved := g.pol.ReadWeight
+		g.pol.ReadWeight = w
+		st := fe.state(fmt.Sprintf("w=%g", w), false)
+		g.pol.ReadWeight = saved
+		rep.Frontier = append(rep.Frontier, st)
+	}
+	for i, nd := range g.nodes {
+		v := int32(i)
+		if e.sel[v] == nd.curOpt || e.req[v] == 0 && !nd.live {
+			continue
+		}
+		o := e.opt(v)
+		ch := OptimizeChange{SHA: hex.EncodeToString(nd.sha[:]), From: nd.opts[nd.curOpt].label, To: o.label, Depth: e.depth(v)}
+		if nd.obj != nil {
+			ch.Key = nd.obj.key
+		}
+		for _, b := range o.bases {
+			ch.Bases = append(ch.Bases, hex.EncodeToString(g.nodes[b].sha[:6]))
+		}
+		rep.Changes = append(rep.Changes, ch)
+	}
+	if pol.Apply {
+		t2 := time.Now()
+		err := g.apply(ctx, e, &rep)
+		rep.ApplySeconds = time.Since(t2).Seconds()
+		if err != nil {
+			return rep, err
+		}
+	}
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	rep.HeapMiB = int(ms.HeapInuse >> 20)
+	rep.Seconds = time.Since(t0).Seconds()
+	return rep, ctx.Err()
+}
+
+// ---- transitions -------------------------------------------------------------------
+
+// apply publishes the selection's changed nodes. A record may declare a depth above what its bases need,
+// so every new record is written at its planned depth, and a node is published once (a) each new base has
+// a record shallower than it and (b) each current record built on it is deeper than its new depth; a
+// dependent that must move first goes first. When nothing is ready a blocking dependent is bridged to a pin.
+// Every record is proven against the durable store first; a node that fails keeps its current record, and
+// anything planned on it waits for a base record that satisfies (a) or fails too.
+func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) error {
+	s := g.s
+	files, err := s.authFiles()
+	if err != nil {
+		return err
+	}
+	deps := map[[32]byte]map[[32]byte]bool{}
+	recs := map[[32]byte]*authRecord{}
+	link := func(r *authRecord, d bool) {
+		for _, b := range r.Bases {
+			if deps[b.SHA] == nil {
+				deps[b.SHA] = map[[32]byte]bool{}
+			}
+			if d {
+				deps[b.SHA][r.SHA] = true
+			} else {
+				delete(deps[b.SHA], r.SHA)
+			}
+		}
+	}
+	for _, f := range files {
+		r, err := s.authLoad(f)
+		if err != nil {
+			return err
+		}
+		if r != nil {
+			recs[f] = r
+			link(r, true)
+		}
+	}
+	var changed []int32
+	isChanged := map[int32]bool{}
+	for i, nd := range g.nodes {
+		if e.sel[i] != nd.curOpt && (e.req[i] > 0 || nd.live) {
+			changed = append(changed, int32(i))
+			isChanged[int32(i)] = true
+		}
+	}
+	slices.SortFunc(changed, func(a, b int32) int {
+		return cmp.Or(cmp.Compare(e.depth(a), e.depth(b)), bytes.Compare(g.nodes[a].sha[:], g.nodes[b].sha[:]))
+	})
+	state := map[int32]string{}
+	setStatus := func(v int32, st string) {
+		state[v] = st
+		hx := hex.EncodeToString(g.nodes[v].sha[:])
+		for k := range rep.Changes {
+			if rep.Changes[k].SHA == hx {
+				rep.Changes[k].Status = st
+			}
+		}
+	}
+	publish := func(r *authRecord) error {
+		if err := s.authPublish(r); err != nil {
+			return err
+		}
+		if old := recs[r.SHA]; old != nil {
+			link(old, false)
+		}
+		recs[r.SHA] = r
+		link(r, true)
+		return nil
+	}
+	gen := func(sha [32]byte) uint64 {
+		if r := recs[sha]; r != nil {
+			return r.Gen + 1
+		}
+		return 1
+	}
+	pinOf := func(nd *rgNode) error {
+		if nd.obj == nil {
+			return fmt.Errorf("optimize: %x has no manifest to pin", nd.sha[:6])
+		}
+		if err := s.materializeCDC(nd.obj.man); err != nil {
+			return err
+		}
+		ps, err := chunkPieces(nd.obj.man)
+		if err != nil {
+			return err
+		}
+		return publish(&authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormPin, Pieces: ps})
+	}
+	finalDepth := func(v int32) int {
+		if o := e.opt(v); o.kind == rgDelta {
+			return e.depth(v)
+		}
+		return 0
+	}
+	// blocker returns the changed dependent that must move first (or -1), and whether (a) holds.
+	ready := func(v int32) (int32, bool) {
+		nd, o, d := g.nodes[v], e.opt(v), finalDepth(v)
+		for _, b := range o.bases {
+			br := recs[g.nodes[b].sha]
+			if br != nil && int(br.Depth) >= d || br == nil && isChanged[b] && state[b] == "" {
+				return -1, false
+			}
+		}
+		for u := range deps[nd.sha] {
+			if ur := recs[u]; ur != nil && int(ur.Depth) <= d && d > 0 {
+				if ui, ok := g.idx[u]; ok && isChanged[ui] && state[ui] == "" {
+					return ui, true
+				}
+				return -2, true
+			}
+		}
+		return -1, true
+	}
+	run := func(v int32) error {
+		nd, o := g.nodes[v], e.opt(v)
+		fail := func(why error) error {
+			setStatus(v, "failed: "+why.Error())
+			rep.Failed++
+			return nil
+		}
+		for _, b := range o.bases {
+			if recs[g.nodes[b].sha] == nil {
+				if g.nodes[b].obj == nil {
+					return fail(fmt.Errorf("base %x has no record", g.nodes[b].sha[:6]))
+				}
+				if err := s.authEnsurePin(g.nodes[b].obj); err != nil {
+					return err
+				}
+				r, err := s.authLoad(g.nodes[b].sha)
+				if err != nil {
+					return err
+				}
+				recs[r.SHA] = r
+			}
+		}
+		var rec *authRecord
+		switch o.kind {
+		case rgCDC:
+			if recs[nd.sha] == nil {
+				setStatus(v, "done")
+				return nil
+			}
+			if err := s.materializeCDC(nd.obj.man); err != nil {
+				return err
+			}
+			if recs[nd.sha].Form == authFormPin {
+				setStatus(v, "done")
+				return nil
+			}
+			ps, err := chunkPieces(nd.obj.man)
+			if err != nil {
+				return err
+			}
+			rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormPin, Pieces: ps}
+		case rgDelta:
+			ps, err := g.encodeFor(ctx, nd, o)
+			if err != nil {
+				if cerr := ctx.Err(); cerr != nil {
+					return cerr
+				}
+				return fail(err)
+			}
+			rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormDelta, Depth: byte(finalDepth(v)), Sketch: nd.sk, Pieces: ps}
+			for _, b := range o.bases {
+				rec.Bases = append(rec.Bases, xdBaseRef{g.nodes[b].sha, g.nodes[b].size})
+			}
+			for _, p := range ps {
+				rep.Written += p.Len
+			}
+		case rgRep:
+			rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormRep, Sketch: nd.sk, Root: o.rep.root}
+		default:
+			setStatus(v, "done")
+			return nil
+		}
+		if rec.Form != authFormPin {
+			if _, _, err := s.authProveContext(ctx, rec, nil, 2); err != nil {
+				if cerr := ctx.Err(); cerr != nil {
+					return cerr
+				}
+				return fail(fmt.Errorf("proof: %w", err))
+			}
+		}
+		fireTestHook(hookOptimizeBeforePublish)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := publish(rec); err != nil {
+			return err
+		}
+		rep.Applied++
+		setStatus(v, "done")
+		return nil
+	}
+	for pending := len(changed); pending > 0; {
+		progressed := false
+		var blocked [][2]int32
+		for _, v := range changed {
+			if state[v] != "" {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			u, ok := ready(v)
+			if !ok {
+				continue
+			}
+			if u >= 0 && rgBridgeFirst && g.nodes[u].obj != nil {
+				if err := pinOf(g.nodes[u]); err != nil {
+					return err
+				}
+				rep.Bridges++
+				u, ok = ready(v)
+			}
+			if u != -1 || !ok {
+				blocked = append(blocked, [2]int32{v, u})
+				continue
+			}
+			if err := run(v); err != nil {
+				return err
+			}
+			pending--
+			progressed = true
+		}
+		if progressed {
+			continue
+		}
+		// Nothing is ready: bridge a blocking dependent to a pin, or give up on what cannot proceed.
+		bridged := false
+		for _, vu := range blocked {
+			if u := vu[1]; u >= 0 && g.nodes[u].obj != nil {
+				if err := pinOf(g.nodes[u]); err != nil {
+					return err
+				}
+				rep.Bridges++
+				bridged = true
+				break
+			}
+		}
+		if bridged {
+			continue
+		}
+		stuck := false
+		for _, vu := range blocked {
+			setStatus(vu[0], "failed: a record outside the plan is built on it at its new depth")
+			rep.Failed++
+			pending--
+			stuck = true
+		}
+		if stuck {
+			continue
+		}
+		for _, v := range changed {
+			if state[v] == "" {
+				setStatus(v, "failed: no base record is shallow enough")
+				rep.Failed++
+				pending--
+			}
+		}
+	}
+	// Pins of contents now held as CDC that nothing depends on go; their chunks are present.
+	for _, v := range changed {
+		nd := g.nodes[v]
+		r := recs[nd.sha]
+		if e.opt(v).kind != rgCDC || r == nil || r.Form != authFormPin || len(deps[nd.sha]) > 0 || nd.obj == nil || nd.extDep > 0 {
+			continue
+		}
+		ok := true
+		for _, c := range nd.obj.man.Chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			if n, err := s.casStat(sum); err != nil || n != c.Length {
+				ok = false
+			}
+		}
+		if !ok {
+			continue
+		}
+		if err := s.authRetire(nd.sha); err != nil {
+			return err
+		}
+		delete(recs, nd.sha)
+		rep.Retired++
+	}
+	return nil
+}
+
+// rgBridgeFirst (tests) bridges a blocking dependent instead of letting it move first.
+var rgBridgeFirst bool
+
+// encodeFor re-runs the option's encoder (deterministic) and stores its pieces; a different envelope
+// than the one priced is refused, so what is published is what was planned.
+func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt) ([]authPiece, error) {
+	s := g.s
+	if o.win {
+		un := g.nodes[o.bases[0]]
+		tgt := s.newAuthObjAtC(nd.obj.man, nil)
+		tgt.ctx = ctx
+		defer tgt.close()
+		base := s.newAuthObjAtC(un.obj.man, nil)
+		base.ctx = ctx
+		defer base.close()
+		wp := authWParams(g.pol.workers(), un.size)
+		if g.pol.SegmentKiB > 0 {
+			wp.Segment = g.pol.SegmentKiB << 10
+		}
+		wp.Locality = o.loc
+		idx, err := dwDcoreBuildWIndex(base, un.size, wp.Anchor, wp.Workers, &un.sha)
+		if err != nil {
+			return nil, err
+		}
+		w := &rgBlob{}
+		if _, err := dwDcoreWEncode(w, tgt, nd.size, base, un.size, idx, wp); err != nil {
+			return nil, err
+		}
+		if sha256.Sum256(w.b) != o.sum {
+			return nil, errors.New("windowed re-encoding differs from the plan")
+		}
+		return g.writeBlob(ctx, w.b, w.finish())
+	}
+	target, err := s.manifestBytes(nd.obj.man)
+	if err != nil {
+		return nil, err
+	}
+	var srcs []xdSrc
+	var xs [][]byte
+	order := o.enc
+	if order == nil {
+		order = o.bases
+	}
+	for _, b := range order {
+		bb, err := s.manifestBytes(g.nodes[b].obj.man)
+		if err != nil {
+			return nil, err
+		}
+		srcs = append(srcs, xdSrc{g.nodes[b].sha, bb})
+		xs = append(xs, bb)
+	}
+	prm := dwDcoreDefaultParams()
+	var ops []dwDcoreOp
+	if len(srcs) == 1 {
+		x, err := dwDcoreBuildIndex(xs, prm)
+		if err != nil {
+			return nil, err
+		}
+		ops = x.MatchLocal(target, o.loc)
+	} else {
+		x0, err := dwDcoreBuildIndex(xs[:1], prm)
+		if err != nil {
+			return nil, err
+		}
+		ops = x0.MatchLocal(target, o.loc)
+		for k := 1; k < len(xs); k++ {
+			xk, err := dwDcoreBuildIndex(xs[k:k+1], prm)
+			if err != nil {
+				return nil, err
+			}
+			ops, _ = authRefine(ops, xk, k)
+		}
+	}
+	blob, _, err := xdEncodeOpsSum(srcs, xdFromDw(ops), target, nd.sha, g.pol.FrameSpan)
+	if err != nil {
+		return nil, err
+	}
+	if sha256.Sum256(blob) != o.sum {
+		return nil, errors.New("re-encoding differs from the plan")
+	}
+	return g.writeBlob(ctx, blob, authPieceEnds(blob))
+}
+
+func (g *rgGraph) writeBlob(ctx context.Context, blob []byte, ends []int) ([]authPiece, error) {
+	if err := g.s.checkAuthDiskReserve(g.pol.ReserveFreeBytes, uint64(len(blob)), uint64(len(ends)+1)); err != nil {
+		return nil, err
+	}
+	b := g.s.newCASBatch()
+	defer b.Abort()
+	var ps []authPiece
+	off := 0
+	for _, end := range ends {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		sum, err := b.Add(blob[off:end])
+		if err != nil {
+			return nil, err
+		}
+		ps = append(ps, authPiece{sum, int64(end - off)})
+		off = end
+	}
+	return ps, b.Flush()
 }
 
 // =============================================================================
@@ -60986,7 +63767,15 @@ func dwDcore_commonSuffix(a, b []byte) int {
 
 // Match encodes t as COPY/ADD ops against the indexed bases. The result
 // always reconstructs t exactly when ops are applied to the same bases.
-func (x *dwDcoreIndex) Match(t []byte) []dwDcoreOp {
+func (x *dwDcoreIndex) Match(t []byte) []dwDcoreOp { return x.MatchLocal(t, 0) }
+
+// dwDcoreNearRadius is the base distance within which a COPY source counts as near the previous one (B6).
+const dwDcoreNearRadius = 128 << 10
+
+// MatchLocal is Match with a locality preference (B6, loc > 0): at every position it first tries the base
+// offsets that continue the previous COPY (aligned and resumed), takes a near match unless a far one is
+// loc bytes longer, and drops far matches shorter than loc. loc = 0 is Match exactly.
+func (x *dwDcoreIndex) MatchLocal(t []byte, loc int) []dwDcoreOp {
 	w := x.p.Window
 	var ops []dwDcoreOp
 	start := 0
@@ -60995,25 +63784,39 @@ func (x *dwDcoreIndex) Match(t []byte) []dwDcoreOp {
 			ops = append(ops, dwDcoreOp{TPos: int64(start), N: int64(end - start), Base: -1, Lit: t[start:end]})
 		}
 	}
+	hb, hoff, hend := -1, int64(0), 0 // previous COPY: base, base end, target end
 	if len(t) >= w && len(x.table) > 0 {
 		h := x.hash0(t)
 		for i := 0; i+w <= len(t); {
+			n, back, bi, off := 0, 0, 0, int64(0)
+			if loc > 0 && hb >= 0 {
+				n, back, off = x.near(t, i, start, hb, hoff+int64(i-hend), hoff)
+				bi = hb
+			}
 			if x.sampled(h) {
-				if n, back, bi, off := x.best(t, i, start, h); n >= x.p.MinCopy {
-					s := i - back
-					emitLit(s)
-					if k := len(ops); k > 0 && ops[k-1].Base == bi && ops[k-1].Off+ops[k-1].N == off && start == s {
-						ops[k-1].N += int64(n)
-					} else {
-						ops = append(ops, dwDcoreOp{TPos: int64(s), N: int64(n), Base: bi, Off: off})
-					}
-					i = s + n
-					start = i
-					if i+w <= len(t) {
-						h = x.hash0(t[i:])
-					}
-					continue
+				hint := int64(-1)
+				if hb >= 0 {
+					hint = x.starts[hb] + hoff + int64(i-hend)
 				}
+				if fn, fback, fbi, foff := x.bestNear(t, i, start, h, hint, loc); fn > n+loc && (loc == 0 || fn >= loc) {
+					n, back, bi, off = fn, fback, fbi, foff
+				}
+			}
+			if n >= x.p.MinCopy && (n >= w || loc > 0) {
+				s := i - back
+				emitLit(s)
+				if k := len(ops); k > 0 && ops[k-1].Base == bi && ops[k-1].Off+ops[k-1].N == off && start == s {
+					ops[k-1].N += int64(n)
+				} else {
+					ops = append(ops, dwDcoreOp{TPos: int64(s), N: int64(n), Base: bi, Off: off})
+				}
+				i = s + n
+				start = i
+				hb, hoff, hend = bi, off+int64(n), i
+				if i+w <= len(t) {
+					h = x.hash0(t[i:])
+				}
+				continue
 			}
 			if i+w >= len(t) {
 				break
@@ -61026,26 +63829,58 @@ func (x *dwDcoreIndex) Match(t []byte) []dwDcoreOp {
 	return ops
 }
 
+// near returns the longer verified match of t[i:] at base offsets a (aligned) and r (resumed) of base bi.
+func (x *dwDcoreIndex) near(t []byte, i, lo, bi int, a, r int64) (n, back int, off int64) {
+	src := x.bases[bi]
+	for _, o := range [2]int64{a, r} {
+		if o < 0 || o >= int64(len(src)) || o == off && n > 0 {
+			continue
+		}
+		f := dwDcore_commonPrefix(src[o:], t[i:])
+		if f < x.p.MinCopy {
+			continue
+		}
+		bk := min(i-lo, int(o))
+		bk = dwDcore_commonSuffix(src[int(o)-bk:o], t[i-bk:i])
+		if f+bk > n {
+			n, back, off = f+bk, bk, o-int64(bk)
+		}
+	}
+	return
+}
+
 // best probes the anchor bucket for the window at t[i:] and returns the
 // longest verified match (forward + backward, backward not crossing lo).
 func (x *dwDcoreIndex) best(t []byte, i, lo int, h uint64) (n, back, bi int, off int64) {
+	return x.bestNear(t, i, lo, h, -1, 0)
+}
+
+// bestNear scores a candidate farther than dwDcoreNearRadius from the virtual offset hint (or any candidate
+// without a hint) loc bytes below its length; loc = 0 is best.
+func (x *dwDcoreIndex) bestNear(t []byte, i, lo int, h uint64, hint int64, loc int) (n, back, bi int, off int64) {
 	m := dwDcore_mix64(h)
 	slot := m >> x.tshift
 	tag := (m >> 8) & 0xffffff
+	score := 0
 	for probe := 0; probe < x.p.MaxProbe; probe++ {
 		e := x.table[slot]
 		if e == 0 {
 			break
 		}
 		if e>>dwDcore_posBits == tag {
-			b, o := x.locate(int64(e&dwDcore_posMask) - 1)
+			v := int64(e&dwDcore_posMask) - 1
+			b, o := x.locate(v)
 			src := x.bases[b]
 			f := dwDcore_commonPrefix(src[o:], t[i:])
 			if f >= x.p.Window {
 				bk := min(i-lo, int(o))
 				bk = dwDcore_commonSuffix(src[int(o)-bk:o], t[i-bk:i])
-				if f+bk > n {
-					n, back, bi, off = f+bk, bk, b, o-int64(bk)
+				sc := f + bk
+				if loc > 0 && (hint < 0 || v-hint > dwDcoreNearRadius || hint-v > dwDcoreNearRadius) {
+					sc -= loc
+				}
+				if sc > score {
+					score, n, back, bi, off = sc, f+bk, bk, b, o-int64(bk)
 				}
 			}
 		}
@@ -61169,6 +64004,7 @@ type dwDcoreWParams struct {
 	PageSize   int   // base read granularity (bytes)
 	CachePages int   // base pages cached per worker
 	Workers    int
+	Locality   int // B6: prefer COPY sources near the previous one by this many bytes (0 = off)
 }
 
 // DefaultWParams: 4 MiB frames, 64 KiB pages x 256 (16 MiB) per worker, a 4 Mi
@@ -61181,7 +64017,7 @@ func dwDcoreDefaultWParams() dwDcoreWParams {
 }
 
 func (p dwDcoreWParams) valid() bool {
-	return p.Anchor.valid() && p.Window >= 1<<10 && p.Window <= 1<<30 && p.Segment >= 0 && p.PageSize >= 512 && p.PageSize&(p.PageSize-1) == 0 && p.CachePages >= 2 && p.Workers >= 1 && p.Workers <= 256
+	return p.Anchor.valid() && p.Window >= 1<<10 && p.Window <= 1<<30 && p.Segment >= 0 && p.PageSize >= 512 && p.PageSize&(p.PageSize-1) == 0 && p.CachePages >= 2 && p.Workers >= 1 && p.Workers <= 256 && p.Locality >= 0
 }
 
 // WIndex is the immutable anchor table over one ReaderAt base. Safe for
@@ -61437,7 +64273,7 @@ func (v *dwDcore_pageView) backward(off int64, t []byte) int {
 }
 
 // matchWindow produces ops for one target window (offsets are absolute in the base).
-func (x *dwDcoreWIndex) matchWindow(v *dwDcore_pageView, t []byte) ([]dwDcoreOp, error) {
+func (x *dwDcoreWIndex) matchWindow(v *dwDcore_pageView, t []byte, loc int) ([]dwDcoreOp, error) {
 	w := x.p.Window
 	var ops []dwDcoreOp
 	start := 0
@@ -61446,29 +64282,41 @@ func (x *dwDcoreWIndex) matchWindow(v *dwDcore_pageView, t []byte) ([]dwDcoreOp,
 			ops = append(ops, dwDcoreOp{TPos: int64(start), N: int64(end - start), Base: -1, Lit: t[start:end]})
 		}
 	}
+	have, hoff, hend := false, int64(0), 0 // previous COPY: base end, target end (locality, B6)
 	if len(t) >= w {
 		h := dwDcore_rollInit(t[:w])
 		for i := 0; i+w <= len(t); {
+			n, back, off := 0, 0, int64(0)
+			if loc > 0 && have {
+				n, back, off = x.near(v, t, i, start, hoff+int64(i-hend), hoff)
+			}
 			if x.sampled(h) {
-				n, back, off := x.best(v, t, i, start, h)
-				if v.err != nil {
-					return nil, v.err
+				hint := int64(-1)
+				if have {
+					hint = hoff + int64(i-hend)
 				}
-				if n >= x.p.MinCopy {
-					s := i - back
-					emitLit(s)
-					if k := len(ops); k > 0 && ops[k-1].Base == 0 && ops[k-1].Off+ops[k-1].N == off && start == s {
-						ops[k-1].N += int64(n)
-					} else {
-						ops = append(ops, dwDcoreOp{TPos: int64(s), N: int64(n), Base: 0, Off: off})
-					}
-					i = s + n
-					start = i
-					if i+w <= len(t) {
-						h = dwDcore_rollInit(t[i : i+w])
-					}
-					continue
+				if fn, fback, foff := x.bestNear(v, t, i, start, h, hint, loc); fn > n+loc && (loc == 0 || fn >= loc) {
+					n, back, off = fn, fback, foff
 				}
+			}
+			if v.err != nil {
+				return nil, v.err
+			}
+			if n >= x.p.MinCopy && (n >= w || loc > 0) {
+				s := i - back
+				emitLit(s)
+				if k := len(ops); k > 0 && ops[k-1].Base == 0 && ops[k-1].Off+ops[k-1].N == off && start == s {
+					ops[k-1].N += int64(n)
+				} else {
+					ops = append(ops, dwDcoreOp{TPos: int64(s), N: int64(n), Base: 0, Off: off})
+				}
+				i = s + n
+				start = i
+				have, hoff, hend = true, off+int64(n), i
+				if i+w <= len(t) {
+					h = dwDcore_rollInit(t[i : i+w])
+				}
+				continue
 			}
 			if i+w >= len(t) {
 				break
@@ -61481,10 +64329,29 @@ func (x *dwDcoreWIndex) matchWindow(v *dwDcore_pageView, t []byte) ([]dwDcoreOp,
 	return ops, nil
 }
 
-func (x *dwDcoreWIndex) best(v *dwDcore_pageView, t []byte, i, lo int, h uint64) (n, back int, off int64) {
+func (x *dwDcoreWIndex) near(v *dwDcore_pageView, t []byte, i, lo int, a, r int64) (n, back int, off int64) {
+	for _, o := range [2]int64{a, r} {
+		if o < 0 || o >= x.size || o == off && n > 0 {
+			continue
+		}
+		f := v.forward(o, t[i:])
+		if f < x.p.MinCopy {
+			continue
+		}
+		bk := min(int64(i-lo), o)
+		b := v.backward(o, t[i-int(bk):i])
+		if f+b > n {
+			n, back, off = f+b, b, o-int64(b)
+		}
+	}
+	return
+}
+
+func (x *dwDcoreWIndex) bestNear(v *dwDcore_pageView, t []byte, i, lo int, h uint64, hint int64, loc int) (n, back int, off int64) {
 	m := dwDcore_mix64(h)
 	slot := m >> x.tshift
 	tag := (m >> 8) & 0xffffff
+	score := 0
 	for probe := 0; probe < x.p.MaxProbe; probe++ {
 		e := x.table[slot]
 		if e == 0 {
@@ -61496,8 +64363,12 @@ func (x *dwDcoreWIndex) best(v *dwDcore_pageView, t []byte, i, lo int, h uint64)
 			if f >= x.p.Window {
 				bk := min(int64(i-lo), o)
 				b := v.backward(o, t[i-int(bk):i])
-				if f+b > n {
-					n, back, off = f+b, b, o-int64(b)
+				sc := f + b
+				if loc > 0 && (hint < 0 || o-hint > dwDcoreNearRadius || hint-o > dwDcoreNearRadius) {
+					sc -= loc
+				}
+				if sc > score {
+					score, n, back, off = sc, f+b, b, o-int64(b)
 				}
 			}
 		}
@@ -61573,7 +64444,7 @@ func dwDcoreWEncode(dst io.Writer, target io.ReaderAt, tsize int64, base io.Read
 			v := dwDcore_newPageView(base, bsize, wp.PageSize, wp.CachePages)
 			for j := range jobs {
 				before := v.Reads
-				ops, err := idx.matchWindow(v, j.buf[:j.n])
+				ops, err := idx.matchWindow(v, j.buf[:j.n], wp.Locality)
 				if err != nil {
 					j.err = err
 					close(j.done)

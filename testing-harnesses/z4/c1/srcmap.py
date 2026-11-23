@@ -55,6 +55,7 @@ ents = [
  ("Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)", "// 16c. Delta (thin) snapshot bundles"),
  ("Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)", "// 16d. Structured representations"),
  ("Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)", "// 16e. Representation-authoritative bodies"),
+ ("Global representation-graph optimization: closure cost, search, transitions (B6)", "// 16e1. Global representation-graph"),
  ("Windowed and estimated similarity deltas (extracted dcore)", "// 16f. Windowed and estimated"),
  ("ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies", "// 16g. ZN7 windowed model container"),
  ("Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs", "// 16i. Exact Brotli and LZ4 replay"),
