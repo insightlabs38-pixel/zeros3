@@ -479,6 +479,21 @@ func TestAuthHelperProcess(t *testing.T) {
 		if _, err := s.AuthorityRevertAll(); err != nil {
 			t.Fatal(err)
 		}
+	case "canonical": // B8: canonical optimize, archive profile
+		lock, err := acquireStoreLock(dir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.release()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if _, err := s.AuthorityOptimize(context.Background(), OptimizePolicy{AuthPolicy: AuthPolicy{Order: "oldest", MaxDepth: 2, AllowDelta: true, AllowRep: true, Apply: true},
+			Profile: "archive", Canonical: true}); err != nil {
+			t.Fatal(err)
+		}
 	case "repair", "repairobject", "audit", "maint":
 		authRepairHelper(t, scenario, dir)
 	case "repack":

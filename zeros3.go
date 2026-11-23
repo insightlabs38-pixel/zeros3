@@ -86,50 +86,51 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      544    Content-defined chunking (CDC)
-//      731    Content-addressed chunk storage (CAS)
-//     2526    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5314    Small-object segments (inline manifests, store level 11)
-//     6564    Manifests (immutable, JSON)
-//     7362    Visibility journal (append-only, checksummed)
-//     7884    Store: format, namespace, and object CRUD
-//     8396    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12048    Version history/restore, history pruning, ListObjectsV2
-//    12654    SigV4 authentication (header and presigned-URL)
-//    13631    Request payload checksums and S3-shaped XML error/response types
-//    13848    HTTP routing and S3 operation handlers
-//    14280    Conditional operations (PUT/GET/HEAD preconditions)
-//    14975    CopyObject
-//    15280    Multipart upload
-//    16224    Stats and reachability scanning
-//    17812    Verify
-//    18027    Store locking and safe offline GC
-//    18330    Offline compaction (`zeros3 compact`)
-//    19513    Pack reclamation and repacking (`zeros3 repack`)
-//    20101    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20561    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21865    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22378    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23443    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24294    Delta sync client, credentials, and parallel transfer
-//    26599    Bulk logical-chunk transport (v2)
-//    27510    Recursive directory sync
-//    27815    Remote replication (`zeros3 replicate`)
-//    28728    Peer-assisted corruption repair (`zeros3 repair`)
-//    29300    Namespace (prefix/bucket) replication
-//    29616    Copy-on-write namespace fork (`zeros3 fork`)
-//    29824    Snapshots and restore
-//    30986    Structural diff and inspect (introspection)
-//    32398    Portable snapshot bundles (`zeros3 bundle`)
-//    33595    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34230    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52660    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60561    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    63643    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    64196    Windowed and estimated similarity deltas (extracted dcore)
-//    66033    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    73886    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    80158    CLI dispatch, HTTP server/startup, and main
+//      545    Content-defined chunking (CDC)
+//      732    Content-addressed chunk storage (CAS)
+//     2527    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5315    Small-object segments (inline manifests, store level 11)
+//     6565    Manifests (immutable, JSON)
+//     7363    Visibility journal (append-only, checksummed)
+//     7885    Store: format, namespace, and object CRUD
+//     8398    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12050    Version history/restore, history pruning, ListObjectsV2
+//    12656    SigV4 authentication (header and presigned-URL)
+//    13633    Request payload checksums and S3-shaped XML error/response types
+//    13850    HTTP routing and S3 operation handlers
+//    14282    Conditional operations (PUT/GET/HEAD preconditions)
+//    14977    CopyObject
+//    15282    Multipart upload
+//    16226    Stats and reachability scanning
+//    17814    Verify
+//    18029    Store locking and safe offline GC
+//    18332    Offline compaction (`zeros3 compact`)
+//    19515    Pack reclamation and repacking (`zeros3 repack`)
+//    20103    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20563    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21867    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22380    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23445    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24296    Delta sync client, credentials, and parallel transfer
+//    26601    Bulk logical-chunk transport (v2)
+//    27512    Recursive directory sync
+//    27817    Remote replication (`zeros3 replicate`)
+//    28730    Peer-assisted corruption repair (`zeros3 repair`)
+//    29302    Namespace (prefix/bucket) replication
+//    29618    Copy-on-write namespace fork (`zeros3 fork`)
+//    29826    Snapshots and restore
+//    30988    Structural diff and inspect (introspection)
+//    32400    Portable snapshot bundles (`zeros3 bundle`)
+//    33597    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34232    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52885    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    60854    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    64136    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    64692    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    65545    Windowed and estimated similarity deltas (extracted dcore)
+//    67382    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    75238    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    81510    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -60894,6 +60895,7 @@ type OptimizePolicy struct {
 	Canonical         bool                                `json:"canonical,omitempty"`  // B8: canonical streams of codec containers
 	B7Search          bool                                `json:"b7_search,omitempty"`  // B8 ablation: the B7 search (no group starts, exact search or incumbent)
 	noZip             bool                                // ablation: no ZIP adapter
+	recordGroup       int64                               // research (B8-G): price record files as grouped entries (exact bytes + this overhead)
 	canonNoDelta      bool                                // ablation: canonical streams only as CDC
 }
 
@@ -61084,6 +61086,9 @@ func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
 func (g *rgGraph) roundMeta(n int64) int64 {
 	if n <= 0 {
 		return 0
+	}
+	if g.pol.recordGroup > 0 {
+		return n + g.pol.recordGroup
 	}
 	return (n + g.block - 1) / g.block * g.block
 }
@@ -65469,6 +65474,38 @@ func zipWrite(s *zipSeg, plain io.ReaderAt, lo, hi int64, w io.Writer) error {
 	return err
 }
 
+// zipAhead serves a ZIP's plaintext slices from a read-ahead window over the body (safe for concurrent entries).
+type zipAhead struct {
+	mu   sync.Mutex
+	ra   io.ReaderAt
+	size int64
+	lo   int64
+	buf  []byte
+}
+
+const zipAheadBytes = 16 << 20 // one batch's plaintext span
+
+func (z *zipAhead) ReadAt(p []byte, off int64) (int, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if off < 0 || off+int64(len(p)) > z.size {
+		return 0, repCorrupt("zip plaintext read %d+%d of %d", off, len(p), z.size)
+	}
+	if off < z.lo || off+int64(len(p)) > z.lo+int64(len(z.buf)) {
+		n := min(max(int64(len(p)), zipAheadBytes), z.size-off)
+		if int64(cap(z.buf)) < n {
+			z.buf = make([]byte, n)
+		}
+		z.buf = z.buf[:n]
+		if k, err := z.ra.ReadAt(z.buf, off); int64(k) != n {
+			z.buf = z.buf[:0]
+			return 0, fmt.Errorf("%w: zip plaintext short at %d: %v", errRepShort, off, err)
+		}
+		z.lo = off
+	}
+	return copy(p, z.buf[off-z.lo:]), nil
+}
+
 type repZipDecoder struct{}
 
 func (repZipDecoder) Decode(c *repCall) error { return zipReadRange(c, 0, c.Rep.Size, c.W) }
@@ -65483,7 +65520,7 @@ func zipReadRange(c *repCall, off, n int64, w io.Writer) error {
 		return err
 	}
 	nt := len(c.Rep.Members) - 1
-	plain, err := c.bodyAt(&c.Rep.Members[nt])
+	body, err := c.bodyAt(&c.Rep.Members[nt])
 	if err != nil {
 		return err
 	}
@@ -65492,6 +65529,11 @@ func zipReadRange(c *repCall, off, n int64, w io.Writer) error {
 	j, _ := slices.BinarySearchFunc(segs, end, func(s zipSeg, x int64) int { return cmp.Compare(s.out, x) })
 	if err := c.decodeWork().step(int64(j - i)); err != nil {
 		return err
+	}
+	// entries read their small slices in stream order: one read-ahead window instead of a body read each
+	var plain io.ReaderAt = body
+	if j > i {
+		plain = &zipAhead{ra: body, size: c.Rep.Members[nt].Size}
 	}
 	clip := func(k int, w io.Writer) error {
 		s := &segs[k]
@@ -65509,9 +65551,13 @@ func zipReadRange(c *repCall, off, n int64, w io.Writer) error {
 	// several entries: replayed concurrently in bounded batches, written in order
 	for lo := i; lo < j; {
 		hi, batch := lo, int64(0)
-		for hi < j && (hi == lo || batch+segs[hi].outLen < 16<<20 && hi-lo < 256) {
-			batch += segs[hi].outLen
+		for hi < j && (hi == lo || batch+segs[hi].plainLen < zipAheadBytes && hi-lo < 256) {
+			batch += segs[hi].plainLen
 			hi++
+		}
+		if za, ok := plain.(*zipAhead); ok && batch > 0 && segs[lo].plain < za.size {
+			var one [1]byte
+			za.ReadAt(one[:], segs[lo].plain) // load the batch's span before its workers start
 		}
 		outs, errs := make([][]byte, hi-lo), make([]error, hi-lo)
 		var wg sync.WaitGroup

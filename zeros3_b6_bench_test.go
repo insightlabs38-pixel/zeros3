@@ -442,6 +442,10 @@ func TestB6Reads(t *testing.T) {
 					off64 := int64((seed ^ uint64(i)*0xbf58476d1ce4e5b9) % uint64(size-(64<<10)))
 					measure(o, "cold64k", off64, 64<<10, true)
 				}
+				if i%4 == 0 && size > 2<<20 && os.Getenv("ZEROS3_B6_1M") != "" { // B8
+					off1m := int64((seed ^ uint64(i)*0x94d049bb133111eb) % uint64(size-(1<<20)))
+					measure(o, "cold1m", off1m, 1<<20, true)
+				}
 			}
 			for range 2 {
 				measure(o, "whole", 0, size, true)

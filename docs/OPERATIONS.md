@@ -452,6 +452,17 @@ behaviour. Fingerprints are derived per run, never persisted, and never
 decide bytes: every selected record is re-encoded and proven at apply.
 Results: `testing-harnesses/next/b7/README.md`.
 
+`-canonical` (B8) lets gzip, zstd and ZIP containers share their decoded
+content: each container becomes an exact replay recipe whose plaintext is a
+separate body (keyed by the plaintext's SHA-256, named by no namespace entry),
+and that body takes any form the optimizer offers, including a delta against
+another container's plaintext or a raw object holding the same bytes. The
+first canonical record raises the store feature `canon`; older builds then
+refuse the store. Replayed reads cost tens of milliseconds for 4 KiB, so the
+mixed and hot profiles usually refuse them; use the archive profile for cold
+release archives. `-codec-replay` is the pre-B8 nested replay. Results:
+`testing-harnesses/next/b8/README.md`.
+
 ### Restartable records and reconstruction layout (research, B5)
 
 Both are opt-in and change only physical placement; reads stay byte-exact and

@@ -491,3 +491,97 @@ func TestB8IncumbentAndProfiles(t *testing.T) {
 	l.exact("mixed store")
 	l.verifyOK("mixed store")
 }
+
+// TestB8CrashMatrix SIGKILLs a canonical optimize at every publication boundary it crosses (stream chunks
+// flushed, a record written, renamed into place, the optimizer about to publish), occurrence by occurrence.
+// After each cut: every acknowledged object reads exactly, gc + repack + compact retire what the cut left
+// unreferenced (a stream published before its container), deep verify passes, and a rerun completes the plan.
+func TestB8CrashMatrix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-kill matrix")
+	}
+	base := newAuthLab(t)
+	v1, v2 := b8Tree(21, 10), b8Edit(b8Tree(21, 10), 3)
+	base.put("a.tar.gz", b8Gzip(t, b8Tar(t, v1, 1), 6))
+	base.put("a.zip", b8Zip(t, v1))
+	base.put("b.tar.gz", b8Gzip(t, b8Tar(t, v2, 2), 6))
+	base.reclaim()
+	base.close()
+	cuts := 0
+	for _, point := range []string{hookCASAfterFlush, hookAuthRecordWritten, hookAuthAfterRename, hookOptimizeBeforePublish} {
+		for occ := 1; occ <= 8; occ++ {
+			l := &authLab{t: t, dir: t.TempDir(), want: base.want}
+			if err := os.CopyFS(l.dir, os.DirFS(base.dir)); err != nil {
+				t.Fatal(err)
+			}
+			os.Remove(filepath.Join(l.dir, "LOCK"))
+			if !runKilled(t, "canonical", l.dir, point, occ) {
+				break
+			}
+			cuts++
+			stage := fmt.Sprintf("%s#%d", point, occ)
+			l.open()
+			l.exact(stage + " after kill")
+			l.reclaim()
+			l.exact(stage + " reclaimed")
+			l.verifyOK(stage)
+			rep := b8Optimize(t, l, OptimizePolicy{})
+			if rep.Failed != 0 {
+				t.Fatalf("%s: rerun failed %d: %+v", stage, rep.Failed, rep.Changes)
+			}
+			l.reclaim()
+			l.exact(stage + " completed")
+			l.verifyOK(stage + " completed")
+			if again := b8Optimize(t, l, OptimizePolicy{}); again.Applied != 0 {
+				t.Fatalf("%s: not converged: %+v", stage, again.Changes)
+			}
+			l.close()
+		}
+	}
+	if cuts < 12 {
+		t.Fatalf("only %d cuts reached", cuts)
+	}
+	t.Logf("%d process-kill cuts", cuts)
+}
+
+// TestB8OnlineMaintenance: B4 online passes over a canonical store retire what deleted containers leave (the
+// raw tar a stream used to be, then a container and the stream only it needed) while live readers stay exact.
+func TestB8OnlineMaintenance(t *testing.T) {
+	l := newAuthLab(t)
+	v1, v2 := b8Tree(31, 12), b8Edit(b8Tree(31, 12), 9)
+	tar1 := b8Tar(t, v1, 1)
+	l.put("v1.tar", tar1)
+	l.put("v1.tar.gz", b8Gzip(t, tar1, 6))
+	l.put("v1.zip", b8Zip(t, v1))
+	l.put("v2.tar.gz", b8Gzip(t, b8Tar(t, v2, 2), 9))
+	l.reclaim()
+	b8Optimize(t, l, OptimizePolicy{})
+	l.reclaim()
+	files0, _ := l.s.authFiles()
+	l.close()
+	s := b4OpenMaint(t, l.dir)
+	l.s = s
+	zero := 0
+	for _, del := range []string{"v1.tar", "v2.tar.gz"} {
+		mustOK(t, s.DeleteObject("b", del))
+		delete(l.want, del)
+		res, err := s.PlanHistoryPrune(historyPruneOptions{Bucket: "b", KeepLast: &zero})
+		mustOK(t, err)
+		mustOK(t, s.ApplyHistoryPrune(&res))
+		time.Sleep(10 * time.Millisecond)
+		for range 2 {
+			_, err := s.maintainOnline(context.Background(), b4Opts())
+			mustOK(t, err)
+			l.exact("online after deleting " + del)
+		}
+		l.verifyOK("online after deleting " + del)
+	}
+	files1, _ := l.s.authFiles()
+	if len(files1) >= len(files0) {
+		t.Fatalf("records %d -> %d: nothing retired", len(files0), len(files1))
+	}
+	l.close()
+	l.open()
+	l.exact("reopened")
+	l.verifyOK("reopened")
+}

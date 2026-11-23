@@ -9,8 +9,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -91,9 +93,10 @@ func b8Campaign(t *testing.T, test func(*testing.T)) {
 	test(t)
 }
 
-func TestB8Build(t *testing.T) { b8Campaign(t, TestB6Build) }
-func TestB8Lanes(t *testing.T) { b8Campaign(t, TestB6Lanes) }
-func TestB8Reads(t *testing.T) { b8Campaign(t, TestB6Reads) }
+func TestB8Build(t *testing.T)      { b8Campaign(t, TestB6Build) }
+func TestB8Lanes(t *testing.T)      { b8Campaign(t, TestB6Lanes) }
+func TestB8Reads(t *testing.T)      { b8Campaign(t, TestB6Reads) }
+func TestB8Concurrent(t *testing.T) { b8Campaign(t, TestB6Concurrent) }
 
 // TestB8Diag solves one family's CDC store (no apply) and prints every node's selection and requirement.
 func TestB8Diag(t *testing.T) {
@@ -105,7 +108,7 @@ func TestB8Diag(t *testing.T) {
 		if prof == "archive" {
 			order = "oldest"
 		}
-		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: order, MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, AllowDelta: true, AllowRep: true}, Profile: prof, Canonical: true}.norm()
+		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: order, MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, AllowDelta: true, AllowRep: true}, Profile: prof, Canonical: true, B7Search: os.Getenv("B8_B7SEARCH") != ""}.norm()
 		g, err := s.rgBuild(context.Background(), pol)
 		if err != nil {
 			t.Fatal(err)
@@ -114,7 +117,9 @@ func TestB8Diag(t *testing.T) {
 			t.Fatal(err)
 		}
 		g.partition()
+		t0 := time.Now()
 		e, _ := g.solve("global", pol.ReadWeight)
+		t.Logf("solve %v evals %d", time.Since(t0), e.evals)
 		for i, nd := range g.nodes {
 			o := e.opt(int32(i))
 			t.Logf("node %d %x %s size %d live %v req %d sel %s bases %v users %v", i, nd.sha[:4], nd.obj.key, nd.size, nd.live, e.req[i], o.label, o.bases, e.users[i])
@@ -207,5 +212,113 @@ func TestB8IRProbe(t *testing.T) {
 		}
 		pl, sk, un, err := b8irCost(t, data[len(hl):len(data)-8])
 		t.Logf("%s gzip size %d plain %d skel %d units %d err %v", p, len(data), pl, sk, un, err)
+	}
+}
+
+// TestB8RecordGroup (B8-G, model only) plans the small-file Coreutils history under three record-file prices:
+// the 4 KiB allocation floor (today), a grouped container (exact bytes + ZEROS3_B8_GROUP_OVERHEAD, default 72:
+// entry header and amortized group slack) and exact bytes (B7's upper bound). No store is written.
+func TestB8RecordGroup(t *testing.T) {
+	fx := os.Getenv("ZEROS3_B6_FX")
+	over := int64(72)
+	if v, err := strconv.ParseInt(os.Getenv("ZEROS3_B8_GROUP_OVERHEAD"), 10, 64); err == nil {
+		over = v
+	}
+	for _, fam := range strings.Split(cmpOr(os.Getenv("ZEROS3_B6_FAMILIES"), "cu-files"), ",") {
+		s, done := b6Open(t, filepath.Join(fx, fam, "cdc"))
+		for _, v := range []struct {
+			name         string
+			block, group int64
+		}{{"block-4k", 0, 0}, {"grouped", 0, over}, {"exact", 1, 0}} {
+			for _, prof := range []string{"archive", "mixed"} {
+				order := "oldest"
+				if prof == "mixed" {
+					order = "newest"
+				}
+				p := OptimizePolicy{AuthPolicy: AuthPolicy{Order: order, MaxDepth: 2, MaxBases: 2, MinSaving: 0.10, AllowDelta: true, AllowRep: true}, Profile: prof}
+				p.recordBlock, p.recordGroup = v.block, v.group
+				rep, err := s.AuthorityOptimize(context.Background(), p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pl := rep.Planned
+				b6Emit(map[string]any{"kind": "recgroup", "family": fam, "pricing": v.name, "profile": prof, "overhead": v.group,
+					"bytes": pl.Bytes, "meta": pl.MetaBytes, "deltas": pl.Deltas, "pins": pl.Pins, "cdc_only": rep.CDCOnly.Bytes})
+				t.Logf("%s %s %s: %d bytes (%d record), %d deltas", fam, v.name, prof, pl.Bytes, pl.MetaBytes, pl.Deltas)
+			}
+		}
+		done()
+	}
+}
+
+// TestB8Scale (planning only, synthetic): N releases of a small file tree, each published as .tar.gz (levels 1,
+// 6, 9 rotating) and every third also as a ZIP: canonical analysis, discovery and search time, peak RSS and the
+// planned store as N grows. ZEROS3_B8_SCALE lists N (default 8,32,96).
+func TestB8Scale(t *testing.T) {
+	ns := []int{8, 32, 96}
+	if v := os.Getenv("ZEROS3_B8_SCALE"); v != "" {
+		ns = nil
+		for _, f := range strings.Split(v, ",") {
+			n, _ := strconv.Atoi(f)
+			ns = append(ns, n)
+		}
+	}
+	for _, n := range ns {
+		l := newAuthLab(t)
+		tree := b8Tree(77, 9)
+		for i := range n {
+			tarb := b8Tar(t, tree, int64(i))
+			l.put(fmt.Sprintf("rel/%03d.tar.gz", i), b8Gzip(t, tarb, []int{1, 6, 9}[i%3]))
+			if i%3 == 0 {
+				l.put(fmt.Sprintf("rel/%03d.zip", i), b8Zip(t, tree))
+			}
+			tree = b8Edit(tree, uint64(1000+i))[:len(tree)]
+		}
+		l.reclaim()
+		resetRSSPeak()
+		t0, cpu0 := time.Now(), procCPUSeconds()
+		rep := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{AllowRep: true, MaxDepth: 2}, Canonical: true})
+		row := map[string]any{"kind": "scale", "releases": n, "containers": rep.Canon.Containers, "streams": rep.Canon.Streams,
+			"nodes": rep.Nodes, "options": rep.Options, "partitions": rep.Partitions, "largest_partition": rep.LargestPartition,
+			"canon_s": rep.Canon.Seconds, "candidate_s": rep.CandidateSeconds, "search_s": rep.SearchSeconds, "wall_s": time.Since(t0).Seconds(),
+			"cpu_s": procCPUSeconds() - cpu0, "rss_mib": rssPeakMiB(), "cdc_mb": float64(rep.CDCOnly.Bytes) / 1e6, "planned_mb": float64(rep.Planned.Bytes) / 1e6}
+		b6Emit(row)
+		t.Logf("%v", row)
+		l.close()
+	}
+}
+
+// TestB8BodyRead times a whole sequential read of every record of a store through the verifier's scan context
+// and the ordinary read context (diagnostic; ZEROS3_B8_STORE).
+func TestB8BodyRead(t *testing.T) {
+	s, done := b6Open(t, os.Getenv("ZEROS3_B8_STORE"))
+	defer done()
+	files, _ := s.authFiles()
+	for _, sha := range files {
+		rec, _ := s.authLoad(sha)
+		for _, mode := range []string{"scan", "read"} {
+			ctx := s.newAuthScanCtx()
+			if mode == "read" {
+				ctx = s.newAuthCtx()
+			}
+			t0 := time.Now()
+			body, _, err := ctx.body(sha, 0, 1)
+			var n int64
+			buf := make([]byte, authReadPiece)
+			for err == nil && n < body.Size() {
+				k := min(int64(len(buf)), body.Size()-n)
+				var rk int
+				rk, err = body.ReadAt(buf[:k], n)
+				if int64(rk) == k {
+					err = nil
+				}
+				n += int64(rk)
+				if time.Since(t0) > 90*time.Second {
+					err = fmt.Errorf("gave up at %d", n)
+				}
+			}
+			ctx.close()
+			t.Logf("%x form %d depth %d bases %d size %d %s: %v err %v", sha[:4], rec.Form, rec.Depth, len(rec.Bases), rec.Size, mode, time.Since(t0), err)
+		}
 	}
 }
