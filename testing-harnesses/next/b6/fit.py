@@ -15,7 +15,9 @@ def solve(X, Y):
 def r2(X, Y, co):
     f = [sum(c*v for c, v in zip(co, a)) for a in X]; m = sum(Y)/len(Y)
     return 1 - sum((y-v)**2 for y, v in zip(Y, f)) / sum((y-m)**2 for y in Y)
-for mode, feats in [('cold4k', ['one', 'nodes', 'records', 'inflated', 'raw']), ('cold64k', ['one', 'nodes', 'records', 'inflated', 'raw']),
+for r in rows:
+    r['raw_all'] = r['raw'] + r['raw_b']
+for mode, feats in [('cold4k', ['one', 'nodes', 'records', 'inflated', 'records_b', 'inflated_b', 'raw_all']), ('cold64k', ['one', 'nodes', 'records', 'inflated', 'records_b', 'inflated_b', 'raw_all']),
                     ('whole', ['one', 'whole_records', 'whole_inflated', 'depthbytes'])]:
     rs = [r for r in rows if r['mode'] == mode]
     if mode == 'whole':

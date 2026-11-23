@@ -700,3 +700,43 @@ func hexOf(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
+
+// TestB6ScopedRun: a prefix-scoped optimization changes only contents in scope, treats chunks that
+// out-of-scope contents share as already paid, and leaves out-of-scope records and bases alone.
+func TestB6ScopedRun(t *testing.T) {
+	l := newAuthLab(t)
+	v := b5Text(161, 300<<10)
+	for i := range 3 {
+		l.put("in/doc", v)
+		l.put("out/doc", b5Mutate(v, uint64(200+i), 2)) // shares most chunks with the in-scope version
+		v = b5Mutate(v, uint64(i+80), 10)
+	}
+	l.reclaim()
+	l.migrate(AuthPolicy{AllowDelta: true, Prefix: "out/", Order: "oldest"})
+	l.reclaim()
+	before := map[[32]byte]uint64{}
+	files, _ := l.s.authFiles()
+	for _, f := range files {
+		r, _ := l.s.authLoad(f)
+		before[f] = r.Gen
+	}
+	rep := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{Prefix: "in/", Apply: true}})
+	for _, c := range rep.Changes {
+		if c.Key != "" && c.Key[:3] != "in/" {
+			t.Fatalf("out-of-scope change %+v", c)
+		}
+	}
+	files, _ = l.s.authFiles()
+	for _, f := range files {
+		r, _ := l.s.authLoad(f)
+		if g, ok := before[f]; ok && r.Gen != g {
+			t.Fatalf("out-of-scope record %x rewritten", f[:6])
+		}
+	}
+	l.reclaim()
+	l.exact("scoped")
+	l.verifyOK("scoped")
+	if again := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{Prefix: "in/"}}); len(again.Changes) != 0 {
+		t.Fatalf("scoped re-run plans %+v", again.Changes)
+	}
+}

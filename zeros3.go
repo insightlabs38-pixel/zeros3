@@ -125,10 +125,10 @@ import (
 //    34229    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    52617    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
 //    60501    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    63377    Windowed and estimated similarity deltas (extracted dcore)
-//    65214    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    73067    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    79339    CLI dispatch, HTTP server/startup, and main
+//    63413    Windowed and estimated similarity deltas (extracted dcore)
+//    65250    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    73103    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    79375    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -60541,7 +60541,7 @@ var rgProfiles = map[string]struct {
 }{
 	"archive": {0, 0, 0, 0, 0},
 	"mixed":   {20, 0, 1, 0, 0},
-	"hot":     {400, 2, 10, 2, 1},
+	"hot":     {400, 2.5, 10, 2, 1},
 }
 
 func (p OptimizePolicy) norm() OptimizePolicy {
@@ -60647,6 +60647,7 @@ type rgNode struct {
 type rgModel struct {
 	Fixed, Node        float64 // per read (namespace, manifest record) and per record a read resolves (body file)
 	Rec, Byte, Copy    float64 // per record fetched, per decoded byte of a deflated record, per reconstructed byte
+	RecB, ByteB        float64 // the same for records reached through COPYs (fetched ahead in parallel)
 	RawByte            float64 // per byte of a record stored raw (hashed, not inflated)
 	WRec, WByte, WCopy float64 // whole-object reads: pipelined fetch and decode, reconstruction per level
 	Block              int64   // restartable record block (0: records decode whole)
@@ -60654,7 +60655,7 @@ type rgModel struct {
 
 // rgDefaultModel is fitted to 2,160 cold sparse and 282 cold whole reads on the B6 fixtures (virtio SSD,
 // unblocked records; testing-harnesses/next/b6/fit.py).
-var rgDefaultModel = rgModel{Fixed: 164, Node: 209, Rec: 128, Byte: 0.0064, RawByte: 0.0018, Copy: 0.0004, WRec: 340, WByte: 0.0018, WCopy: 0.0064}
+var rgDefaultModel = rgModel{Fixed: 164, Node: 209, Rec: 128, Byte: 0.0064, RecB: 128, ByteB: 0.0064, RawByte: 0.0018, Copy: 0.0004, WRec: 340, WByte: 0.0018, WCopy: 0.0064}
 
 type rgGraph struct {
 	s      *Store
@@ -60721,14 +60722,14 @@ type rgEval struct {
 	dep    []int8
 	depOK  []bool
 	evals  int64
-	tmp    map[int32]uint64
+	tmp    rgTouch
 	single bool // ablation: single-node moves only
 }
 
 func newRGEval(g *rgGraph, sel []int32) *rgEval {
 	n := len(g.nodes)
 	e := &rgEval{g: g, sel: make([]int32, n), req: make([]int32, n), ref: slices.Clone(g.ext), users: make([][]int32, n),
-		metaOf: make([]int64, n), rc: make([]float64, n), rcOK: make([]bool, n), wh: make([]float64, n), queued: make([]bool, n), dep: make([]int8, n), depOK: make([]bool, n), tmp: map[int32]uint64{}}
+		metaOf: make([]int64, n), rc: make([]float64, n), rcOK: make([]bool, n), wh: make([]float64, n), queued: make([]bool, n), dep: make([]int8, n), depOK: make([]bool, n), tmp: newRGTouch()}
 	for c, r := range e.ref {
 		if r > 0 {
 			e.bytes += g.cphys[c]
@@ -61065,8 +61066,27 @@ func (e *rgEval) objective() float64 {
 
 // ---- read model ----------------------------------------------------------------
 
-// rgTouch collects the records one read fetches: component -> bitmask of restartable blocks (all ones: whole).
-type rgTouch map[int32]uint64
+// rgTouch collects the records one read fetches: component -> bitmask of restartable blocks (all ones:
+// whole); own holds those the content's own record names (the rest are reached through COPYs and are
+// fetched by the dependency prefetch in parallel).
+type rgTouch struct {
+	m   map[int32]uint64
+	own map[int32]bool
+}
+
+func newRGTouch() rgTouch { return rgTouch{m: map[int32]uint64{}, own: map[int32]bool{}} }
+
+func (t rgTouch) reset() {
+	clear(t.m)
+	clear(t.own)
+}
+
+func (t rgTouch) mark(c int32, m uint64, depth int) {
+	t.m[c] |= m
+	if depth == 0 {
+		t.own[c] = true
+	}
+}
 
 func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 	if a >= b || depth > authHardDepth+1 {
@@ -61074,10 +61094,10 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 	}
 	o := e.opt(v)
 	if o.kind != rgCDC {
-		t[-1-v] = 0 // the body record file a read of v resolves
+		t.mark(-1-v, 0, depth) // the body record file a read of v resolves
 	}
 	for _, p := range o.hdr {
-		t[p] = ^uint64(0)
+		t.mark(p, ^uint64(0), depth)
 	}
 	k, _ := slices.BinarySearchFunc(o.units, a, func(u rgUnit, x int64) int { return cmp.Compare(u.tend, x+1) })
 	for ; k < len(o.units) && o.units[k].tpos < b; k++ {
@@ -61093,9 +61113,9 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 				if (hi-1)/blk >= 63 {
 					m = ^uint64(0)
 				}
-				t[o.pieces[p]] |= m
+				t.mark(o.pieces[p], m, depth)
 			} else {
-				t[o.pieces[p]] = ^uint64(0)
+				t.mark(o.pieces[p], ^uint64(0), depth)
 			}
 		}
 	}
@@ -61110,25 +61130,43 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 // cost prices a touch set: one fetch per record (two for a partial restartable read: table, blocks) and
 // its decoded bytes.
 func (g *rgGraph) cost(t rgTouch) (us float64, recs int, decoded int64) {
-	nodes := 0
-	var raw int64
-	for c, m := range t {
+	f := g.features(t)
+	md := g.model
+	us = md.Fixed + float64(f.nodes)*md.Node + float64(f.rec[0])*md.Rec + float64(f.infl[0])*md.Byte + float64(f.raw[0])*md.RawByte +
+		float64(f.rec[1])*md.RecB + float64(f.infl[1])*md.ByteB + float64(f.raw[1])*md.RawByte
+	return us, f.rec[0] + f.rec[1], f.infl[0] + f.infl[1] + f.raw[0] + f.raw[1]
+}
+
+// rgFeatures splits a touch set into own (0) and COPY-reached (1) records, inflated and raw decoded bytes.
+type rgFeatures struct {
+	nodes     int
+	rec       [2]int
+	infl, raw [2]int64
+}
+
+func (g *rgGraph) features(t rgTouch) (f rgFeatures) {
+	for c, m := range t.m {
 		if c < 0 {
-			nodes++
+			f.nodes++
 			continue
+		}
+		k := 1
+		if t.own[c] {
+			k = 0
 		}
 		n := g.clen[c]
 		if m != ^uint64(0) && g.model.Block > 0 {
 			n = min(n, int64(bits.OnesCount64(m))*g.model.Block)
-			recs++
+			f.rec[k]++
 		}
-		recs++
-		decoded += n
+		f.rec[k]++
 		if g.craw[c] {
-			raw += n
+			f.raw[k] += n
+		} else {
+			f.infl[k] += n
 		}
 	}
-	return g.model.Fixed + float64(nodes)*g.model.Node + float64(recs)*g.model.Rec + float64(decoded-raw)*g.model.Byte + float64(raw)*g.model.RawByte, recs, decoded
+	return
 }
 
 // rgProbes are the read offsets of the sparse model: 8 of 4 KiB, 4 of 64 KiB, spread over the content.
@@ -61155,7 +61193,7 @@ func (g *rgGraph) sparseCost(e *rgEval, v int32) float64 {
 	}
 	var c4, c64 float64
 	for k, p := range rgProbes(nd.size) {
-		clear(e.tmp)
+		e.tmp.reset()
 		g.touch(e, v, p[0], p[1], e.tmp, 0)
 		us, _, _ := g.cost(e.tmp)
 		us += float64(p[1]-p[0]) * g.model.Copy * float64(1+max(e.depth(v), 0))
@@ -61175,10 +61213,10 @@ func (g *rgGraph) wholeCost(e *rgEval, v int32) float64 {
 	if !nd.live || nd.size == 0 {
 		return 0
 	}
-	t := rgTouch{}
+	t := newRGTouch()
 	g.touch(e, v, 0, nd.size, t, 0)
 	var recs, dec int64
-	for c := range t {
+	for c := range t.m {
 		if c >= 0 {
 			recs++
 			if !g.craw[c] {
@@ -61191,27 +61229,20 @@ func (g *rgGraph) wholeCost(e *rgEval, v int32) float64 {
 
 // rgReadStats is the modeled physical work of a read.
 type rgReadStats struct {
-	US       float64 `json:"us"`
-	Records  int     `json:"records"`
-	Decoded  int64   `json:"decoded"`
-	Nodes    int     `json:"nodes"` // body records the read resolves
-	Inflated int64   `json:"inflated"`
+	US       float64    `json:"us"`
+	Records  int        `json:"records"`
+	Decoded  int64      `json:"decoded"`
+	Nodes    int        `json:"nodes"` // body records the read resolves
+	Inflated int64      `json:"inflated"`
+	f        rgFeatures // own and COPY-reached split
 }
 
 func (g *rgGraph) readStats(e *rgEval, v int32, a, b int64) rgReadStats {
-	t := rgTouch{}
+	t := newRGTouch()
 	g.touch(e, v, a, b, t, 0)
 	us, r, d := g.cost(t)
-	n := 0
-	var infl int64
-	for c := range t {
-		if c < 0 {
-			n++
-		} else if !g.craw[c] {
-			infl += g.clen[c] // whole-record units; partial blocks are counted in d
-		}
-	}
-	return rgReadStats{us + float64(b-a)*g.model.Copy*float64(1+max(e.depth(v), 0)), r, d, n, min(infl, d)}
+	f := g.features(t)
+	return rgReadStats{us + float64(b-a)*g.model.Copy*float64(1+max(e.depth(v), 0)), r, d, f.nodes, f.infl[0] + f.infl[1], f}
 }
 
 // ---- graph construction ---------------------------------------------------------
@@ -61584,7 +61615,12 @@ func (g *rgGraph) layoutDelta(o *rgOpt, blob []byte, size int64) error {
 		if err != nil {
 			return err
 		}
-		p0, p1 := pr(int64(len(blob))-min(int64(len(blob)), 64<<10), int64(len(blob)))
+		// every read fetches the frame table and trailer, which follow the last frame's program
+		var toff int64
+		if n := w.Frames(); n > 0 {
+			toff = w.pstart[n-1] + w.frames[n-1].plen
+		}
+		p0, p1 := pr(toff, int64(len(blob)))
 		for p := p0; p < p1; p++ {
 			o.hdr = append(o.hdr, o.pieces[p])
 		}

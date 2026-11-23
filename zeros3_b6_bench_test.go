@@ -719,21 +719,13 @@ func TestB6Refit(t *testing.T) {
 			continue
 		}
 		ms := cf.g.readStats(cf.e, v, r.Row.Off, r.Row.Off+r.Row.Len)
-		tt := rgTouch{}
-		cf.g.touch(cf.e, v, r.Row.Off, r.Row.Off+r.Row.Len, tt, 0)
+		f := ms.f
 		var wrec, winfl int64
 		if r.Row.Mode == "whole" {
-			for c := range tt {
-				if c >= 0 {
-					wrec++
-					if !cf.g.craw[c] {
-						winfl += cf.g.clen[c]
-					}
-				}
-			}
+			wrec, winfl = int64(f.rec[0]+f.rec[1]), f.infl[0]+f.infl[1]
 		}
 		b6Emit(map[string]any{"kind": "feature", "family": r.Family, "lane": r.Lane, "mode": r.Row.Mode, "wall_us": r.Row.WallUS, "cpu_us": r.Row.CPUUS,
-			"disk_reads": r.Row.DiskReads, "records": ms.Records, "decoded": ms.Decoded, "inflated": ms.Inflated, "raw": ms.Decoded - ms.Inflated, "nodes": ms.Nodes, "len": r.Row.Len, "depth": cf.e.depth(v),
+			"disk_reads": r.Row.DiskReads, "records": f.rec[0], "inflated": f.infl[0], "raw": f.raw[0], "records_b": f.rec[1], "inflated_b": f.infl[1], "raw_b": f.raw[1], "nodes": ms.Nodes, "len": r.Row.Len, "depth": cf.e.depth(v),
 			"size": cf.g.nodes[v].size, "traced_records": r.Row.Records, "traced_decoded": r.Row.LogicalBytes,
 			"whole_records": wrec, "whole_inflated": winfl})
 	}
