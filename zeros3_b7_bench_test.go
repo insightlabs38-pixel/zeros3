@@ -9,12 +9,14 @@ package main
 import (
 	"bytes"
 	"cmp"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -647,13 +649,18 @@ func TestB7Chunking(t *testing.T) {
 		t.Skip("set ZEROS3_B6_CORPUS")
 	}
 	for _, f := range b7Families(c) {
-		if !b6Want("ZEROS3_B6_FAMILIES", f.name) || !slices.Contains([]string{"coreutils", "go", "sqlite", "tensors", "git", "vendor"}, f.name) {
+		if !b6Want("ZEROS3_B6_FAMILIES", f.name) || !slices.Contains([]string{"coreutils", "go", "sqlite", "tensors", "git", "vendor", "ts"}, f.name) {
 			continue
 		}
 		for i := 1; i < len(f.puts); i++ {
 			base, _ := os.ReadFile(f.puts[i-1].file)
 			tgt, _ := os.ReadFile(f.puts[i].file)
-			row := map[string]any{"kind": "chunking", "family": f.name, "pair": i, "target_bytes": len(tgt)}
+			fam := f.name
+			if f.name == "ts" && os.Getenv("ZEROS3_B7_GUNZIP") == "1" {
+				// format-informed: the same comparison over the decoded tar streams of the gzip containers
+				base, tgt, fam = b7Gunzip(t, base), b7Gunzip(t, tgt), "ts-gunzip"
+			}
+			row := map[string]any{"kind": "chunking", "family": fam, "pair": i, "target_bytes": len(tgt)}
 			prm := dwDcoreDefaultParams()
 			prm.MaxAnchors = 1 << 27
 			x, _ := dwDcoreBuildIndex([][]byte{base}, prm)
@@ -868,4 +875,16 @@ func TestB7Scale(t *testing.T) {
 		b, _ := json.Marshal(row)
 		t.Logf("%s", b)
 	}
+}
+
+func b7Gunzip(t *testing.T, b []byte) []byte {
+	r, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

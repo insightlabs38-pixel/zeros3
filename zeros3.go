@@ -124,12 +124,12 @@ import (
 //    33595    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    34230    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    52660    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60560    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    63642    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    64185    Windowed and estimated similarity deltas (extracted dcore)
-//    66022    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    73875    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    80147    CLI dispatch, HTTP server/startup, and main
+//    60561    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    63643    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    64196    Windowed and estimated similarity deltas (extracted dcore)
+//    66033    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    73886    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    80158    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -63833,10 +63833,7 @@ func (x *rsIndex) postings(h uint64) []rsPost {
 	b := h >> 48
 	ps := x.post[x.dir[b]:x.dir[b+1]]
 	i := sort.Search(len(ps), func(k int) bool { return ps[k].h >= h })
-	j := i
-	for j < len(ps) && ps[j].h == h {
-		j++
-	}
+	j := i + sort.Search(len(ps)-i, func(k int) bool { return ps[i+k].h > h }) // O(log n) for common fingerprints
 	return ps[i:j]
 }
 

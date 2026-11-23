@@ -330,14 +330,22 @@ func TestB7LazyRepCandidates(t *testing.T) {
 			t.Fatalf("%x: lazy price %d, staged %d", sha[:6], c, staged[sha])
 		}
 	}
-	// force every lazy representation into the plan and apply it
+	// force every lazy representation into the plan; one planned root is corrupted (a re-construction that
+	// differs from the plan): that node must fail and keep its current record, the others publish
 	e := newRGEval(g, g.currentSel())
 	forced := 0
+	var bad *rgNode
 	for v, nd := range g.nodes {
 		for o, opt := range nd.opts {
 			if opt.kind == rgRep && opt.rep.lazy {
 				e.set(int32(v), int32(o))
 				forced++
+				if bad == nil {
+					bad = nd
+					r2 := *opt.rep.root
+					r2.Rep[0] ^= 1
+					opt.rep = &authRepCand{kind: opt.rep.kind, root: &r2, chunks: opt.rep.chunks, lazy: true}
+				}
 			}
 		}
 	}
@@ -345,8 +353,15 @@ func TestB7LazyRepCandidates(t *testing.T) {
 	if err := g.apply(context.Background(), e, &rep); err != nil {
 		t.Fatal(err)
 	}
+	if rep.Failed != 1 {
+		t.Fatalf("corrupted plan: %d failed", rep.Failed)
+	}
+	if r, _ := l.s.authLoad(bad.sha); r != nil && r.Form == authFormRep {
+		t.Fatal("a representation that differs from its plan was published")
+	}
+	forced--
 	t.Logf("forced %d lazy representations, %d candidates", forced, len(lazy))
-	if rep.Applied != forced || rep.Failed != 0 {
+	if rep.Applied != forced {
 		t.Fatalf("applied %d of %d lazy representations (failed %d)", rep.Applied, forced, rep.Failed)
 	}
 	st, _ := l.s.AuthorityStatus()

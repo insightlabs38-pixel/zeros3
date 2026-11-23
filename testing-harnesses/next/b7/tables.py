@@ -112,10 +112,25 @@ if by['read']:
             if any(cells):
                 print(f'| {f} | {a}/{b} | ' + ' | '.join(cells) + ' |')
 
+if by['read']:
+    print('\n## Physical work per cold read (medians: device read requests, decoded bytes modeled)')
+    print('| family | lane | 4 KiB device reads | 4 KiB decoded KB | 64 KiB device reads | whole ms |')
+    print('|---|---|---:|---:|---:|---:|')
+    med = lambda x: sorted(x)[len(x) // 2] if x else float('nan')
+    cells = defaultdict(lambda: defaultdict(list))
+    for r in by['read']:
+        cells[(r['family'], r['lane'])][r['row']['Mode']].append(r)
+    for (f, l), m in sorted(cells.items(), key=lambda kv: (FAMS.index(kv[0][0]) if kv[0][0] in FAMS else 99, kv[0][1])):
+        c4, c64, wh = m.get('cold4k', []), m.get('cold64k', []), m.get('whole', [])
+        print(f"| {f} | {l} | {med([r['row']['DiskReads'] for r in c4])} | {med([r['model_decoded'] for r in c4])/1e3:.0f} | "
+              f"{med([r['row']['DiskReads'] for r in c64])} | {med([r['row']['WallUS'] for r in wh])/1e3:.1f} |")
+
 if by['concurrent']:
-    print('\n## Concurrent readers (reads/s)')
+    print('\n## Concurrent readers (8 closed-loop, 75% 4 KiB / 25% 64 KiB, cold start; both lane orders)')
+    print('| family | lane | order | reads/s | p50 µs | p95 µs | p99 µs | CPU s |')
+    print('|---|---|---|---:|---:|---:|---:|---:|')
     for r in forder(by['concurrent']):
-        print(f"- {r['family']} {r.get('lane')}: {r.get('reads_per_s', r.get('rps', 0)):.0f} reads/s, p99 {r.get('p99_us', 0)/1000:.1f} ms")
+        print(f"| {r['family']} | {r['lane']} | {r['order']} first | {r['reads']/r['seconds']:,.0f} | {r['p50_us']} | {r['p95_us']} | {r['p99_us']} | {r['cpu_s']:.1f} |")
 
 if by['density']:
     print('\n## COPY-anchor density on large bases (packed envelope bytes, best of locality 0/256)')

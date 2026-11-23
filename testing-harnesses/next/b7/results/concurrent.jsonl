@@ -1,0 +1,8 @@
+{"cpu_s":37.443875,"family":"coreutils","kind":"concurrent","lane":"b6-archive","order":"b6-archive","p50_us":632,"p95_us":9305,"p99_us":21505,"reads":48418,"seconds":10}
+{"cpu_s":37.876098999999996,"family":"coreutils","kind":"concurrent","lane":"b7-archive","order":"b6-archive","p50_us":656,"p95_us":10084,"p99_us":23823,"reads":44294,"seconds":10}
+{"cpu_s":38.045036999999994,"family":"coreutils","kind":"concurrent","lane":"b7-archive","order":"b7-archive","p50_us":663,"p95_us":10332,"p99_us":24161,"reads":43801,"seconds":10}
+{"cpu_s":37.80165500000001,"family":"coreutils","kind":"concurrent","lane":"b6-archive","order":"b7-archive","p50_us":633,"p95_us":9450,"p99_us":21560,"reads":48693,"seconds":10}
+{"cpu_s":33.497450000000015,"family":"vendor","kind":"concurrent","lane":"b6-archive","order":"b6-archive","p50_us":177,"p95_us":3933,"p99_us":9494,"reads":97684,"seconds":10}
+{"cpu_s":33.32430600000001,"family":"vendor","kind":"concurrent","lane":"b7-archive","order":"b6-archive","p50_us":177,"p95_us":3349,"p99_us":7022,"reads":116447,"seconds":10}
+{"cpu_s":33.23156,"family":"vendor","kind":"concurrent","lane":"b7-archive","order":"b7-archive","p50_us":173,"p95_us":3255,"p99_us":6975,"reads":118815,"seconds":10}
+{"cpu_s":33.627835000000005,"family":"vendor","kind":"concurrent","lane":"b6-archive","order":"b7-archive","p50_us":171,"p95_us":3796,"p99_us":9199,"reads":101628,"seconds":10}

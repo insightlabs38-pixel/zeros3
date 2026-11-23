@@ -1,0 +1,3 @@
+{"contents":1500,"heap_mib":30,"kind":"scale","region":{"build_s":0.206419064,"index_bytes":8855424,"rank_s":0.062359609,"recall_prev@4":1},"sketch":{"build_s":0.143208706,"rank_s":0.263943525,"recall_prev@4":1}}
+{"contents":6000,"heap_mib":110,"kind":"scale","region":{"build_s":0.786043849,"index_bytes":34730900,"rank_s":0.319324691,"recall_prev@4":1},"sketch":{"build_s":0.639237901,"rank_s":5.369622566,"recall_prev@4":1}}
+{"contents":24000,"heap_mib":373,"kind":"scale","region":{"build_s":3.057987062,"index_bytes":138367684,"rank_s":1.485464301,"recall_prev@4":1},"sketch":{"build_s":2.6585548450000003,"rank_s":114.562347039,"recall_prev@4":0.9999375}}
