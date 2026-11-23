@@ -125,10 +125,10 @@ import (
 //    34229    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    52617    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
 //    60501    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    63236    Windowed and estimated similarity deltas (extracted dcore)
-//    65073    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    72926    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    79198    CLI dispatch, HTTP server/startup, and main
+//    63377    Windowed and estimated similarity deltas (extracted dcore)
+//    65214    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    73067    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    79339    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -60522,10 +60522,12 @@ type OptimizePolicy struct {
 	Profile         string    `json:"profile"`           // archive | mixed | hot: default weights below
 	ReadWeight      float64   `json:"read_weight"`       // retained bytes one modeled µs of a content's sparse cold read is worth
 	ReadBudget      float64   `json:"read_budget"`       // modeled sparse read at most this multiple of the content's CDC read (0 = none)
+	WholeWeight     float64   `json:"whole_weight"`      // retained bytes one modeled µs of a content's whole-object read is worth
+	WholeBudget     float64   `json:"whole_budget"`      // modeled whole read at most this multiple of the content's CDC whole read (0 = none)
 	MigrationWeight float64   `json:"migration_weight"`  // retained-byte equivalent of one byte a transition writes
 	MinGain         float64   `json:"min_gain"`          // a partition changes only for this fraction of its stored bytes
 	Locality        []int     `json:"locality"`          // COPY locality slacks programs are generated with (0 = the plain matcher)
-	Algorithm       string    `json:"algorithm"`         // global | local | oracle | current
+	Algorithm       string    `json:"algorithm"`         // global | local | oracle | current (ablations: single, edmonds)
 	Pareto          []float64 `json:"pareto,omitempty"`  // read weights of a frontier sweep reported beside the plan
 	MaxEvals        int64     `json:"max_evals"`         // move evaluations per partition
 	Blocked         *bool     `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
@@ -60534,12 +60536,12 @@ type OptimizePolicy struct {
 
 // rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
 var rgProfiles = map[string]struct {
-	weight, budget float64
-	depth          int
+	weight, budget, whole, wholeBudget float64
+	depth                              int
 }{
-	"archive": {0, 0, 0},
-	"mixed":   {20, 0, 0},
-	"hot":     {400, 2, 1},
+	"archive": {0, 0, 0, 0, 0},
+	"mixed":   {20, 0, 1, 0, 0},
+	"hot":     {400, 2, 10, 2, 1},
 }
 
 func (p OptimizePolicy) norm() OptimizePolicy {
@@ -60552,6 +60554,12 @@ func (p OptimizePolicy) norm() OptimizePolicy {
 		}
 		if p.ReadBudget == 0 {
 			p.ReadBudget = pr.budget
+		}
+		if p.WholeWeight == 0 {
+			p.WholeWeight = pr.whole
+		}
+		if p.WholeBudget == 0 {
+			p.WholeBudget = pr.wholeBudget
 		}
 		if pr.depth > 0 && (p.MaxDepth <= 0 || p.MaxDepth > pr.depth) {
 			p.MaxDepth = pr.depth
@@ -60620,28 +60628,33 @@ type rgOpt struct {
 }
 
 type rgNode struct {
-	sha     [32]byte
-	size    int64
-	obj     *authObj // nil: a record no live manifest in scope names
-	cur     *authRecord
-	live    bool
-	fixed   bool // out of scope: only its current form
-	newest  bool // newest version of its key (stays CDC under the default order)
-	extDep  int  // smallest depth of a record outside the model that names it as a base (0 = none)
-	opts    []*rgOpt
-	curOpt  int32
-	sk      []uint64
-	cdcRead float64
+	sha      [32]byte
+	size     int64
+	obj      *authObj // nil: a record no live manifest in scope names
+	cur      *authRecord
+	live     bool
+	fixed    bool // out of scope: only its current form
+	newest   bool // newest version of its key (stays CDC under the default order)
+	extDep   int  // smallest depth of a record outside the model that names it as a base (0 = none)
+	opts     []*rgOpt
+	curOpt   int32
+	sk       []uint64
+	cdcRead  float64
+	cdcWhole float64
 }
 
 // rgModel is the calibrated read-cost model (µs): a cold record fetch and a decoded byte.
 type rgModel struct {
-	Rec, Byte, Copy float64
-	Block           int64 // restartable record block (0: records decode whole)
+	Fixed, Node        float64 // per read (namespace, manifest record) and per record a read resolves (body file)
+	Rec, Byte, Copy    float64 // per record fetched, per decoded byte of a deflated record, per reconstructed byte
+	RawByte            float64 // per byte of a record stored raw (hashed, not inflated)
+	WRec, WByte, WCopy float64 // whole-object reads: pipelined fetch and decode, reconstruction per level
+	Block              int64   // restartable record block (0: records decode whole)
 }
 
-// rgDefaultModel is fitted to the B5 cold reads on this class of storage (testing-harnesses/next/b6).
-var rgDefaultModel = rgModel{Rec: 120, Byte: 0.0052, Copy: 0.0004}
+// rgDefaultModel is fitted to 2,160 cold sparse and 282 cold whole reads on the B6 fixtures (virtio SSD,
+// unblocked records; testing-harnesses/next/b6/fit.py).
+var rgDefaultModel = rgModel{Fixed: 164, Node: 209, Rec: 128, Byte: 0.0064, RawByte: 0.0018, Copy: 0.0004, WRec: 340, WByte: 0.0018, WCopy: 0.0064}
 
 type rgGraph struct {
 	s      *Store
@@ -60651,6 +60664,7 @@ type rgGraph struct {
 	cid    map[[32]byte]int32
 	cphys  []int64
 	clen   []int64
+	craw   []bool // stored (or priced) without compression
 	ext    []int32
 	block  int64
 	model  rgModel
@@ -60658,6 +60672,7 @@ type rgGraph struct {
 	encNS  int64
 	parts  [][]int32
 	partOf []int32
+	wc     *authWinCache // decoded windows shared by the windowed encoders of planning and transitions
 }
 
 func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
@@ -60668,6 +60683,7 @@ func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
 	g.cid[sha] = id
 	g.cphys = append(g.cphys, phys)
 	g.clen = append(g.clen, logical)
+	g.craw = append(g.craw, phys-packRecordBytes >= logical*15/16)
 	g.ext = append(g.ext, 0)
 	return id
 }
@@ -60697,19 +60713,22 @@ type rgEval struct {
 	writes int64
 	rc     []float64
 	rcOK   []bool
+	wh     []float64 // whole-read cost cache, valid with rcOK
 	rsum   float64
+	wsum   float64
 	dirty  []int32
 	queued []bool
 	dep    []int8
 	depOK  []bool
 	evals  int64
 	tmp    map[int32]uint64
+	single bool // ablation: single-node moves only
 }
 
 func newRGEval(g *rgGraph, sel []int32) *rgEval {
 	n := len(g.nodes)
 	e := &rgEval{g: g, sel: make([]int32, n), req: make([]int32, n), ref: slices.Clone(g.ext), users: make([][]int32, n),
-		metaOf: make([]int64, n), rc: make([]float64, n), rcOK: make([]bool, n), queued: make([]bool, n), dep: make([]int8, n), depOK: make([]bool, n), tmp: map[int32]uint64{}}
+		metaOf: make([]int64, n), rc: make([]float64, n), rcOK: make([]bool, n), wh: make([]float64, n), queued: make([]bool, n), dep: make([]int8, n), depOK: make([]bool, n), tmp: map[int32]uint64{}}
 	for c, r := range e.ref {
 		if r > 0 {
 			e.bytes += g.cphys[c]
@@ -60847,6 +60866,7 @@ func (e *rgEval) invalidate(v int32) {
 		if e.rcOK[x] {
 			e.rcOK[x] = false
 			e.rsum -= e.weight(x) * e.rc[x]
+			e.wsum -= e.weight(x) * e.wh[x]
 		}
 		if !e.queued[x] {
 			e.dirty, e.queued[x] = append(e.dirty, x), true
@@ -60934,7 +60954,10 @@ func (e *rgEval) nodeOK(x int32) bool {
 	if nd.extDep > 0 && d >= nd.extDep {
 		return false
 	}
-	return !(g.pol.ReadBudget > 0 && nd.live && o.kind != rgCDC && e.readCost(x) > g.pol.ReadBudget*nd.cdcRead)
+	if g.pol.ReadBudget > 0 && nd.live && o.kind != rgCDC && e.readCost(x) > g.pol.ReadBudget*nd.cdcRead {
+		return false
+	}
+	return !(g.pol.WholeBudget > 0 && nd.live && o.kind != rgCDC && e.wholeRead(x) > g.pol.WholeBudget*nd.cdcWhole)
 }
 
 // lift tries options of v that are infeasible because of what is built on it, repairing each dependent
@@ -61002,10 +61025,20 @@ func (e *rgEval) lift(part []int32, budget int64) bool {
 func (e *rgEval) readCost(v int32) float64 {
 	if !e.rcOK[v] {
 		e.rc[v] = e.g.sparseCost(e, v)
+		e.wh[v] = 0
+		if p := e.g.pol; p.WholeWeight > 0 || p.WholeBudget > 0 {
+			e.wh[v] = e.g.wholeCost(e, v)
+		}
 		e.rcOK[v] = true
 		e.rsum += e.weight(v) * e.rc[v]
+		e.wsum += e.weight(v) * e.wh[v]
 	}
 	return e.rc[v]
+}
+
+func (e *rgEval) wholeRead(v int32) float64 {
+	e.readCost(v)
+	return e.wh[v]
 }
 
 func (e *rgEval) readSum() float64 {
@@ -61023,8 +61056,9 @@ func (e *rgEval) readSum() float64 {
 func (e *rgEval) objective() float64 {
 	p := e.g.pol
 	j := float64(e.bytes) + p.MigrationWeight*float64(e.writes)
-	if p.ReadWeight > 0 {
+	if p.ReadWeight > 0 || p.WholeWeight > 0 {
 		j += p.ReadWeight * e.readSum()
+		j += p.WholeWeight * e.wsum
 	}
 	return j
 }
@@ -61039,6 +61073,9 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 		return
 	}
 	o := e.opt(v)
+	if o.kind != rgCDC {
+		t[-1-v] = 0 // the body record file a read of v resolves
+	}
 	for _, p := range o.hdr {
 		t[p] = ^uint64(0)
 	}
@@ -61073,7 +61110,13 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 // cost prices a touch set: one fetch per record (two for a partial restartable read: table, blocks) and
 // its decoded bytes.
 func (g *rgGraph) cost(t rgTouch) (us float64, recs int, decoded int64) {
+	nodes := 0
+	var raw int64
 	for c, m := range t {
+		if c < 0 {
+			nodes++
+			continue
+		}
 		n := g.clen[c]
 		if m != ^uint64(0) && g.model.Block > 0 {
 			n = min(n, int64(bits.OnesCount64(m))*g.model.Block)
@@ -61081,8 +61124,11 @@ func (g *rgGraph) cost(t rgTouch) (us float64, recs int, decoded int64) {
 		}
 		recs++
 		decoded += n
+		if g.craw[c] {
+			raw += n
+		}
 	}
-	return float64(recs)*g.model.Rec + float64(decoded)*g.model.Byte, recs, decoded
+	return g.model.Fixed + float64(nodes)*g.model.Node + float64(recs)*g.model.Rec + float64(decoded-raw)*g.model.Byte + float64(raw)*g.model.RawByte, recs, decoded
 }
 
 // rgProbes are the read offsets of the sparse model: 8 of 4 KiB, 4 of 64 KiB, spread over the content.
@@ -61122,18 +61168,50 @@ func (g *rgGraph) sparseCost(e *rgEval, v int32) float64 {
 	return (c4 + c64) / 2
 }
 
+// wholeCost is a whole-object read: every record it reaches fetched and decoded (pipelined) and the
+// reconstruction work of each delta level.
+func (g *rgGraph) wholeCost(e *rgEval, v int32) float64 {
+	nd := g.nodes[v]
+	if !nd.live || nd.size == 0 {
+		return 0
+	}
+	t := rgTouch{}
+	g.touch(e, v, 0, nd.size, t, 0)
+	var recs, dec int64
+	for c := range t {
+		if c >= 0 {
+			recs++
+			if !g.craw[c] {
+				dec += g.clen[c]
+			}
+		}
+	}
+	return g.model.Fixed + float64(recs)*g.model.WRec + float64(dec)*g.model.WByte + float64(nd.size)*g.model.WCopy*float64(max(e.depth(v), 0))
+}
+
 // rgReadStats is the modeled physical work of a read.
 type rgReadStats struct {
-	US      float64 `json:"us"`
-	Records int     `json:"records"`
-	Decoded int64   `json:"decoded"`
+	US       float64 `json:"us"`
+	Records  int     `json:"records"`
+	Decoded  int64   `json:"decoded"`
+	Nodes    int     `json:"nodes"` // body records the read resolves
+	Inflated int64   `json:"inflated"`
 }
 
 func (g *rgGraph) readStats(e *rgEval, v int32, a, b int64) rgReadStats {
 	t := rgTouch{}
 	g.touch(e, v, a, b, t, 0)
 	us, r, d := g.cost(t)
-	return rgReadStats{us + float64(b-a)*g.model.Copy*float64(1+max(e.depth(v), 0)), r, d}
+	n := 0
+	var infl int64
+	for c := range t {
+		if c < 0 {
+			n++
+		} else if !g.craw[c] {
+			infl += g.clen[c] // whole-record units; partial blocks are counted in d
+		}
+	}
+	return rgReadStats{us + float64(b-a)*g.model.Copy*float64(1+max(e.depth(v), 0)), r, d, n, min(infl, d)}
 }
 
 // ---- graph construction ---------------------------------------------------------
@@ -61660,7 +61738,10 @@ func (g *rgGraph) rgCandidates(v int32, inv map[uint64][]int32, byKey map[string
 // generate adds delta (and representation) options for every eligible live node.
 func (g *rgGraph) generate(ctx context.Context) error {
 	s, pol := g.s, g.pol
-	m := &authMigrator{ctx: ctx, s: s, pol: pol.AuthPolicy, wc: newAuthWinCache(authPlanWinCacheMax), refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
+	if g.wc == nil {
+		g.wc = newAuthWinCache(authPlanWinCacheMax)
+	}
+	m := &authMigrator{ctx: ctx, s: s, pol: pol.AuthPolicy, wc: g.wc, refs: map[[32]byte]int{}, phys: map[[32]byte]int64{},
 		objs: map[[32]byte]*authObj{}, depth: map[int]int{}, repC: map[int]*authRepCand{}, groups: map[int]*AuthGroup{}, byKey: map[string][]int{}, index: map[uint64][]int{}, sketch: map[int][]uint64{}}
 	m.idx = &authIdxCache{budget: authIdxCacheBytes, m: map[[32]byte]*authIdxEnt{}}
 	var eligible []int32
@@ -61686,7 +61767,7 @@ func (g *rgGraph) generate(ctx context.Context) error {
 			data = b
 			nd.sk = authFeatures(b, 16)
 		} else {
-			r := s.newAuthObjAtC(nd.obj.man, nil)
+			r := s.newAuthObjAtC(nd.obj.man, g.wc)
 			sk, err := authSketchAt(r, nd.size, 16)
 			r.close()
 			if err != nil {
@@ -61840,28 +61921,53 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cands [
 	return nil
 }
 
+// rgMemSource is the largest content a windowed encoder reads from one sequential decode held in memory;
+// a scattered base read through CDC re-inflates whole chunks per page.
+const rgMemSource = 128 << 20
+
+// source returns a reader of the content: decoded in memory up to rgMemSource, else streamed.
+func (g *rgGraph) source(ctx context.Context, man manifestV1) (io.ReaderAt, func(), error) {
+	if man.TotalLength <= rgMemSource {
+		b, err := g.s.manifestBytes(man)
+		if err != nil {
+			return nil, nil, err
+		}
+		return bytes.NewReader(b), func() {}, nil
+	}
+	if g.wc == nil {
+		g.wc = newAuthWinCache(authPlanWinCacheMax)
+	}
+	r := g.s.newAuthObjAtC(man, g.wc)
+	r.ctx = ctx
+	return r, r.close, nil
+}
+
 // windowedOpts encodes windowed single-base deltas of a large object against its two best candidates.
 func (g *rgGraph) windowedOpts(ctx context.Context, m *authMigrator, v int32, cands []int32, comp *packCompressor) error {
 	nd := g.nodes[v]
-	tgt := g.s.newAuthObjAtC(nd.obj.man, nil)
-	tgt.ctx = ctx
-	defer tgt.close()
+	tgt, tclose, err := g.source(ctx, nd.obj.man)
+	if err != nil {
+		return nil
+	}
+	defer tclose()
 	for _, u := range cands[:min(len(cands), 2)] {
 		un := g.nodes[u]
-		base := g.s.newAuthObjAtC(un.obj.man, nil)
-		base.ctx = ctx
+		base, bclose, err := g.source(ctx, un.obj.man)
+		if err != nil {
+			continue
+		}
 		wp := authWParams(g.pol.workers(), un.size)
 		if g.pol.SegmentKiB > 0 {
 			wp.Segment = g.pol.SegmentKiB << 10
 		}
 		idx, err := dwDcoreBuildWIndex(base, un.size, wp.Anchor, wp.Workers, &un.sha)
 		if err != nil {
-			base.close()
+			bclose()
 			continue
 		}
 		for _, loc := range g.pol.Locality {
 			if err := ctx.Err(); err != nil {
-				base.close()
+				bclose()
 				return err
 			}
 			wp.Locality = loc
@@ -61878,7 +61984,7 @@ func (g *rgGraph) windowedOpts(ctx context.Context, m *authMigrator, v int32, ca
 				nd.opts = append(nd.opts, o)
 			}
 		}
-		base.close()
+		bclose()
 		debug.FreeOSMemory()
 	}
 	return nil
@@ -62048,6 +62154,12 @@ func (e *rgEval) localSearch(part []int32, budget int64) {
 				e.set(v, bestO)
 				improved = true
 			}
+		}
+		if e.single {
+			if !improved {
+				return
+			}
+			continue
 		}
 		if !improved && e.cascade(part, budget-(e.evals-start)) {
 			improved = true
@@ -62619,7 +62731,7 @@ func (e *rgEval) state(name string, whole bool) OptimizeState {
 		st.Decoded4K += d4
 		st.SparseUS += e.readCost(v)
 		if whole {
-			st.WholeUS += g.readStats(e, v, 0, nd.size).US
+			st.WholeUS += g.wholeCost(e, v)
 		}
 	}
 	if live > 0 {
@@ -62647,6 +62759,8 @@ type OptimizeReport struct {
 	Profile          string           `json:"profile"`
 	ReadWeight       float64          `json:"read_weight"`
 	ReadBudget       float64          `json:"read_budget"`
+	WholeWeight      float64          `json:"whole_weight"`
+	WholeBudget      float64          `json:"whole_budget"`
 	Model            rgModel          `json:"model"`
 	Nodes            int              `json:"nodes"`
 	Live             int              `json:"live"`
@@ -62664,6 +62778,7 @@ type OptimizeReport struct {
 	Local            OptimizeState    `json:"local"`
 	Planned          OptimizeState    `json:"planned"`
 	Oracle           *OptimizeState   `json:"oracle,omitempty"`
+	Ablations        []OptimizeState  `json:"ablations,omitempty"` // single-move search and the arborescence start alone
 	OracleParts      int              `json:"oracle_partitions,omitempty"`
 	Frontier         []OptimizeState  `json:"frontier,omitempty"`
 	Changes          []OptimizeChange `json:"changes,omitempty"`
@@ -62710,6 +62825,12 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 		case "current":
 		case "local":
 			e.emulateLocal(part)
+		case "single":
+			e.single = true
+			e.localSearch(part, g.pol.MaxEvals)
+			e.single = false
+		case "edmonds":
+			e.arborescence(part)
 		case "oracle":
 			if e.oracle(part, 1<<20) {
 				oracled++
@@ -62753,7 +62874,7 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (OptimizeReport, error) {
 	pol = pol.norm()
 	t0 := time.Now()
-	rep := OptimizeReport{Algorithm: pol.Algorithm, Profile: pol.Profile, ReadWeight: pol.ReadWeight, ReadBudget: pol.ReadBudget}
+	rep := OptimizeReport{Algorithm: pol.Algorithm, Profile: pol.Profile, ReadWeight: pol.ReadWeight, ReadBudget: pol.ReadBudget, WholeWeight: pol.WholeWeight, WholeBudget: pol.WholeBudget}
 	if err := s.checkAuthDiskReserve(pol.ReserveFreeBytes, 0, 0); err != nil {
 		return rep, err
 	}
@@ -62788,6 +62909,7 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	for i, nd := range g.nodes {
 		if nd.live {
 			nd.cdcRead = ec.readCost(int32(i))
+			nd.cdcWhole = g.wholeCost(ec, int32(i))
 		}
 	}
 	rep.Nodes, rep.Partitions, rep.Components = len(g.nodes), len(g.parts), len(g.cphys)
@@ -62803,6 +62925,12 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	e, oracled := g.solve(pol.Algorithm, pol.ReadWeight)
 	rep.Planned = e.state(pol.Algorithm, true)
 	rep.Evals = e.evals
+	for _, alg := range []string{"single", "edmonds"} {
+		if pol.Oracle && pol.Algorithm == "global" {
+			ae, _ := g.solve(alg, pol.ReadWeight)
+			rep.Ablations = append(rep.Ablations, ae.state(alg, false))
+		}
+	}
 	if pol.Oracle {
 		oe, n := g.solve("oracle", pol.ReadWeight)
 		st := oe.state("oracle", false)
@@ -63145,12 +63273,16 @@ func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt) ([]authPi
 	s := g.s
 	if o.win {
 		un := g.nodes[o.bases[0]]
-		tgt := s.newAuthObjAtC(nd.obj.man, nil)
-		tgt.ctx = ctx
-		defer tgt.close()
-		base := s.newAuthObjAtC(un.obj.man, nil)
-		base.ctx = ctx
-		defer base.close()
+		tgt, tclose, err := g.source(ctx, nd.obj.man)
+		if err != nil {
+			return nil, err
+		}
+		defer tclose()
+		base, bclose, err := g.source(ctx, un.obj.man)
+		if err != nil {
+			return nil, err
+		}
+		defer bclose()
 		wp := authWParams(g.pol.workers(), un.size)
 		if g.pol.SegmentKiB > 0 {
 			wp.Segment = g.pol.SegmentKiB << 10

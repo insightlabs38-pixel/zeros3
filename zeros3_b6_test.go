@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"math"
@@ -627,4 +628,75 @@ func xdApplyForTest(blob, base []byte) ([]byte, error) {
 		return nil, errDelta
 	}
 	return out, nil
+}
+
+// TestB6MaintenanceAndBlocks: an optimized graph whose base loses its last live root keeps that base as a
+// required intermediate through online maintenance passes (B4) and a blocked, reconstruction-ordered repack
+// (B5); reads stay exact, deep verify passes, and re-optimization models the intermediate without moving it.
+func TestB6MaintenanceAndBlocks(t *testing.T) {
+	l := newAuthLab(t)
+	v := b5Text(151, 400<<10)
+	keys := []string{"k0", "k1", "k2", "k3"}
+	for i, k := range keys {
+		l.put(k, v)
+		v = b5Mutate(v, uint64(i+70), 10)
+	}
+	l.reclaim()
+	rep := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{Apply: true, Order: "oldest"}})
+	if rep.Applied < 2 {
+		t.Fatalf("applied %d", rep.Applied)
+	}
+	// delete a content that some delta uses as a base
+	var victim string
+	for _, c := range rep.Changes {
+		for _, b := range c.Bases {
+			for _, k := range keys {
+				if hexOf(l.want[k])[:12] == b && victim == "" {
+					victim = k
+				}
+			}
+		}
+	}
+	if victim == "" {
+		t.Fatalf("no base among %+v", rep.Changes)
+	}
+	l.close()
+	s := b4OpenMaint(t, l.dir)
+	l.s = s
+	mustOK(t, s.DeleteObject("b", victim))
+	delete(l.want, victim)
+	zero := 0
+	res, err := s.PlanHistoryPrune(historyPruneOptions{Bucket: "b", KeepLast: &zero})
+	mustOK(t, err)
+	mustOK(t, s.ApplyHistoryPrune(&res))
+	for range 3 {
+		if _, err := s.maintainOnline(context.Background(), b4Opts()); err != nil {
+			t.Fatal(err)
+		}
+		l.exact("after pass")
+	}
+	l.verifyOK("online")
+	l.offline(func() {
+		if _, err := repackStore(l.dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true, Recompress: true, BlockLog: 15, Layout: layoutRecon}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	l.exact("blocked recon")
+	l.verifyOK("blocked recon")
+	again := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{Order: "oldest"}})
+	if again.Nodes != len(keys) {
+		t.Fatalf("model has %d nodes, want the %d contents including the intermediate", again.Nodes, len(keys))
+	}
+	if again.Live != len(keys)-1 {
+		t.Fatalf("live %d", again.Live)
+	}
+	l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{Apply: true, Order: "oldest"}})
+	l.reclaim()
+	l.exact("reoptimized")
+	l.verifyOK("reoptimized")
+}
+
+func hexOf(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }
