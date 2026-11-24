@@ -82,7 +82,7 @@ if conc:
     print('| family | lane | order | reads/s | p50 µs | p95 µs | p99 µs | CPU s |')
     print('|---|---|---|---:|---:|---:|---:|---:|')
     for r in conc:
-        print(f'| {r["family"]} | {r["lane"]} | {r.get("order", "")} | {r.get("reads_per_s", 0):.0f} | {r.get("p50_us", 0):.0f} | '
+        print(f'| {r["family"]} | {r["lane"]} | {r.get("order", "")} | {r.get("reads", 0) / max(r.get("seconds", 1), 1):.0f} | {r.get("p50_us", 0):.0f} | '
               f'{r.get("p95_us", 0):.0f} | {r.get("p99_us", 0):.0f} | {r.get("cpu_s", 0):.1f} |')
 
 scale = [r for r in rows if r.get('kind') == 'scale']

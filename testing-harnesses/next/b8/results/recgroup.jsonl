@@ -1,0 +1,6 @@
+{"bytes":4038506,"cdc_only":4851429,"deltas":89,"family":"cu-files","kind":"recgroup","meta":585728,"overhead":0,"pins":54,"pricing":"block-4k","profile":"archive"}
+{"bytes":4239389,"cdc_only":4851429,"deltas":32,"family":"cu-files","kind":"recgroup","meta":208896,"overhead":0,"pins":19,"pricing":"block-4k","profile":"mixed"}
+{"bytes":2464758,"cdc_only":4851429,"deltas":525,"family":"cu-files","kind":"recgroup","meta":217763,"overhead":72,"pins":322,"pricing":"grouped","profile":"archive"}
+{"bytes":3615330,"cdc_only":4851429,"deltas":74,"family":"cu-files","kind":"recgroup","meta":32805,"overhead":72,"pins":53,"pricing":"grouped","profile":"mixed"}
+{"bytes":2402964,"cdc_only":4851429,"deltas":529,"family":"cu-files","kind":"recgroup","meta":157759,"overhead":0,"pins":322,"pricing":"exact","profile":"archive"}
+{"bytes":3589903,"cdc_only":4851429,"deltas":76,"family":"cu-files","kind":"recgroup","meta":24240,"overhead":0,"pins":54,"pricing":"exact","profile":"mixed"}

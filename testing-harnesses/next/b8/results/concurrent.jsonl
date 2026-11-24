@@ -1,0 +1,12 @@
+{"cpu_s":33.799514,"family":"ts","kind":"concurrent","lane":"cdc","order":"cdc","p50_us":7,"p95_us":53,"p99_us":443,"reads":2051851,"seconds":10}
+{"cpu_s":39.14818600000001,"family":"ts","kind":"concurrent","lane":"b7rg-archive","order":"cdc","p50_us":32001,"p95_us":143329,"p99_us":200237,"reads":1878,"seconds":10}
+{"cpu_s":39.332854999999995,"family":"ts","kind":"concurrent","lane":"b8-archive","order":"cdc","p50_us":42410,"p95_us":135161,"p99_us":188354,"reads":1514,"seconds":10}
+{"cpu_s":39.407515000000004,"family":"ts","kind":"concurrent","lane":"b8-archive","order":"b8-archive","p50_us":41673,"p95_us":127363,"p99_us":170093,"reads":1554,"seconds":10}
+{"cpu_s":39.10095100000001,"family":"ts","kind":"concurrent","lane":"b7rg-archive","order":"b8-archive","p50_us":35187,"p95_us":137662,"p99_us":189019,"reads":1845,"seconds":10}
+{"cpu_s":33.94984299999999,"family":"ts","kind":"concurrent","lane":"cdc","order":"b8-archive","p50_us":7,"p95_us":53,"p99_us":486,"reads":2085309,"seconds":10}
+{"cpu_s":36.88699399999999,"family":"django","kind":"concurrent","lane":"cdc","order":"cdc","p50_us":36,"p95_us":268,"p99_us":1913,"reads":503607,"seconds":10}
+{"cpu_s":38.61936599999996,"family":"django","kind":"concurrent","lane":"b7rg-archive","order":"cdc","p50_us":14347,"p95_us":103899,"p99_us":162863,"reads":2781,"seconds":10}
+{"cpu_s":38.69301100000001,"family":"django","kind":"concurrent","lane":"b8-archive","order":"cdc","p50_us":30215,"p95_us":127674,"p99_us":208762,"reads":1818,"seconds":10}
+{"cpu_s":39.00636999999995,"family":"django","kind":"concurrent","lane":"b8-archive","order":"b8-archive","p50_us":31349,"p95_us":131866,"p99_us":201956,"reads":1832,"seconds":10}
+{"cpu_s":38.80164300000001,"family":"django","kind":"concurrent","lane":"b7rg-archive","order":"b8-archive","p50_us":13866,"p95_us":106980,"p99_us":167573,"reads":2682,"seconds":10}
+{"cpu_s":37.27515299999999,"family":"django","kind":"concurrent","lane":"cdc","order":"b8-archive","p50_us":36,"p95_us":264,"p99_us":1905,"reads":510084,"seconds":10}

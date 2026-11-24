@@ -11,12 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -584,4 +586,47 @@ func TestB8OnlineMaintenance(t *testing.T) {
 	l.open()
 	l.exact("reopened")
 	l.verifyOK("reopened")
+}
+
+// TestB8ConcurrentReads: eight readers of random ranges and whole objects over canonical gzip and ZIP
+// containers sharing streams (shared body readers, ZIP read-ahead, the representation cache) stay exact.
+func TestB8ConcurrentReads(t *testing.T) {
+	l := newAuthLab(t)
+	v1 := b8Tree(41, 16)
+	tar1 := b8Tar(t, v1, 1)
+	l.put("a.tar.gz", b8Gzip(t, tar1, 6))
+	l.put("a.zip", b8Zip(t, v1))
+	l.put("b.tar.gz", b8Gzip(t, b8Tar(t, b8Edit(v1, 2), 2), 6))
+	l.reclaim()
+	b8Optimize(t, l, OptimizePolicy{})
+	l.reclaim()
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for w := range 8 {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			r := rand.New(rand.NewPCG(uint64(w), 9))
+			keys := slices.Sorted(maps.Keys(l.want))
+			for i := range 40 {
+				k := keys[r.IntN(len(keys))]
+				want := l.want[k]
+				a := int64(r.IntN(len(want)))
+				n := min(int64(1+r.IntN(200000)), int64(len(want))-a)
+				if i%10 == 0 {
+					a, n = 0, int64(len(want))
+				}
+				_, _, got, err := l.s.GetObjectRange("b", k, byteRange{a, a + n - 1})
+				if err != nil || !bytes.Equal(got, want[a:a+n]) {
+					errs <- fmt.Errorf("%s %d+%d: %v", k, a, n, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
 }

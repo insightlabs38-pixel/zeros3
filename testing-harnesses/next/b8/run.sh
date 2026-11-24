@@ -14,6 +14,21 @@ done
 pip download -q --no-deps --no-binary :all: -d "$C/lone" requests==2.32.3; pip download -q --no-deps --only-binary :all: -d "$C/lone" requests==2.32.3
 cp -n "$C/src/coreutils-9.5.tar.xz" "$C/lone/"
 python3 -I "$ROOT/testing-harnesses/next/b8/make_inputs.py" "$C"   # needs python-zstandard 0.25.0
+python3 -I - "$C" <<'PY'   # B6's per-file Coreutils history (src/ and lib/ members >= 4 KiB), for the B8-G model
+import os, sys, tarfile
+C = sys.argv[1]
+for v in ['9.5', '9.6', '9.7']:
+    d = f'{C}/cu/{v}'
+    if os.path.exists(d + '/.done'):
+        continue
+    with tarfile.open(f'{C}/src/coreutils-{v}.tar') as t:
+        for m in t:
+            if m.isfile() and any(m.name.startswith(f'coreutils-{v}/{p}') for p in ['src/', 'lib/']):
+                b = t.extractfile(m).read()
+                if len(b) >= 4096:
+                    p = os.path.join(d, m.name.split('/', 1)[1]); os.makedirs(os.path.dirname(p), exist_ok=True); open(p, 'wb').write(b)
+    open(d + '/.done', 'w').close()
+PY
 (cd "$C" && sha256sum -c "$ROOT/testing-harnesses/next/b8/corpus.sha256" --quiet)
 cd "$ROOT"
 T="-tags b8bench,b6bench,b5locality,b1rangeexperiment -count=1 -timeout 8h"
@@ -22,6 +37,7 @@ env $E go test $T -run '^TestB8Build$' .
 # exact-DEFLATE residuals of the producers (B8-A)
 B8_FILES=$C/ts/typescript-5.6.2.tgz,$C/django/Django-5.1.1.tar.gz,$C/django/Django-5.1.1-py3-none-any.whl,$C/src/coreutils-9.7.tar.gz \
   go test $T -run '^TestB8IRProbe$' -v . | grep -E 'gzip size|zip members' > "$R/irprobe.txt"
+python3 -I "$ROOT/testing-harnesses/next/b8/oracle.py" "$C" > "$R/oracle.jsonl"
 POS=ts,django,cu-gz,wrap,ts-mix
 A=b7-archive,b7r-archive,b7rg-archive,b8s-archive,b8-archive
 env $E ZEROS3_B6_OUT=$R/lanes.jsonl ZEROS3_B6_FAMILIES=$POS ZEROS3_B6_LANES=cdc,$A,b8-nodelta-archive go test $T -run '^TestB8Lanes$' .
@@ -39,4 +55,7 @@ env $E ZEROS3_B6_OUT=$R/reads-mixed.jsonl ZEROS3_B5_COLD=1 ZEROS3_B6_N=8 ZEROS3_
   ZEROS3_B6_LANES=b7rg-mixed,b8-mixed go test $T -run '^TestB8Reads$' .
 env $E ZEROS3_B6_OUT=$R/concurrent.jsonl ZEROS3_B6_FAMILIES=ts,django ZEROS3_B6_LANES=cdc,b7rg-archive,b8-archive go test $T -run '^TestB8Concurrent$' .
 ZEROS3_B6_OUT=$R/scale.jsonl go test $T -run '^TestB8Scale$' .
-python3 "$ROOT/testing-harnesses/next/b8/tables.py" "$R"/*.jsonl > "$R/tables.md"
+env $E ZEROS3_B6_FAMILIES=cu-files go test $T -run '^TestB6Build$' .
+env $E ZEROS3_B6_OUT=$R/recgroup.jsonl ZEROS3_B6_FAMILIES=cu-files go test $T -run '^TestB8RecordGroup$' .
+gzip -9f "$R/reads.jsonl" "$R/reads-mixed.jsonl"
+python3 "$ROOT/testing-harnesses/next/b8/tables.py" "$R"/*.jsonl "$R"/*.jsonl.gz > "$R/tables.md"

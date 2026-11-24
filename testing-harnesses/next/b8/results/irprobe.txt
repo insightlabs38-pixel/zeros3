@@ -1,0 +1,4 @@
+    zeros3_b8_bench_test.go:210: /tmp/claude-0/-home-user-zeros3/9e27a7dd-44f6-5fc1-808e-b3d648ea76d4/scratchpad/w/corpus/ts/typescript-5.6.2.tgz gzip size 4174769 plain 22536704 skel 4070 units 123061 err <nil>
+    zeros3_b8_bench_test.go:210: /tmp/claude-0/-home-user-zeros3/9e27a7dd-44f6-5fc1-808e-b3d648ea76d4/scratchpad/w/corpus/django/Django-5.1.1.tar.gz gzip size 10675933 plain 61317120 skel 8514 units 409803 err <nil>
+    zeros3_b8_bench_test.go:202: /tmp/claude-0/-home-user-zeros3/9e27a7dd-44f6-5fc1-808e-b3d648ea76d4/scratchpad/w/corpus/django/Django-5.1.1-py3-none-any.whl zip members 3656 comp 7606786 plain 23164930 skel 69995 units 155647 fail 0
+    zeros3_b8_bench_test.go:210: /tmp/claude-0/-home-user-zeros3/9e27a7dd-44f6-5fc1-808e-b3d648ea76d4/scratchpad/w/corpus/src/coreutils-9.7.tar.gz gzip size 15107617 plain 63078400 skel 97991 units 742024 err <nil>
