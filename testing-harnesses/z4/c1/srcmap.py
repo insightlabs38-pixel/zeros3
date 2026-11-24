@@ -61,6 +61,7 @@ ents = [
  ("Grouped authority records: group log, tombs, seal indexes, compaction (B9)", "// 16e4. Grouped authority records"),
  ("Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)", "// 16e5. Reversible executable normalization"),
  ("Verified decoded-window cache (B9)", "// 16e6. Verified decoded-window cache"),
+ ("Deep canonical streams: nested containers, page and block splices, kind 16 (B10)", "// 16e7. Deep canonical streams"),
  ("Windowed and estimated similarity deltas (extracted dcore)", "// 16f. Windowed and estimated"),
  ("ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies", "// 16g. ZN7 windowed model container"),
  ("Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs", "// 16i. Exact Brotli and LZ4 replay"),

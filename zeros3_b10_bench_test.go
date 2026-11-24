@@ -128,3 +128,58 @@ func TestB10Probe(t *testing.T) {
 		fmt.Println(string(b))
 	}
 }
+
+// TestB10Cache: repeated and nearby 4 KiB reads of a lane store's largest objects, decoded-window cache off
+// and at 64 MiB (both orders); every read is compared with the reference bytes.
+func TestB10Cache(t *testing.T) {
+	fx := os.Getenv("ZEROS3_B6_FX")
+	lane := os.Getenv("ZEROS3_B10_LANE")
+	if lane == "" {
+		lane = "b10-archive"
+	}
+	for _, f := range b10Families(os.Getenv("ZEROS3_B6_CORPUS")) {
+		if !b6Want("ZEROS3_B6_FAMILIES", f.name) {
+			continue
+		}
+		dir := filepath.Join(fx, f.name, lane)
+		if _, err := os.Stat(filepath.Join(dir, ".b6-ready")); err != nil {
+			continue
+		}
+		s, done := b6Open(t, dir)
+		objs := b6Objects(t, s, 4)
+		for i := range objs {
+			d, err := b6Read(s, objs[i].man, 0, objs[i].man.TotalLength)
+			mustOK(t, err)
+			objs[i].data = d
+		}
+		for _, order := range [][2]int64{{0, 64 << 20}, {64 << 20, 0}} {
+			for _, budget := range order {
+				for _, wl := range []string{"repeated", "nearby"} {
+					s.SetWindowCache(budget)
+					b5Purge(s)
+					t0, n := time.Now(), 0
+					for rep := range 6 {
+						for _, o := range objs {
+							size := o.man.TotalLength
+							for k := range 16 {
+								off := (int64(k)*7919*4096 + size/3) % max(1, size-4096)
+								if wl == "nearby" {
+									off = (size/3 + int64(rep*16+k)*4096) % max(1, size-4096)
+								}
+								got, err := b6Read(s, o.man, off, min(4096, size-off))
+								if err != nil || !bytes.Equal(got, o.data[off:off+min(4096, size-off)]) {
+									t.Fatalf("%s %s at %d: %v", f.name, wl, off, err)
+								}
+								n++
+							}
+						}
+					}
+					sec := time.Since(t0).Seconds()
+					b6Emit(map[string]any{"kind": "cache", "family": f.name, "lane": lane, "workload": wl, "budget": budget, "reads": n, "seconds": sec, "reads_per_s": float64(n) / sec})
+				}
+			}
+		}
+		s.SetWindowCache(0)
+		done()
+	}
+}

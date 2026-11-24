@@ -921,3 +921,32 @@ func TestB10SpliceCrashMatrix(t *testing.T) {
 	}
 	t.Logf("%d process-kill cuts", cuts)
 }
+
+// TestB10SpliceWindowCache: with the opt-in cache a replayed page is kept whole at its second touch and a
+// nested child's windows are shared; every cached and uncached read is exact.
+func TestB10SpliceWindowCache(t *testing.T) {
+	l := b10SmallLab(t)
+	data, err := os.ReadFile("testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet")
+	mustOK(t, err)
+	l.put("p.parquet", data)
+	l.reclaim()
+	b8Optimize(t, l, OptimizePolicy{AuthPolicy: AuthPolicy{MaxDepth: 2}, Profile: "archive", Splice: true})
+	l.reclaim()
+	l.s.SetWindowCache(16 << 20)
+	defer l.s.SetWindowCache(0)
+	wc := l.s.win.Load()
+	for pass := range 3 {
+		for k, want := range l.want {
+			for _, off := range []int64{int64(len(want)) / 3, int64(len(want)) / 2} {
+				n := min(int64(4096), int64(len(want))-off)
+				if got := l.read(k, byteRange{off, off + n - 1}); !bytes.Equal(got, want[off:off+n]) {
+					t.Fatalf("pass %d %s at %d", pass, k, off)
+				}
+			}
+		}
+	}
+	if wc.st.hits.Load() == 0 {
+		t.Fatal("no cache hit on repeated ranges")
+	}
+	l.exact("cached")
+}

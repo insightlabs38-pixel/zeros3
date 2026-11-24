@@ -86,54 +86,55 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      548    Content-defined chunking (CDC)
-//      735    Content-addressed chunk storage (CAS)
-//     2530    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5318    Small-object segments (inline manifests, store level 11)
-//     6568    Manifests (immutable, JSON)
-//     7366    Visibility journal (append-only, checksummed)
-//     7888    Store: format, namespace, and object CRUD
-//     8405    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12057    Version history/restore, history pruning, ListObjectsV2
-//    12663    SigV4 authentication (header and presigned-URL)
-//    13640    Request payload checksums and S3-shaped XML error/response types
-//    13857    HTTP routing and S3 operation handlers
-//    14289    Conditional operations (PUT/GET/HEAD preconditions)
-//    14984    CopyObject
-//    15289    Multipart upload
-//    16233    Stats and reachability scanning
-//    17821    Verify
-//    18037    Store locking and safe offline GC
-//    18343    Offline compaction (`zeros3 compact`)
-//    19526    Pack reclamation and repacking (`zeros3 repack`)
-//    20122    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20582    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21927    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22440    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23505    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24356    Delta sync client, credentials, and parallel transfer
-//    26661    Bulk logical-chunk transport (v2)
-//    27572    Recursive directory sync
-//    27877    Remote replication (`zeros3 replicate`)
-//    28790    Peer-assisted corruption repair (`zeros3 repair`)
-//    29362    Namespace (prefix/bucket) replication
-//    29678    Copy-on-write namespace fork (`zeros3 fork`)
-//    29886    Snapshots and restore
-//    31048    Structural diff and inspect (introspection)
-//    32460    Portable snapshot bundles (`zeros3 bundle`)
-//    33657    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34292    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52955    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61007    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    64299    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    64855    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    65760    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    66915    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    67859    Verified decoded-window cache (B9)
-//    68140    Windowed and estimated similarity deltas (extracted dcore)
-//    69977    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    77833    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    84105    CLI dispatch, HTTP server/startup, and main
+//      549    Content-defined chunking (CDC)
+//      736    Content-addressed chunk storage (CAS)
+//     2531    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5319    Small-object segments (inline manifests, store level 11)
+//     6569    Manifests (immutable, JSON)
+//     7367    Visibility journal (append-only, checksummed)
+//     7889    Store: format, namespace, and object CRUD
+//     8406    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12058    Version history/restore, history pruning, ListObjectsV2
+//    12664    SigV4 authentication (header and presigned-URL)
+//    13641    Request payload checksums and S3-shaped XML error/response types
+//    13858    HTTP routing and S3 operation handlers
+//    14290    Conditional operations (PUT/GET/HEAD preconditions)
+//    14985    CopyObject
+//    15290    Multipart upload
+//    16234    Stats and reachability scanning
+//    17822    Verify
+//    18038    Store locking and safe offline GC
+//    18344    Offline compaction (`zeros3 compact`)
+//    19527    Pack reclamation and repacking (`zeros3 repack`)
+//    20123    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20583    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21928    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22441    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23506    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24357    Delta sync client, credentials, and parallel transfer
+//    26662    Bulk logical-chunk transport (v2)
+//    27573    Recursive directory sync
+//    27878    Remote replication (`zeros3 replicate`)
+//    28791    Peer-assisted corruption repair (`zeros3 repair`)
+//    29363    Namespace (prefix/bucket) replication
+//    29679    Copy-on-write namespace fork (`zeros3 fork`)
+//    29887    Snapshots and restore
+//    31049    Structural diff and inspect (introspection)
+//    32461    Portable snapshot bundles (`zeros3 bundle`)
+//    33658    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34293    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52968    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61061    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    64404    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    64960    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    65867    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67022    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    67966    Verified decoded-window cache (B9)
+//    68247    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    69476    Windowed and estimated similarity deltas (extracted dcore)
+//    71313    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    79169    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    85441    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -68534,6 +68535,14 @@ func splReadD(d io.ReaderAt, off, n int64) ([]byte, error) {
 	return b, nil
 }
 
+// splWinCache is the store's opt-in decoded-window cache (B9), nil when off or outside a store read.
+func splWinCache(c *repCall) *winCache {
+	if src, ok := c.env.Src.(*storeRepSource); ok && c.env.Cache != nil {
+		return src.s.win.Load()
+	}
+	return nil
+}
+
 // splWrite produces object bytes [a, b) of segment s (relative to the object) to w.
 func splWrite(c *repCall, s *splSeg, d io.ReaderAt, a, b int64, w io.Writer) error {
 	switch s.kind {
@@ -68551,11 +68560,21 @@ func splWrite(c *repCall, s *splSeg, d io.ReaderAt, a, b int64, w io.Writer) err
 		}
 		return nil
 	case splPage:
-		plain, err := splReadD(d, s.plain, s.plainLen)
-		if err != nil {
-			return err
+		replay := func() ([]byte, error) {
+			plain, err := splReadD(d, s.plain, s.plainLen)
+			if err != nil {
+				return nil, err
+			}
+			return splPageReplay(s.rec, plain, s.outLen)
 		}
-		out, err := splPageReplay(s.rec, plain, s.outLen)
+		var out []byte
+		var err error
+		// B10: with the opt-in window cache, a page reused by a second range is kept whole (unit-aligned)
+		if wc := splWinCache(c); wc != nil && (a != s.out || b != s.out+s.outLen) && s.outLen <= winMaxRequest*4 && wc.want(winKey{c.ID, -1 - s.out}) {
+			out, err = wc.get(winKey{c.ID, -1 - s.out}, replay)
+		} else {
+			out, err = replay()
+		}
 		if err != nil {
 			return err
 		}
@@ -68582,6 +68601,9 @@ func splWrite(c *repCall, s *splSeg, d io.ReaderAt, a, b int64, w io.Writer) err
 	produce, err := repRangeReader(cc, a-s.out, b-a)
 	if err != nil {
 		return err
+	}
+	if wc := splWinCache(c); produce != nil && winCached(wc, cc, b-a) {
+		produce = winRangeReader(wc, cc, a-s.out, b-a) // a child's windows are its own output: shared by every parent
 	}
 	if produce == nil { // no native range: the whole child, bounded by the page limit
 		if m.Size > splMaxPage*4 {
