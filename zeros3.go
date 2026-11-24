@@ -54750,6 +54750,7 @@ type authWinBody struct {
 	rec     *authRecord
 	wr      *dwDcoreWRecord
 	base    authBody
+	sub     bool       // B8: read as a base below the top: partial frames run sub-range programs in any context
 	bases   []authBody // {base}, for authExec
 	wp      dwDcoreWParams
 	wc      *authWinCache
@@ -54785,7 +54786,7 @@ func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authB
 		return nil, fmt.Errorf("%w: windowed envelope does not match its record", errAuthCorrupt)
 	}
 	wc := c.wc
-	if depth == 1 && rec.Depth > 1 && wc == nil {
+	if rec.Depth > 1 && wc == nil { // B8: also when the read enters below the top (a canonical stream)
 		// COPY ranges within one target window can revisit the same base
 		// window many times. Share verified base windows only for this read.
 		c.wc = newAuthWinCache(authNestedReadWinBytes)
@@ -54797,7 +54798,7 @@ func (c *authCtx) newWindowed(rec *authRecord, blob *pieceSeq, depth int) (authB
 	if int(rec.Depth) < int(brec.Depth)+1 {
 		return nil, fmt.Errorf("%w: recorded depth %d below the base's %d", errAuthCorrupt, rec.Depth, int(brec.Depth)+1)
 	}
-	return &authWinBody{c: c, rec: rec, wr: wr, base: b, bases: []authBody{b}, wc: wc, wp: authWParams(1, wr.BaseSize), off: -1}, nil
+	return &authWinBody{c: c, rec: rec, wr: wr, base: b, bases: []authBody{b}, wc: wc, wp: authWParams(1, wr.BaseSize), off: -1, sub: depth > 1}, nil
 }
 
 func (b *authWinBody) Size() int64 { return b.rec.Size }
@@ -54811,7 +54812,7 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 			key := authWinKey{b.rec.SHA, b.rec.Gen, fs}
 			if data, ok := b.wc.get(key); ok {
 				b.win, b.off = data, fs
-			} else if b.c.ranged && (off > fs || max(off+int64(len(p)-n), b.reqEnd) < fs+fl) {
+			} else if (b.c.ranged || b.sub) && (off > fs || max(off+int64(len(p)-n), b.reqEnd) < fs+fl) {
 				k, err := b.exec(fi, p[n:n+int(min(int64(len(p)-n), fs+fl-off))], off, true)
 				n += k
 				off += int64(k)
@@ -54839,7 +54840,9 @@ func (b *authWinBody) ReadAt(p []byte, off int64) (int, error) {
 func (b *authWinBody) window(fi int, key authWinKey) error {
 	fs, fl := b.wr.tstart[fi], b.wr.frames[fi].tlen
 	decode := func(reuse []byte) ([]byte, error) {
-		if b.c.ranged {
+		// B8: a base that is itself a delta is read where COPYs point even in a sequential pass: a page view
+		// over it re-decodes a base window at every jump between its frames.
+		if _, pin := b.base.(*authPinBody); b.c.ranged || !pin {
 			out := slices.Grow(reuse[:0], int(fl))[:fl]
 			if _, err := b.exec(fi, out, fs, false); err != nil {
 				return nil, err

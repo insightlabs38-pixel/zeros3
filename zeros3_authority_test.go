@@ -3568,7 +3568,9 @@ func authNestedRangeExecution(t *testing.T, segment int64) {
 	fr, wr := cost(true)
 	fw, ww := cost(false)
 	t.Logf("cold 4 KiB: ranged fetched %d (%d frames), frame reconstruction %d (%d frames)", fr, wr, fw, ww)
-	if wr != 0 || ww == 0 || fr*2 > fw {
+	// B8: frame reconstruction over a delta base now also reads the base where COPYs point, so the reference
+	// fetches less than it did; the ranged read must still avoid the frame and fetch less.
+	if wr != 0 || ww == 0 || fr >= fw {
 		t.Fatalf("ranged read did not avoid frame reconstruction: %d/%d vs %d/%d", fr, wr, fw, ww)
 	}
 	var wg sync.WaitGroup
