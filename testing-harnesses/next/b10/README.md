@@ -81,7 +81,7 @@ stream fails reads closed and deep verify and gc refuse; shared children with or
 deletion; optimizer apply/reclaim/reopen/verify, plan = model, convergence, more options never plan worse; 8 concurrent
 readers; **35 real SIGKILL cuts** (CAS flush, record written/renamed, frame written/synced, before publish; legacy and
 grouped) each exact, reclaimed, verified, completed, converged; `-race` on the concurrent, stale-view and shared-child
-tests; grouped mode: authority/B4/B6/B8/B9 suites and the B10 tests. ROOTSUITE
+tests; grouped: authority/B4/B6/B8/B9 and B10 suites. Root suite `go test .` at `50422f3`: pass (1,514 s).
 
 ## Limits and implications for the competitive benchmark
 Deep streams are an archive tier for nested gzip (40 ms per 4 KiB) and a warm tier for SST; hot data stays CDC. Not
