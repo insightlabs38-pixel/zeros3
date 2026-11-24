@@ -61353,6 +61353,7 @@ type rgEval struct {
 	single   bool // ablation: single-node moves only
 	maxBases int  // restricted start: options with at most this many bases (0 = any)
 	noCanon  bool // B8 incumbent: canonical options excluded
+	noSplice bool // B10 incumbent: deep-stream options excluded (the B9 plan)
 }
 
 func newRGEval(g *rgGraph, sel []int32) *rgEval {
@@ -62983,7 +62984,7 @@ func (e *rgEval) allowed(v, o int32) bool {
 	if e.g.pol.Order == "newest" && nd.newest && opt.kind != rgCDC && !opt.cur {
 		return false
 	}
-	if e.noCanon && opt.canon && !opt.cur {
+	if e.noCanon && opt.canon && !opt.cur || e.noSplice && opt.splice && !opt.cur {
 		return false
 	}
 	return e.maxBases == 0 || len(opt.bases) <= e.maxBases || opt.cur
@@ -63683,12 +63684,23 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 				g.searchB7(e, part, saved)
 				break
 			}
-			// B8: the best plan without canonical options is the incumbent the full search must beat.
+			// B8: the best plan without canonical options is the incumbent the full search must beat;
+			// B10: so is the best plan without deep-stream options (more options never plan worse).
 			e.noCanon = true
 			g.searchB7(e, part, saved)
 			g.searchGroups(e, part)
 			e.noCanon = false
 			ji, selI := e.objective(), snapshotSel(e, part)
+			if g.spliceIn(part) {
+				restoreSel(e, part, saved)
+				e.noSplice = true
+				g.searchB7(e, part, saved)
+				g.searchGroups(e, part)
+				e.noSplice = false
+				if e.objective() < ji && e.feasibleAll(part) {
+					ji, selI = e.objective(), snapshotSel(e, part)
+				}
+			}
 			restoreSel(e, part, saved)
 			g.searchB7(e, part, saved)
 			g.searchGroups(e, part)
@@ -63805,6 +63817,10 @@ func (g *rgGraph) searchGroups(e *rgEval, part []int32) {
 	}
 	if !e.noCanon {
 		try(func(o *rgOpt) bool { return o.canon })
+		if !e.noSplice && g.spliceIn(part) { // B10: all deep streams, and all canonical forms but deep streams
+			try(func(o *rgOpt) bool { return o.splice })
+			try(func(o *rgOpt) bool { return o.canon && !o.splice })
+		}
 	}
 	try(func(o *rgOpt) bool { return o.kind == rgRep && !o.canon })
 	// read-priced objectives re-evaluate reads on every move: a smaller exhaustive budget
@@ -63816,6 +63832,18 @@ func (g *rgGraph) searchGroups(e *rgEval, part []int32) {
 	if e.oracle(part, limit) && (!(e.objective() <= j0) || !e.feasibleAll(part)) {
 		restoreSel(e, part, sel0)
 	}
+}
+
+// spliceIn reports whether any node of part has a deep-stream option (B10).
+func (g *rgGraph) spliceIn(part []int32) bool {
+	for _, v := range part {
+		for _, o := range g.nodes[v].opts {
+			if o.splice && !o.cur {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // multiIn reports whether any node of part has a multi-base option.

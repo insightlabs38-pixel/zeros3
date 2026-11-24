@@ -950,3 +950,40 @@ func TestB10SpliceWindowCache(t *testing.T) {
 	}
 	l.exact("cached")
 }
+
+// TestB10IncumbentNoWorse: more options never plan a worse objective. A history whose nested jar is byte-
+// identical in every version (decoding it only adds a recipe) and the nested labs, each planned with and
+// without deep streams (every nested unit decodable) on the archive and mixed profiles.
+func TestB10IncumbentNoWorse(t *testing.T) {
+	jarLab := func(t *testing.T) *authLab {
+		l := newAuthLab(t)
+		fs := b8Tree(61, 12)
+		var args []any
+		for _, f := range fs[:8] {
+			args = append(args, f.name, f.data)
+		}
+		jar := b10Zip(t, args...)
+		for i := range 3 {
+			l.put("dist.tar.gz", b10Gzip(t, b10Tar(t, "lib/core.jar", jar, "README", b5Text(uint64(70+i), 30_000), "bin/run", b5Text(uint64(80+i), 9000)), 6))
+		}
+		l.reclaim()
+		return l
+	}
+	for name, mk := range map[string]func(*testing.T) *authLab{"identical-jar": jarLab, "small": b10SmallLab} {
+		for _, prof := range []string{"archive", "mixed"} {
+			l := mk(t)
+			plan := func(splice bool) OptimizeReport {
+				p := b6Policy(OptimizePolicy{AuthPolicy: AuthPolicy{MaxDepth: 2, AllowRep: true}, Profile: prof, Canonical: true, Splice: splice})
+				p.spliceAll = true
+				rep, err := l.s.AuthorityOptimize(context.Background(), p)
+				mustOK(t, err)
+				return rep
+			}
+			without, with := plan(false), plan(true)
+			if with.Planned.Objective > without.Planned.Objective+1e-6 {
+				t.Fatalf("%s/%s: deep streams planned %.0f, without %.0f", name, prof, with.Planned.Objective, without.Planned.Objective)
+			}
+			t.Logf("%s/%s: objective %.0f -> %.0f", name, prof, without.Planned.Objective, with.Planned.Objective)
+		}
+	}
+}
