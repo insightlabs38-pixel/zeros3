@@ -463,6 +463,13 @@ mixed and hot profiles usually refuse them; use the archive profile for cold
 release archives. `-codec-replay` is the pre-B8 nested replay. Results:
 `testing-harnesses/next/b8/README.md`.
 
+`-record-groups` (B9, migrate and optimize) publishes records into append-only group files instead of one
+file each; `authority groups -enable` raises the store feature `recgroup` and moves existing record files into
+groups, `authority groups -disable` writes them back as files and lowers it. `gc`, `repack` and online
+maintenance retire grouped records by tombs and rewrite groups below 75% live. `-executables` (B9, with
+`optimize`) adds normalized ELF/PE x86-64 Go executables (feature `exenorm`). `ZEROS3_WINDOW_CACHE_MIB`
+enables the in-memory decoded-window cache for replayed representations (off by default).
+
 ### Restartable records and reconstruction layout (research, B5)
 
 Both are opt-in and change only physical placement; reads stay byte-exact and

@@ -7,12 +7,20 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -94,7 +102,13 @@ func b9Lanes() []b6Lane {
 			return s.AuthorityOptimize(ctx, p)
 		}
 	}
-	lanes := []b6Lane{{"cdc", nil, ""}, {"b8c-archive", canon(false), ""}, {"b9n-archive", canon(true), ""}}
+	regroup := func(ctx context.Context, s *Store) (any, error) { // the b8 graph, its records moved into groups
+		if err := s.ensureFeature(agFeature); err != nil {
+			return nil, err
+		}
+		return s.agCompact(true)
+	}
+	lanes := []b6Lane{{"cdc", nil, ""}, {"b8c-archive", canon(false), ""}, {"b9n-archive", canon(true), ""}, {"b8g-archive", regroup, "b8-archive"}}
 	for _, cfg := range []string{"b8", "b8m", "b9"} {
 		lanes = append(lanes, b6Lane{cfg + "-archive", run(OptimizePolicy{AuthPolicy: op, Profile: "archive"}, cfg), ""},
 			b6Lane{cfg + "-mixed", run(OptimizePolicy{AuthPolicy: np, Profile: "mixed"}, cfg), ""})
@@ -194,12 +208,9 @@ func b9RecordStats(t *testing.T, s *Store, dir string) map[string]any {
 			pick = append(pick, files[i*len(files)/200])
 		}
 	}
-	var cold, warm []float64
+	var cold, open, warm []float64
 	for _, f := range pick {
-		dropCaches()
-		s.auth.ag.mu.Lock()
-		s.auth.ag.reset()
-		s.auth.ag.mu.Unlock()
+		dropCaches() // page cache dropped, the group index kept (a running server)
 		t0 := time.Now()
 		if r, err := s.authLoad(f); err != nil || r == nil {
 			t.Fatal(err)
@@ -208,12 +219,18 @@ func b9RecordStats(t *testing.T, s *Store, dir string) map[string]any {
 		t0 = time.Now()
 		s.authLoad(f)
 		warm = append(warm, float64(time.Since(t0).Nanoseconds())/1e3)
+		dropCaches() // and the index rebuilt first (a fresh process)
+		s.auth.ag.mu.Lock()
+		s.auth.ag.reset()
+		s.auth.ag.mu.Unlock()
+		t0 = time.Now()
+		s.authLoad(f)
+		open = append(open, float64(time.Since(t0).Microseconds()))
 	}
-	slices.Sort(cold)
-	slices.Sort(warm)
 	if len(pick) > 0 {
-		row["lookup_cold_us_p50"], row["lookup_cold_us_p95"] = cold[len(cold)/2], cold[len(cold)*95/100]
-		row["lookup_warm_us_p50"], row["lookup_warm_us_p95"] = warm[len(warm)/2], warm[len(warm)*95/100]
+		row["lookup_cold_us_p50"], row["lookup_cold_us_p95"] = b9Pct(cold, .5), b9Pct(cold, .95)
+		row["lookup_open_us_p50"], row["lookup_open_us_p95"] = b9Pct(open, .5), b9Pct(open, .95)
+		row["lookup_warm_us_p50"], row["lookup_warm_us_p95"] = b9Pct(warm, .5), b9Pct(warm, .95)
 	}
 	// Recovery: index rebuild from the group files (open path), cold.
 	dropCaches()
@@ -225,6 +242,53 @@ func b9RecordStats(t *testing.T, s *Store, dir string) map[string]any {
 	s.auth.ag.mu.Unlock()
 	row["index_rebuild_cold_ms"] = float64(time.Since(t0).Microseconds()) / 1e3
 	return row
+}
+
+// TestB9Append times publication of N small pin records one by one (fsync each) as record files and as
+// grouped records, then their retirement (gc batch), in a scratch store; and the index rebuild of the result.
+func TestB9Append(t *testing.T) {
+	n := 1000
+	for _, grouped := range []bool{false, true} {
+		old := agWanted
+		agWanted = grouped
+		l := newAuthLab(t)
+		l.put("x", genRandomBytes(7, 200_000))
+		ps, err := chunkPieces(l.man("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var shas [][32]byte
+		var lat []float64
+		w0, t0 := b6ProcIO("write_bytes"), time.Now()
+		for i := range n {
+			r := &authRecord{SHA: sha256.Sum256([]byte(fmt.Sprint("b9append", i))), Size: 200_000, Gen: 1, Form: authFormPin, Pieces: ps}
+			t1 := time.Now()
+			if err := l.s.authPublish(r); err != nil {
+				t.Fatal(err)
+			}
+			lat = append(lat, float64(time.Since(t1).Microseconds())/1e3)
+			shas = append(shas, r.SHA)
+		}
+		wall, written := time.Since(t0).Seconds(), b6ProcIO("write_bytes")-w0
+		alloc, _ := allocatedBytes(filepath.Join(l.dir, "bodies"))
+		t1 := time.Now()
+		if err := l.s.authRetireMany(shas, false); err != nil {
+			t.Fatal(err)
+		}
+		retire := time.Since(t1).Seconds()
+		t1 = time.Now()
+		ag, err := l.s.agCompact(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := map[string]any{"kind": "append", "grouped": grouped, "records": n, "publish_per_s": float64(n) / wall, "publish_p50_ms": b9Pct(lat, .5),
+			"publish_p99_ms": b9Pct(lat, .99), "written": written, "bodies_alloc": alloc, "retire_s": retire, "compact_s": time.Since(t1).Seconds(),
+			"compact_reclaimed": ag.BytesReclaimed}
+		b6Emit(row)
+		t.Logf("%v", row)
+		l.close()
+		agWanted = old
+	}
 }
 
 func TestB9Reads(t *testing.T)      { b9Campaign(t, TestB6Reads) }
@@ -297,6 +361,9 @@ func TestB9ExeProbe(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if os.Getenv("B9_PCLN") != "" {
+				b9PclnDelta(t, canon, im)
+			}
 			canon = append(canon, exeUnitTable(im.units)...)
 			nt := time.Since(t0)
 			// round trip
@@ -339,6 +406,213 @@ func TestB9ExeProbe(t *testing.T) {
 				}
 			}
 			prevRaw, prevCanon = raw, canon
+		}
+	}
+}
+
+// ---- B9-C decoded-window cache campaign ------------------------------------------
+
+type b9Req struct {
+	obj  int
+	a, n int64
+}
+
+// b9Workloads are the pre-registered access patterns over objs (sizes): each is a list of requests.
+func b9Workloads(sizes []int64, seed uint64) map[string][]b9Req {
+	r := rand.New(rand.NewPCG(seed, 7))
+	pick := func() (int, int64) {
+		o := r.IntN(len(sizes))
+		return o, int64(r.IntN(int(max(1, sizes[o]-65536))))
+	}
+	w := map[string][]b9Req{}
+	for range 64 { // cold: distinct first touches
+		o, a := pick()
+		w["cold"] = append(w["cold"], b9Req{o, a, 4096})
+	}
+	var hot []b9Req
+	for range 16 {
+		o, a := pick()
+		hot = append(hot, b9Req{o, a, 4096})
+	}
+	for range 8 {
+		w["repeat"] = append(w["repeat"], hot...)
+	}
+	for range 128 { // nearby: within 48 KiB after one of 16 anchors
+		h := hot[r.IntN(len(hot))]
+		a := min(h.a+int64(r.IntN(48<<10)), sizes[h.obj]-4096)
+		w["nearby"] = append(w["nearby"], b9Req{h.obj, max(0, a), 4096})
+	}
+	off := int64(r.IntN(1 << 20))
+	for range 4 { // the same offset in every object (objects sharing canonical streams)
+		for o := range sizes {
+			w["shared"] = append(w["shared"], b9Req{o, min(off, max(0, sizes[o]-4096)), 4096})
+		}
+	}
+	z := rand.NewZipf(rand.New(rand.NewPCG(seed, 8)), 1.1, 1, 255)
+	var pool []b9Req
+	for range 256 {
+		o, a := pick()
+		pool = append(pool, b9Req{o, a, []int64{4096, 4096, 4096, 65536}[r.IntN(4)]})
+	}
+	for range 400 {
+		w["zipf"] = append(w["zipf"], pool[z.Uint64()])
+	}
+	for range 128 {
+		o, a := pick()
+		w["unrelated"] = append(w["unrelated"], b9Req{o, a, 4096})
+	}
+	return w
+}
+
+func b9Pct(xs []float64, p float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	ys := slices.Clone(xs)
+	slices.Sort(ys)
+	return ys[min(len(ys)-1, int(float64(len(ys))*p))]
+}
+
+// TestB9Cache runs every workload with the cache off and on (matched, both orders) on a lane store, then
+// the concurrent Zipf workload with 8 readers and the capacity sweep. Every read is checked byte for byte.
+func TestB9Cache(t *testing.T) {
+	fx := os.Getenv("ZEROS3_B6_FX")
+	lane := cmp.Or(os.Getenv("ZEROS3_B9_LANE"), "b8c-archive")
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_B9_WINDOW_KIB")); err == nil && v > 0 {
+		old := winSize
+		winSize = int64(v) << 10
+		defer func() { winSize = old }()
+	}
+	for _, fam := range strings.Split(cmp.Or(os.Getenv("ZEROS3_B6_FAMILIES"), "ts,django"), ",") {
+		dir := filepath.Join(fx, fam, lane)
+		s, done := b6Open(t, dir)
+		objs := b6Objects(t, s, 0)
+		var sizes []int64
+		var truth [][]byte
+		for _, o := range objs {
+			b, err := b6Read(s, o.man, 0, o.man.TotalLength)
+			if err != nil {
+				t.Fatal(err)
+			}
+			truth = append(truth, b)
+			sizes = append(sizes, o.man.TotalLength)
+		}
+		ws := b9Workloads(sizes, 11)
+		run := func(name string, budget int64, reqs []b9Req, readers int, cold bool) map[string]any {
+			s.SetWindowCache(budget)
+			s.purgeReadCaches()
+			if cold {
+				dropCaches()
+			}
+			var mu sync.Mutex
+			var lat []float64
+			var next atomic.Int64
+			cpu0, t0 := procCPUSeconds(), time.Now()
+			var wg sync.WaitGroup
+			for range readers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						i := int(next.Add(1)) - 1
+						if i >= len(reqs) {
+							return
+						}
+						q := reqs[i]
+						n := min(q.n, sizes[q.obj]-q.a)
+						t1 := time.Now()
+						got, err := b6Read(s, objs[q.obj].man, q.a, n)
+						d := float64(time.Since(t1).Microseconds()) / 1e3
+						if err != nil || !bytes.Equal(got, truth[q.obj][q.a:q.a+n]) {
+							t.Errorf("%s %s %d %d+%d: %v", fam, name, q.obj, q.a, n, err)
+							return
+						}
+						mu.Lock()
+						lat = append(lat, d)
+						mu.Unlock()
+					}
+				}()
+			}
+			wg.Wait()
+			wall := time.Since(t0).Seconds()
+			st := s.WindowCacheStats()
+			row := map[string]any{"kind": "cache", "family": fam, "lane": lane, "workload": name, "budget_mib": budget >> 20, "readers": readers,
+				"requests": len(reqs), "wall_s": wall, "cpu_s": procCPUSeconds() - cpu0, "rps": float64(len(reqs)) / wall,
+				"p50_ms": b9Pct(lat, .5), "p95_ms": b9Pct(lat, .95), "p99_ms": b9Pct(lat, .99), "hits": st.Hits, "misses": st.Misses,
+				"joins": st.Joins, "evictions": st.Evictions, "cache_bytes": st.Bytes, "decode_ms": float64(st.DecodeNS) / 1e6, "window_kib": winSize >> 10, "admission": "second-touch", "first_touches": st.Bypass}
+			if st.Hits+st.Misses+st.Joins > 0 {
+				row["hit_rate"] = float64(st.Hits+st.Joins) / float64(st.Hits+st.Misses+st.Joins)
+				if st.Misses > 0 {
+					row["decode_avoided_ms"] = float64(st.DecodeNS) / float64(st.Misses) * float64(st.Hits+st.Joins) / 1e6
+				}
+			}
+			b6Emit(row)
+			t.Logf("%v", row)
+			return row
+		}
+		for _, order := range [][2]int64{{0, 64 << 20}, {64 << 20, 0}} {
+			for _, b := range order {
+				for _, name := range []string{"cold", "repeat", "nearby", "shared", "unrelated"} {
+					run(name, b, ws[name], 1, true)
+				}
+				run("zipf-8", b, ws["zipf"], 8, true)
+			}
+		}
+		for _, b := range []int64{16 << 20, 64 << 20, 256 << 20} {
+			run("zipf-8", b, ws["zipf"], 8, true)
+		}
+		done()
+	}
+}
+
+// b9PclnDelta (probe only, forward transform) rewrites the Go function table's shifting u32 columns as
+// differences from the previous function's value: functab funcoff, and every _func offset field.
+func b9PclnDelta(t *testing.T, b []byte, im *exeImage) {
+	at := bytes.Index(b, []byte{0xf1, 0xff, 0xff, 0xff, 0x00, 0x00, 0x01, 0x08})
+	if at < 0 {
+		return
+	}
+	p := b[at:]
+	u64 := func(o int) uint64 { return binary.LittleEndian.Uint64(p[o:]) }
+	nfunc, pcln := int(u64(8)), int(u64(64))
+	ft := p[pcln:]
+	type rec struct{ off, n int }
+	var recs []rec
+	for i := range nfunc {
+		fo := int(binary.LittleEndian.Uint32(ft[i*8+4:]))
+		f := ft[fo:]
+		npc, nfd := int(binary.LittleEndian.Uint32(f[28:])), int(f[43])
+		recs = append(recs, rec{fo, 44 + 4*npc + 4*nfd})
+	}
+	// columns: functab funcoff; _func nameOff(4), pcsp(16), pcfile(20), pcln(24), cuOffset(32), pcdata[k], funcdata[k]
+	prevFO := uint32(0)
+	prev := map[int]uint32{}
+	for i := range nfunc {
+		fo := binary.LittleEndian.Uint32(ft[i*8+4:])
+		binary.LittleEndian.PutUint32(ft[i*8+4:], fo-prevFO)
+		prevFO = fo
+	}
+	for _, r := range recs {
+		f := ft[r.off : r.off+r.n]
+		npc := int(binary.LittleEndian.Uint32(f[28:]))
+		cols := []int{4, 16, 20, 24, 32}
+		for k := range npc {
+			cols = append(cols, 44+4*k)
+		}
+		for k := range int(f[43]) {
+			cols = append(cols, 44+4*npc+4*k)
+		}
+		for ci, c := range cols {
+			key := ci
+			if c >= 44 {
+				key = 100 + c - 44
+			}
+			v := binary.LittleEndian.Uint32(f[c:])
+			if v == 0 || v == 0xffffffff {
+				continue
+			}
+			binary.LittleEndian.PutUint32(f[c:], v-prev[key])
+			prev[key] = v
 		}
 	}
 }

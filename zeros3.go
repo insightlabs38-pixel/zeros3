@@ -128,12 +128,12 @@ import (
 //    64299    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
 //    64855    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
 //    65760    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    66896    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    67840    Verified decoded-window cache (B9)
-//    68067    Windowed and estimated similarity deltas (extracted dcore)
-//    69904    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    77760    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    84032    CLI dispatch, HTTP server/startup, and main
+//    66915    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    67859    Verified decoded-window cache (B9)
+//    68140    Windowed and estimated similarity deltas (extracted dcore)
+//    69977    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    77833    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    84105    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -8049,7 +8049,7 @@ type Store struct {
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
 	rep repState
 	win atomic.Pointer[winCache] // B9 decoded-window cache (nil: off)
-	fg  fgGate // requests in flight; deferred construction yields to them
+	fg  fgGate                   // requests in flight; deferred construction yields to them
 
 	// mcache holds verified, immutable served manifests for the read path
 	// (section 5b). It is per Store, bounded, and never authoritative.
@@ -66636,6 +66636,25 @@ func (s *Store) agCompact(regroup bool) (rep AGReport, err error) {
 		return rep, err
 	}
 	x := &s.auth.ag
+	// An unsealed group mostly dead (above 64 KiB) is sealed so that it can be rewritten like any other.
+	x.mu.RLock()
+	act := x.groups[x.last]
+	seal := act != nil && !act.sealed && len(act.damaged) == 0 && act.end > 64<<10 && float64(act.live) < agCompactLive*float64(act.end-agHeaderLen)
+	x.mu.RUnlock()
+	if seal {
+		lk, err := flockStore(s.authDir(), agDirName, syscall.LOCK_EX, true)
+		if err != nil {
+			return rep, err
+		}
+		err = s.agRefresh()
+		if err == nil && !act.sealed && x.last == act.seq {
+			err = s.agSeal(act)
+		}
+		lk.release()
+		if err != nil {
+			return rep, err
+		}
+	}
 	x.mu.RLock()
 	var victims []*agGroup
 	for _, q := range slices.Sorted(maps.Keys(x.groups)) {
@@ -67482,7 +67501,7 @@ func (t *exeTables) exeRestore(ri int, buf []byte, base, p, end int64) error {
 	r := t.regions[ri]
 	lim := min(base+int64(len(buf)), r.size)
 	for i := p; i < end && i < lim; {
-		slot, bias, ok := exeCandidate(buf, base, i, r.size)
+		slot, bias, ok := exeCandidate(buf, base, i, lim) // a rewritten instruction never extends past the buffer
 		if !ok || slot+4 > lim {
 			i++
 			continue
@@ -67842,11 +67861,12 @@ func (t *exeTables) readRegion(ri int, body io.ReaderAt, lo, hi int64, w io.Writ
 // A sparse read of a replayed representation (gzip, zstd, ZIP, normalized executable) repeats the same
 // restart work for every request that lands in the same region. The cache keeps fixed output windows of
 // such representations in memory, keyed by the representation object's digest (which names every
-// component and body it reads, so a key never outlives its meaning) and the window index. A window enters
-// only after its decode completed from verified inputs; each carries a CRC-32C that a hit checks. Misses of
-// one window by concurrent readers decode it once. Two LRU segments (probation, protected: a second touch
-// promotes) keep one-pass scans from displacing the windows that are reused; requests above
-// winMaxRequest bypass the cache. Whole-object reads never use it and keep their SHA-256 check.
+// component and body it reads, so a key never outlives its meaning) and the window index. A first touch is
+// served as without the cache (only its key is remembered), so cold reads pay nothing; a second touch decodes
+// and admits the whole window. A window enters only after its decode completed from verified inputs; each
+// carries a CRC-32C that a hit checks. Concurrent misses of one window decode it once. Two LRU segments
+// (probation, protected: a second hit promotes) keep one-pass scans from displacing reused windows; requests
+// above winMaxRequest bypass the cache. Whole-object reads never use it and keep their SHA-256 check.
 // =============================================================================
 
 const (
@@ -67854,8 +67874,8 @@ const (
 	winMaxRequest = 1 << 20
 )
 
-// winSize is the cached output window; a variable so experiments sweep it.
-var winSize int64 = 64 << 10
+// winSize is the cached output window (16 KiB: measured against 64 KiB in testing-harnesses/next/b9).
+var winSize int64 = 16 << 10
 
 type winKey struct {
 	rep [32]byte
@@ -67881,9 +67901,14 @@ type winShard struct {
 	prob, prot  list.List
 	pbytes, tot int64
 	flights     map[winKey]*winFlight
+	ghost       map[winKey]struct{} // keys touched once, not decoded whole (bounded, FIFO)
+	ghostQ      []winKey
 }
 
-// WinStats counts cache work: hits and joins avoided a decode; decodeNS is the decode time of misses.
+const winGhost = 4096 // remembered first touches per shard
+
+// WinStats counts cache work: hits and joins avoided a decode; decodeNS is the decode time of misses;
+// Bypass counts first touches served without decoding a window.
 type WinStats struct {
 	Hits, Misses, Joins, Evictions, Bypass, Corrupt int64
 	Bytes, Budget                                   int64
@@ -67899,7 +67924,7 @@ type winCache struct {
 func newWinCache(budget int64) *winCache {
 	c := &winCache{budget: budget}
 	for i := range c.sh {
-		c.sh[i].ents, c.sh[i].flights = map[winKey]*list.Element{}, map[winKey]*winFlight{}
+		c.sh[i].ents, c.sh[i].flights, c.sh[i].ghost = map[winKey]*list.Element{}, map[winKey]*winFlight{}, map[winKey]struct{}{}
 	}
 	return c
 }
@@ -67930,6 +67955,30 @@ func (s *Store) WindowCacheStats() WinStats {
 
 func (c *winCache) shard(k winKey) *winShard {
 	return &c.sh[((binary.LittleEndian.Uint64(k.rep[:8])^uint64(k.idx))*0x9e3779b97f4a7c15)>>60]
+}
+
+// want reports whether window k is cached, being decoded or was touched before; otherwise it remembers k.
+func (c *winCache) want(k winKey) bool {
+	sh := c.shard(k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if _, ok := sh.ents[k]; ok {
+		return true
+	}
+	if _, ok := sh.flights[k]; ok {
+		return true
+	}
+	if _, ok := sh.ghost[k]; ok {
+		return true
+	}
+	if len(sh.ghostQ) >= winGhost {
+		delete(sh.ghost, sh.ghostQ[0])
+		sh.ghostQ = sh.ghostQ[1:]
+	}
+	sh.ghost[k] = struct{}{}
+	sh.ghostQ = append(sh.ghostQ, k)
+	c.st.bypass.Add(1)
+	return false
 }
 
 // get returns window k, decoding it with fill on a miss (once for concurrent callers).
@@ -68030,12 +68079,36 @@ func winCached(c *winCache, call *repCall, n int64) bool {
 }
 
 // winRangeReader serves [off, off+n) of call from cached windows, decoding missing ones by the kind's range
-// reader (each window is the exact output of that reader for its span).
+// reader (each window is the exact output of that reader for its span); first touches go to it directly.
 func winRangeReader(c *winCache, call *repCall, off, n int64) func(w io.Writer) error {
 	return func(w io.Writer) error {
-		size := call.Rep.Size
-		for k := off / winSize; k*winSize < off+n; k++ {
+		size, end := call.Rep.Size, off+n
+		direct := int64(-1) // start of a run of first-touched windows, served by one direct read
+		flush := func(to int64) error {
+			if direct < 0 {
+				return nil
+			}
+			produce, err := repRangeReader(call, direct, to-direct)
+			if err == nil && produce == nil {
+				err = fmt.Errorf("%w: no range reader", errRepUnsupported)
+			}
+			if err == nil {
+				err = produce(w)
+			}
+			direct = -1
+			return err
+		}
+		for k := off / winSize; k*winSize < end; k++ {
 			lo, hi := k*winSize, min(size, (k+1)*winSize)
+			if !c.want(winKey{call.ID, k}) {
+				if direct < 0 {
+					direct = max(off, lo)
+				}
+				continue
+			}
+			if err := flush(lo); err != nil {
+				return err
+			}
 			data, err := c.get(winKey{call.ID, k}, func() ([]byte, error) {
 				produce, err := repRangeReader(call, lo, hi-lo)
 				if err != nil || produce == nil {
@@ -68054,12 +68127,12 @@ func winRangeReader(c *winCache, call *repCall, off, n int64) func(w io.Writer) 
 			if err != nil {
 				return err
 			}
-			a, b := max(off, lo)-lo, min(off+n, hi)-lo
+			a, b := max(off, lo)-lo, min(end, hi)-lo
 			if _, err := w.Write(data[a:b]); err != nil {
 				return err
 			}
 		}
-		return nil
+		return flush(end)
 	}
 }
 

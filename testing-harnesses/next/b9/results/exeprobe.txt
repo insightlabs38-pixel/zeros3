@@ -1,0 +1,336 @@
+== elf compile pcln-columns=0
+compile 1.22.0: size 19361697 units 21580 regions 9 exceptions 0 changed bytes 1136070 unit table 119397 normalize 130.794469ms roundtrip diffs 0
+compile 1.22.6: size 19353079 units 21329 regions 9 exceptions 1 changed bytes 1133179 unit table 118003 normalize 151.28137ms roundtrip diffs 0
+  delta raw 3527103 norm 2120352 (60.1%) err <nil> <nil>
+    literals by section: map[.data:533979 .go.buildinfo:10 .gopclntab:1773254 .noptrdata:2573 .note.go.buildid:151 .rodata:1428168 .strtab:736 .symtab:481401 .text:3458608 other:581]
+    literals by section: map[.data:446711 .go.buildinfo:10 .gopclntab:1773254 .itablink:24 .noptrdata:179 .note.go.buildid:131 .rodata:1376053 .strtab:736 .symtab:348422 .text:955622 other:3219]
+compile 1.23.0: size 19798633 units 21883 regions 9 exceptions 0 changed bytes 1152360 unit table 121115 normalize 150.952074ms roundtrip diffs 0
+  delta raw 5757329 norm 4806365 (83.5%) err <nil> <nil>
+    literals by section: map[.data:612470 .go.buildinfo:211 .gopclntab:3218764 .noptrdata:27771 .note.go.buildid:682 .rodata:1873807 .strtab:45053 .symtab:524677 .text:6113517 other:576]
+    literals by section: map[.data:528198 .go.buildinfo:211 .gopclntab:3218823 .itablink:136 .noptrdata:25645 .note.go.buildid:214 .rodata:1822431 .strtab:45053 .symtab:441238 .text:4129707 other:33793]
+compile 1.23.4: size 19803234 units 21893 regions 9 exceptions 0 changed bytes 1149540 unit table 121169 normalize 104.353166ms roundtrip diffs 0
+  delta raw 3129064 norm 1901448 (60.8%) err <nil> <nil>
+    literals by section: map[.data:456503 .gopclntab:1359292 .itablink:3049 .noptrdata:2396 .note.go.buildid:143 .rodata:1375030 .strtab:147 .symtab:483606 .text:2814597 .typelink:1111 other:396]
+    literals by section: map[.data:395248 .gopclntab:1359293 .noptrdata:137 .note.go.buildid:83 .rodata:1320591 .strtab:147 .symtab:337187 .text:846016 .typelink:1111 other:878]
+== elf compile pcln-columns=1
+compile 1.22.0: size 19361697 units 21580 regions 9 exceptions 0 changed bytes 1710547 unit table 119397 normalize 153.706457ms roundtrip diffs 574477
+compile 1.22.6: size 19353079 units 21329 regions 9 exceptions 1 changed bytes 1708033 unit table 118003 normalize 183.409264ms roundtrip diffs 574854
+  delta raw 3527103 norm 1980723 (56.2%) err <nil> <nil>
+    literals by section: map[.data:533979 .go.buildinfo:10 .gopclntab:1773254 .noptrdata:2573 .note.go.buildid:151 .rodata:1428168 .strtab:736 .symtab:481401 .text:3458608 other:581]
+    literals by section: map[.data:448589 .go.buildinfo:10 .gopclntab:1342179 .itablink:24 .noptrdata:179 .note.go.buildid:131 .rodata:1376053 .strtab:736 .symtab:348422 .text:955622 other:3219]
+compile 1.23.0: size 19798633 units 21883 regions 9 exceptions 0 changed bytes 1743398 unit table 121115 normalize 130.471844ms roundtrip diffs 591038
+  delta raw 5757329 norm 4723327 (82.0%) err <nil> <nil>
+    literals by section: map[.data:612470 .go.buildinfo:211 .gopclntab:3218764 .noptrdata:27771 .note.go.buildid:682 .rodata:1873807 .strtab:45053 .symtab:524677 .text:6113517 other:576]
+    literals by section: map[.data:528407 .go.buildinfo:211 .gopclntab:2975470 .itablink:136 .noptrdata:25645 .note.go.buildid:214 .rodata:1822319 .strtab:45053 .symtab:441238 .text:4129707 other:33793]
+compile 1.23.4: size 19803234 units 21893 regions 9 exceptions 0 changed bytes 1741373 unit table 121169 normalize 131.568113ms roundtrip diffs 591833
+  delta raw 3129064 norm 1735860 (55.5%) err <nil> <nil>
+    literals by section: map[.data:456503 .gopclntab:1359292 .itablink:3049 .noptrdata:2396 .note.go.buildid:143 .rodata:1375030 .strtab:147 .symtab:483606 .text:2814597 .typelink:1111 other:396]
+    literals by section: map[.data:395544 .gopclntab:978489 .noptrdata:137 .note.go.buildid:83 .rodata:1320576 .strtab:147 .symtab:337187 .text:846016 .typelink:1111 other:878]
+== elf link pcln-columns=0
+link 1.22.0: size 5298429 units 5997 regions 9 exceptions 0 changed bytes 282607 unit table 33497 normalize 53.121752ms roundtrip diffs 0
+link 1.22.6: size 5294710 units 5934 regions 9 exceptions 0 changed bytes 281745 unit table 33158 normalize 49.043613ms roundtrip diffs 0
+  delta raw 890241 norm 636546 (71.5%) err <nil> <nil>
+    literals by section: map[.data:48150 .go.buildinfo:12 .gopclntab:385280 .itablink:720 .noptrdata:1005 .note.go.buildid:83 .rodata:438823 .strtab:59 .symtab:121024 .text:504301 other:156]
+    literals by section: map[.data:44064 .go.buildinfo:12 .gopclntab:385338 .noptrdata:145 .note.go.buildid:83 .rodata:422400 .strtab:59 .symtab:64216 .text:175214 other:415]
+link 1.23.0: size 5678421 units 6393 regions 9 exceptions 0 changed bytes 300223 unit table 35718 normalize 42.856775ms roundtrip diffs 0
+  delta raw 1570235 norm 1309015 (83.4%) err <nil> <nil>
+    literals by section: map[.data:72438 .go.buildinfo:151 .gopclntab:853807 .noptrdata:6818 .note.go.buildid:164 .rodata:668175 .strtab:17479 .symtab:153834 .text:1097132 other:394]
+    literals by section: map[.data:66295 .go.buildinfo:151 .gopclntab:853874 .itablink:60 .noptrdata:5587 .note.go.buildid:146 .rodata:649497 .strtab:17479 .symtab:85677 .text:661569 other:9145]
+link 1.23.4: size 5683028 units 6403 regions 9 exceptions 0 changed bytes 300779 unit table 35773 normalize 33.03998ms roundtrip diffs 0
+  delta raw 936022 norm 643413 (68.7%) err <nil> <nil>
+    literals by section: map[.data:62591 .go.buildinfo:1 .gopclntab:407995 .itablink:978 .noptrdata:1390 .note.go.buildid:107 .rodata:488465 .strtab:129 .symtab:140955 .text:510808 .typelink:210 other:343]
+    literals by section: map[.data:57366 .go.buildinfo:1 .gopclntab:407995 .noptrdata:137 .note.go.buildid:100 .rodata:460068 .strtab:129 .symtab:59649 .text:130712 .typelink:210 other:515]
+== elf link pcln-columns=1
+link 1.22.0: size 5298429 units 5997 regions 9 exceptions 0 changed bytes 447108 unit table 33497 normalize 63.289886ms roundtrip diffs 164501
+link 1.22.6: size 5294710 units 5934 regions 9 exceptions 0 changed bytes 446222 unit table 33158 normalize 62.406636ms roundtrip diffs 164477
+  delta raw 890241 norm 555327 (62.4%) err <nil> <nil>
+    literals by section: map[.data:48150 .go.buildinfo:12 .gopclntab:385280 .itablink:720 .noptrdata:1005 .note.go.buildid:83 .rodata:438823 .strtab:59 .symtab:121024 .text:504301 other:156]
+    literals by section: map[.data:44030 .go.buildinfo:12 .gopclntab:197200 .noptrdata:145 .note.go.buildid:83 .rodata:422401 .strtab:59 .symtab:64216 .text:175214 other:415]
+link 1.23.0: size 5678421 units 6393 regions 9 exceptions 0 changed bytes 477206 unit table 35718 normalize 40.612776ms roundtrip diffs 176983
+  delta raw 1570235 norm 1271307 (81.0%) err <nil> <nil>
+    literals by section: map[.data:72438 .go.buildinfo:151 .gopclntab:853807 .noptrdata:6818 .note.go.buildid:164 .rodata:668175 .strtab:17479 .symtab:153834 .text:1097132 other:394]
+    literals by section: map[.data:66731 .go.buildinfo:151 .gopclntab:700917 .itablink:60 .noptrdata:5587 .note.go.buildid:146 .rodata:649443 .strtab:17479 .symtab:85677 .text:661569 other:9145]
+link 1.23.4: size 5683028 units 6403 regions 9 exceptions 0 changed bytes 477947 unit table 35773 normalize 67.018127ms roundtrip diffs 177168
+  delta raw 936022 norm 567150 (60.6%) err <nil> <nil>
+    literals by section: map[.data:62591 .go.buildinfo:1 .gopclntab:407995 .itablink:978 .noptrdata:1390 .note.go.buildid:107 .rodata:488465 .strtab:129 .symtab:140955 .text:510808 .typelink:210 other:343]
+    literals by section: map[.data:57420 .go.buildinfo:1 .gopclntab:212541 .noptrdata:137 .note.go.buildid:100 .rodata:460068 .strtab:129 .symtab:59649 .text:130712 .typelink:210 other:515]
+== elf go pcln-columns=0
+go 1.22.0: size 12690016 units 16372 regions 9 exceptions 0 changed bytes 680222 unit table 90916 normalize 148.927219ms roundtrip diffs 0
+go 1.22.6: size 12684733 units 16283 regions 9 exceptions 0 changed bytes 679247 unit table 90438 normalize 72.718209ms roundtrip diffs 0
+  delta raw 2190394 norm 1492535 (68.1%) err <nil> <nil>
+    literals by section: map[.data:72754 .go.buildinfo:12 .gopclntab:1116577 .itablink:3915 .noptrdata:2479 .note.go.buildid:150 .rodata:949775 .strtab:288 .symtab:362714 .text:1407420 .typelink:11494 other:226]
+    literals by section: map[.data:57929 .go.buildinfo:12 .gopclntab:1116634 .itablink:16 .noptrdata:146 .note.go.buildid:132 .rodata:891317 .strtab:288 .symtab:252345 .text:412877 .typelink:11479 other:941]
+go 1.23.0: size 13387863 units 17123 regions 9 exceptions 0 changed bytes 714039 unit table 94937 normalize 75.654982ms roundtrip diffs 0
+  delta raw 3607610 norm 2997461 (83.1%) err <nil> <nil>
+    literals by section: map[.data:96323 .go.buildinfo:256 .gopclntab:2068875 .noptrdata:4840 .note.go.buildid:159 .rodata:1465719 .strtab:58152 .symtab:410695 .text:2756660 other:485]
+    literals by section: map[.data:82982 .go.buildinfo:256 .gopclntab:2068875 .itablink:431 .noptrdata:1656 .note.go.buildid:159 .rodata:1402036 .strtab:58152 .symtab:301990 .text:1696773 other:24234]
+go 1.23.4: size 13397287 units 17142 regions 9 exceptions 0 changed bytes 714643 unit table 95039 normalize 79.993162ms roundtrip diffs 0
+  delta raw 2307449 norm 1554660 (67.4%) err <nil> <nil>
+    literals by section: map[.data:91558 .go.buildinfo:1 .gopclntab:1042653 .itablink:4623 .noptrdata:3666 .note.go.buildid:143 .rodata:1177082 .strtab:294 .symtab:391025 .text:1463576 .typelink:10625 other:455]
+    literals by section: map[.data:78141 .go.buildinfo:1 .gopclntab:1042662 .noptrdata:137 .note.go.buildid:83 .rodata:1102428 .strtab:294 .symtab:251818 .text:394827 .typelink:10240 other:750]
+== elf go pcln-columns=1
+go 1.22.0: size 12690016 units 16372 regions 9 exceptions 0 changed bytes 1155351 unit table 90916 normalize 115.072239ms roundtrip diffs 475129
+go 1.22.6: size 12684733 units 16283 regions 9 exceptions 0 changed bytes 1154037 unit table 90438 normalize 130.708575ms roundtrip diffs 474790
+  delta raw 2190394 norm 1358619 (62.0%) err <nil> <nil>
+    literals by section: map[.data:72754 .go.buildinfo:12 .gopclntab:1116577 .itablink:3915 .noptrdata:2479 .note.go.buildid:150 .rodata:949775 .strtab:288 .symtab:362714 .text:1407420 .typelink:11494 other:226]
+    literals by section: map[.data:57972 .go.buildinfo:12 .gopclntab:725781 .itablink:16 .noptrdata:146 .note.go.buildid:132 .rodata:891302 .strtab:288 .symtab:252367 .text:412877 .typelink:11479 other:941]
+go 1.23.0: size 13387863 units 17123 regions 9 exceptions 0 changed bytes 1208841 unit table 94937 normalize 79.813637ms roundtrip diffs 494802
+  delta raw 3607610 norm 2941683 (81.5%) err <nil> <nil>
+    literals by section: map[.data:96323 .go.buildinfo:256 .gopclntab:2068875 .noptrdata:4840 .note.go.buildid:159 .rodata:1465719 .strtab:58152 .symtab:410695 .text:2756660 other:485]
+    literals by section: map[.data:82974 .go.buildinfo:256 .gopclntab:1798392 .itablink:431 .noptrdata:1670 .note.go.buildid:159 .rodata:1401764 .strtab:58152 .symtab:301990 .text:1696773 other:24234]
+go 1.23.4: size 13397287 units 17142 regions 9 exceptions 0 changed bytes 1209739 unit table 95039 normalize 89.042818ms roundtrip diffs 495096
+  delta raw 2307449 norm 1412959 (61.2%) err <nil> <nil>
+    literals by section: map[.data:91558 .go.buildinfo:1 .gopclntab:1042653 .itablink:4623 .noptrdata:3666 .note.go.buildid:143 .rodata:1177082 .strtab:294 .symtab:391025 .text:1463576 .typelink:10625 other:455]
+    literals by section: map[.data:78302 .go.buildinfo:1 .gopclntab:705401 .noptrdata:137 .note.go.buildid:83 .rodata:1102406 .strtab:294 .symtab:251819 .text:394827 .typelink:10240 other:750]
+== elf vet pcln-columns=0
+vet 1.22.0: size 6131217 units 7846 regions 9 exceptions 0 changed bytes 358508 unit table 43607 normalize 40.997154ms roundtrip diffs 0
+vet 1.22.6: size 6119707 units 7727 regions 9 exceptions 0 changed bytes 356268 unit table 42961 normalize 46.021223ms roundtrip diffs 0
+  delta raw 1068986 norm 727122 (68.0%) err <nil> <nil>
+    literals by section: map[.data:41163 .go.buildinfo:12 .gopclntab:541876 .itablink:2786 .noptrdata:2269 .note.go.buildid:104 .rodata:501680 .strtab:135 .symtab:174377 .text:606993 other:270]
+    literals by section: map[.data:38394 .go.buildinfo:12 .gopclntab:541942 .itablink:4 .noptrdata:197 .note.go.buildid:97 .rodata:475002 .strtab:135 .symtab:82624 .text:181164 other:914]
+vet 1.23.0: size 7194248 units 8303 regions 9 exceptions 0 changed bytes 378508 unit table 46196 normalize 44.333519ms roundtrip diffs 0
+  delta raw 2013887 norm 1708247 (84.8%) err <nil> <nil>
+    literals by section: map[.data:55145 .go.buildinfo:151 .gopclntab:1022247 .noptrdata:7626 .note.go.buildid:164 .rodata:1310559 .strtab:19327 .symtab:199715 .text:1392062 other:397]
+    literals by section: map[.data:44939 .go.buildinfo:151 .gopclntab:1022269 .itablink:203 .noptrdata:5702 .note.go.buildid:146 .rodata:1279840 .strtab:19327 .symtab:114952 .text:898123 other:12066]
+vet 1.23.4: size 7194840 units 8315 regions 9 exceptions 0 changed bytes 378928 unit table 46261 normalize 44.691328ms roundtrip diffs 0
+  delta raw 1177565 norm 798113 (67.8%) err <nil> <nil>
+    literals by section: map[.data:32822 .go.buildinfo:1 .gopclntab:505400 .itablink:2262 .noptrdata:1673 .note.go.buildid:83 .rodata:661918 .strtab:195 .symtab:162369 .text:593772 other:7413]
+    literals by section: map[.data:24665 .go.buildinfo:1 .gopclntab:505447 .noptrdata:118 .note.go.buildid:83 .rodata:632608 .strtab:195 .symtab:77968 .text:135892 other:7553]
+== elf vet pcln-columns=1
+vet 1.22.0: size 6131217 units 7846 regions 9 exceptions 0 changed bytes 570071 unit table 43607 normalize 45.942903ms roundtrip diffs 211563
+vet 1.22.6: size 6119707 units 7727 regions 9 exceptions 0 changed bytes 567857 unit table 42961 normalize 38.658047ms roundtrip diffs 211589
+  delta raw 1068986 norm 637480 (59.6%) err <nil> <nil>
+    literals by section: map[.data:41163 .go.buildinfo:12 .gopclntab:541876 .itablink:2786 .noptrdata:2269 .note.go.buildid:104 .rodata:501680 .strtab:135 .symtab:174377 .text:606993 other:270]
+    literals by section: map[.data:39565 .go.buildinfo:12 .gopclntab:272259 .itablink:4 .noptrdata:197 .note.go.buildid:97 .rodata:475002 .strtab:135 .symtab:82624 .text:181164 other:914]
+vet 1.23.0: size 7194248 units 8303 regions 9 exceptions 0 changed bytes 605012 unit table 46196 normalize 39.515815ms roundtrip diffs 226504
+  delta raw 2013887 norm 1669828 (82.9%) err <nil> <nil>
+    literals by section: map[.data:55145 .go.buildinfo:151 .gopclntab:1022247 .noptrdata:7626 .note.go.buildid:164 .rodata:1310559 .strtab:19327 .symtab:199715 .text:1392062 other:397]
+    literals by section: map[.data:46137 .go.buildinfo:151 .gopclntab:841309 .itablink:203 .noptrdata:5702 .note.go.buildid:146 .rodata:1279278 .strtab:19327 .symtab:114952 .text:898123 other:12066]
+vet 1.23.4: size 7194840 units 8315 regions 9 exceptions 0 changed bytes 605890 unit table 46261 normalize 32.142289ms roundtrip diffs 226962
+  delta raw 1177565 norm 708370 (60.2%) err <nil> <nil>
+    literals by section: map[.data:32822 .go.buildinfo:1 .gopclntab:505400 .itablink:2262 .noptrdata:1673 .note.go.buildid:83 .rodata:661918 .strtab:195 .symtab:162369 .text:593772 other:7413]
+    literals by section: map[.data:24795 .go.buildinfo:1 .gopclntab:252222 .noptrdata:118 .note.go.buildid:83 .rodata:632608 .strtab:195 .symtab:78012 .text:135892 other:7553]
+== elf asm pcln-columns=0
+asm 1.22.0: size 3836125 units 3901 regions 9 exceptions 0 changed bytes 189463 unit table 21916 normalize 30.487515ms roundtrip diffs 0
+asm 1.22.6: size 3831435 units 3825 regions 9 exceptions 0 changed bytes 188549 unit table 21496 normalize 25.071095ms roundtrip diffs 0
+  delta raw 423998 norm 284322 (67.1%) err <nil> <nil>
+    literals by section: map[.data:19929 .go.buildinfo:12 .gopclntab:221826 .itablink:373 .noptrdata:423 .note.go.buildid:83 .rodata:58740 .symtab:58084 .text:262109 other:126]
+    literals by section: map[.data:19017 .go.buildinfo:12 .gopclntab:221826 .noptrdata:53 .note.go.buildid:83 .rodata:51526 .symtab:20291 .text:94089 other:286]
+asm 1.23.0: size 4106917 units 4168 regions 9 exceptions 0 changed bytes 202194 unit table 23410 normalize 23.777205ms roundtrip diffs 0
+  delta raw 1077300 norm 915067 (84.9%) err <nil> <nil>
+    literals by section: map[.data:137291 .go.buildinfo:151 .gopclntab:556166 .noptrdata:24224 .note.go.buildid:162 .rodata:423018 .strtab:10712 .symtab:99998 .text:740533 other:308]
+    literals by section: map[.data:136399 .go.buildinfo:151 .gopclntab:556168 .itablink:98 .noptrdata:22971 .note.go.buildid:146 .rodata:411630 .strtab:10712 .symtab:37230 .text:468063 other:5950]
+asm 1.23.4: size 4115652 units 4180 regions 9 exceptions 0 changed bytes 202527 unit table 23476 normalize 18.716288ms roundtrip diffs 0
+  delta raw 621512 norm 451016 (72.6%) err <nil> <nil>
+    literals by section: map[.data:114423 .go.buildinfo:1 .gopclntab:265291 .noptrdata:1359 .note.go.buildid:107 .rodata:306459 .strtab:121 .symtab:89302 .text:361030 other:392]
+    literals by section: map[.data:113354 .go.buildinfo:1 .gopclntab:265349 .noptrdata:141 .note.go.buildid:100 .rodata:295436 .strtab:121 .symtab:17427 .text:131115 other:580]
+== elf asm pcln-columns=1
+asm 1.22.0: size 3836125 units 3901 regions 9 exceptions 0 changed bytes 295447 unit table 21916 normalize 52.631938ms roundtrip diffs 105984
+asm 1.22.6: size 3831435 units 3825 regions 9 exceptions 0 changed bytes 294491 unit table 21496 normalize 42.34147ms roundtrip diffs 105942
+  delta raw 423998 norm 222797 (52.5%) err <nil> <nil>
+    literals by section: map[.data:19929 .go.buildinfo:12 .gopclntab:221826 .itablink:373 .noptrdata:423 .note.go.buildid:83 .rodata:58740 .symtab:58084 .text:262109 other:126]
+    literals by section: map[.data:19046 .go.buildinfo:12 .gopclntab:66454 .noptrdata:53 .note.go.buildid:83 .rodata:51526 .symtab:20269 .text:94089 other:286]
+asm 1.23.0: size 4106917 units 4168 regions 9 exceptions 0 changed bytes 318175 unit table 23410 normalize 21.611676ms roundtrip diffs 115981
+  delta raw 1077300 norm 886448 (82.3%) err <nil> <nil>
+    literals by section: map[.data:137291 .go.buildinfo:151 .gopclntab:556166 .noptrdata:24224 .note.go.buildid:162 .rodata:423018 .strtab:10712 .symtab:99998 .text:740533 other:308]
+    literals by section: map[.data:136500 .go.buildinfo:151 .gopclntab:436733 .itablink:98 .noptrdata:22971 .note.go.buildid:146 .rodata:411440 .strtab:10712 .symtab:37230 .text:468063 other:5950]
+asm 1.23.4: size 4115652 units 4180 regions 9 exceptions 0 changed bytes 318786 unit table 23476 normalize 18.807926ms roundtrip diffs 116259
+  delta raw 621512 norm 394343 (63.4%) err <nil> <nil>
+    literals by section: map[.data:114423 .go.buildinfo:1 .gopclntab:265291 .noptrdata:1359 .note.go.buildid:107 .rodata:306459 .strtab:121 .symtab:89302 .text:361030 other:392]
+    literals by section: map[.data:113445 .go.buildinfo:1 .gopclntab:130350 .noptrdata:141 .note.go.buildid:100 .rodata:295454 .strtab:121 .symtab:17427 .text:131115 other:415]
+== elf cgo pcln-columns=0
+cgo 1.22.0: size 3743834 units 5049 regions 9 exceptions 0 changed bytes 218091 unit table 27894 normalize 39.228503ms roundtrip diffs 0
+cgo 1.22.6: size 3740866 units 4995 regions 9 exceptions 0 changed bytes 217414 unit table 27604 normalize 22.818607ms roundtrip diffs 0
+  delta raw 552902 norm 390939 (70.7%) err <nil> <nil>
+    literals by section: map[.data:15927 .go.buildinfo:12 .gopclntab:253561 .itablink:1368 .noptrdata:526 .note.go.buildid:83 .rodata:259975 .strtab:48 .symtab:85383 .text:244453 other:128]
+    literals by section: map[.data:15269 .go.buildinfo:12 .gopclntab:253587 .noptrdata:102 .note.go.buildid:83 .rodata:245166 .strtab:48 .symtab:25117 .text:68613 other:315]
+cgo 1.23.0: size 4032102 units 5371 regions 9 exceptions 0 changed bytes 232473 unit table 29692 normalize 17.071757ms roundtrip diffs 0
+  delta raw 1091896 norm 903037 (82.7%) err <nil> <nil>
+    literals by section: map[.data:38466 .go.buildinfo:151 .gopclntab:612490 .noptrdata:6199 .note.go.buildid:161 .rodata:443206 .strtab:12774 .symtab:128864 .text:700828 .typelink:6659 other:382]
+    literals by section: map[.data:31361 .go.buildinfo:151 .gopclntab:612490 .itablink:143 .noptrdata:5251 .note.go.buildid:146 .rodata:425281 .strtab:12774 .symtab:47988 .text:404525 .typelink:4607 other:6722]
+cgo 1.23.4: size 4040817 units 5381 regions 9 exceptions 0 changed bytes 232886 unit table 29747 normalize 20.370992ms roundtrip diffs 0
+  delta raw 662453 norm 447195 (67.5%) err <nil> <nil>
+    literals by section: map[.data:33663 .go.buildinfo:1 .gopclntab:297161 .itablink:1993 .noptrdata:996 .note.go.buildid:107 .rodata:297225 .strtab:109 .symtab:113021 .text:325576 .typelink:121 other:1440]
+    literals by section: map[.data:28258 .go.buildinfo:1 .gopclntab:297145 .noptrdata:115 .note.go.buildid:100 .rodata:278207 .strtab:109 .symtab:22109 .text:75471 .typelink:121 other:1629]
+== elf cgo pcln-columns=1
+cgo 1.22.0: size 3743834 units 5049 regions 9 exceptions 0 changed bytes 345885 unit table 27894 normalize 36.708779ms roundtrip diffs 127794
+cgo 1.22.6: size 3740866 units 4995 regions 9 exceptions 0 changed bytes 345238 unit table 27604 normalize 41.744597ms roundtrip diffs 127824
+  delta raw 552902 norm 319098 (57.7%) err <nil> <nil>
+    literals by section: map[.data:15927 .go.buildinfo:12 .gopclntab:253561 .itablink:1368 .noptrdata:526 .note.go.buildid:83 .rodata:259975 .strtab:48 .symtab:85383 .text:244453 other:128]
+    literals by section: map[.data:15291 .go.buildinfo:12 .gopclntab:92369 .noptrdata:102 .note.go.buildid:83 .rodata:245080 .strtab:48 .symtab:25183 .text:68613 other:315]
+cgo 1.23.0: size 4032102 units 5371 regions 9 exceptions 0 changed bytes 370264 unit table 29692 normalize 25.24984ms roundtrip diffs 137791
+  delta raw 1091896 norm 874937 (80.1%) err <nil> <nil>
+    literals by section: map[.data:38466 .go.buildinfo:151 .gopclntab:612490 .noptrdata:6199 .note.go.buildid:161 .rodata:443206 .strtab:12774 .symtab:128864 .text:700828 .typelink:6659 other:382]
+    literals by section: map[.data:31413 .go.buildinfo:151 .gopclntab:473266 .itablink:143 .noptrdata:5251 .note.go.buildid:146 .rodata:425283 .strtab:12774 .symtab:47987 .text:404525 .typelink:4607 other:6722]
+cgo 1.23.4: size 4040817 units 5381 regions 9 exceptions 0 changed bytes 371195 unit table 29747 normalize 19.536458ms roundtrip diffs 138309
+  delta raw 662453 norm 387418 (58.5%) err <nil> <nil>
+    literals by section: map[.data:33663 .go.buildinfo:1 .gopclntab:297161 .itablink:1993 .noptrdata:996 .note.go.buildid:107 .rodata:297225 .strtab:109 .symtab:113021 .text:325576 .typelink:121 other:1440]
+    literals by section: map[.data:28406 .go.buildinfo:1 .gopclntab:150886 .noptrdata:115 .note.go.buildid:100 .rodata:278198 .strtab:109 .symtab:22109 .text:75471 .typelink:121 other:2056]
+== pe compile.exe pcln-columns=0
+compile.exe 1.22.0: size 19660288 units 21790 regions 8 exceptions 0 changed bytes 980939 unit table 120544 normalize 250.92392ms roundtrip diffs 0
+compile.exe 1.22.6: size 19651072 units 21536 regions 8 exceptions 0 changed bytes 979986 unit table 119134 normalize 122.037454ms roundtrip diffs 0
+  delta raw 3641424 norm 2196964 (60.3%) err <nil> <nil>
+    literals by section: map[other:7702017]
+    literals by section: map[other:5048958]
+compile.exe 1.23.0: size 20305408 units 22336 regions 8 exceptions 0 changed bytes 1005815 unit table 123566 normalize 98.934682ms roundtrip diffs 0
+  delta raw 5931111 norm 4911151 (82.8%) err <nil> <nil>
+    literals by section: map[other:12789238]
+    literals by section: map[other:10676412]
+compile.exe 1.23.4: size 20308992 units 22344 regions 8 exceptions 1 changed bytes 1006044 unit table 123608 normalize 140.38991ms roundtrip diffs 0
+  delta raw 3272668 norm 2011068 (61.5%) err <nil> <nil>
+    literals by section: map[other:6759938]
+    literals by section: map[other:4613016]
+== pe compile.exe pcln-columns=1
+compile.exe 1.22.0: size 19660288 units 21790 regions 8 exceptions 0 changed bytes 1556895 unit table 120544 normalize 202.461868ms roundtrip diffs 575956
+compile.exe 1.22.6: size 19651072 units 21536 regions 8 exceptions 0 changed bytes 1556671 unit table 119134 normalize 209.283611ms roundtrip diffs 576685
+  delta raw 3641424 norm 2050030 (56.3%) err <nil> <nil>
+    literals by section: map[other:7702017]
+    literals by section: map[other:4671652]
+compile.exe 1.23.0: size 20305408 units 22336 regions 8 exceptions 0 changed bytes 1603592 unit table 123566 normalize 153.928807ms roundtrip diffs 597777
+  delta raw 5931111 norm 4829199 (81.4%) err <nil> <nil>
+    literals by section: map[other:12789238]
+    literals by section: map[other:10435761]
+compile.exe 1.23.4: size 20308992 units 22344 regions 8 exceptions 1 changed bytes 1604497 unit table 123608 normalize 131.48681ms roundtrip diffs 598453
+  delta raw 3272668 norm 1841687 (56.3%) err <nil> <nil>
+    literals by section: map[other:6759938]
+    literals by section: map[other:4237405]
+== pe link.exe pcln-columns=0
+link.exe 1.22.0: size 5468672 units 6151 regions 8 exceptions 0 changed bytes 250141 unit table 34353 normalize 47.517922ms roundtrip diffs 0
+link.exe 1.22.6: size 5466624 units 6087 regions 8 exceptions 0 changed bytes 249921 unit table 34011 normalize 44.935626ms roundtrip diffs 0
+  delta raw 945115 norm 663013 (70.2%) err <nil> <nil>
+    literals by section: map[other:1547316]
+    literals by section: map[other:1150742]
+link.exe 1.23.0: size 6019584 units 6752 regions 8 exceptions 0 changed bytes 275091 unit table 37676 normalize 42.798647ms roundtrip diffs 0
+  delta raw 1675530 norm 1395764 (83.3%) err <nil> <nil>
+    literals by section: map[other:3097759]
+    literals by section: map[other:2630040]
+link.exe 1.23.4: size 6025216 units 6761 regions 8 exceptions 0 changed bytes 275441 unit table 37723 normalize 60.929625ms roundtrip diffs 0
+  delta raw 1008053 norm 737027 (73.1%) err <nil> <nil>
+    literals by section: map[other:1848142]
+    literals by section: map[other:1462162]
+== pe link.exe pcln-columns=1
+link.exe 1.22.0: size 5468672 units 6151 regions 8 exceptions 0 changed bytes 418254 unit table 34353 normalize 50.036264ms roundtrip diffs 168113
+link.exe 1.22.6: size 5466624 units 6087 regions 8 exceptions 0 changed bytes 418005 unit table 34011 normalize 39.954764ms roundtrip diffs 168084
+  delta raw 945115 norm 579970 (61.4%) err <nil> <nil>
+    literals by section: map[other:1547316]
+    literals by section: map[other:958030]
+link.exe 1.23.0: size 6019584 units 6752 regions 8 exceptions 0 changed bytes 459143 unit table 37676 normalize 36.122128ms roundtrip diffs 184052
+  delta raw 1675530 norm 1357546 (81.0%) err <nil> <nil>
+    literals by section: map[other:3097759]
+    literals by section: map[other:2475967]
+link.exe 1.23.4: size 6025216 units 6761 regions 8 exceptions 0 changed bytes 459824 unit table 37723 normalize 40.925481ms roundtrip diffs 184383
+  delta raw 1008053 norm 653182 (64.8%) err <nil> <nil>
+    literals by section: map[other:1848142]
+    literals by section: map[other:1249978]
+== pe go.exe pcln-columns=0
+go.exe 1.22.0: size 12960768 units 16607 regions 8 exceptions 1 changed bytes 567487 unit table 92187 normalize 96.219848ms roundtrip diffs 0
+go.exe 1.22.6: size 12960256 units 16518 regions 8 exceptions 0 changed bytes 567224 unit table 91709 normalize 70.12098ms roundtrip diffs 0
+  delta raw 2270975 norm 1536525 (67.7%) err <nil> <nil>
+    literals by section: map[other:4090613]
+    literals by section: map[other:2987050]
+go.exe 1.23.0: size 13758464 units 17436 regions 8 exceptions 0 changed bytes 603338 unit table 96622 normalize 97.755125ms roundtrip diffs 0
+  delta raw 3744294 norm 3083287 (82.3%) err <nil> <nil>
+    literals by section: map[other:7115284]
+    literals by section: map[other:5973768]
+go.exe 1.23.4: size 13765632 units 17450 regions 8 exceptions 0 changed bytes 603916 unit table 96694 normalize 78.676529ms roundtrip diffs 0
+  delta raw 2389266 norm 1638014 (68.6%) err <nil> <nil>
+    literals by section: map[other:4478899]
+    literals by section: map[other:3359740]
+== pe go.exe pcln-columns=1
+go.exe 1.22.0: size 12960768 units 16607 regions 8 exceptions 1 changed bytes 1048278 unit table 92187 normalize 163.557327ms roundtrip diffs 480791
+go.exe 1.22.6: size 12960256 units 16518 regions 8 exceptions 0 changed bytes 1048015 unit table 91709 normalize 98.255428ms roundtrip diffs 480791
+  delta raw 2270975 norm 1399406 (61.6%) err <nil> <nil>
+    literals by section: map[other:4090613]
+    literals by section: map[other:2564911]
+go.exe 1.23.0: size 13758464 units 17436 regions 8 exceptions 0 changed bytes 1104333 unit table 96622 normalize 74.548571ms roundtrip diffs 500995
+  delta raw 3744294 norm 3025122 (80.8%) err <nil> <nil>
+    literals by section: map[other:7115284]
+    literals by section: map[other:5695669]
+go.exe 1.23.4: size 13765632 units 17450 regions 8 exceptions 0 changed bytes 1105525 unit table 96694 normalize 86.272584ms roundtrip diffs 501609
+  delta raw 2389266 norm 1489952 (62.4%) err <nil> <nil>
+    literals by section: map[other:4478899]
+    literals by section: map[other:2913026]
+== pe vet.exe pcln-columns=0
+vet.exe 1.22.0: size 6296576 units 7970 regions 8 exceptions 0 changed bytes 310679 unit table 44294 normalize 103.454076ms roundtrip diffs 0
+vet.exe 1.22.6: size 6285824 units 7852 regions 8 exceptions 0 changed bytes 309408 unit table 43653 normalize 56.977883ms roundtrip diffs 0
+  delta raw 1110492 norm 752586 (67.8%) err <nil> <nil>
+    literals by section: map[other:1795505]
+    literals by section: map[other:1310660]
+vet.exe 1.23.0: size 7563264 units 8631 regions 8 exceptions 0 changed bytes 337381 unit table 47971 normalize 38.359311ms roundtrip diffs 0
+  delta raw 2124151 norm 1795667 (84.5%) err <nil> <nil>
+    literals by section: map[other:4270595]
+    literals by section: map[other:3726035]
+vet.exe 1.23.4: size 7568896 units 8642 regions 8 exceptions 1 changed bytes 337659 unit table 48028 normalize 33.521456ms roundtrip diffs 0
+  delta raw 1253327 norm 871734 (69.6%) err <nil> <nil>
+    literals by section: map[other:2114524]
+    literals by section: map[other:1603178]
+== pe vet.exe pcln-columns=1
+vet.exe 1.22.0: size 6296576 units 7970 regions 8 exceptions 0 changed bytes 525066 unit table 44294 normalize 59.444036ms roundtrip diffs 214387
+vet.exe 1.22.6: size 6285824 units 7852 regions 8 exceptions 0 changed bytes 523888 unit table 43653 normalize 37.557302ms roundtrip diffs 214480
+  delta raw 1110492 norm 660981 (59.5%) err <nil> <nil>
+    literals by section: map[other:1795505]
+    literals by section: map[other:1100716]
+vet.exe 1.23.0: size 7563264 units 8631 regions 8 exceptions 0 changed bytes 568104 unit table 47971 normalize 38.893067ms roundtrip diffs 230723
+  delta raw 2124151 norm 1758721 (82.8%) err <nil> <nil>
+    literals by section: map[other:4270595]
+    literals by section: map[other:3541374]
+vet.exe 1.23.4: size 7568896 units 8642 regions 8 exceptions 1 changed bytes 568683 unit table 48028 normalize 48.562486ms roundtrip diffs 231024
+  delta raw 1253327 norm 775672 (61.9%) err <nil> <nil>
+    literals by section: map[other:2114524]
+    literals by section: map[other:1365881]
+== pe asm.exe pcln-columns=0
+asm.exe 1.22.0: size 3992576 units 4011 regions 8 exceptions 0 changed bytes 173218 unit table 22533 normalize 60.890892ms roundtrip diffs 0
+asm.exe 1.22.6: size 3988480 units 3934 regions 8 exceptions 0 changed bytes 172886 unit table 22108 normalize 25.487587ms roundtrip diffs 0
+  delta raw 483900 norm 341165 (70.5%) err <nil> <nil>
+    literals by section: map[other:690801]
+    literals by section: map[other:498917]
+asm.exe 1.23.0: size 4440576 units 4487 regions 8 exceptions 0 changed bytes 194462 unit table 25152 normalize 20.800007ms roundtrip diffs 0
+  delta raw 1168987 norm 997045 (85.3%) err <nil> <nil>
+    literals by section: map[other:2212300]
+    literals by section: map[other:1908169]
+asm.exe 1.23.4: size 4444160 units 4495 regions 8 exceptions 0 changed bytes 194738 unit table 25194 normalize 25.604735ms roundtrip diffs 0
+  delta raw 683507 norm 534248 (78.2%) err <nil> <nil>
+    literals by section: map[other:1288463]
+    literals by section: map[other:1056425]
+== pe asm.exe pcln-columns=1
+asm.exe 1.22.0: size 3992576 units 4011 regions 8 exceptions 0 changed bytes 282037 unit table 22533 normalize 38.486655ms roundtrip diffs 108819
+asm.exe 1.22.6: size 3988480 units 3934 regions 8 exceptions 0 changed bytes 281642 unit table 22108 normalize 34.468685ms roundtrip diffs 108756
+  delta raw 483900 norm 273578 (56.5%) err <nil> <nil>
+    literals by section: map[other:690801]
+    literals by section: map[other:353424]
+asm.exe 1.23.0: size 4440576 units 4487 regions 8 exceptions 0 changed bytes 316830 unit table 25152 normalize 22.26163ms roundtrip diffs 122368
+  delta raw 1168987 norm 968891 (82.9%) err <nil> <nil>
+    literals by section: map[other:2212300]
+    literals by section: map[other:1784306]
+asm.exe 1.23.4: size 4444160 units 4495 regions 8 exceptions 0 changed bytes 317410 unit table 25194 normalize 23.596799ms roundtrip diffs 122672
+  delta raw 683507 norm 470387 (68.8%) err <nil> <nil>
+    literals by section: map[other:1288463]
+    literals by section: map[other:910636]
+== pe cgo.exe pcln-columns=0
+cgo.exe 1.22.0: size 3883520 units 5172 regions 8 exceptions 0 changed bytes 192170 unit table 28576 normalize 54.109272ms roundtrip diffs 0
+cgo.exe 1.22.6: size 3880960 units 5117 regions 8 exceptions 0 changed bytes 191973 unit table 28280 normalize 31.148697ms roundtrip diffs 0
+  delta raw 594386 norm 411447 (69.2%) err <nil> <nil>
+    literals by section: map[other:871160]
+    literals by section: map[other:629492]
+cgo.exe 1.23.0: size 4339200 units 5687 regions 8 exceptions 0 changed bytes 214074 unit table 31406 normalize 24.75299ms roundtrip diffs 0
+  delta raw 1182404 norm 982601 (83.1%) err <nil> <nil>
+    literals by section: map[other:2150018]
+    literals by section: map[other:1806510]
+cgo.exe 1.23.4: size 4344832 units 5696 regions 8 exceptions 0 changed bytes 214352 unit table 31453 normalize 32.925391ms roundtrip diffs 0
+  delta raw 757398 norm 540450 (71.4%) err <nil> <nil>
+    literals by section: map[other:1410361]
+    literals by section: map[other:1081630]
+== pe cgo.exe pcln-columns=1
+cgo.exe 1.22.0: size 3883520 units 5172 regions 8 exceptions 0 changed bytes 322896 unit table 28576 normalize 50.574992ms roundtrip diffs 130726
+cgo.exe 1.22.6: size 3880960 units 5117 regions 8 exceptions 0 changed bytes 322856 unit table 28280 normalize 25.443767ms roundtrip diffs 130883
+  delta raw 594386 norm 340430 (57.3%) err <nil> <nil>
+    literals by section: map[other:871160]
+    literals by section: map[other:483249]
+cgo.exe 1.23.0: size 4339200 units 5687 regions 8 exceptions 0 changed bytes 358061 unit table 31406 normalize 25.71964ms roundtrip diffs 143987
+  delta raw 1182404 norm 954193 (80.7%) err <nil> <nil>
+    literals by section: map[other:2150018]
+    literals by section: map[other:1664458]
+cgo.exe 1.23.4: size 4344832 units 5696 regions 8 exceptions 0 changed bytes 358518 unit table 31453 normalize 33.014912ms roundtrip diffs 144166
+  delta raw 757398 norm 476722 (62.9%) err <nil> <nil>
+    literals by section: map[other:1410361]
+    literals by section: map[other:900328]

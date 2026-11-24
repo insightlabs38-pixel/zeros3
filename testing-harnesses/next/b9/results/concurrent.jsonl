@@ -1,0 +1,12 @@
+{"cpu_s":30.061382000000002,"family":"cu-files","kind":"concurrent","lane":"b8-archive","order":"b8-archive","p50_us":6,"p95_us":494,"p99_us":2318,"reads":705978,"seconds":10}
+{"cpu_s":28.015569,"family":"cu-files","kind":"concurrent","lane":"b9-archive","order":"b8-archive","p50_us":117,"p95_us":2308,"p99_us":4344,"reads":161326,"seconds":10}
+{"cpu_s":28.495874,"family":"cu-files","kind":"concurrent","lane":"b9-archive","order":"b9-archive","p50_us":122,"p95_us":2338,"p99_us":4409,"reads":158226,"seconds":10}
+{"cpu_s":27.644267,"family":"cu-files","kind":"concurrent","lane":"b8-archive","order":"b9-archive","p50_us":6,"p95_us":529,"p99_us":2704,"reads":615417,"seconds":10}
+{"cpu_s":29.401995,"family":"cu-files","kind":"concurrent","lane":"b8g-archive","order":"b8g-archive","p50_us":7,"p95_us":454,"p99_us":2310,"reads":740087,"seconds":10}
+{"cpu_s":29.958099,"family":"cu-files","kind":"concurrent","lane":"b8-archive","order":"b8g-archive","p50_us":6,"p95_us":515,"p99_us":2409,"reads":686391,"seconds":10}
+{"cpu_s":32.171063,"family":"cu-files","kind":"concurrent","lane":"b8-mixed","order":"b8g-archive","p50_us":5,"p95_us":57,"p99_us":781,"reads":1983049,"seconds":10}
+{"cpu_s":29.886463000000006,"family":"cu-files","kind":"concurrent","lane":"b9-mixed","order":"b8g-archive","p50_us":6,"p95_us":377,"p99_us":2081,"reads":847448,"seconds":10}
+{"cpu_s":22.93971900000001,"family":"cu-files","kind":"concurrent","lane":"b9-mixed","order":"b9-mixed","p50_us":6,"p95_us":274,"p99_us":2742,"reads":694344,"seconds":10}
+{"cpu_s":16.92871600000001,"family":"cu-files","kind":"concurrent","lane":"b8-mixed","order":"b9-mixed","p50_us":5,"p95_us":45,"p99_us":616,"reads":1191137,"seconds":10}
+{"cpu_s":20.13291700000002,"family":"cu-files","kind":"concurrent","lane":"b8-archive","order":"b9-mixed","p50_us":6,"p95_us":379,"p99_us":4465,"reads":463638,"seconds":10}
+{"cpu_s":20.841267000000016,"family":"cu-files","kind":"concurrent","lane":"b8g-archive","order":"b9-mixed","p50_us":6,"p95_us":415,"p99_us":3951,"reads":524103,"seconds":10}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -956,9 +957,13 @@ func TestB9WindowCache(t *testing.T) {
 	pass("first")
 	st1 := l.s.WindowCacheStats()
 	pass("second")
+	pass("third")
 	st2 := l.s.WindowCacheStats()
-	if st1.Misses == 0 || st2.Hits <= st1.Hits || st2.Misses != st1.Misses {
-		t.Fatalf("no reuse: %+v then %+v", st1, st2)
+	pass("fourth")
+	st3 := l.s.WindowCacheStats()
+	// First touches bypass; a window is decoded whole at its second touch, then only hit.
+	if st1.Bypass == 0 || st2.Hits <= st1.Hits || st2.Misses > st1.Misses+st1.Bypass || st3.Misses != st2.Misses || st3.Bypass != st2.Bypass {
+		t.Fatalf("no reuse: %+v, %+v, %+v", st1, st2, st3)
 	}
 	// Concurrent readers of the same windows.
 	l.s.SetWindowCache(64 << 20)
@@ -1029,4 +1034,53 @@ func TestB9WindowCache(t *testing.T) {
 		t.Fatal("cache not dropped")
 	}
 	pass("off")
+}
+
+// TestB9ActiveGroupReclaimed: records retired while their group is still the active (unsealed) one are
+// reclaimed too: compaction seals a mostly dead active group above 64 KiB and rewrites it.
+func TestB9ActiveGroupReclaimed(t *testing.T) {
+	b9Grouped(t, 1<<20)
+	l := newAuthLab(t)
+	l.put("x", genRandomBytes(7, 200_000))
+	ps, err := chunkPieces(l.man("x"))
+	mustOK(t, err)
+	var shas [][32]byte
+	for i := range 600 {
+		r := &authRecord{SHA: sha256.Sum256([]byte(fmt.Sprint("b9active", i))), Size: 200_000, Gen: 1, Form: authFormPin, Pieces: ps}
+		mustOK(t, l.s.authPublish(r))
+		shas = append(shas, r.SHA)
+	}
+	mustOK(t, l.s.authRetireMany(shas[:550], false))
+	ag, err := l.s.agCompact(false)
+	mustOK(t, err)
+	if ag.Compacted != 1 || ag.GroupBytes > 64<<10 {
+		t.Fatalf("active group not reclaimed: %+v", ag)
+	}
+	for i, sha := range shas {
+		r, err := l.s.authLoad(sha)
+		if err != nil || (r != nil) != (i >= 550) {
+			t.Fatalf("record %d after compaction: %v %v", i, r != nil, err)
+		}
+	}
+	l.close()
+	l.open()
+	for i, sha := range shas {
+		if r, _ := l.s.authLoad(sha); (r != nil) != (i >= 550) {
+			t.Fatalf("record %d after reopen", i)
+		}
+	}
+}
+
+// TestB9ExeRestoreEdges: a decode window that ends inside an opcode (0F, E8, a ModRM byte) never reads
+// past its buffer, and restores nothing it cannot see whole.
+func TestB9ExeRestoreEdges(t *testing.T) {
+	tb := &exeTables{regions: []exeRegion{{0, 64, 0x1000, true}}, units: map[uint32]uint64{0x11223344: 0x1000}, except: map[int64]bool{}}
+	for _, tail := range [][]byte{{0x0F}, {0x0F, 0x85}, {0xE8, 0x44, 0x33}, {0x8B, 0x05}, {0x48, 0x8D, 0x05, 0x44}} {
+		buf := append(make([]byte, 20), tail...)
+		want := slices.Clone(buf)
+		mustOK(t, tb.exeRestore(0, buf, 0, 0, int64(len(buf))))
+		if !bytes.Equal(buf, want) {
+			t.Fatalf("tail %x: rewrote bytes it could not see whole", tail)
+		}
+	}
 }
