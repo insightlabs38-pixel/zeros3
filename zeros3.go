@@ -123,18 +123,18 @@ import (
 //    32461    Portable snapshot bundles (`zeros3 bundle`)
 //    33658    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    34293    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52968    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61061    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    64404    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    64960    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    65867    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67022    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    67966    Verified decoded-window cache (B9)
-//    68247    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    69476    Windowed and estimated similarity deltas (extracted dcore)
-//    71313    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    79169    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    85441    CLI dispatch, HTTP server/startup, and main
+//    52978    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61071    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    64442    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    64998    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    65905    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67060    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68004    Verified decoded-window cache (B9)
+//    68285    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    69535    Windowed and estimated similarity deltas (extracted dcore)
+//    71372    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    79228    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    85500    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -50519,6 +50519,16 @@ func repRangeReader(c *repCall, off, n int64) (func(w io.Writer) error, error) {
 	case repKindParquet:
 		if n <= 64<<20 {
 			return func(w io.Writer) error { _, err := repSCParquetRangeTo(c, w, off, n); return err }, nil
+		}
+	case repKindSST: // B10: only the overlapped data blocks (whole-table rebuilds took 282 ms per 4 KiB)
+		if n <= 64<<20 {
+			return func(w io.Writer) error {
+				b, _, err := repSCReadSSTRange(c, off, n)
+				if err == nil {
+					_, err = w.Write(b)
+				}
+				return err
+			}, nil
 		}
 	case repKindConcat:
 		if concatRangeSupported(c.Rep, off, off+n) {

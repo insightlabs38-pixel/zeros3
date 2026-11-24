@@ -987,3 +987,43 @@ func TestB10IncumbentNoWorse(t *testing.T) {
 		}
 	}
 }
+
+// TestB10SSTKindRanges: ranges of a structured SST representation (kind 9) rebuild only their data blocks and
+// are exact at every block boundary and at random offsets.
+func TestB10SSTKindRanges(t *testing.T) {
+	l := newAuthLab(t)
+	for _, p := range []string{"testdata/p7/rocksdb_lz4_small.sst", "testing-harnesses/z3/sstz3/testdata/rocksdb-zstd.sst"} {
+		data, err := os.ReadFile(p)
+		mustOK(t, err)
+		key := filepath.Base(p)
+		l.put(key, data)
+		l.s.rep.hardCodecs.Store(true)
+		mem := map[[32]byte][]byte{}
+		root, _, err := l.s.repConstructMem(l.man(key), bytes.NewReader(data), nil, 0, true, mem)
+		l.s.rep.hardCodecs.Store(false)
+		mustOK(t, err)
+		src := l.s.newRepSource(root.Descs, nil)
+		src.mem = mem
+		env := &repEnv{Src: src, Limits: repProdLimits}
+		call, err := env.open(root.Rep)
+		mustOK(t, err)
+		if call.Rep.Kind != repKindSST {
+			t.Fatalf("%s: kind %d", key, call.Rep.Kind)
+		}
+		r := rand.New(rand.NewPCG(4, 4))
+		size := int64(len(data))
+		for i := range 200 {
+			off := r.Int64N(size)
+			n := min(int64([]int{1, 4096, 65536}[i%3]), size-off)
+			produce, err := repRangeReader(call, off, n)
+			if err != nil || produce == nil {
+				t.Fatalf("%s: no range reader: %v", key, err)
+			}
+			var b bytes.Buffer
+			if err := produce(&b); err != nil || !bytes.Equal(b.Bytes(), data[off:off+n]) {
+				t.Fatalf("%s [%d,+%d): %v", key, off, n, err)
+			}
+		}
+		src.close()
+	}
+}
