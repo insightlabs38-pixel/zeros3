@@ -368,6 +368,8 @@ func TestAuthorityRevertRestoresCDC(t *testing.T) {
 }
 
 func TestAuthorityGCFailsClosedOnMissingBase(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	l := newAuthLab(t)
 	hist := authHistory(41, 3, 1_000_000)
 	for i, v := range hist {
@@ -511,7 +513,7 @@ func TestAuthHelperProcess(t *testing.T) {
 			Profile: "archive", Canonical: true}); err != nil {
 			t.Fatal(err)
 		}
-	case "repair", "repairobject", "audit", "maint":
+	case "repair", "repairobject", "audit", "maint", "b10online":
 		authRepairHelper(t, scenario, dir)
 	case "repack":
 		if _, err := repackStore(dir, repackOptions{TargetBytes: defaultPackTargetBytes, MaxLivePercent: 100, Compress: true}); err != nil {
@@ -743,7 +745,7 @@ func TestAuthorityMalformedRecordsAndEnvelopes(t *testing.T) {
 	files, _ := l.s.authFiles()
 	r := rand.New(rand.NewPCG(5, 6))
 	for _, f := range files {
-		raw, _ := os.ReadFile(l.s.authPath(f))
+		raw := authRawRecord(t, l.s, f)
 		if _, err := unmarshalAuthRecord(raw); err != nil {
 			t.Fatal(err)
 		}
@@ -1656,6 +1658,8 @@ func TestAuthorityRepairPaths(t *testing.T) {
 }
 
 func TestAuthorityObjectRepairPreservesRecordUntilExactReplacement(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	setSmallObjectPolicyForTest(t, false)
 	l := newAuthLab(t)
 	exact := genRandomBytes(622, 196_608)
@@ -2339,6 +2343,8 @@ func TestAuthorityStorageDiagnostics(t *testing.T) {
 }
 
 func TestAuthorityRecoverPeerClosure(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	local, peer := authMigratedLab(t), authMigratedLab(t)
 	local.offline(func() {
 		if _, err := gcCollect(local.dir, true); err != nil {
@@ -2440,6 +2446,8 @@ func TestAuthorityRecoverPeerClosure(t *testing.T) {
 }
 
 func TestAuthorityRecoverPeerWithExactCDCFallback(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
 			local := authMigratedLab(t)
@@ -2612,6 +2620,8 @@ func TestAuthorityBaseRetentionAfterNamespacePruning(t *testing.T) {
 // materializing chunks, produce a second manifest served by the same record, and a copy
 // whose source closure is broken is refused before anything becomes visible.
 func TestAuthorityCopyAndRestoreOfBodyOnlyContent(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	l := newAuthLab(t)
 	hist := authHistory(181, 4, 800_000)
 	for _, v := range hist { // one key: older revisions only in history
@@ -3510,6 +3520,8 @@ func TestAuthWindowedProgramValidation(t *testing.T) {
 // A depth-2 windowed history serves arbitrary ranges by executing only the operations that produce them,
 // through gc, repack and reopen, concurrently, and never returns bytes from damaged or missing dependencies.
 func TestAuthorityNestedRangeExecution(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	t.Run("zw1", func(t *testing.T) { authNestedRangeExecution(t, 0) })
 	t.Run("zw2", func(t *testing.T) { authNestedRangeExecution(t, 16<<10) })
 }
@@ -3659,6 +3671,8 @@ func authNestedRangeExecution(t *testing.T, segment int64) {
 // a pin record's chunk list is. Substitutions and inconsistent metadata must fail closed; a forgery that is internally
 // consistent is found by whole reads and deep verification, which check the content digest.
 func TestAuthorityPartialReadBinding(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	l, key, rec := authNestedLab(t, 16<<10)
 	want := l.want[key]
 	off := int64(len(want)/2 + 999)
@@ -5837,6 +5851,19 @@ func authRepairHelper(t *testing.T, scenario, dir string) {
 			a.VerifyOK = true
 		}
 		emit(a)
+	case "b10online": // B10: one online pass (gc + group compaction) as the only writer
+		s, err := openStoreWith(dir, true, true, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		o := defaultMaintOptions()
+		o.MaxSourcePacks, o.TargetBytes, o.Wait, o.MaxLivePercent = 0, 1<<20, 20*time.Second, 101
+		rep, err := s.maintainOnline(context.Background(), o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		emit(rep)
 	case "maint":
 		o := map[string]string{}
 		if _, err := gcCollect(dir, true); err != nil {
@@ -7101,6 +7128,8 @@ func TestAuthorityHardCodecsFeatureLifecycle(t *testing.T) {
 // (Parquet recipes with streaming-Brotli pages). A build that predates either refuses the store and names the
 // feature, nothing changes on disk, and revert -all clears the feature.
 func TestAuthorityStreamAndIQ3FeaturesRefuseOlderBuilds(t *testing.T) {
+	// The feature under test must be the only one the older build lacks, so no "recgroup".
+	authLegacyLayout(t)
 	cases := []struct {
 		name, feature string
 		lab           func() *authLab

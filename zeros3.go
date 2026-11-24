@@ -54178,19 +54178,50 @@ func (c *authCtx) body(sha [32]byte, want int64, depth int) (authBody, *authReco
 	c.path[sha] = true
 	defer delete(c.path, sha)
 	var b authBody
-	switch rec.Form {
-	case authFormPin:
-		b = &authPinBody{c: c, rec: rec}
-	case authFormRep:
-		b = &authRepBody{c: c, rec: rec, depth: depth}
-	case authFormDelta:
-		b, err = c.newDelta(rec, depth)
-		if err != nil {
+	for retried := false; ; retried = true {
+		err = nil
+		switch rec.Form {
+		case authFormPin:
+			b = &authPinBody{c: c, rec: rec}
+		case authFormRep:
+			b = &authRepBody{c: c, rec: rec, depth: depth}
+		case authFormDelta:
+			b, err = c.newDelta(rec, depth)
+		}
+		if err == nil {
+			break
+		}
+		// B10: a record superseded in another process can meet its bases' newer generations (a depth or
+		// envelope disagreement): reload the group index once and retry only if the record changed.
+		if retried || !errors.Is(err, errAuthCorrupt) || c.overlay[sha] != nil {
 			return nil, nil, err
 		}
+		fresh, ferr := c.s.authReloadRecord(sha)
+		if ferr != nil || fresh == nil || authSameRecord(fresh, rec) || want > 0 && fresh.Size != want {
+			return nil, nil, err
+		}
+		rec = fresh
 	}
 	c.open[sha] = b
 	return b, rec, nil
+}
+
+// authReloadRecord re-reads the group index from the files, then sha's record.
+func (s *Store) authReloadRecord(sha [32]byte) (*authRecord, error) {
+	x := &s.auth.ag
+	x.mu.Lock()
+	err := s.agReloadLocked()
+	x.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return s.authLoad(sha)
+}
+
+func authSameRecord(a, b *authRecord) bool {
+	x, err1 := a.marshal()
+	y, err2 := b.marshal()
+	return err1 == nil && err2 == nil && bytes.Equal(x, y)
 }
 
 // readPiece may be called by concurrent bodies of one closure (ZN7 window workers): the chunk cache

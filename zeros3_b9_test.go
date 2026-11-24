@@ -248,6 +248,7 @@ func TestB9GroupedLifecycle(t *testing.T) {
 // TestB9MixedLegacyAndGrouped: records published as files before grouping keep reading beside grouped
 // ones; a grouped generation supersedes its file; repack regroups the rest.
 func TestB9MixedLegacyAndGrouped(t *testing.T) {
+	authLegacyLayout(t) // the first phase must write record files whatever ZEROS3_RECORD_GROUPS says
 	l := newAuthLab(t)
 	b9SmallHistory(l, 5, 12, 2)
 	l.reclaim()

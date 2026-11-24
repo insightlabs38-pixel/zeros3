@@ -333,6 +333,8 @@ func TestB8ZipTableFuzz(t *testing.T) {
 // TestB8RecordShape: rep records with bases are checked against the body references of their
 // representation; a mismatch is refused at publication and faults reachability.
 func TestB8RecordShape(t *testing.T) {
+	// Removes, renames or substitutes record files: the legacy one-file-per-record layout (B10 has the grouped analogues).
+	authLegacyLayout(t)
 	l := newAuthLab(t)
 	fs := b8Tree(11, 10)
 	tarb := b8Tar(t, fs, 1)

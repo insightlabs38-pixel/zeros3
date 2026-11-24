@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -210,15 +209,7 @@ func TestAuthorityEquivCorruptionClasses(t *testing.T) {
 	})
 	t.Run("a damaged record refuses gc and repack", func(t *testing.T) {
 		f := eqFixture(t)
-		path := f.l.s.authPath(f.rec.SHA)
-		b, err := os.ReadFile(path)
-		if err != nil || len(b) < 40 {
-			t.Fatalf("record file: %v", err)
-		}
-		b[len(b)/2] ^= 0x5a
-		if err := os.WriteFile(path, b, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		authDamageRecord(t, f.l.s, f.rec.SHA) // a record file or a group frame, whichever layout holds it
 		f.l.close()
 		if _, err := gcCollect(f.l.dir, true); err == nil {
 			t.Fatal("gc ran against a damaged live record")
