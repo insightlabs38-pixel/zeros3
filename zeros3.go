@@ -61108,6 +61108,7 @@ type OptimizePolicy struct {
 	spliceNoRep       bool                                // B10 ablation: deep streams decode no nested container
 	spliceNoPage      bool                                // B10 ablation: deep streams decode no page or block
 	spliceNoDelta     bool                                // B10 ablation: deep streams only as CDC
+	spliceAll         bool                                // B10 ablation: decode nested containers other objects also hold
 }
 
 // rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
@@ -61216,6 +61217,13 @@ type rgOpt struct {
 	canon  bool    // a canonical wrapper: its base is the container's stream
 	splice bool    // B10: a deep-stream representation (kind 16) over its base
 	rfix   float64 // B10: modeled fixed replay of a sparse read (µs, splice)
+	segs   []rgSeg // B10: the splice table, for the read model
+}
+
+// rgSeg is one splice segment as the read model sees it: output and deep-stream spans and its replay.
+type rgSeg struct {
+	out, outLen, plain, plainLen int64
+	kind, codec                  byte // codec: the page codec, or the child's replay kind
 }
 
 type rgNode struct {
@@ -61276,6 +61284,7 @@ type rgGraph struct {
 	chunkRefs map[[32]byte]int32              // eligible contents holding each CDC chunk (B7 share discount)
 	canonSt   CanonStats                      // B8 canonical analysis
 	splSt     SpliceStats                     // B10 deep-stream analysis
+	splShared map[[32]byte]bool               // B10: nested containers several objects hold byte for byte
 }
 
 // rgCandSet is what discovery hands the encoders for one target: single bases, best first, and
@@ -61737,6 +61746,10 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 	for _, p := range o.hdr {
 		t.mark(p, ^uint64(0), depth)
 	}
+	if o.splice && len(o.segs) > 0 { // B10: the segments a read overlaps, priced exactly
+		g.spliceTouch(e, v, o, a, b, t, depth)
+		return
+	}
 	if o.replay != rgReplayNone {
 		*t.replay += g.replayUS(o, a, b, t.whole)
 	}
@@ -62187,7 +62200,8 @@ func (g *rgGraph) keepOpt(nd *rgNode) (*rgOpt, error) {
 		if k, plain, err := g.s.repTopCodec(r.Root); err == nil && k != 0 {
 			o.replay, o.plain = rgReplayOf(k), plain
 			if k == repKindSplice {
-				o.splice, o.rfix = true, g.s.spliceFixedOf(r.Root)
+				o.splice = true
+				o.rfix, o.segs = g.s.spliceFixedOf(r.Root)
 			}
 			if o.canon = len(r.Bases) == 1; o.canon {
 				o.units = nil
@@ -68703,14 +68717,20 @@ type SpliceStats struct {
 	Children    int     `json:"children"`     // nested canonical containers
 	Pages       int     `json:"pages"`        // replayed pages and blocks
 	Refused     int     `json:"refused"`      // units left verbatim (unsupported producer, limits)
+	Kept        int     `json:"kept"`         // nested containers another object holds byte for byte (left verbatim)
 	PlainBytes  int64   `json:"plain_bytes"`  // deep-stream bytes
 	TableBytes  int64   `json:"table_bytes"`  // splice tables
 	RecipeBytes int64   `json:"recipe_bytes"` // priced bytes of the objects' own components
 	Seconds     float64 `json:"seconds"`
 }
 
-// splOpts selects the units a construction decodes (noRep, noPage: campaign ablations).
-type splOpts struct{ hard, noRep, noPage bool }
+// splOpts selects the units a construction decodes (noRep, noPage: campaign ablations). shared names nested
+// containers whose exact bytes other objects hold too: they stay COPY (hybrid raw/replay), since their raw
+// bytes already match across versions and decoding them would only add a recipe.
+type splOpts struct {
+	hard, noRep, noPage bool
+	shared              map[[32]byte]bool
+}
 
 // splBuilder carries one construction: the components go to mem (a planning overlay).
 type splBuilder struct {
@@ -68837,11 +68857,57 @@ func (sb *splBuilder) tarUnits(ra io.ReaderAt, size int64) error {
 		default:
 			continue
 		}
+		if sb.opt.shared != nil {
+			h := sha256.New()
+			if _, err := io.Copy(h, io.NewSectionReader(ra, body, esz)); err != nil {
+				return err
+			}
+			if sb.opt.shared[[32]byte(h.Sum(nil))] {
+				sb.st.Kept++
+				continue
+			}
+		}
 		if !sb.child(ra, body, esz, kind) {
 			sb.st.Refused++
 		}
 	}
 	return nil
+}
+
+// tarNested lists the SHA-256 of every nested container member of a tar (the units tarUnits considers).
+func tarNested(ra io.ReaderAt, size int64) ([][32]byte, error) {
+	if err := tarPrescan(ra, size); err != nil {
+		return nil, err
+	}
+	var out [][32]byte
+	hdr := make([]byte, tarBlock)
+	for pos := int64(0); pos+tarBlock <= size; {
+		if err := repReadFullAt(ra, hdr, pos); err != nil {
+			return nil, err
+		}
+		if allZero(hdr) {
+			break
+		}
+		esz, _ := tarEntrySize(hdr)
+		body := pos + tarBlock
+		pos = body + (esz+tarBlock-1)/tarBlock*tarBlock
+		if esz < splMinUnit || hdr[156] != '0' && hdr[156] != 0 {
+			continue
+		}
+		var head [4]byte
+		if err := repReadFullAt(ra, head[:], body); err != nil {
+			return nil, err
+		}
+		if !(head[0] == 0x1f && head[1] == 0x8b && head[2] == 8) && !bytes.Equal(head[:], []byte{0x28, 0xb5, 0x2f, 0xfd}) && !bytes.Equal(head[:], []byte("PK\x03\x04")) {
+			continue
+		}
+		h := sha256.New()
+		if _, err := io.Copy(h, io.NewSectionReader(ra, body, esz)); err != nil {
+			return nil, err
+		}
+		out = append(out, [32]byte(h.Sum(nil)))
+	}
+	return out, nil
 }
 
 // parquetUnits finds the compressed page payloads of a Parquet file (v2 pages: the values after the levels).
@@ -69140,8 +69206,59 @@ func splFixed(t *splTable, kinds []repKind, size int64) float64 {
 	return us
 }
 
+// spliceTouch maps a read of a splice onto its deep stream: COPY bytes as they are, a page whole, a child's
+// slice from its codec's warm-up; replay CPU per page and per child restart.
+func (g *rgGraph) spliceTouch(e *rgEval, v int32, o *rgOpt, a, b int64, t rgTouch, depth int) {
+	if t.whole && a == 0 && b >= g.nodes[v].size {
+		*t.replay += rgReplayCost[rgReplaySplice].Whole * float64(o.plain)
+		g.touch(e, o.bases[0], 0, o.plain, t, depth+1)
+		return
+	}
+	k, _ := slices.BinarySearchFunc(o.segs, a, func(s rgSeg, x int64) int { return cmp.Compare(s.out+s.outLen, x+1) })
+	for ; k < len(o.segs) && o.segs[k].out < b; k++ {
+		sg := &o.segs[k]
+		lo, hi := max(a, sg.out)-sg.out, min(b, sg.out+sg.outLen)-sg.out
+		switch sg.kind {
+		case splCopy:
+			g.touch(e, o.bases[0], sg.plain+lo, sg.plain+hi, t, depth+1)
+		case splPage:
+			per := 0.004
+			switch int(sg.codec) {
+			case repPQCodecZstd:
+				per = 0.012
+			case repPQCodecBrotli:
+				per = 0.05
+			}
+			*t.replay += 80 + per*float64(sg.plainLen+sg.outLen)
+			g.touch(e, o.bases[0], sg.plain, sg.plain+sg.plainLen, t, depth+1)
+		case splRep:
+			c := rgReplayCost[sg.codec]
+			*t.replay += c.Fixed + c.Byte*float64(hi-lo)
+			pa, pb := lo*sg.plainLen/sg.outLen, (hi*sg.plainLen+sg.outLen-1)/sg.outLen
+			g.touch(e, o.bases[0], sg.plain+max(0, pa-c.Warm), sg.plain+min(sg.plainLen, pb+64<<10), t, depth+1)
+		}
+	}
+}
+
+// spliceSegs is the read model's view of a splice table.
+func spliceSegs(t *splTable, kinds []repKind) []rgSeg {
+	out := make([]rgSeg, len(t.segs))
+	for i, sg := range t.segs {
+		out[i] = rgSeg{out: sg.out, outLen: sg.outLen, plain: sg.plain, plainLen: sg.plainLen, kind: sg.kind}
+		switch sg.kind {
+		case splPage:
+			out[i].codec = sg.rec[0]
+		case splRep:
+			if sg.member < len(kinds) {
+				out[i].codec = rgReplayOf(kinds[sg.member])
+			}
+		}
+	}
+	return out
+}
+
 // spliceFixedOf prices a committed splice record's replay (0 when unreadable: the record is kept as is).
-func (s *Store) spliceFixedOf(root *repRoot) float64 { return s.spliceFixedMem(root, nil) }
+func (s *Store) spliceFixedOf(root *repRoot) (float64, []rgSeg) { return s.spliceFixedMem(root, nil) }
 
 // spliceOpts builds the deep-stream option of every eligible tar, Parquet and SST content (live objects and
 // canonical streams) and the node of its deep stream; the new stream nodes join discovery.
@@ -69149,6 +69266,11 @@ func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []in
 	s := g.s
 	t0 := time.Now()
 	defer func() { g.splSt.Seconds += time.Since(t0).Seconds() }()
+	if !g.pol.spliceAll && g.splShared == nil {
+		if err := g.spliceShared(ctx, eligible); err != nil {
+			return nil, err
+		}
+	}
 	var added []int32
 	for _, v := range eligible {
 		if err := ctx.Err(); err != nil {
@@ -69180,7 +69302,7 @@ func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []in
 		if err != nil {
 			continue
 		}
-		fixed := s.spliceFixedMem(root, mem)
+		fixed, segs := s.spliceFixedMem(root, mem)
 		cl, err := s.repClosureMem(root, mem)
 		if err != nil {
 			canon.close()
@@ -69202,7 +69324,7 @@ func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []in
 			added = append(added, u)
 		}
 		o := &rgOpt{kind: rgRep, label: "splice", bases: []int32{u}, enc: []int32{u}, rep: &authRepCand{kind: repKindSplice, root: root, chunks: cl.chunks, lazy: true},
-			replay: rgReplaySplice, plain: g.nodes[u].size, canon: true, splice: true, rfix: fixed}
+			replay: rgReplaySplice, plain: g.nodes[u].size, canon: true, splice: true, rfix: fixed, segs: segs}
 		rec := authRecord{SHA: nd.sha, Size: nd.size, Gen: 1, Form: authFormRep, Depth: 1, Bases: []xdBaseRef{{g.nodes[u].sha, g.nodes[u].size}}, Root: root, Sketch: make([]uint64, 16)}
 		if b, err := rec.marshal(); err == nil {
 			o.meta = g.roundMeta(int64(len(b)))
@@ -69232,22 +69354,67 @@ func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []in
 }
 
 func (g *rgGraph) splOpts() splOpts {
-	return splOpts{hard: g.s.rep.hardCodecs.Load(), noRep: g.pol.spliceNoRep, noPage: g.pol.spliceNoPage}
+	return splOpts{hard: g.s.rep.hardCodecs.Load(), noRep: g.pol.spliceNoRep, noPage: g.pol.spliceNoPage, shared: g.splShared}
+}
+
+// spliceShared finds the nested containers that more than one eligible tar holds byte for byte.
+func (g *rgGraph) spliceShared(ctx context.Context, eligible []int32) error {
+	count := map[[32]byte]int{}
+	for _, v := range eligible {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		nd := g.nodes[v]
+		if nd.obj == nil || nd.deep || nd.size < splMinUnit || nd.size > repMaxInspect {
+			continue
+		}
+		units, err := func() ([][32]byte, error) {
+			var ra io.ReaderAt
+			if nd.canon != nil && nd.canon.File != nil {
+				ra = nd.canon.File
+			} else {
+				mra := g.s.newManifestReaderAt(nd.obj.man)
+				defer mra.close()
+				ra = mra
+			}
+			if spliceKind(ra, nd.size) != 't' {
+				return nil, errRepUnsupported
+			}
+			return tarNested(ra, nd.size)
+		}()
+		if err != nil {
+			continue
+		}
+		seen := map[[32]byte]bool{}
+		for _, u := range units {
+			if !seen[u] {
+				seen[u] = true
+				count[u]++
+			}
+		}
+	}
+	g.splShared = map[[32]byte]bool{}
+	for u, n := range count {
+		if n > 1 {
+			g.splShared[u] = true
+		}
+	}
+	return nil
 }
 
 // spliceFixedMem is the modeled fixed replay of a splice root (mem: a planning build's components).
-func (s *Store) spliceFixedMem(root *repRoot, mem map[[32]byte][]byte) float64 {
+func (s *Store) spliceFixedMem(root *repRoot, mem map[[32]byte][]byte) (float64, []rgSeg) {
 	src := s.newRepSource(root.Descs, nil)
 	src.mem = mem
 	defer src.close()
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	call, err := env.open(root.Rep)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
 	t, err := splRecipe(call)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
 	var kinds []repKind
 	for i := 0; i < t.children; i++ {
@@ -69257,7 +69424,7 @@ func (s *Store) spliceFixedMem(root *repRoot, mem map[[32]byte][]byte) float64 {
 			kinds = append(kinds, 0)
 		}
 	}
-	return splFixed(t, kinds, call.Rep.Size)
+	return splFixed(t, kinds, call.Rep.Size), spliceSegs(t, kinds)
 }
 
 // spliceApply constructs the planned splice again, checks it against the plan and stages its components

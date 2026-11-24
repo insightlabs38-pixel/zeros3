@@ -513,6 +513,21 @@ func TestAuthHelperProcess(t *testing.T) {
 			Profile: "archive", Canonical: true}); err != nil {
 			t.Fatal(err)
 		}
+	case "splice": // B10: deep-stream optimize, archive profile
+		lock, err := acquireStoreLock(dir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.release()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if _, err := s.AuthorityOptimize(context.Background(), OptimizePolicy{AuthPolicy: AuthPolicy{Order: "oldest", MaxDepth: 2, AllowDelta: true, AllowRep: true, Apply: true},
+			Profile: "archive", Canonical: true, Splice: true}); err != nil {
+			t.Fatal(err)
+		}
 	case "repair", "repairobject", "audit", "maint", "b10online":
 		authRepairHelper(t, scenario, dir)
 	case "repack":

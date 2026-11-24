@@ -7,14 +7,18 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -566,4 +570,354 @@ func TestB10SpliceOptimize(t *testing.T) {
 	l.reclaim()
 	l.exact("version deleted")
 	l.verifyOK("version deleted")
+}
+
+// b10SmallLab: two gem versions and a gzipped layer nesting a jar, small enough for fault matrices.
+func b10SmallLab(t *testing.T) *authLab {
+	l := newAuthLab(t)
+	v1 := b8Tree(41, 9)
+	v2 := b8Edit(v1, 5)
+	l.put("g/demo-1.gem", b10Gem(t, v1, 1700000000))
+	l.put("g/demo-2.gem", b10Gem(t, v2, 1700086400))
+	var args []any
+	for _, f := range v2[:6] {
+		args = append(args, f.name, f.data)
+	}
+	l.put("oci/layer.tar.gz", b10Gzip(t, b10Tar(t, "app/lib.jar", b10Zip(t, args...), "etc/x", b5Text(5, 9000)), 6))
+	l.reclaim()
+	return l
+}
+
+// TestB10SpliceDamage: a missing or damaged deep stream fails reads closed (never other bytes), deep verify
+// and gc refuse; restored, everything is exact again.
+func TestB10SpliceDamage(t *testing.T) {
+	authLegacyLayout(t) // removes and edits record files
+	l := b10SmallLab(t)
+	b8Optimize(t, l, OptimizePolicy{AuthPolicy: AuthPolicy{MaxDepth: 2}, Profile: "archive", Splice: true})
+	l.reclaim()
+	var victim *authRecord
+	var key string
+	for k, r := range b8Forms(t, l) {
+		if r != nil && r.Form == authFormRep && len(r.Bases) == 1 {
+			if kd, _, _ := l.s.repTopCodec(r.Root); kd == repKindSplice && strings.HasSuffix(k, ".gem") {
+				victim, key = r, k
+			}
+		}
+	}
+	if victim == nil {
+		t.Fatal("no spliced gem")
+	}
+	d := victim.Bases[0].SHA
+	p := l.s.authPath(d)
+	orig, err := os.ReadFile(p)
+	mustOK(t, err)
+	check := func(stage string) {
+		got, err := g1ReadAll(l, key, byteRange{0, l.man(key).TotalLength - 1})
+		if err == nil && !bytes.Equal(got, l.want[key]) {
+			t.Fatalf("%s: wrong bytes without an error", stage)
+		}
+		if !bytes.Equal(got, l.want[key][:len(got)]) {
+			t.Fatalf("%s: delivered bytes are not an exact prefix", stage)
+		}
+		if err == nil {
+			t.Fatalf("%s: read succeeded without its deep stream", stage)
+		}
+		if res, err := l.s.Verify(true); err == nil && res.OK() {
+			t.Fatalf("%s: deep verify passed", stage)
+		}
+		l.offline(func() {
+			if _, err := gcCollect(l.dir, true); err == nil {
+				t.Fatalf("%s: gc ran", stage)
+			}
+		})
+	}
+	mustOK(t, os.Remove(p))
+	l.s.purgeReadCaches()
+	check("deep stream record missing")
+	b := slices.Clone(orig)
+	b[len(b)/2] ^= 0x41
+	mustOK(t, os.WriteFile(p, b, 0o644))
+	l.s.purgeReadCaches()
+	check("deep stream record damaged")
+	mustOK(t, os.WriteFile(p, orig, 0o644))
+	l.s.purgeReadCaches()
+	l.exact("restored")
+	l.verifyOK("restored")
+}
+
+// TestB10SpliceRefusals: units the builder must not decode stay verbatim; hostile containers are bounded.
+func TestB10SpliceRefusals(t *testing.T) {
+	l := newAuthLab(t)
+	bomb := b10Gzip(t, make([]byte, 64<<20), 9) // 64 MiB of zeros in ~64 KiB: above the expansion bound
+	var multi []byte                            // two gzip members: refused by the canonical gzip builder
+	multi = append(b10Gzip(t, b5Text(1, 50_000), 6), b10Gzip(t, b5Text(2, 50_000), 6)...)
+	trunc := b10Gzip(t, b5Text(3, 80_000), 6)
+	trunc = trunc[:len(trunc)-9]
+	zipBad := b10Zip(t, "a", b5Text(4, 40_000), "b", b5Text(5, 40_000))
+	zipBad[len(zipBad)-10] ^= 0xff // central directory damaged
+	arch := b10Tar(t, "bomb.gz", bomb, "multi.gz", multi, "trunc.gz", trunc, "bad.zip", zipBad, "ok.gz", b10Gzip(t, b5Text(6, 60_000), 6))
+	_, root, canon, st := b10SpliceEnv(t, l, "arch", arch, false)
+	if st.Children != 1 || st.Refused != 4 {
+		t.Fatalf("children %d refused %d", st.Children, st.Refused)
+	}
+	if canon.Size > int64(len(arch))+70_000 {
+		t.Fatalf("deep stream of %d bytes for %d", canon.Size, len(arch))
+	}
+	_ = root
+	// nothing decodable: no representation at all
+	l.put("plain", b10Tar(t, "a.txt", b5Text(7, 9000)))
+	if _, _, err := l.s.spliceConstruct(l.man("plain"), nil, 0, map[[32]byte][]byte{}, splOpts{}, nil); !errors.Is(err, errRepUnsupported) {
+		t.Fatalf("plain tar: %v", err)
+	}
+	// a truncated Parquet file is refused
+	pqb, err := os.ReadFile("testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet")
+	mustOK(t, err)
+	l.put("trunc.parquet", append(pqb[:len(pqb)/2:len(pqb)/2], pqb[len(pqb)-8:]...))
+	if _, _, err := l.s.spliceConstruct(l.man("trunc.parquet"), nil, 0, map[[32]byte][]byte{}, splOpts{}, nil); err == nil {
+		t.Fatal("truncated Parquet accepted")
+	}
+	// LZ4 pages need the hard-codec policy
+	lz, err := os.ReadFile("testdata/p7/pa_lz4_raw.parquet")
+	mustOK(t, err)
+	l.put("lz4.parquet", lz)
+	if _, _, err := l.s.spliceConstruct(l.man("lz4.parquet"), nil, 0, map[[32]byte][]byte{}, splOpts{}, nil); !errors.Is(err, errRepUnsupported) {
+		t.Fatalf("LZ4 pages without the hard-codec policy: %v", err)
+	}
+}
+
+// TestB10SpliceTableFuzz: damaged tables, recipes and member lists never panic and never reproduce the object.
+func TestB10SpliceTableFuzz(t *testing.T) {
+	l := newAuthLab(t)
+	pqb, err := os.ReadFile("testing-harnesses/z3/parquetz3/testdata/pa_snappy_v2.parquet")
+	mustOK(t, err)
+	gem := b10Gem(t, b8Tree(9, 8), 1700000000)
+	for name, data := range map[string][]byte{"gem": gem, "parquet": pqb} {
+		env, root, _, _ := b10SpliceEnv(t, l, name, data, false)
+		src := env.Src.(*storeRepSource)
+		rep, err := env.loadRep(root.Rep)
+		mustOK(t, err)
+		call := env.call(root.Rep, rep, 1, nil, nil)
+		tb, err := splRecipe(call)
+		mustOK(t, err)
+		var table []byte
+		for i := tb.children; i < tb.children+tb.tableN; i++ {
+			b, _ := call.get(rep.Members[i].SHA)
+			table = append(table, b...)
+		}
+		want := sha256.Sum256(data)
+		r := rand.New(rand.NewPCG(7, uint64(len(name))))
+		for range 400 {
+			m := slices.Clone(table)
+			switch r.IntN(3) {
+			case 0:
+				m[r.IntN(len(m))] ^= byte(1 + r.IntN(255))
+			case 1:
+				m = m[:r.IntN(len(m))]
+			default:
+				m = append(m, byte(r.IntN(256)))
+			}
+			if t2, err := splParse(m, rep, tb.children, tb.plain); err == nil && !bytes.Equal(m, table) {
+				// a parse that still covers everything must not reproduce the object
+				r2 := *rep
+				tid := sha256.Sum256(m)
+				src.mem[tid] = m
+				id := []repMember{{Role: repStored, SHA: tid, Size: int64(len(m))}}
+				r2.Members = append(append(slices.Clone(rep.Members[:tb.children]), id...), rep.Members[len(rep.Members)-1])
+				r2.Recipe = binary.AppendUvarint(binary.AppendUvarint(nil, uint64(tb.children)), uint64(len(id)))
+				raw, err := r2.marshal()
+				if err != nil {
+					continue
+				}
+				rid := sha256.Sum256(raw)
+				src.mem[rid] = raw
+				if _, sum, err := env.reconstruct(rid, io.Discard); err == nil && sum == want {
+					t.Fatalf("%s: a mutated table (%d segments) reproduced the object", name, len(t2.segs))
+				}
+			}
+		}
+		// damaged deep stream bytes never reproduce the object
+		canonFile := env.Body
+		env.Body = func(sha [32]byte, n int64) (io.ReaderAt, error) {
+			f, err := canonFile(sha, n)
+			if err != nil {
+				return nil, err
+			}
+			return b10Flip{f, n / 3}, nil
+		}
+		if _, sum, err := env.reconstruct(root.Rep, io.Discard); err == nil && sum == want {
+			t.Fatalf("%s: a damaged deep stream reproduced the object", name)
+		}
+		env.Body = canonFile
+	}
+}
+
+// b10Flip serves a body with one byte flipped.
+type b10Flip struct {
+	r   io.ReaderAt
+	off int64
+}
+
+func (f b10Flip) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.r.ReadAt(p, off)
+	if f.off >= off && f.off < off+int64(n) {
+		p[f.off-off] ^= 0x20
+	}
+	return n, err
+}
+
+// TestB10SpliceSharedChild: two packages nesting the identical data tarball and a standalone copy of it
+// share one child representation. Reachability is order-independent (the standalone root keeps its own body
+// reference however the walk met the child first), and deleting parents one by one keeps the rest exact.
+func TestB10SpliceSharedChild(t *testing.T) {
+	l := newAuthLab(t)
+	fs := b8Tree(51, 16)
+	data := b10Gzip(t, b8Tar(t, fs, 1700000000), 6)
+	l.put("a.gem", b10Tar(t, "metadata.gz", b10Gzip(t, b5Text(1, 40_000), 9), "data.tar.gz", data))
+	l.put("b.gem", b10Tar(t, "metadata.gz", b10Gzip(t, b5Text(2, 40_000), 9), "data.tar.gz", data))
+	l.put("data.tar.gz", data)
+	// The walk order of the two splice roots and the standalone canonical root must not matter.
+	mem := map[[32]byte][]byte{}
+	var roots [][32]byte
+	var descs []map[[32]byte]*repDesc
+	for _, k := range []string{"a.gem", "b.gem"} {
+		root, c, err := l.s.spliceConstruct(l.man(k), nil, 0, mem, splOpts{}, nil)
+		mustOK(t, err)
+		c.close()
+		roots, descs = append(roots, root.Rep), append(descs, root.Descs)
+	}
+	root, c, err := l.s.repConstructCanon(l.man("data.tar.gz"), nil, 0, mem, false)
+	mustOK(t, err)
+	c.close()
+	roots, descs = append(roots, root.Rep), append(descs, root.Descs)
+	all := map[[32]byte]*repDesc{}
+	for _, d := range descs {
+		maps.Copy(all, d)
+	}
+	src := l.s.newRepSource(all, nil)
+	src.mem = mem
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	fwd, err := env.reachableAll(roots)
+	mustOK(t, err)
+	rev, err := env.reachableAll([][32]byte{roots[2], roots[1], roots[0]})
+	mustOK(t, err)
+	alone, err := env.reachable(roots[2])
+	mustOK(t, err)
+	src.close()
+	if len(fwd.Role) != len(rev.Role) || !maps.Equal(fwd.Bodies, rev.Bodies) || len(fwd.Bodies) != 3 || len(alone.Bodies) != 1 {
+		t.Fatalf("reachability depends on order: %d/%d objects, bodies %d vs %d (standalone %d)", len(fwd.Role), len(rev.Role), len(fwd.Bodies), len(rev.Bodies), len(alone.Bodies))
+	}
+	for b := range alone.Bodies {
+		if _, ok := fwd.Bodies[b]; !ok {
+			t.Fatal("the standalone container's stream was lost behind a splice child")
+		}
+	}
+	l.reclaim()
+	b8Optimize(t, l, OptimizePolicy{AuthPolicy: AuthPolicy{MaxDepth: 2}, Profile: "archive", Splice: true})
+	l.reclaim()
+	l.exact("optimized")
+	for _, k := range []string{"a.gem", "data.tar.gz"} {
+		mustOK(t, l.s.DeleteObject("b", k))
+		delete(l.want, k)
+		l.reclaim()
+		l.exact("deleted " + k)
+		l.verifyOK("deleted " + k)
+	}
+}
+
+// TestB10SpliceConcurrentReads: eight readers of random ranges and whole objects over spliced gems, a nested
+// layer and Parquet/SST pages stay exact (run with -race).
+func TestB10SpliceConcurrentReads(t *testing.T) {
+	l := b10SmallLab(t)
+	for _, p := range []string{"testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet", "testdata/p7/rocksdb_lz4_small.sst"} {
+		data, err := os.ReadFile(p)
+		mustOK(t, err)
+		l.put(filepath.Base(p), data)
+	}
+	l.reclaim()
+	b8Optimize(t, l, OptimizePolicy{AuthPolicy: AuthPolicy{MaxDepth: 2, HardCodecs: true}, Profile: "archive", Splice: true})
+	l.reclaim()
+	keys := slices.Sorted(maps.Keys(l.want))
+	var wg sync.WaitGroup
+	errc := make(chan error, 8)
+	for w := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := rand.New(rand.NewPCG(uint64(w), 9))
+			for range 40 {
+				k := keys[r.IntN(len(keys))]
+				want := l.want[k]
+				off := r.Int64N(int64(len(want)))
+				n := min(int64(1+r.IntN(200_000)), int64(len(want))-off)
+				if r.IntN(8) == 0 {
+					off, n = 0, int64(len(want))
+				}
+				got, err := g1ReadAll(l, k, byteRange{off, off + n - 1})
+				if err != nil || !bytes.Equal(got, want[off:off+n]) {
+					errc <- fmt.Errorf("%s [%d,+%d): %v", k, off, n, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Fatal(err)
+	}
+}
+
+// TestB10SpliceCrashMatrix: real SIGKILL cuts of a deep-stream optimize (deep-stream and component chunks
+// flushed, record written and renamed, before publication; legacy and grouped records). After each cut every
+// acknowledged object is exact, reclamation and deep verify pass, a rerun completes and converges.
+func TestB10SpliceCrashMatrix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-kill matrix")
+	}
+	pol := OptimizePolicy{AuthPolicy: AuthPolicy{MaxDepth: 2}, Profile: "archive", Splice: true}
+	cuts := 0
+	for _, grouped := range []bool{false, true} {
+		env := []string{"ZEROS3_RECORD_GROUPS=0"}
+		points := []string{hookCASAfterFlush, hookAuthRecordWritten, hookAuthAfterRename, hookOptimizeBeforePublish}
+		if grouped {
+			b9Grouped(t, 1<<20)
+			env = []string{"ZEROS3_RECORD_GROUPS=1"}
+			points = []string{hookAGFrameWritten, hookAGSynced, hookOptimizeBeforePublish}
+		} else {
+			authLegacyLayout(t)
+		}
+		base := b10SmallLab(t)
+		base.close()
+		for _, point := range points {
+			for occ := 1; occ <= 5; occ++ {
+				l := &authLab{t: t, dir: t.TempDir(), want: base.want}
+				mustOK(t, os.CopyFS(l.dir, os.DirFS(base.dir)))
+				os.Remove(filepath.Join(l.dir, "LOCK"))
+				if killed, _ := runHelper(t, "splice", l.dir, point, occ, env...); !killed {
+					break
+				}
+				cuts++
+				stage := fmt.Sprintf("grouped=%v %s#%d", grouped, point, occ)
+				l.open()
+				l.exact(stage + " after kill")
+				l.reclaim()
+				l.exact(stage + " reclaimed")
+				l.verifyOK(stage)
+				if rep := b8Optimize(t, l, pol); rep.Failed != 0 {
+					t.Fatalf("%s: rerun failed %d: %+v", stage, rep.Failed, rep.Changes)
+				}
+				l.reclaim()
+				l.exact(stage + " completed")
+				l.verifyOK(stage + " completed")
+				if again := b8Optimize(t, l, pol); again.Applied != 0 {
+					t.Fatalf("%s: not converged: %+v", stage, again.Changes)
+				}
+				l.close()
+			}
+		}
+	}
+	if cuts < 16 {
+		t.Fatalf("only %d cuts reached", cuts)
+	}
+	t.Logf("%d process-kill cuts", cuts)
 }
