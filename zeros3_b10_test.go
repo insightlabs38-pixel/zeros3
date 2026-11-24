@@ -388,7 +388,7 @@ func b10SpliceEnv(t *testing.T, l *authLab, key string, data []byte, hard bool) 
 	l.put(key, data)
 	mem := map[[32]byte][]byte{}
 	st := &SpliceStats{}
-	root, canon, err := l.s.spliceConstruct(l.man(key), bytes.NewReader(data), 0, mem, hard, st)
+	root, canon, err := l.s.spliceConstruct(l.man(key), bytes.NewReader(data), 0, mem, splOpts{hard: hard}, st)
 	if err != nil {
 		t.Fatalf("%s: %v", key, err)
 	}

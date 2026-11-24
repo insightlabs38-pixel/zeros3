@@ -61105,6 +61105,9 @@ type OptimizePolicy struct {
 	noZip             bool                                // ablation: no ZIP adapter
 	recordGroup       int64                               // research (B8-G): price record files as grouped entries (exact bytes + this overhead)
 	canonNoDelta      bool                                // ablation: canonical streams only as CDC
+	spliceNoRep       bool                                // B10 ablation: deep streams decode no nested container
+	spliceNoPage      bool                                // B10 ablation: deep streams decode no page or block
+	spliceNoDelta     bool                                // B10 ablation: deep streams only as CDC
 }
 
 // rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
@@ -62473,7 +62476,9 @@ func (g *rgGraph) generate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		eligible = append(eligible, deep...)
+		if !pol.spliceNoDelta {
+			eligible = append(eligible, deep...)
+		}
 	}
 	// Sketches (one read per node); CDC alternatives of record-holding nodes are priced from the bytes.
 	inv := map[uint64][]int32{}
@@ -68704,12 +68709,16 @@ type SpliceStats struct {
 	Seconds     float64 `json:"seconds"`
 }
 
+// splOpts selects the units a construction decodes (noRep, noPage: campaign ablations).
+type splOpts struct{ hard, noRep, noPage bool }
+
 // splBuilder carries one construction: the components go to mem (a planning overlay).
 type splBuilder struct {
 	s     *Store
 	b     *repBuilder
 	mem   map[[32]byte][]byte
 	hard  bool
+	opt   splOpts
 	units []splUnit
 	held  int64
 	st    *SpliceStats
@@ -68726,7 +68735,7 @@ func (sb *splBuilder) close() {
 
 // child builds the canonical representation of a nested container and proves it against its bytes.
 func (sb *splBuilder) child(ra io.ReaderAt, off, n int64, kind repKind) bool {
-	if len(sb.units) >= splMaxChildren {
+	if len(sb.units) >= splMaxChildren || sb.opt.noRep {
 		return false
 	}
 	cb := sb.s.newRepBuilder(n, sb.s.repDescLookup, nil)
@@ -68773,7 +68782,7 @@ func (sb *splBuilder) child(ra io.ReaderAt, off, n int64, kind repKind) bool {
 
 // page analyzes one compressed page payload [off, off+n) holding want decoded bytes.
 func (sb *splBuilder) page(comp *repPQCompressor, ra io.ReaderAt, off, n, want int64) bool {
-	if n < 1 || n > splMaxPage || want < 0 || want > splMaxPage || sb.held+want > splMaxHeldPlain {
+	if n < 1 || n > splMaxPage || want < 0 || want > splMaxPage || sb.held+want > splMaxHeldPlain || sb.opt.noPage {
 		return false
 	}
 	payload := make([]byte, n)
@@ -68949,7 +68958,7 @@ func spliceKind(ra io.ReaderAt, size int64) byte {
 
 // spliceConstruct builds the deep-stream representation of an object in memory (components in mem) and
 // proves it through the production decoder; the returned canon holds D (a temp file the caller closes).
-func (s *Store) spliceConstruct(man manifestV1, src io.ReaderAt, reserve uint64, mem map[[32]byte][]byte, hard bool, st *SpliceStats) (*repRoot, *repCanon, error) {
+func (s *Store) spliceConstruct(man manifestV1, src io.ReaderAt, reserve uint64, mem map[[32]byte][]byte, opt splOpts, st *SpliceStats) (*repRoot, *repCanon, error) {
 	size := man.TotalLength
 	objSHA, err := decodeHexSHA256(man.ObjectSHA256)
 	if err != nil {
@@ -68978,7 +68987,7 @@ func (s *Store) spliceConstruct(man manifestV1, src io.ReaderAt, reserve uint64,
 	b.sink = b.newSink()
 	b.reserve = reserve
 	defer b.close()
-	sb := &splBuilder{s: s, b: b, mem: mem, hard: hard, st: st}
+	sb := &splBuilder{s: s, b: b, mem: mem, hard: opt.hard, opt: opt, st: st}
 	defer sb.close()
 	st.Objects++
 	switch kind {
@@ -69164,7 +69173,7 @@ func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []in
 			return added, err
 		}
 		mem := map[[32]byte][]byte{}
-		root, canon, err := s.spliceConstruct(nd.obj.man, src, g.pol.ReserveFreeBytes, mem, s.rep.hardCodecs.Load(), &g.splSt)
+		root, canon, err := s.spliceConstruct(nd.obj.man, src, g.pol.ReserveFreeBytes, mem, g.splOpts(), &g.splSt)
 		if errors.Is(err, syscall.ENOSPC) {
 			return added, err
 		}
@@ -69222,6 +69231,10 @@ func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []in
 	return added, nil
 }
 
+func (g *rgGraph) splOpts() splOpts {
+	return splOpts{hard: g.s.rep.hardCodecs.Load(), noRep: g.pol.spliceNoRep, noPage: g.pol.spliceNoPage}
+}
+
 // spliceFixedMem is the modeled fixed replay of a splice root (mem: a planning build's components).
 func (s *Store) spliceFixedMem(root *repRoot, mem map[[32]byte][]byte) float64 {
 	src := s.newRepSource(root.Descs, nil)
@@ -69256,7 +69269,7 @@ func (g *rgGraph) spliceApply(nd *rgNode, planned *repRoot, dsha [32]byte) (*rep
 		src = nd.canon.File
 	}
 	mem := map[[32]byte][]byte{}
-	root, canon, err := s.spliceConstruct(nd.obj.man, src, g.pol.ReserveFreeBytes, mem, s.rep.hardCodecs.Load(), nil)
+	root, canon, err := s.spliceConstruct(nd.obj.man, src, g.pol.ReserveFreeBytes, mem, g.splOpts(), nil)
 	if err != nil {
 		return nil, err
 	}
