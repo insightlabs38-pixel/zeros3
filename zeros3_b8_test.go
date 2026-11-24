@@ -210,7 +210,7 @@ func TestB8ZipExact(t *testing.T) {
 	}
 	for name, data := range cases {
 		man := l.man(name)
-		root, c, err := l.s.repConstructCanon(man, nil, 0, nil)
+		root, c, err := l.s.repConstructCanon(man, nil, 0, nil, false)
 		if name == "only-empty" {
 			if !errors.Is(err, errRepUnsupported) {
 				t.Fatalf("%s: %v", name, err)
@@ -271,7 +271,7 @@ func TestB8ZipExact(t *testing.T) {
 	z := cases["mixed"]
 	for _, cut := range []int{len(z) - 1, len(z) - 30, len(z) / 2, 100} {
 		l.put("cut", z[:cut])
-		if _, c, err := l.s.repConstructCanon(l.man("cut"), nil, 0, nil); err == nil {
+		if _, c, err := l.s.repConstructCanon(l.man("cut"), nil, 0, nil, false); err == nil {
 			c.close()
 			t.Fatalf("truncated at %d: accepted", cut)
 		}
@@ -284,7 +284,7 @@ func TestB8ZipTableFuzz(t *testing.T) {
 	l := newAuthLab(t)
 	data := b8Zip(t, b8Tree(9, 8))
 	l.put("z", data)
-	root, c, err := l.s.repConstructCanon(l.man("z"), nil, 0, nil)
+	root, c, err := l.s.repConstructCanon(l.man("z"), nil, 0, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

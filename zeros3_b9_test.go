@@ -10,6 +10,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -684,4 +685,348 @@ func b9ExpectNoTmp(t *testing.T, dir string) {
 		}
 		return nil
 	})
+}
+
+// ---- B9-B normalized executables -----------------------------------------------
+
+// b9GoBinaries builds two releases of a small Go program for linux/amd64 (ELF) and windows/amd64 (PE); the
+// second inserts a function early so that every later address moves.
+func b9GoBinaries(t *testing.T) map[string][3][]byte {
+	t.Helper()
+	dir := t.TempDir()
+	// Package a0 is imported first and links before fmt, sort and strings: v1 grows it, moving them all.
+	a0 := []string{"package a0\n\nfunc F(n int) int { return n * 3 }\n",
+		"package a0\n\nfunc F(n int) int { return G(n) * 3 }\n\nfunc G(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\treturn G(n-1) + G(n-2) + H(n)\n}\n\nfunc H(n int) int { s := 0; for i := range n { s += i * i % 7 }; return s }\n",
+		"package a0\n\nimport \"strconv\"\n\nfunc F(n int) int { return G(n)*3 + len(strconv.Itoa(n)) }\n\nfunc G(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\treturn G(n-1) + G(n-2) + H(n)\n}\n\nfunc H(n int) int { s := 0; for i := range n { s += i * i % 11 }; return s + K(n) }\n\nfunc K(n int) int { m := map[int]int{}; for i := range n { m[i%5] += i }; return len(m) }\n"}
+	out := map[string][3][]byte{}
+	for v := range 3 {
+		d := filepath.Join(dir, fmt.Sprint(v))
+		mustOK(t, os.MkdirAll(filepath.Join(d, "a0"), 0o755))
+		mustOK(t, os.WriteFile(filepath.Join(d, "go.mod"), []byte("module b9exe\ngo 1.22\n"), 0o644))
+		mustOK(t, os.WriteFile(filepath.Join(d, "a0", "a0.go"), []byte(a0[v]), 0o644))
+		mustOK(t, os.WriteFile(filepath.Join(d, "main.go"), []byte(`package main
+
+import ("b9exe/a0"; "fmt"; "os"; "sort"; "strings")
+
+func work(xs []string) string { sort.Strings(xs); return strings.Join(xs, ",") }
+func main() { fmt.Println(work(os.Args), a0.F(len(os.Environ()))) }
+`), 0o644))
+		for _, goos := range []string{"linux", "windows"} {
+			bin := filepath.Join(d, "a-"+goos)
+			cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-w", "-o", bin, ".") // no DWARF, as Go's own tools ship
+			cmd.Dir = d
+			cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH=amd64", "CGO_ENABLED=0", "GOFLAGS=")
+			if b, err := cmd.CombinedOutput(); err != nil {
+				t.Skipf("go build unavailable: %v %s", err, b)
+			}
+			b, err := os.ReadFile(bin)
+			mustOK(t, err)
+			pair := out[goos]
+			pair[v] = b
+			out[goos] = pair
+		}
+	}
+	return out
+}
+
+// TestB9ExeNormalizeExact: normalization of real ELF and PE builds round-trips byte for byte, the canonical
+// code differs from the original only in rewritten slots, restart points hold their invariant, and every
+// range decodes exactly from its restart point.
+func TestB9ExeNormalizeExact(t *testing.T) {
+	bins := b9GoBinaries(t)
+	for goos, pair := range bins {
+		for v, raw := range pair {
+			im, err := exeParse(raw)
+			mustOK(t, err)
+			canon := slices.Clone(raw)
+			tb, err := exeNormalize(canon, im)
+			mustOK(t, err)
+			ut := exeUnitTable(im.units)
+			tb.unitSize = int64(len(ut))
+			units, m, err := exeParseUnits(ut)
+			mustOK(t, err)
+			if !slices.Equal(units, im.units) || len(m) != len(units) {
+				t.Fatalf("%s v%d: unit table round trip", goos, v)
+			}
+			t2, err := exeParseTables(tb.marshal(), int64(len(raw)))
+			mustOK(t, err)
+			t2.units, t2.hashes = m, units
+			if bytes.Equal(canon, raw) {
+				t.Fatalf("%s v%d: nothing normalized", goos, v)
+			}
+			// Whole and random ranges through the production range decoder over the canonical bytes.
+			body := bytes.NewReader(append(slices.Clone(canon), ut...))
+			read := func(off, n int64) []byte {
+				var w bytes.Buffer
+				pos := off
+				for ri, r := range t2.regions {
+					if r.off+r.size <= pos || r.off >= off+n {
+						continue
+					}
+					if pos < r.off {
+						w.Write(canon[pos:r.off])
+						pos = r.off
+					}
+					hi := min(off+n, r.off+r.size) - r.off
+					mustOK(t, t2.readRegion(ri, body, pos-r.off, hi, &w))
+					pos = r.off + hi
+				}
+				w.Write(canon[pos : off+n])
+				return w.Bytes()
+			}
+			if got := read(0, int64(len(raw))); !bytes.Equal(got, raw) {
+				t.Fatalf("%s v%d: whole decode differs", goos, v)
+			}
+			rng := rand.New(rand.NewPCG(uint64(v), 1))
+			var edges []int64
+			for _, r := range t2.regions {
+				edges = append(edges, r.off, r.off+r.size)
+				for blk := int64(0); blk < r.size; blk += exeBlock {
+					edges = append(edges, r.off+blk)
+				}
+			}
+			for i := range 400 {
+				var a int64
+				if i < len(edges) {
+					a = max(0, edges[i]-int64(rng.IntN(9)))
+				} else {
+					a = int64(rng.IntN(len(raw)))
+				}
+				n := min(int64(1+rng.IntN([]int{8, 4096, 70000}[i%3])), int64(len(raw))-a)
+				if got := read(a, n); !bytes.Equal(got, raw[a:a+n]) {
+					t.Fatalf("%s v%d: range %d+%d differs", goos, v, a, n)
+				}
+			}
+		}
+	}
+}
+
+// TestB9ExeMalformed: truncated and damaged images never panic; whatever still parses normalizes and
+// restores exactly (the transform never depends on the headers being honest).
+func TestB9ExeMalformed(t *testing.T) {
+	bins := b9GoBinaries(t)
+	rng := rand.New(rand.NewPCG(3, 3))
+	for goos, pair := range bins {
+		raw := pair[0]
+		for i := range 300 {
+			b := slices.Clone(raw)
+			switch i % 3 {
+			case 0:
+				b = b[:rng.IntN(len(b))]
+			case 1:
+				for range 1 + rng.IntN(8) {
+					b[rng.IntN(min(len(b), 4096))] = byte(rng.IntN(256))
+				}
+			default:
+				for range 1 + rng.IntN(64) {
+					b[rng.IntN(len(b))] = byte(rng.IntN(256))
+				}
+			}
+			im, err := exeParse(b)
+			if err != nil {
+				continue
+			}
+			canon := slices.Clone(b)
+			tb, err := exeNormalize(canon, im)
+			if err != nil {
+				continue
+			}
+			_, m, err := exeParseUnits(exeUnitTable(im.units))
+			mustOK(t, err)
+			tb.units = m
+			for ri, r := range tb.regions {
+				if r.code {
+					mustOK(t, tb.exeRestore(ri, canon[r.off:r.off+r.size], 0, 0, r.size))
+				} else {
+					tb.restorePtrs(ri, canon[r.off:r.off+r.size], 0, 0, r.size)
+				}
+			}
+			if !bytes.Equal(canon, b) {
+				t.Fatalf("%s case %d: damaged image does not round trip", goos, i)
+			}
+		}
+		for _, cut := range []int{0, 3, 63, 64, 200} {
+			if _, err := exeParse(raw[:cut]); err == nil {
+				t.Fatalf("%s: %d-byte prefix parsed", goos, cut)
+			}
+		}
+	}
+	for i := range 500 {
+		b := make([]byte, 1+rng.IntN(600))
+		for j := range b {
+			b[j] = byte(rng.IntN(256))
+		}
+		if _, err := exeParseTables(b, 1<<20); err == nil && i%7 == 0 {
+			t.Logf("random table %d parsed (must still be bounded)", i)
+		}
+	}
+}
+
+// TestB9ExeRepresentation: normalized ELF and PE releases become kind-15 records whose canonical streams
+// delta against each other; reads are exact (whole and ranges) through apply, reclamation and reopen, deep
+// verify passes, "exenorm" is raised, a rerun changes nothing, and without Executables nothing is normalized.
+func TestB9ExeRepresentation(t *testing.T) {
+	bins := b9GoBinaries(t)
+	l := newAuthLab(t)
+	for v := range 3 {
+		l.put("tool", bins["linux"][v])
+		l.put("tool.exe", bins["windows"][v])
+	}
+	l.reclaim()
+	plain := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{AllowRep: true, AllowDelta: true, MaxDepth: 2, Order: "oldest", Apply: false}, Profile: "archive", Canonical: true})
+	rep := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{AllowRep: true, AllowDelta: true, MaxDepth: 2, Order: "oldest", Apply: true}, Profile: "archive", Canonical: true, Executables: true})
+	if rep.Failed != 0 {
+		t.Fatalf("apply failed: %+v", rep.Changes)
+	}
+	exe := 0
+	files, _ := l.s.authFiles()
+	for _, f := range files {
+		r := mustLoad(t, l.s, f)
+		if r.Form == authFormRep && r.Root != nil {
+			if obj, err := (&repEnv{Src: l.s.newRepSource(r.Root.Descs, nil), Limits: repProdLimits}).loadRep(r.Root.Rep); err == nil && obj.Kind == repKindExe {
+				exe++
+			}
+		}
+	}
+	if exe == 0 {
+		t.Fatalf("no normalized executable selected (planned %d vs %d without, canon %+v)", rep.Planned.Bytes, plain.Planned.Bytes, rep.Canon)
+	}
+	if !slices.Contains(l.s.formatSnapshot().Features, authExeFeature) {
+		t.Fatal("exenorm not raised")
+	}
+	t.Logf("planned %d bytes with executables, %d without; %d normalized records", rep.Planned.Bytes, plain.Planned.Bytes, exe)
+	l.exact("normalized")
+	l.reclaim()
+	l.exact("reclaimed")
+	l.verifyOK("reclaimed")
+	l.close()
+	l.open()
+	l.exact("reopened")
+	for k, want := range l.want {
+		r := rand.New(rand.NewPCG(9, uint64(len(k))))
+		for range 60 {
+			a := int64(r.IntN(len(want)))
+			n := min(int64(1+r.IntN(100000)), int64(len(want))-a)
+			if got := l.read(k, byteRange{a, a + n - 1}); !bytes.Equal(got, want[a:a+n]) {
+				t.Fatalf("%s %d+%d differs", k, a, n)
+			}
+		}
+	}
+	again := l.optimize(OptimizePolicy{AuthPolicy: AuthPolicy{AllowRep: true, AllowDelta: true, MaxDepth: 2, Order: "oldest", Apply: true}, Profile: "archive", Canonical: true, Executables: true})
+	if again.Applied != 0 {
+		t.Fatalf("not converged: %+v", again.Changes)
+	}
+}
+
+// ---- B9-C decoded-window cache -------------------------------------------------
+
+// TestB9WindowCache: ranges of canonical gzip and ZIP containers read exactly with the cache on: a second
+// pass hits, concurrent readers of one window decode it once, a tiny budget evicts and stays exact, a
+// damaged cached window is detected by its CRC and decoded again, large requests bypass, a changed
+// representation (re-optimized store) never serves an old window, and turning the cache off drops it.
+func TestB9WindowCache(t *testing.T) {
+	l := newAuthLab(t)
+	v1 := b8Tree(51, 14)
+	l.put("a.tar.gz", b8Gzip(t, b8Tar(t, v1, 1), 6))
+	l.put("a.zip", b8Zip(t, v1))
+	l.put("b.tar.gz", b8Gzip(t, b8Tar(t, b8Edit(v1, 4), 2), 6))
+	l.reclaim()
+	b8Optimize(t, l, OptimizePolicy{})
+	l.reclaim()
+	l.s.SetWindowCache(64 << 20)
+	keys := slices.Sorted(maps.Keys(l.want))
+	type rg struct {
+		k    string
+		a, n int64
+	}
+	r := rand.New(rand.NewPCG(4, 4))
+	var rs []rg
+	for range 60 {
+		k := keys[r.IntN(len(keys))]
+		a := int64(r.IntN(len(l.want[k])))
+		rs = append(rs, rg{k, a, min(int64(1+r.IntN(100000)), int64(len(l.want[k]))-a)})
+	}
+	pass := func(stage string) {
+		for _, x := range rs {
+			if got := l.read(x.k, byteRange{x.a, x.a + x.n - 1}); !bytes.Equal(got, l.want[x.k][x.a:x.a+x.n]) {
+				t.Fatalf("%s: %s %d+%d differs", stage, x.k, x.a, x.n)
+			}
+		}
+	}
+	pass("first")
+	st1 := l.s.WindowCacheStats()
+	pass("second")
+	st2 := l.s.WindowCacheStats()
+	if st1.Misses == 0 || st2.Hits <= st1.Hits || st2.Misses != st1.Misses {
+		t.Fatalf("no reuse: %+v then %+v", st1, st2)
+	}
+	// Concurrent readers of the same windows.
+	l.s.SetWindowCache(64 << 20)
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for w := range 8 {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for _, x := range rs[:20] {
+				_, _, got, err := l.s.GetObjectRange("b", x.k, byteRange{x.a, x.a + x.n - 1})
+				if err != nil || !bytes.Equal(got, l.want[x.k][x.a:x.a+x.n]) {
+					errs <- fmt.Errorf("reader %d %s %d+%d: %v", w, x.k, x.a, x.n, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if st := l.s.WindowCacheStats(); st.Hits+st.Joins == 0 {
+		t.Fatalf("concurrent readers shared nothing: %+v", st)
+	}
+	// A damaged window is caught on its next hit.
+	c := l.s.win.Load()
+	for i := range c.sh {
+		for _, el := range c.sh[i].ents {
+			el.Value.(*winEnt).data[0] ^= 1
+			break
+		}
+	}
+	pass("damaged window")
+	if st := l.s.WindowCacheStats(); st.Corrupt == 0 {
+		t.Fatalf("damage not detected: %+v", st)
+	}
+	// Tiny budget: evictions, still exact.
+	l.s.SetWindowCache(winShards * 3 * winSize)
+	pass("tiny")
+	pass("tiny again")
+	if st := l.s.WindowCacheStats(); st.Evictions == 0 || st.Bytes > st.Budget {
+		t.Fatalf("budget not enforced: %+v", st)
+	}
+	// Large requests bypass.
+	l.s.SetWindowCache(64 << 20)
+	for _, k := range keys {
+		want := l.want[k]
+		if n := min(int64(len(want)), 2<<20); n > winMaxRequest {
+			if got := l.read(k, byteRange{0, n - 2}); !bytes.Equal(got, want[:n-1]) {
+				t.Fatal("large range differs")
+			}
+		}
+	}
+	if st := l.s.WindowCacheStats(); st.Misses != 0 {
+		t.Fatalf("a large request filled the cache: %+v", st)
+	}
+	// A changed representation: windows of the old one are never served for the new one.
+	pass("before change")
+	l.put("a.tar.gz", b8Gzip(t, b8Tar(t, b8Edit(v1, 9), 3), 6))
+	l.reclaim()
+	b8Optimize(t, l, OptimizePolicy{})
+	rs = slices.DeleteFunc(rs, func(x rg) bool { return x.a+x.n > int64(len(l.want[x.k])) })
+	pass("after change")
+	l.s.SetWindowCache(0)
+	if l.s.win.Load() != nil {
+		t.Fatal("cache not dropped")
+	}
+	pass("off")
 }

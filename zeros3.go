@@ -86,52 +86,54 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      546    Content-defined chunking (CDC)
-//      733    Content-addressed chunk storage (CAS)
-//     2528    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5316    Small-object segments (inline manifests, store level 11)
-//     6566    Manifests (immutable, JSON)
-//     7364    Visibility journal (append-only, checksummed)
-//     7886    Store: format, namespace, and object CRUD
-//     8399    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12051    Version history/restore, history pruning, ListObjectsV2
-//    12657    SigV4 authentication (header and presigned-URL)
-//    13634    Request payload checksums and S3-shaped XML error/response types
-//    13851    HTTP routing and S3 operation handlers
-//    14283    Conditional operations (PUT/GET/HEAD preconditions)
-//    14978    CopyObject
-//    15283    Multipart upload
-//    16227    Stats and reachability scanning
-//    17815    Verify
-//    18031    Store locking and safe offline GC
-//    18337    Offline compaction (`zeros3 compact`)
-//    19520    Pack reclamation and repacking (`zeros3 repack`)
-//    20116    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20576    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21921    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22434    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23499    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24350    Delta sync client, credentials, and parallel transfer
-//    26655    Bulk logical-chunk transport (v2)
-//    27566    Recursive directory sync
-//    27871    Remote replication (`zeros3 replicate`)
-//    28784    Peer-assisted corruption repair (`zeros3 repair`)
-//    29356    Namespace (prefix/bucket) replication
-//    29672    Copy-on-write namespace fork (`zeros3 fork`)
-//    29880    Snapshots and restore
-//    31042    Structural diff and inspect (introspection)
-//    32454    Portable snapshot bundles (`zeros3 bundle`)
-//    33651    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34286    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52939    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60987    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    64278    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    64834    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    65729    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    66846    Windowed and estimated similarity deltas (extracted dcore)
-//    68683    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    76539    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    82811    CLI dispatch, HTTP server/startup, and main
+//      548    Content-defined chunking (CDC)
+//      735    Content-addressed chunk storage (CAS)
+//     2530    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5318    Small-object segments (inline manifests, store level 11)
+//     6568    Manifests (immutable, JSON)
+//     7366    Visibility journal (append-only, checksummed)
+//     7888    Store: format, namespace, and object CRUD
+//     8405    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12057    Version history/restore, history pruning, ListObjectsV2
+//    12663    SigV4 authentication (header and presigned-URL)
+//    13640    Request payload checksums and S3-shaped XML error/response types
+//    13857    HTTP routing and S3 operation handlers
+//    14289    Conditional operations (PUT/GET/HEAD preconditions)
+//    14984    CopyObject
+//    15289    Multipart upload
+//    16233    Stats and reachability scanning
+//    17821    Verify
+//    18037    Store locking and safe offline GC
+//    18343    Offline compaction (`zeros3 compact`)
+//    19526    Pack reclamation and repacking (`zeros3 repack`)
+//    20122    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20582    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21927    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22440    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23505    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24356    Delta sync client, credentials, and parallel transfer
+//    26661    Bulk logical-chunk transport (v2)
+//    27572    Recursive directory sync
+//    27877    Remote replication (`zeros3 replicate`)
+//    28790    Peer-assisted corruption repair (`zeros3 repair`)
+//    29362    Namespace (prefix/bucket) replication
+//    29678    Copy-on-write namespace fork (`zeros3 fork`)
+//    29886    Snapshots and restore
+//    31048    Structural diff and inspect (introspection)
+//    32460    Portable snapshot bundles (`zeros3 bundle`)
+//    33657    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34292    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52955    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61007    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    64299    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    64855    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    65760    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    66896    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    67840    Verified decoded-window cache (B9)
+//    68067    Windowed and estimated similarity deltas (extracted dcore)
+//    69904    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    77760    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    84032    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -8046,6 +8048,7 @@ type Store struct {
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
 	rep repState
+	win atomic.Pointer[winCache] // B9 decoded-window cache (nil: off)
 	fg  fgGate // requests in flight; deferred construction yields to them
 
 	// mcache holds verified, immutable served manifests for the read path
@@ -8218,6 +8221,9 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 }
 
 func (s *Store) finishOpen() (*Store, error) {
+	if v, err := strconv.ParseInt(os.Getenv("ZEROS3_WINDOW_CACHE_MIB"), 10, 64); err == nil && v > 0 {
+		s.SetWindowCache(v << 20)
+	}
 	if _, err := os.Lstat(s.repDir()); err == nil || !os.IsNotExist(err) {
 		s.rep.mayHaveRoots.Store(true) // present, or unreadable: let reachability report it
 	}
@@ -34370,7 +34376,7 @@ const (
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip || k == repKindExe
 }
 
 type repRole uint8
@@ -34491,7 +34497,7 @@ func (r *repObject) validate(lim repLimits) error {
 				return repCorrupt("member %d: frame exceeds the framed length", i)
 			}
 		case repBody:
-			if r.Kind != repKindGzip && r.Kind != repKindZstd && r.Kind != repKindZip || m.Size < 1 {
+			if r.Kind != repKindGzip && r.Kind != repKindZstd && r.Kind != repKindZip && r.Kind != repKindExe || m.Size < 1 {
 				return repCorrupt("member %d: body reference in kind %d", i, r.Kind)
 			}
 		case repVia:
@@ -34895,6 +34901,8 @@ func repDecoderFor(k repKind) (repDecoder, bool) {
 		return zstdDecoder{}, true
 	case repKindZip:
 		return repZipDecoder{}, true
+	case repKindExe:
+		return repExeDecoder{}, true
 	}
 	return nil, false
 }
@@ -39177,6 +39185,7 @@ type repCanon struct {
 	SHA  [32]byte
 	Size int64
 	File *os.File
+	Exe  bool // B9: normalized executables may be built
 }
 
 func (c *repCanon) close() {
@@ -40161,6 +40170,8 @@ func (b *repBuilder) encodeKind(k repKind, src io.ReaderAt, size int64) (*repObj
 		return b.encodeZstd(src, size)
 	case repKindZip:
 		return b.encodeZip(src, size)
+	case repKindExe:
+		return b.encodeExe(src, size)
 	case repKindSQLite:
 		return b.encodeSQLite(src, size)
 	case repKindCAR:
@@ -40591,8 +40602,8 @@ func (s *Store) repConstructMem(man manifestV1, src io.ReaderAt, live func() boo
 
 // repConstructCanon builds the canonical representation of a codec container (B8): its recipe with the decoded
 // plaintext as a body reference. The returned canon holds the plaintext; the caller closes it.
-func (s *Store) repConstructCanon(man manifestV1, src io.ReaderAt, reserve uint64, mem map[[32]byte][]byte) (*repRoot, *repCanon, error) {
-	canon := &repCanon{}
+func (s *Store) repConstructCanon(man manifestV1, src io.ReaderAt, reserve uint64, mem map[[32]byte][]byte, exe bool) (*repRoot, *repCanon, error) {
+	canon := &repCanon{Exe: exe}
 	root, _, err := s.repConstructOpt(man, src, nil, reserve, true, mem, canon)
 	if err == nil && canon.File == nil {
 		err = fmt.Errorf("%w: not a codec container", errRepUnsupported)
@@ -40622,10 +40633,10 @@ func (s *Store) repConstructOpt(man manifestV1, src io.ReaderAt, live func() boo
 		ra = mra
 	}
 	kind, ok := repCandidate(ra, man.TotalLength)
-	if canon != nil && canonKind(ra, man.TotalLength) == repKindZip {
-		kind, ok = repKindZip, true
+	if ck := canonKind(ra, man.TotalLength); canon != nil && (ck == repKindZip || ck == repKindExe && canon.Exe) {
+		kind, ok = ck, true
 	}
-	if !ok || canon != nil && kind != repKindGzip && kind != repKindZstd && kind != repKindZip {
+	if !ok || canon != nil && kind != repKindGzip && kind != repKindZstd && kind != repKindZip && kind != repKindExe {
 		return nil, 0, errRepUnsupported
 	}
 	s.repEnsure()
@@ -41659,6 +41670,9 @@ func (s *Store) repOpenEnvReader(env *repEnv, src *storeRepSource, root *repRoot
 			src.close()
 			done()
 			return nil, err
+		}
+		if wc := s.win.Load(); winCached(wc, call, rng.end-rng.start+1) {
+			produce = winRangeReader(wc, call, rng.start, rng.end-rng.start+1) // B9: decoded-window cache
 		}
 	}
 	inner := produce
@@ -50507,6 +50521,8 @@ func repRangeReader(c *repCall, off, n int64) (func(w io.Writer) error, error) {
 		return func(w io.Writer) error { return repSeekRead(c, sk, off, n, w) }, nil
 	case repKindZip:
 		return func(w io.Writer) error { return zipReadRange(c, off, n, w) }, nil
+	case repKindExe:
+		return func(w io.Writer) error { return exeReadRange(c, off, n, w) }, nil
 	}
 	return nil, nil
 }
@@ -58260,7 +58276,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature, authExeFeature},
 	}
 }
 
@@ -58426,6 +58442,9 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 			}
 			if need.canon || len(rec.Bases) > 0 {
 				addFeature(authCanonFeature)
+			}
+			if need.exe {
+				addFeature(authExeFeature)
 			}
 		}
 	}
@@ -60712,6 +60731,7 @@ func runAuthority(args []string) {
 	cands := fs.Int("candidates", 4, "migrate/optimize: trial bases per target (max 8)")
 	discovery := fs.String("discovery", "region", "optimize: candidate discovery, region (B7 positional fingerprints, complementary bases) or sketch (B6)")
 	canonical := fs.Bool("canonical", false, "optimize: B8 canonical streams: gzip, zstd and ZIP containers share their decoded content")
+	execs := fs.Bool("executables", false, "optimize: B9 normalized ELF/PE x86-64 Go executables (implies -canonical; raises \"exenorm\")")
 	anchorBytes := fs.Int("anchor-bytes", 8, "optimize: windowed bases (over 32 MiB) index one COPY anchor per this many bytes, at most 8 Mi (-1: the migration rule)")
 	groupsOn := fs.Bool("enable", false, "groups: raise the store feature \"recgroup\" and move record files into groups")
 	groupsOff := fs.Bool("disable", false, "groups: write grouped records back to files and lower \"recgroup\"")
@@ -60881,7 +60901,7 @@ func runAuthority(args []string) {
 		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
-			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical}
+			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs}
 		pol.Locality = []int{}
 		for _, f := range strings.Split(*locality, ",") {
 			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
@@ -61024,9 +61044,10 @@ type OptimizePolicy struct {
 	discover          func(g *rgGraph, v int32) rgCandSet // research hook: replaces discovery (oracles)
 	recordBlock       int64                               // research: price record files in this allocation unit
 	noRestrictedStart bool                                // ablation: the B6 search without the single-base start
-	StageReps         bool                                `json:"stage_reps,omitempty"` // B6 behaviour: stage every representation candidate while planning
-	Canonical         bool                                `json:"canonical,omitempty"`  // B8: canonical streams of codec containers
-	B7Search          bool                                `json:"b7_search,omitempty"`  // B8 ablation: the B7 search (no group starts, exact search or incumbent)
+	StageReps         bool                                `json:"stage_reps,omitempty"`  // B6 behaviour: stage every representation candidate while planning
+	Canonical         bool                                `json:"canonical,omitempty"`   // B8: canonical streams of codec containers
+	Executables       bool                                `json:"executables,omitempty"` // B9: normalized ELF/PE executables (with Canonical)
+	B7Search          bool                                `json:"b7_search,omitempty"`   // B8 ablation: the B7 search (no group starts, exact search or incumbent)
 	noZip             bool                                // ablation: no ZIP adapter
 	recordGroup       int64                               // research (B8-G): price record files as grouped entries (exact bytes + this overhead)
 	canonNoDelta      bool                                // ablation: canonical streams only as CDC
@@ -64017,7 +64038,7 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 		case rgRep:
 			root := o.rep.root
 			if o.canon {
-				r2, c2, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, nil)
+				r2, c2, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, nil, g.pol.Executables)
 				if err == nil {
 					c2.close()
 					if r2.Rep != root.Rep || c2.SHA != g.nodes[o.bases[0]].sha {
@@ -64907,6 +64928,7 @@ const (
 	rgReplayGzip
 	rgReplayZstd
 	rgReplayZip
+	rgReplayExe
 )
 
 // rgReplayCost prices exact codec replay per read (µs): a restart (fixed: predictor warm-up, tables) plus
@@ -64915,7 +64937,7 @@ const (
 var rgReplayCost = [...]struct {
 	Fixed, Byte, Whole float64
 	Warm               int64
-}{{}, {15000, 0.11, 0.11, 128 << 10}, {45000, 0.17, 0.10, 2 << 20}, {3000, 0.11, 0.11, 0}}
+}{{}, {15000, 0.11, 0.11, 128 << 10}, {45000, 0.17, 0.10, 2 << 20}, {3000, 0.11, 0.11, 0}, {1500, 0.004, 0.004, 0}}
 
 func rgReplayOf(k repKind) byte {
 	switch k {
@@ -64925,6 +64947,8 @@ func rgReplayOf(k repKind) byte {
 		return rgReplayZstd
 	case repKindZip:
 		return rgReplayZip
+	case repKindExe:
+		return rgReplayExe
 	}
 	return rgReplayNone
 }
@@ -64945,6 +64969,11 @@ func (g *rgGraph) replayUS(o *rgOpt, a, b int64, whole bool) float64 {
 // before the proportional position through the end of the unit.
 func (g *rgGraph) canonTouch(e *rgEval, v int32, o *rgOpt, a, b int64, t rgTouch, depth int) {
 	size := max(g.nodes[v].size, 1)
+	if o.replay == rgReplayExe { // offsets are the original's, then the unit table after them
+		g.touch(e, o.bases[0], max(0, a-exeLookBack), min(o.plain, b+exeBlock/2), t, depth+1)
+		g.touch(e, o.bases[0], size, o.plain, t, depth+1)
+		return
+	}
 	pa, pb := a*o.plain/size, (b*o.plain+size-1)/size
 	pa = max(0, pa-rgReplayCost[o.replay].Warm)
 	pb = min(o.plain, pb+64<<10)
@@ -64980,6 +65009,8 @@ func canonKind(ra io.ReaderAt, size int64) repKind {
 		return repKindZstd
 	case bytes.Equal(hd[:], []byte("PK\x03\x04")):
 		return repKindZip
+	case bytes.Equal(hd[:], []byte("\x7fELF")), hd[0] == 'M' && hd[1] == 'Z':
+		return repKindExe // B9: only with the policy's Executables; the builder refuses what it cannot normalize
 	}
 	return 0
 }
@@ -65002,7 +65033,7 @@ func (g *rgGraph) canonOpts(ctx context.Context, m *authMigrator, eligible []int
 		ra := s.newManifestReaderAt(nd.obj.man)
 		kind := canonKind(ra, nd.size)
 		ra.close()
-		if kind == 0 || kind == repKindZip && g.pol.noZip {
+		if kind == 0 || kind == repKindZip && g.pol.noZip || kind == repKindExe && !g.pol.Executables {
 			continue
 		}
 		g.canonSt.Containers++
@@ -65010,7 +65041,7 @@ func (g *rgGraph) canonOpts(ctx context.Context, m *authMigrator, eligible []int
 			return added, err
 		}
 		mem := map[[32]byte][]byte{}
-		root, canon, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, mem)
+		root, canon, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, mem, g.pol.Executables)
 		if errors.Is(err, syscall.ENOSPC) {
 			return added, err
 		}
@@ -66858,6 +66889,1177 @@ func (s *Store) agVerify(res *VerifyResult) {
 				res.addIssue("corrupt", fmt.Sprintf("authority group %016x", q), "seal index disagrees with the frames")
 			}
 		}
+	}
+}
+
+// =============================================================================
+// 16e5. Reversible executable normalization (B9, kind 15, store feature "exenorm")
+//
+// A call or jump between functions carries a rel32 displacement that changes whenever code between the call
+// site and its target grows or shrinks, so a release-to-release delta of an executable is mostly 4-byte
+// literals. Here the executable's code is rewritten so that every such displacement holds the target's
+// identity instead: the FNV-1a hash of the Go function name (from the function table, present in stripped
+// binaries). The canonical stream is the file with those slots replaced, at the same offsets, followed by the
+// unit table (function sizes and name hashes in address order); both delta well across releases. Restoring a
+// slot needs only the unit table: rel32 = entry(hash) - (slot address + 4 + immediate bytes).
+//
+// The scan is a byte pattern scan (CALL/JMP/Jcc rel32, RIP-relative ModRM forms) whose candidate test reads
+// only bytes before the slot, so the encoder and the decoder, which sees canonical slot bytes, agree on every
+// candidate. A slot is rewritten only if its target is a unit entry with a unique hash; an untouched slot whose
+// raw value is some unit's hash is an exception. Per 64 KiB block a restart point (no rewritten instruction
+// within 5 bytes before it) lets a range decode start near it. ELF64 and PE32+ for x86-64 with a Go 1.18+
+// function table only; anything else stays on the generic path. Exactness is proven on the original bytes.
+// =============================================================================
+
+const (
+	repKindExe       repKind = 15
+	exeBlock                 = 64 << 10
+	exeMaxUnits              = 1 << 21
+	exeMaxRegions            = 64
+	exeMaxSections           = 256
+	exeFormatV1              = 1
+	authExeFeature           = "exenorm"
+	exeMaxExceptions         = 1 << 20
+	exeLookBack              = 5
+)
+
+var errExe = errors.New("executable: unsupported or malformed")
+
+type exeRegion struct {
+	off, size int64
+	va        uint64
+	code      bool // x86 reference scan; otherwise aligned 64-bit pointer words
+}
+
+// exeTag marks a canonical pointer word: the low half is the target's name hash.
+const exeTag = uint64(0xFFFFFFFE) << 32
+
+// exeImage is what normalization needs of an executable: its code and pointer regions and its units (address
+// and name hash of every function or data symbol whose hash is unique).
+type exeImage struct {
+	regions []exeRegion
+	units   []exeUnit // address order
+}
+
+func (im *exeImage) code() []exeRegion {
+	return slices.DeleteFunc(slices.Clone(im.regions), func(r exeRegion) bool { return !r.code })
+}
+
+type exeUnit struct {
+	va   uint64
+	hash uint32
+}
+
+func exeFNV(b []byte) uint32 {
+	h := uint32(2166136261)
+	for _, c := range b {
+		h ^= uint32(c)
+		h *= 16777619
+	}
+	return h
+}
+
+// exeParse reads the code regions and the Go function table of an ELF64 or PE32+ x86-64 image held in b.
+func exeParse(b []byte) (*exeImage, error) {
+	var im exeImage
+	var data []exeRegion // non-executable file-backed sections, searched for the function table
+	var ptrs []exeRegion // regions scanned for pointer words (allocated data and the symbol table)
+	var syms []exeSyms
+	var coff *exeCOFF
+	switch {
+	case len(b) >= 64 && string(b[:4]) == "\x7fELF":
+		if b[4] != 2 || b[5] != 1 || binary.LittleEndian.Uint16(b[18:]) != 62 {
+			return nil, fmt.Errorf("%w: ELF class, data or machine", errExe)
+		}
+		shoff, shentsize, shnum := binary.LittleEndian.Uint64(b[40:]), int64(binary.LittleEndian.Uint16(b[58:])), int64(binary.LittleEndian.Uint16(b[60:]))
+		if shentsize != 64 || shnum > exeMaxSections || shoff > uint64(len(b)) || int64(shoff)+shnum*64 > int64(len(b)) {
+			return nil, fmt.Errorf("%w: ELF section table", errExe)
+		}
+		for i := int64(0); i < shnum; i++ {
+			h := b[int64(shoff)+i*64:]
+			typ, flags := binary.LittleEndian.Uint32(h[4:]), binary.LittleEndian.Uint64(h[8:])
+			addr, off, size := binary.LittleEndian.Uint64(h[16:]), binary.LittleEndian.Uint64(h[24:]), binary.LittleEndian.Uint64(h[32:])
+			if (typ != 1 && typ != 2) || size == 0 { // PROGBITS or SYMTAB with bytes in the file
+				continue
+			}
+			if off > uint64(len(b)) || size > uint64(len(b))-off || addr+size < addr {
+				return nil, fmt.Errorf("%w: ELF section %d outside the file", errExe, i)
+			}
+			r := exeRegion{int64(off), int64(size), addr, false}
+			switch {
+			case typ == 2:
+				link := int64(binary.LittleEndian.Uint32(h[40:]))
+				if binary.LittleEndian.Uint64(h[56:]) != 24 || link >= shnum {
+					return nil, fmt.Errorf("%w: ELF symbol table", errExe)
+				}
+				l := b[int64(shoff)+link*64:]
+				so, ss := binary.LittleEndian.Uint64(l[24:]), binary.LittleEndian.Uint64(l[32:])
+				if so > uint64(len(b)) || ss > uint64(len(b))-so {
+					return nil, fmt.Errorf("%w: ELF string table", errExe)
+				}
+				syms = append(syms, exeSyms{b[off : off+size], b[so : so+ss]})
+				ptrs = append(ptrs, r)
+			case flags&4 != 0 && addr != 0:
+				r.code = true
+				im.regions = append(im.regions, r)
+			case flags&2 != 0:
+				data = append(data, r)
+				ptrs = append(ptrs, r)
+			}
+		}
+	case len(b) >= 0x40 && string(b[:2]) == "MZ":
+		pe := int64(binary.LittleEndian.Uint32(b[0x3c:]))
+		if pe < 0x40 || pe+24 > int64(len(b)) || string(b[pe:pe+4]) != "PE\x00\x00" || binary.LittleEndian.Uint16(b[pe+4:]) != 0x8664 {
+			return nil, fmt.Errorf("%w: PE signature or machine", errExe)
+		}
+		nsec, optSize := int64(binary.LittleEndian.Uint16(b[pe+6:])), int64(binary.LittleEndian.Uint16(b[pe+20:]))
+		opt := pe + 24
+		if optSize < 112 || opt+optSize > int64(len(b)) || binary.LittleEndian.Uint16(b[opt:]) != 0x20b || nsec > exeMaxSections {
+			return nil, fmt.Errorf("%w: PE32+ optional header", errExe)
+		}
+		base := binary.LittleEndian.Uint64(b[opt+24:])
+		st := opt + optSize
+		if st+nsec*40 > int64(len(b)) {
+			return nil, fmt.Errorf("%w: PE section table", errExe)
+		}
+		var secVA []uint64
+		for i := int64(0); i < nsec; i++ {
+			secVA = append(secVA, base+uint64(binary.LittleEndian.Uint32(b[st+i*40+12:])))
+		}
+		if symOff, nsym := int64(binary.LittleEndian.Uint32(b[pe+12:])), int64(binary.LittleEndian.Uint32(b[pe+16:])); symOff > 0 && nsym > 0 {
+			if nsym > exeMaxUnits || symOff+nsym*18+4 > int64(len(b)) {
+				return nil, fmt.Errorf("%w: COFF symbol table", errExe)
+			}
+			strs := b[symOff+nsym*18:]
+			if n := int64(binary.LittleEndian.Uint32(strs)); n >= 4 && n <= int64(len(strs)) {
+				strs = strs[:n]
+			} else {
+				strs = strs[:4]
+			}
+			pes := exeCOFF{b[symOff : symOff+nsym*18], strs, secVA}
+			coff = &pes
+			ptrs = append(ptrs, exeRegion{symOff, nsym * 18, 0, false})
+		}
+		for i := int64(0); i < nsec; i++ {
+			h := b[st+i*40:]
+			vsize, rva := uint64(binary.LittleEndian.Uint32(h[8:])), uint64(binary.LittleEndian.Uint32(h[12:]))
+			rawSize, rawOff, ch := uint64(binary.LittleEndian.Uint32(h[16:])), uint64(binary.LittleEndian.Uint32(h[20:])), binary.LittleEndian.Uint32(h[36:])
+			size := min(vsize, rawSize)
+			if size == 0 {
+				continue
+			}
+			if rawOff > uint64(len(b)) || size > uint64(len(b))-rawOff {
+				return nil, fmt.Errorf("%w: PE section %d outside the file", errExe, i)
+			}
+			r := exeRegion{int64(rawOff), int64(size), base + rva, false}
+			if ch&0x20000000 != 0 {
+				r.code = true
+				im.regions = append(im.regions, r)
+			} else if ch&0x40 != 0 {
+				data = append(data, r)
+				ptrs = append(ptrs, r)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("%w: not ELF or PE", errExe)
+	}
+	if len(im.regions) == 0 || len(im.regions) > exeMaxRegions {
+		return nil, fmt.Errorf("%w: %d code regions", errExe, len(im.regions))
+	}
+	slices.SortFunc(im.regions, func(x, y exeRegion) int { return cmp.Compare(x.off, y.off) })
+	for i := 1; i < len(im.regions); i++ {
+		if im.regions[i].off < im.regions[i-1].off+im.regions[i-1].size {
+			return nil, fmt.Errorf("%w: overlapping code regions", errExe)
+		}
+	}
+	var err error
+	found := false
+	for _, d := range append(slices.Clone(data), im.regions...) {
+		if im.units, err = exePclntab(b[d.off:d.off+d.size], &im); err == nil {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("%w: no Go function table", errExe)
+	}
+	for _, st := range syms {
+		im.units = append(im.units, exeSymUnits(st)...)
+	}
+	if coff != nil {
+		im.units = append(im.units, coff.units()...)
+	}
+	im.units = exeUniqueUnits(im.units)
+	for _, p := range ptrs {
+		p.off, p.size = (p.off+7)&^7, (p.off+p.size)&^7-(p.off+7)&^7
+		if p.size > 0 {
+			im.regions = append(im.regions, p)
+		}
+	}
+	slices.SortFunc(im.regions, func(x, y exeRegion) int { return cmp.Compare(x.off, y.off) })
+	for i := 1; i < len(im.regions); i++ {
+		if im.regions[i].off < im.regions[i-1].off+im.regions[i-1].size {
+			return nil, fmt.Errorf("%w: overlapping sections", errExe)
+		}
+	}
+	if len(im.regions) > exeMaxRegions {
+		return nil, fmt.Errorf("%w: %d regions", errExe, len(im.regions))
+	}
+	return &im, nil
+}
+
+type exeSyms struct{ tab, str []byte }
+
+// exeCOFF is a PE image's COFF symbol table (Go keeps one unless linked with -s).
+type exeCOFF struct {
+	tab, str []byte
+	secVA    []uint64
+}
+
+func (c *exeCOFF) units() []exeUnit {
+	var out []exeUnit
+	for o := 0; o+18 <= len(c.tab); {
+		e := c.tab[o:]
+		aux := int(e[17])
+		o += 18 * (1 + aux)
+		sec := int(int16(binary.LittleEndian.Uint16(e[12:])))
+		if sec < 1 || sec > len(c.secVA) || (e[16] != 2 && e[16] != 3) {
+			continue
+		}
+		name := e[:8]
+		if binary.LittleEndian.Uint32(e) == 0 {
+			so := int(binary.LittleEndian.Uint32(e[4:]))
+			if so < 4 || so >= len(c.str) {
+				continue
+			}
+			name = c.str[so:]
+		}
+		k := bytes.IndexByte(name[:min(len(name), 4096)], 0)
+		if k < 0 {
+			k = min(len(name), 8)
+		}
+		if k == 0 {
+			continue
+		}
+		out = append(out, exeUnit{c.secVA[sec-1] + uint64(binary.LittleEndian.Uint32(e[8:])), exeFNV(name[:k])})
+	}
+	return out
+}
+
+// exeSymUnits lists the named, addressed symbols of an ELF symbol table (functions and data objects).
+func exeSymUnits(st exeSyms) []exeUnit {
+	var out []exeUnit
+	for o := 24; o+24 <= len(st.tab) && len(out) < exeMaxUnits; o += 24 {
+		e := st.tab[o:]
+		name, typ, va := uint64(binary.LittleEndian.Uint32(e)), e[4]&0xf, binary.LittleEndian.Uint64(e[8:])
+		if va == 0 || (typ != 1 && typ != 2) || name >= uint64(len(st.str)) {
+			continue
+		}
+		n := st.str[name:]
+		k := bytes.IndexByte(n[:min(len(n), 4096)], 0)
+		if k <= 0 {
+			continue
+		}
+		out = append(out, exeUnit{va, exeFNV(n[:k])})
+	}
+	return out
+}
+
+// exeUniqueUnits keeps one unit per address (the same function from two tables) and drops every hash that
+// names more than one address.
+func exeUniqueUnits(us []exeUnit) []exeUnit {
+	slices.SortFunc(us, func(a, b exeUnit) int { return cmp.Or(cmp.Compare(a.va, b.va), cmp.Compare(a.hash, b.hash)) })
+	us = slices.Compact(us)
+	at := map[uint32]uint64{}
+	bad := map[uint32]bool{}
+	byVA := map[uint64]bool{}
+	for _, u := range us {
+		if v, ok := at[u.hash]; ok && v != u.va {
+			bad[u.hash] = true
+		}
+		at[u.hash] = u.va
+	}
+	return slices.DeleteFunc(us, func(u exeUnit) bool {
+		if bad[u.hash] || byVA[u.va] {
+			return true // a second name at one address keeps the first only
+		}
+		byVA[u.va] = true
+		return false
+	})
+}
+
+// exePclntab finds and reads a Go 1.18+ function table (pcHeader magic 0xfffffff0/1, x86, 8-byte pointers)
+// inside sec, returning the units whose name hash is unique.
+func exePclntab(sec []byte, im *exeImage) ([]exeUnit, error) {
+	for at := 0; at+72 <= len(sec); at += 8 {
+		j := bytes.Index(sec[at:], []byte{0xff, 0xff, 0xff, 0x00, 0x00, 0x01, 0x08})
+		if j < 1 {
+			return nil, errExe
+		}
+		at += j - 1
+		if at%8 != 0 || (sec[at] != 0xf0 && sec[at] != 0xf1) {
+			at += 1
+			at -= at % 8
+			continue
+		}
+		u, err := exeReadPcln(sec[at:], im)
+		if err == nil {
+			return u, nil
+		}
+	}
+	return nil, errExe
+}
+
+func exeReadPcln(p []byte, im *exeImage) ([]exeUnit, error) {
+	u64 := func(o int) uint64 { return binary.LittleEndian.Uint64(p[o:]) }
+	nfunc, text, nameOff, pclnOff := u64(8), u64(24), u64(32), u64(64)
+	if nfunc == 0 || nfunc > exeMaxUnits || nameOff >= uint64(len(p)) || pclnOff >= uint64(len(p)) || pclnOff+(nfunc+1)*8 > uint64(len(p)) {
+		return nil, errExe
+	}
+	inCode := func(va uint64) bool {
+		for _, r := range im.regions {
+			if va >= r.va && va-r.va < uint64(r.size) {
+				return true
+			}
+		}
+		return false
+	}
+	if text == 0 { // newer linkers leave textStart to the runtime: offsets are from the first code section
+		text = slices.MinFunc(im.regions, func(a, b exeRegion) int { return cmp.Compare(a.va, b.va) }).va
+	}
+	if !inCode(text) {
+		return nil, errExe
+	}
+	ft := p[pclnOff:]
+	seen := map[uint32]int{}
+	units := make([]exeUnit, 0, nfunc)
+	prev := uint64(0)
+	for i := uint64(0); i < nfunc; i++ {
+		entry, fo := uint64(binary.LittleEndian.Uint32(ft[i*8:])), uint64(binary.LittleEndian.Uint32(ft[i*8+4:]))
+		if i > 0 && entry < prev || pclnOff+fo+8 > uint64(len(p)) {
+			return nil, errExe
+		}
+		prev = entry
+		f := p[pclnOff+fo:]
+		if uint64(binary.LittleEndian.Uint32(f)) != entry {
+			return nil, errExe
+		}
+		no := int64(int32(binary.LittleEndian.Uint32(f[4:])))
+		if no < 0 || nameOff+uint64(no) >= uint64(len(p)) {
+			return nil, errExe
+		}
+		name := p[nameOff+uint64(no):]
+		k := bytes.IndexByte(name[:min(len(name), 4096)], 0)
+		if k < 0 {
+			return nil, errExe
+		}
+		va := text + entry
+		if !inCode(va) {
+			return nil, errExe
+		}
+		h := exeFNV(name[:k])
+		seen[h]++
+		units = append(units, exeUnit{va, h})
+	}
+	_ = seen
+	return units, nil
+}
+
+// exeRIPForm reports whether the ModRM byte at region index i (b holds region bytes from index base) begins a
+// RIP-relative operand and how many immediate bytes follow the displacement. It reads only b[..i].
+func exeRIPForm(b []byte, base, i int64) (bias uint8, ok bool) {
+	at := func(k int64) (byte, bool) {
+		if k < 0 || k-base < 0 {
+			return 0, false
+		}
+		return b[k-base], true
+	}
+	op, ok1 := at(i - 1)
+	modrm, _ := at(i)
+	if !ok1 {
+		return 0, false
+	}
+	if op == 0xFF {
+		return 0, modrm == 0x15 || modrm == 0x25 || modrm == 0x05 || modrm == 0x0D
+	}
+	if c, ok := at(i - 5); ok && c == 0x62 { // EVEX: map 3 carries an imm8
+		c4, _ := at(i - 4)
+		if c4&7 == 3 {
+			return 1, true
+		}
+		return 0, true
+	}
+	if c, ok := at(i - 4); ok && c == 0xC4 {
+		c3, _ := at(i - 3)
+		if c3&0x1F == 3 {
+			return 1, true
+		}
+		return 0, true
+	}
+	if c, ok := at(i - 3); ok && c == 0xC5 && exeVecOp(op) {
+		return 0, true
+	}
+	if c, ok := at(i - 3); ok && c == 0x0F {
+		if c2, _ := at(i - 2); c2 == 0x38 {
+			return 0, true
+		}
+	}
+	if c, ok := at(i - 2); ok && c == 0x0F {
+		if op >= 0x90 && op <= 0x9F {
+			return 0, true
+		}
+		switch op {
+		case 0x10, 0x11, 0x28, 0x29, 0x2A, 0x2C, 0x2D, 0x2E, 0x2F, 0x51, 0x54, 0x57, 0x58, 0x59, 0x5C, 0x5E, 0x6F, 0x7F, 0xAF, 0xEF, 0x74, 0x75, 0x76, 0x6E, 0x7E, 0xB0, 0xB1, 0xB6, 0xB7, 0xBE, 0xBF, 0xC1, 0xD6:
+			return 0, true
+		}
+		return 0, false
+	}
+	switch op {
+	case 0x80, 0x83, 0xC6, 0x6B:
+		return 1, true
+	case 0x81, 0xC7, 0x69:
+		return 4, true
+	case 0xF6, 0xF7:
+		if (modrm>>3)&7 > 1 {
+			return 0, true
+		}
+		if op == 0xF6 {
+			return 1, true
+		}
+		return 4, true
+	case 0x8B, 0x8D, 0x89, 0x88, 0x8A, 0x63, 0x85, 0x84, 0x03, 0x2B, 0x3B, 0x39, 0x01, 0x29, 0x0B, 0x23, 0x33, 0x31, 0x21, 0x09:
+		return 0, true
+	}
+	return 0, false
+}
+
+func exeVecOp(op byte) bool {
+	switch op {
+	case 0x10, 0x11, 0x28, 0x29, 0x6F, 0x7F, 0x6E, 0x7E, 0xEF, 0xDB, 0xEB, 0x74, 0x75, 0x76, 0x58, 0x59, 0x5C, 0x2A, 0x2C, 0x2D, 0x12, 0x13, 0x16, 0x17, 0xE7, 0x2B:
+		return true
+	}
+	return false
+}
+
+// exeCandidate reports the slot (region index) and immediate count of a reference candidate at region index
+// i, reading only b[..i+1] (the opcode bytes, never the slot).
+func exeCandidate(b []byte, base, i, end int64) (slot int64, bias uint8, ok bool) {
+	c := b[i-base]
+	switch {
+	case c == 0xE8 || c == 0xE9:
+		return i + 1, 0, i+5 <= end
+	case c == 0x0F:
+		if i+1 < end && b[i+1-base]&0xF0 == 0x80 {
+			return i + 2, 0, i+6 <= end
+		}
+	case c&0xC7 == 0x05:
+		if bias, ok := exeRIPForm(b, base, i); ok && i+5+int64(bias) <= end {
+			return i + 1, bias, true
+		}
+	}
+	return 0, 0, false
+}
+
+// exeTables is the per-object decoding state.
+type exeTables struct {
+	regions  []exeRegion
+	restart  [][]uint16 // per region, per block: restart point minus the block start
+	except   map[int64]bool
+	units    map[uint32]uint64
+	hashes   []exeUnit // address order (the unit table of the canonical stream)
+	unitOff  int64     // the unit table's offset in the canonical stream (the original size)
+	unitSize int64
+}
+
+// exeNormalize rewrites b (the whole file) in place into the canonical payload and returns the tables.
+func exeNormalize(b []byte, im *exeImage) (*exeTables, error) {
+	t := &exeTables{regions: im.regions, except: map[int64]bool{}, units: make(map[uint32]uint64, len(im.units)), hashes: im.units, unitOff: int64(len(b))}
+	byVA := make(map[uint64]uint32, len(im.units))
+	for _, u := range im.units {
+		t.units[u.hash] = u.va
+		byVA[u.va] = u.hash
+	}
+	for _, r := range im.regions {
+		if !r.code {
+			t.restart = append(t.restart, nil)
+			if err := t.normPtrs(b[r.off:r.off+r.size], r, byVA); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		reg := slices.Clone(b[r.off : r.off+r.size]) // candidates are tested on original bytes, as the decoder sees them
+		out := b[r.off : r.off+r.size]
+		var spans [][2]int64 // rewritten instructions, region indexes [candidate, slot end)
+		for i := int64(0); i < r.size; {
+			slot, bias, ok := exeCandidate(reg, 0, i, r.size)
+			if !ok {
+				i++
+				continue
+			}
+			raw := binary.LittleEndian.Uint32(reg[slot:])
+			target := r.va + uint64(slot) + 4 + uint64(bias) + uint64(int64(int32(raw)))
+			if h, ok := byVA[target]; ok {
+				binary.LittleEndian.PutUint32(out[slot:], h)
+				spans = append(spans, [2]int64{i, slot + 4})
+				i = slot + 4
+				continue
+			}
+			if _, clash := t.units[raw]; clash {
+				if len(t.except) >= exeMaxExceptions {
+					return nil, fmt.Errorf("%w: too many exceptions", errExe)
+				}
+				t.except[r.off+slot] = true
+			}
+			i++
+		}
+		t.restart = append(t.restart, exeRestarts(spans, r.size))
+	}
+	return t, nil
+}
+
+// normPtrs rewrites aligned pointer words naming a unit to exeTag|hash; a raw word that looks canonical is an
+// exception.
+func (t *exeTables) normPtrs(reg []byte, r exeRegion, byVA map[uint64]uint32) error {
+	for o := 0; o+8 <= len(reg); o += 8 {
+		w := binary.LittleEndian.Uint64(reg[o:])
+		if h, ok := byVA[w]; ok {
+			binary.LittleEndian.PutUint64(reg[o:], exeTag|uint64(h))
+			continue
+		}
+		if _, clash := t.units[uint32(w)]; clash && w&^0xffffffff == exeTag {
+			if len(t.except) >= exeMaxExceptions {
+				return fmt.Errorf("%w: too many exceptions", errExe)
+			}
+			t.except[r.off+int64(o)] = true
+		}
+	}
+	return nil
+}
+
+// restorePtrs is normPtrs' inverse over region indexes [lo, hi) (8-aligned; buf holds them from index base).
+func (t *exeTables) restorePtrs(ri int, buf []byte, base, lo, hi int64) {
+	r := t.regions[ri]
+	for o := lo &^ 7; o+8 <= hi && o+8-base <= int64(len(buf)); o += 8 {
+		if o < base {
+			continue
+		}
+		w := binary.LittleEndian.Uint64(buf[o-base:])
+		if w&^0xffffffff != exeTag || t.except[r.off+o] {
+			continue
+		}
+		if va, ok := t.units[uint32(w)]; ok {
+			binary.LittleEndian.PutUint64(buf[o-base:], va)
+		}
+	}
+}
+
+// exeRestarts picks, per block, the first index at or after the block start where a decode may begin: no
+// rewritten instruction ends within exeLookBack bytes before it or straddles it.
+func exeRestarts(spans [][2]int64, size int64) []uint16 {
+	var out []uint16
+	k := 0
+	for blk := int64(0); blk < size; blk += exeBlock {
+		p := blk
+		for {
+			for k < len(spans) && spans[k][1]+exeLookBack <= p {
+				k++
+			}
+			if k < len(spans) && spans[k][0] < p {
+				p = spans[k][1] + exeLookBack // inside or too close: move past it
+				continue
+			}
+			break
+		}
+		out = append(out, uint16(min(p-blk, 0xffff)))
+	}
+	return out
+}
+
+// exeRestore rewrites canonical bytes of one region back to the original, from region index p (a restart
+// point) up to index end. buf holds region bytes from index base (base <= p - exeLookBack when possible);
+// slots that start before end are completed even if they extend past it, so buf must reach end + 4.
+func (t *exeTables) exeRestore(ri int, buf []byte, base, p, end int64) error {
+	r := t.regions[ri]
+	lim := min(base+int64(len(buf)), r.size)
+	for i := p; i < end && i < lim; {
+		slot, bias, ok := exeCandidate(buf, base, i, r.size)
+		if !ok || slot+4 > lim {
+			i++
+			continue
+		}
+		s := buf[slot-base:]
+		v := binary.LittleEndian.Uint32(s)
+		va, unit := t.units[v]
+		if !unit || t.except[r.off+slot] {
+			i++
+			continue
+		}
+		binary.LittleEndian.PutUint32(s, uint32(int32(int64(va)-int64(r.va+uint64(slot)+4+uint64(bias)))))
+		i = slot + 4
+	}
+	return nil
+}
+
+// exeUnitTable serializes the units in address order: the gap from the previous entry and the name hash.
+func exeUnitTable(units []exeUnit) []byte {
+	var b []byte
+	b = binary.AppendUvarint(b, uint64(len(units)))
+	prev := uint64(0)
+	for _, u := range units {
+		b = binary.AppendUvarint(b, u.va-prev)
+		b = binary.LittleEndian.AppendUint32(b, u.hash)
+		prev = u.va
+	}
+	return b
+}
+
+func exeParseUnits(b []byte) ([]exeUnit, map[uint32]uint64, error) {
+	n, k := binary.Uvarint(b)
+	if k <= 0 || n > exeMaxUnits || n > uint64(len(b)) {
+		return nil, nil, errExe
+	}
+	b = b[k:]
+	units := make([]exeUnit, 0, n)
+	m := make(map[uint32]uint64, n)
+	va := uint64(0)
+	for i := uint64(0); i < n; i++ {
+		d, k := binary.Uvarint(b)
+		if k <= 0 || len(b) < k+4 || (i > 0 && d == 0) {
+			return nil, nil, errExe
+		}
+		va += d
+		h := binary.LittleEndian.Uint32(b[k:])
+		b = b[k+4:]
+		if _, dup := m[h]; dup {
+			return nil, nil, errExe
+		}
+		m[h] = va
+		units = append(units, exeUnit{va, h})
+	}
+	if len(b) != 0 {
+		return nil, nil, errExe
+	}
+	return units, m, nil
+}
+
+// ---- representation (kind 15): table members, then the canonical stream as a BODY -------------------------
+
+func (t *exeTables) marshal() []byte {
+	b := []byte{exeFormatV1}
+	b = binary.AppendUvarint(b, uint64(t.unitOff))
+	b = binary.AppendUvarint(b, uint64(t.unitSize))
+	b = binary.AppendUvarint(b, uint64(len(t.regions)))
+	for i, r := range t.regions {
+		b = binary.AppendUvarint(b, uint64(r.off))
+		b = binary.AppendUvarint(b, uint64(r.size))
+		b = binary.AppendUvarint(b, r.va)
+		if !r.code {
+			b = append(b, 0)
+			continue
+		}
+		b = append(b, 1)
+		for _, d := range t.restart[i] {
+			b = binary.AppendUvarint(b, uint64(d))
+		}
+	}
+	ex := slices.Sorted(maps.Keys(t.except))
+	b = binary.AppendUvarint(b, uint64(len(ex)))
+	prev := int64(0)
+	for _, o := range ex {
+		b = binary.AppendUvarint(b, uint64(o-prev))
+		prev = o
+	}
+	return b
+}
+
+// exeParseTables reads the table of an object of size bytes (the units come from the body separately).
+func exeParseTables(b []byte, size int64) (*exeTables, error) {
+	bad := func(what string) error { return repCorrupt("executable table %s", what) }
+	if len(b) < 1 || b[0] != exeFormatV1 {
+		return nil, bad("version")
+	}
+	b = b[1:]
+	uv := func() (uint64, bool) {
+		v, k := binary.Uvarint(b)
+		if k <= 0 {
+			return 0, false
+		}
+		b = b[k:]
+		return v, true
+	}
+	t := &exeTables{except: map[int64]bool{}}
+	uo, ok1 := uv()
+	us, ok2 := uv()
+	nr, ok3 := uv()
+	if !ok1 || !ok2 || !ok3 || int64(uo) != size || us > 64<<20 || nr == 0 || nr > exeMaxRegions {
+		return nil, bad("header")
+	}
+	t.unitOff, t.unitSize = int64(uo), int64(us)
+	end := int64(0)
+	for i := uint64(0); i < nr; i++ {
+		off, ok1 := uv()
+		sz, ok2 := uv()
+		va, ok3 := uv()
+		if !ok1 || !ok2 || !ok3 || len(b) < 1 || int64(off) < end || sz == 0 || off+sz > uint64(size) || va+sz < va {
+			return nil, bad("region")
+		}
+		r := exeRegion{int64(off), int64(sz), va, b[0] == 1}
+		b = b[1:]
+		end = r.off + r.size
+		var rs []uint16
+		if r.code {
+			for blk := int64(0); blk < r.size; blk += exeBlock {
+				d, ok := uv()
+				if !ok || d > 0xffff {
+					return nil, bad("restart")
+				}
+				rs = append(rs, uint16(d))
+			}
+		} else if r.off%8 != 0 || r.size%8 != 0 {
+			return nil, bad("pointer region alignment")
+		}
+		t.regions = append(t.regions, r)
+		t.restart = append(t.restart, rs)
+	}
+	ne, ok := uv()
+	if !ok || ne > exeMaxExceptions {
+		return nil, bad("exceptions")
+	}
+	prev := int64(0)
+	for i := uint64(0); i < ne; i++ {
+		d, ok := uv()
+		if !ok || (i > 0 && d == 0) || prev+int64(d) >= size {
+			return nil, bad("exception")
+		}
+		prev += int64(d)
+		t.except[prev] = true
+	}
+	if len(b) != 0 {
+		return nil, bad("trailing bytes")
+	}
+	return t, nil
+}
+
+// encodeExe builds the normalized executable representation (top level of a canonical build only).
+func (b *repBuilder) encodeExe(src io.ReaderAt, size int64) (*repObject, error) {
+	if b.canon == nil || b.depth != 1 {
+		return nil, fmt.Errorf("%w: executable outside a canonical build", errRepUnsupported)
+	}
+	if err := b.budget.inspect(size); err != nil {
+		return nil, err
+	}
+	if size > 512<<20 {
+		return nil, fmt.Errorf("%w: executable of %d bytes", errRepUnsupported, size)
+	}
+	data := make([]byte, size)
+	if err := repReadFullAt(src, data, 0); err != nil {
+		return nil, err
+	}
+	im, err := exeParse(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errRepUnsupported, err)
+	}
+	t, err := exeNormalize(data, im)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errRepUnsupported, err)
+	}
+	ut := exeUnitTable(im.units)
+	t.unitSize = int64(len(ut))
+	f, err := b.codecTemp()
+	if err != nil {
+		return nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			repRemoveTemp(f)
+		}
+	}()
+	digest := sha256.New()
+	if _, err := io.MultiWriter(f, digest).Write(append(data, ut...)); err != nil {
+		return nil, err
+	}
+	members, err := b.codecTable(t.marshal())
+	if err != nil {
+		return nil, err
+	}
+	body, ok := b.canonPlain(f, [32]byte(digest.Sum(nil)), size+int64(len(ut)))
+	if !ok {
+		return nil, fmt.Errorf("%w: executable canonical stream", errRepUnsupported)
+	}
+	keep = true
+	return &repObject{Kind: repKindExe, Size: size, Members: append(members, body), Recipe: binary.AppendUvarint(nil, uint64(len(members)))}, nil
+}
+
+// exeLoad parses (once per representation and cache) the table and the unit table of the body.
+func exeLoad(c *repCall) (*exeTables, io.ReaderAt, error) {
+	r := c.Rep.Recipe
+	nt, k := binary.Uvarint(r)
+	if k != len(r) || nt < 1 || nt+1 != uint64(len(c.Rep.Members)) || c.Rep.Members[nt].Role != repBody {
+		return nil, nil, repCorrupt("executable recipe members")
+	}
+	body, err := c.bodyAt(&c.Rep.Members[nt])
+	if err != nil {
+		return nil, nil, err
+	}
+	if c.env.Cache != nil {
+		if v, ok := c.env.Cache.getDerived(c.ID).(*exeTables); ok {
+			return v, body, nil
+		}
+	}
+	tb, err := readTable(c, int(nt), 16<<20)
+	if err != nil {
+		return nil, nil, err
+	}
+	t, err := exeParseTables(tb, c.Rep.Size)
+	if err != nil {
+		return nil, nil, err
+	}
+	if c.Rep.Members[nt].Size != t.unitOff+t.unitSize {
+		return nil, nil, repCorrupt("executable stream is %d bytes, the table says %d", c.Rep.Members[nt].Size, t.unitOff+t.unitSize)
+	}
+	ub := make([]byte, t.unitSize)
+	if err := repReadFullAt(body, ub, t.unitOff); err != nil {
+		return nil, nil, err
+	}
+	if t.hashes, t.units, err = exeParseUnits(ub); err != nil {
+		return nil, nil, repCorrupt("executable unit table")
+	}
+	if c.env.Cache != nil {
+		c.env.Cache.putDerived(c.ID, t, int64(len(t.units))*48+int64(len(t.except))*40+int64(len(tb))+1024)
+	}
+	return t, body, nil
+}
+
+type repExeDecoder struct{}
+
+func (repExeDecoder) Decode(c *repCall) error                      { return exeReadRange(c, 0, c.Rep.Size, c.W) }
+func (repExeDecoder) Expand(c *repCall, emit func([32]byte)) error { return nil }
+
+// exeReadRange writes original bytes [off, off+n): canonical bytes outside the regions are the original;
+// a code region decodes from the restart point at or before the range, a pointer region word by word.
+func exeReadRange(c *repCall, off, n int64, w io.Writer) error {
+	t, body, err := exeLoad(c)
+	if err != nil {
+		return err
+	}
+	end := off + n
+	copyRaw := func(a, b int64) error {
+		for a < b {
+			k := min(b-a, 1<<20)
+			buf := make([]byte, k)
+			if err := repReadFullAt(body, buf, a); err != nil {
+				return err
+			}
+			if _, err := w.Write(buf); err != nil {
+				return err
+			}
+			a += k
+		}
+		return nil
+	}
+	pos := off
+	for ri, r := range t.regions {
+		if r.off+r.size <= pos {
+			continue
+		}
+		if r.off >= end {
+			break
+		}
+		if pos < r.off {
+			if err := copyRaw(pos, r.off); err != nil {
+				return err
+			}
+			pos = r.off
+		}
+		lo, hi := pos-r.off, min(end, r.off+r.size)-r.off
+		if err := t.readRegion(ri, body, lo, hi, w); err != nil {
+			return err
+		}
+		pos = r.off + hi
+	}
+	return copyRaw(pos, end)
+}
+
+// readRegion writes region indexes [lo, hi) of region ri.
+func (t *exeTables) readRegion(ri int, body io.ReaderAt, lo, hi int64, w io.Writer) error {
+	r := t.regions[ri]
+	if !r.code {
+		for a := lo; a < hi; {
+			b := min(hi, a+1<<20)
+			wlo, whi := a&^7, min(r.size, (b+7)&^7)
+			buf := make([]byte, whi-wlo)
+			if err := repReadFullAt(body, buf, r.off+wlo); err != nil {
+				return err
+			}
+			t.restorePtrs(ri, buf, wlo, wlo, whi)
+			if _, err := w.Write(buf[a-wlo : b-wlo]); err != nil {
+				return err
+			}
+			a = b
+		}
+		return nil
+	}
+	rs := t.restart[ri]
+	point := func(k int) int64 {
+		if k >= len(rs) {
+			return r.size
+		}
+		return min(int64(k)*exeBlock+int64(rs[k]), r.size)
+	}
+	k := int(lo / exeBlock)
+	for k > 0 && point(k) > lo {
+		k--
+	}
+	for k < len(rs) && point(k) < hi {
+		p, q := point(k), point(k+1)
+		for q < hi && q-p < 1<<20 && k+1 < len(rs) { // decode up to 1 MiB of blocks per window
+			k++
+			q = point(k + 1)
+		}
+		base := max(0, p-exeLookBack)
+		buf := make([]byte, q-base)
+		if err := repReadFullAt(body, buf, r.off+base); err != nil {
+			return err
+		}
+		if err := t.exeRestore(ri, buf, base, p, q); err != nil {
+			return err
+		}
+		a, b := max(lo, p), min(hi, q)
+		if a < b {
+			if _, err := w.Write(buf[a-base : b-base]); err != nil {
+				return err
+			}
+		}
+		k++
+	}
+	return nil
+}
+
+// =============================================================================
+// 16e6. Verified decoded-window cache (B9, opt-in: ZEROS3_WINDOW_CACHE_MIB, SetWindowCache)
+//
+// A sparse read of a replayed representation (gzip, zstd, ZIP, normalized executable) repeats the same
+// restart work for every request that lands in the same region. The cache keeps fixed output windows of
+// such representations in memory, keyed by the representation object's digest (which names every
+// component and body it reads, so a key never outlives its meaning) and the window index. A window enters
+// only after its decode completed from verified inputs; each carries a CRC-32C that a hit checks. Misses of
+// one window by concurrent readers decode it once. Two LRU segments (probation, protected: a second touch
+// promotes) keep one-pass scans from displacing the windows that are reused; requests above
+// winMaxRequest bypass the cache. Whole-object reads never use it and keep their SHA-256 check.
+// =============================================================================
+
+const (
+	winShards     = 16
+	winMaxRequest = 1 << 20
+)
+
+// winSize is the cached output window; a variable so experiments sweep it.
+var winSize int64 = 64 << 10
+
+type winKey struct {
+	rep [32]byte
+	idx int64
+}
+
+type winEnt struct {
+	key       winKey
+	data      []byte
+	crc       uint32
+	protected bool
+}
+
+type winFlight struct {
+	done chan struct{}
+	data []byte
+	err  error
+}
+
+type winShard struct {
+	mu          sync.Mutex
+	ents        map[winKey]*list.Element
+	prob, prot  list.List
+	pbytes, tot int64
+	flights     map[winKey]*winFlight
+}
+
+// WinStats counts cache work: hits and joins avoided a decode; decodeNS is the decode time of misses.
+type WinStats struct {
+	Hits, Misses, Joins, Evictions, Bypass, Corrupt int64
+	Bytes, Budget                                   int64
+	DecodeNS, DecodedBytes                          int64
+}
+
+type winCache struct {
+	budget int64
+	sh     [winShards]winShard
+	st     struct{ hits, misses, joins, evict, bypass, corrupt, decodeNS, decoded atomic.Int64 }
+}
+
+func newWinCache(budget int64) *winCache {
+	c := &winCache{budget: budget}
+	for i := range c.sh {
+		c.sh[i].ents, c.sh[i].flights = map[winKey]*list.Element{}, map[winKey]*winFlight{}
+	}
+	return c
+}
+
+// SetWindowCache sets the decoded-window cache budget in bytes (0 disables it and drops every window).
+func (s *Store) SetWindowCache(bytes int64) {
+	if bytes <= 0 {
+		s.win.Store(nil)
+		return
+	}
+	s.win.Store(newWinCache(bytes))
+}
+
+func (s *Store) WindowCacheStats() WinStats {
+	c := s.win.Load()
+	if c == nil {
+		return WinStats{}
+	}
+	st := WinStats{Hits: c.st.hits.Load(), Misses: c.st.misses.Load(), Joins: c.st.joins.Load(), Evictions: c.st.evict.Load(),
+		Bypass: c.st.bypass.Load(), Corrupt: c.st.corrupt.Load(), DecodeNS: c.st.decodeNS.Load(), DecodedBytes: c.st.decoded.Load(), Budget: c.budget}
+	for i := range c.sh {
+		c.sh[i].mu.Lock()
+		st.Bytes += c.sh[i].tot
+		c.sh[i].mu.Unlock()
+	}
+	return st
+}
+
+func (c *winCache) shard(k winKey) *winShard {
+	return &c.sh[((binary.LittleEndian.Uint64(k.rep[:8])^uint64(k.idx))*0x9e3779b97f4a7c15)>>60]
+}
+
+// get returns window k, decoding it with fill on a miss (once for concurrent callers).
+func (c *winCache) get(k winKey, fill func() ([]byte, error)) ([]byte, error) {
+	sh := c.shard(k)
+	sh.mu.Lock()
+	if el, ok := sh.ents[k]; ok {
+		e := el.Value.(*winEnt)
+		if crc32.Checksum(e.data, castagnoliTable) != e.crc {
+			c.st.corrupt.Add(1)
+			sh.remove(el)
+		} else {
+			sh.touch(el)
+			sh.mu.Unlock()
+			c.st.hits.Add(1)
+			return e.data, nil
+		}
+	}
+	if f, ok := sh.flights[k]; ok {
+		sh.mu.Unlock()
+		c.st.joins.Add(1)
+		<-f.done
+		return f.data, f.err
+	}
+	f := &winFlight{done: make(chan struct{})}
+	sh.flights[k] = f
+	sh.mu.Unlock()
+	c.st.misses.Add(1)
+	t0 := time.Now()
+	f.data, f.err = fill()
+	c.st.decodeNS.Add(int64(time.Since(t0)))
+	c.st.decoded.Add(int64(len(f.data)))
+	sh.mu.Lock()
+	delete(sh.flights, k)
+	if f.err == nil {
+		c.st.evict.Add(sh.insert(k, f.data, c.budget/winShards))
+	}
+	sh.mu.Unlock()
+	close(f.done)
+	return f.data, f.err
+}
+
+// insert adds a window to probation and evicts (probation first) down to the shard budget.
+func (sh *winShard) insert(k winKey, data []byte, budget int64) (evicted int64) {
+	if int64(len(data)) > budget/2 {
+		return 0
+	}
+	e := &winEnt{key: k, data: data, crc: crc32.Checksum(data, castagnoliTable)}
+	sh.ents[k] = sh.prob.PushFront(e)
+	sh.pbytes += int64(len(data))
+	sh.tot += int64(len(data))
+	for sh.tot > budget {
+		l := &sh.prob
+		if l.Len() == 0 || (sh.pbytes <= budget/4 && sh.prot.Len() > 0) {
+			l = &sh.prot
+		}
+		sh.remove(l.Back())
+		evicted++
+	}
+	return evicted
+}
+
+// touch promotes a probation window on its second use and keeps protected windows in recency order.
+func (sh *winShard) touch(el *list.Element) {
+	e := el.Value.(*winEnt)
+	if e.protected {
+		sh.prot.MoveToFront(el)
+		return
+	}
+	sh.prob.Remove(el)
+	sh.pbytes -= int64(len(e.data))
+	e.protected = true
+	sh.ents[e.key] = sh.prot.PushFront(e)
+}
+
+func (sh *winShard) remove(el *list.Element) {
+	e := el.Value.(*winEnt)
+	if e.protected {
+		sh.prot.Remove(el)
+	} else {
+		sh.prob.Remove(el)
+		sh.pbytes -= int64(len(e.data))
+	}
+	sh.tot -= int64(len(e.data))
+	delete(sh.ents, e.key)
+}
+
+// winCached reports whether a range read of call goes through the cache.
+func winCached(c *winCache, call *repCall, n int64) bool {
+	if c == nil || n > winMaxRequest {
+		return false
+	}
+	switch call.Rep.Kind {
+	case repKindGzip, repKindZstd, repKindZip, repKindExe:
+		return true
+	}
+	return false
+}
+
+// winRangeReader serves [off, off+n) of call from cached windows, decoding missing ones by the kind's range
+// reader (each window is the exact output of that reader for its span).
+func winRangeReader(c *winCache, call *repCall, off, n int64) func(w io.Writer) error {
+	return func(w io.Writer) error {
+		size := call.Rep.Size
+		for k := off / winSize; k*winSize < off+n; k++ {
+			lo, hi := k*winSize, min(size, (k+1)*winSize)
+			data, err := c.get(winKey{call.ID, k}, func() ([]byte, error) {
+				produce, err := repRangeReader(call, lo, hi-lo)
+				if err != nil || produce == nil {
+					return nil, cmp.Or(err, fmt.Errorf("%w: no range reader", errRepUnsupported))
+				}
+				var b bytes.Buffer
+				b.Grow(int(hi - lo))
+				if err := produce(&b); err != nil {
+					return nil, err
+				}
+				if int64(b.Len()) != hi-lo {
+					return nil, fmt.Errorf("%w: window %d produced %d of %d bytes", errRepShort, k, b.Len(), hi-lo)
+				}
+				return b.Bytes(), nil
+			})
+			if err != nil {
+				return err
+			}
+			a, b := max(off, lo)-lo, min(off+n, hi)-lo
+			if _, err := w.Write(data[a:b]); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }
 
@@ -76436,7 +77638,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != agFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != agFeature && x != authExeFeature {
 			return x
 		}
 	}
@@ -76468,7 +77670,7 @@ func (s *Store) authRecordFeatures(rec *authRecord) ([]string, error) {
 		for _, f := range []struct {
 			on   bool
 			name string
-		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}} {
+		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}, {need.exe, authExeFeature}} {
 			if f.on {
 				out = append(out, f.name)
 			}
@@ -84948,6 +86150,7 @@ type repReplayNeeds struct {
 	seek         bool // a gzip or zstd recipe carries a seek index
 	reach        bool // a zstd recipe carries the per-block model reach (after its seek index)
 	canon        bool // B8: body references or ZIP representations
+	exe          bool // B9: normalized executable representations
 }
 
 func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
@@ -84975,6 +86178,7 @@ func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
 			need.codec = obj.Kind == repKindGzip || obj.Kind == repKindZstd || obj.Kind == repKindZip
 		}
 		need.canon = need.canon || obj.Kind == repKindZip
+		need.exe = need.exe || obj.Kind == repKindExe
 		switch obj.Kind {
 		case repKindGzip:
 			g, err := gzipRecipe(obj)
@@ -85008,7 +86212,7 @@ func repFloorOf(env *repEnv, reach *repReach) (int, error) {
 			return 0, err
 		}
 		switch obj.Kind {
-		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd, repKindZip: // zip: gated by the authority "canon" feature
+		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd, repKindZip, repKindExe: // zip, exe: gated by the authority features "canon", "exenorm"
 		case repKindModel:
 			floor = max(floor, storeFormatVersionModel)
 		case repKindSST, repKindParquet:

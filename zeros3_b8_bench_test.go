@@ -153,7 +153,7 @@ func TestB8Canon(t *testing.T) {
 		s, done := b6Open(t, filepath.Join(fx, fam, "cdc"))
 		s.eachLiveManifest(nil, func(lm liveMan) error {
 			t0 := time.Now()
-			root, c, err := s.repConstructCanon(lm.man, nil, 0, map[[32]byte][]byte{})
+			root, c, err := s.repConstructCanon(lm.man, nil, 0, map[[32]byte][]byte{}, false)
 			if err != nil {
 				t.Logf("%s %d: %v", lm.key, lm.man.TotalLength, err)
 				return nil

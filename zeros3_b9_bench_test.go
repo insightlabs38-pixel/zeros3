@@ -6,7 +6,9 @@ package main
 // Environment as B6-B8 (ZEROS3_B6_FX, ZEROS3_B6_CORPUS, ZEROS3_B6_OUT, ZEROS3_B6_FAMILIES, ZEROS3_B6_LANES).
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,7 +39,30 @@ func b9Families(c string) []b6Family {
 		}
 		return f
 	}
+	tools := func(name, dir, ext string) b6Family {
+		f := b6Family{name: name}
+		for _, v := range []string{"1.22.0", "1.22.6", "1.23.0", "1.23.4"} {
+			for _, tool := range []string{"compile", "link", "go", "vet", "asm", "cgo"} {
+				f.puts = append(f.puts, b6Put{tool + ext, filepath.Join(c, dir, v, tool+ext)})
+			}
+		}
+		return f
+	}
+	hist := func(name, key string, files ...string) b6Family {
+		f := b6Family{name: name}
+		for _, p := range files {
+			f.puts = append(f.puts, b6Put{key, filepath.Join(c, p)})
+		}
+		return f
+	}
+	dj := b6Family{name: "django"}
+	for _, v := range []string{"5.1.1", "5.1.2", "5.1.3"} {
+		dj.puts = append(dj.puts, b6Put{"django.tar.gz", filepath.Join(c, "django/Django-"+v+".tar.gz")},
+			b6Put{"django.whl", filepath.Join(c, "django/Django-"+v+"-py3-none-any.whl")})
+	}
 	return []b6Family{
+		tools("elf", "elf", ""), tools("pe", "pe", ".exe"),
+		hist("ts", "typescript.tgz", "ts/typescript-5.6.2.tgz", "ts/typescript-5.6.3.tgz", "ts/typescript-5.7.2.tgz"), dj,
 		perFile("cu-files", "cu", "9.5", "9.6", "9.7"),
 		perFile("go-files", "gofiles", "1.22.0", "1.22.6", "1.23.0", "1.23.4"),
 		perFile("rnd-files", "rnd", "0", "1", "2"),
@@ -62,7 +87,14 @@ func b9Lanes() []b6Lane {
 			return s.AuthorityOptimize(ctx, p)
 		}
 	}
-	lanes := []b6Lane{{"cdc", nil, ""}}
+	canon := func(exe bool) func(context.Context, *Store) (any, error) {
+		return func(ctx context.Context, s *Store) (any, error) {
+			p := OptimizePolicy{AuthPolicy: op, Profile: "archive", Canonical: true, Executables: exe}
+			p.Apply, p.AllowDelta, p.AllowRep = true, true, true
+			return s.AuthorityOptimize(ctx, p)
+		}
+	}
+	lanes := []b6Lane{{"cdc", nil, ""}, {"b8c-archive", canon(false), ""}, {"b9n-archive", canon(true), ""}}
 	for _, cfg := range []string{"b8", "b8m", "b9"} {
 		lanes = append(lanes, b6Lane{cfg + "-archive", run(OptimizePolicy{AuthPolicy: op, Profile: "archive"}, cfg), ""},
 			b6Lane{cfg + "-mixed", run(OptimizePolicy{AuthPolicy: np, Profile: "mixed"}, cfg), ""})
@@ -197,3 +229,116 @@ func b9RecordStats(t *testing.T, s *Store, dir string) map[string]any {
 
 func TestB9Reads(t *testing.T)      { b9Campaign(t, TestB6Reads) }
 func TestB9Concurrent(t *testing.T) { b9Campaign(t, TestB6Concurrent) }
+
+// ---- B9-B probe: delta literals by section, raw vs normalized (B9_EXE_DIR/<version>/<B9_TOOL>) ----
+
+type exeSec struct {
+	name     string
+	off, end int64
+}
+
+func exeSections(b []byte) []exeSec {
+	var out []exeSec
+	if string(b[:4]) != "\x7fELF" {
+		return nil
+	}
+	shoff, shnum, shstr := int64(binary.LittleEndian.Uint64(b[40:])), int64(binary.LittleEndian.Uint16(b[60:])), int64(binary.LittleEndian.Uint16(b[62:]))
+	if string(b[:4]) != "\x7fELF" {
+		return nil
+	}
+	if shoff == 0 {
+		return nil
+	}
+	sh := func(i int64) []byte { return b[shoff+i*64:] }
+	strOff := int64(binary.LittleEndian.Uint64(sh(shstr)[24:]))
+	for i := int64(0); i < shnum; i++ {
+		h := sh(i)
+		no := int64(binary.LittleEndian.Uint32(h))
+		name := b[strOff+no:]
+		name = name[:bytes.IndexByte(name, 0)]
+		off, size := int64(binary.LittleEndian.Uint64(h[24:])), int64(binary.LittleEndian.Uint64(h[32:]))
+		if binary.LittleEndian.Uint32(h[4:]) == 8 {
+			continue
+		}
+		out = append(out, exeSec{string(name), off, off + size})
+	}
+	return out
+}
+
+func exeSecOf(s []exeSec, pos int64) string {
+	for _, x := range s {
+		if pos >= x.off && pos < x.end && x.name != "" {
+			return x.name
+		}
+	}
+	return "other"
+}
+
+func TestB9ExeProbe(t *testing.T) {
+	dir := os.Getenv("B9_EXE_DIR")
+	if dir == "" {
+		t.Skip("B9_EXE_DIR")
+	}
+	vers := []string{"1.22.0", "1.22.6", "1.23.0", "1.23.4"}
+	for _, tool := range []string{os.Getenv("B9_TOOL")} {
+		var prevRaw, prevCanon []byte
+		for _, v := range vers {
+			raw, err := os.ReadFile(filepath.Join(dir, v, tool))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t0 := time.Now()
+			im, err := exeParse(raw)
+			if err != nil {
+				t.Fatalf("%s %s: %v", tool, v, err)
+			}
+			canon := bytes.Clone(raw)
+			tb, err := exeNormalize(canon, im)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canon = append(canon, exeUnitTable(im.units)...)
+			nt := time.Since(t0)
+			// round trip
+			back := bytes.Clone(canon[:len(raw)])
+			for ri, r := range tb.regions {
+				if r.code {
+					tb.exeRestore(ri, back[r.off:r.off+r.size], 0, 0, r.size)
+				} else {
+					tb.restorePtrs(ri, back[r.off:r.off+r.size], 0, 0, r.size)
+				}
+			}
+			ndiff := 0
+			for i := range raw {
+				if back[i] != raw[i] {
+					ndiff++
+				}
+			}
+			changed := 0
+			for i := range raw {
+				if canon[i] != raw[i] {
+					changed++
+				}
+			}
+			t.Logf("%s %s: size %d units %d regions %d exceptions %d changed bytes %d unit table %d normalize %v roundtrip diffs %d", tool, v, len(raw), len(im.units), len(im.regions), len(tb.except), changed, len(canon)-len(raw), nt, ndiff)
+			if prevRaw != nil {
+				dr, _, err1 := xdEncode([]xdSrc{{data: prevRaw}}, raw, 1<<20)
+				dn, _, err2 := xdEncode([]xdSrc{{data: prevCanon}}, canon, 1<<20)
+				t.Logf("  delta raw %d norm %d (%.1f%%) err %v %v", len(dr), len(dn), 100*float64(len(dn))/float64(len(dr)), err1, err2)
+				for _, pair := range [][2][]byte{{prevRaw, raw}, {prevCanon, canon}} {
+					x, _ := dwDcoreBuildIndex([][]byte{pair[0]}, dwDcoreDefaultParams())
+					ops := xdFromDw(x.Match(pair[1]))
+					lit := map[string]int64{}
+					sec := exeSections(raw)
+					for _, o := range ops {
+						if o.base < 0 {
+							lit[exeSecOf(sec, o.tpos)] += o.n
+						}
+					}
+					t.Logf("    literals by section: %v", lit)
+				}
+			}
+			prevRaw, prevCanon = raw, canon
+		}
+	}
+}
