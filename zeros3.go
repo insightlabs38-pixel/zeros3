@@ -65536,7 +65536,8 @@ func zipReadRange(c *repCall, off, n int64, w io.Writer) error {
 	// entries read their small slices in stream order: one read-ahead window instead of a body read each
 	var plain io.ReaderAt = body
 	if j > i {
-		plain = &zipAhead{ra: body, size: c.Rep.Members[nt].Size}
+		last := &segs[j-1]
+		plain = &zipAhead{ra: body, size: last.plain + last.plainLen} // never past what the range replays
 	}
 	clip := func(k int, w io.Writer) error {
 		s := &segs[k]
