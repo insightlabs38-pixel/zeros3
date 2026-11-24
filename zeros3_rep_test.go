@@ -576,7 +576,7 @@ func TestRepWireGoldenAndRoundTrip(t *testing.T) {
 }
 
 func TestRepWireKindNumbers(t *testing.T) {
-	want := map[repKind]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: false, 14: true, 15: true, 16: false, 0: false, 255: false}
+	want := map[repKind]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: false, 14: true, 15: true, 16: true, 17: false, 0: false, 255: false}
 	for k, ok := range want {
 		if k.supported() != ok {
 			t.Fatalf("kind %d supported=%v", k, k.supported())
@@ -588,7 +588,7 @@ func TestRepWireKindNumbers(t *testing.T) {
 			t.Fatalf("kind %d: want unsupported, got %v", k, err)
 		}
 	}
-	if repKindConcat != 1 || repKindCAR != 2 || repKindSQLite != 3 || repKindGit != 4 || repKindMerkle != 5 || repKindGzip != 6 || repKindZstd != 7 || repKindModel != 8 || repKindSST != 9 || repKindParquet != 10 || repKindDEX != 11 || repKindCLR != 12 || repKindZip != 14 || repKindExe != 15 {
+	if repKindConcat != 1 || repKindCAR != 2 || repKindSQLite != 3 || repKindGit != 4 || repKindMerkle != 5 || repKindGzip != 6 || repKindZstd != 7 || repKindModel != 8 || repKindSST != 9 || repKindParquet != 10 || repKindDEX != 11 || repKindCLR != 12 || repKindZip != 14 || repKindExe != 15 || repKindSplice != 16 {
 		t.Fatal("kind numbering moved")
 	}
 }
@@ -615,7 +615,7 @@ func TestRepWireCorruptionMatrix(t *testing.T) {
 	mut("magic", func(b []byte) []byte { b[0] = 'X'; return b }, errRepCorrupt)
 	mut("version", func(b []byte) []byte { b[4] = 2; return b }, errRepUnsupported)
 	mut("unassigned kind", func(b []byte) []byte { b[5] = 13; return b }, errRepUnsupported)
-	mut("future kind", func(b []byte) []byte { b[5] = 16; return b }, errRepUnsupported)
+	mut("future kind", func(b []byte) []byte { b[5] = 17; return b }, errRepUnsupported)
 	mut("trailing", func(b []byte) []byte { return append(b, 0) }, errRepCorrupt)
 	mut("role", func(b []byte) []byte { b[9] = 2; return b }, errRepCorrupt)
 	mut("nonminimal size varint", func(b []byte) []byte {
