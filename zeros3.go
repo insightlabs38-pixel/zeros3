@@ -86,51 +86,52 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      545    Content-defined chunking (CDC)
-//      732    Content-addressed chunk storage (CAS)
-//     2527    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5315    Small-object segments (inline manifests, store level 11)
-//     6565    Manifests (immutable, JSON)
-//     7363    Visibility journal (append-only, checksummed)
-//     7885    Store: format, namespace, and object CRUD
-//     8398    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12050    Version history/restore, history pruning, ListObjectsV2
-//    12656    SigV4 authentication (header and presigned-URL)
-//    13633    Request payload checksums and S3-shaped XML error/response types
-//    13850    HTTP routing and S3 operation handlers
-//    14282    Conditional operations (PUT/GET/HEAD preconditions)
-//    14977    CopyObject
-//    15282    Multipart upload
-//    16226    Stats and reachability scanning
-//    17814    Verify
-//    18029    Store locking and safe offline GC
-//    18332    Offline compaction (`zeros3 compact`)
-//    19515    Pack reclamation and repacking (`zeros3 repack`)
-//    20103    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20563    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21867    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22380    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23445    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24296    Delta sync client, credentials, and parallel transfer
-//    26601    Bulk logical-chunk transport (v2)
-//    27512    Recursive directory sync
-//    27817    Remote replication (`zeros3 replicate`)
-//    28730    Peer-assisted corruption repair (`zeros3 repair`)
-//    29302    Namespace (prefix/bucket) replication
-//    29618    Copy-on-write namespace fork (`zeros3 fork`)
-//    29826    Snapshots and restore
-//    30988    Structural diff and inspect (introspection)
-//    32400    Portable snapshot bundles (`zeros3 bundle`)
-//    33597    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34232    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52885    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    60857    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    64143    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    64699    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    65594    Windowed and estimated similarity deltas (extracted dcore)
-//    67431    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    75287    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    81559    CLI dispatch, HTTP server/startup, and main
+//      546    Content-defined chunking (CDC)
+//      733    Content-addressed chunk storage (CAS)
+//     2528    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5316    Small-object segments (inline manifests, store level 11)
+//     6566    Manifests (immutable, JSON)
+//     7364    Visibility journal (append-only, checksummed)
+//     7886    Store: format, namespace, and object CRUD
+//     8399    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12051    Version history/restore, history pruning, ListObjectsV2
+//    12657    SigV4 authentication (header and presigned-URL)
+//    13634    Request payload checksums and S3-shaped XML error/response types
+//    13851    HTTP routing and S3 operation handlers
+//    14283    Conditional operations (PUT/GET/HEAD preconditions)
+//    14978    CopyObject
+//    15283    Multipart upload
+//    16227    Stats and reachability scanning
+//    17815    Verify
+//    18031    Store locking and safe offline GC
+//    18337    Offline compaction (`zeros3 compact`)
+//    19520    Pack reclamation and repacking (`zeros3 repack`)
+//    20116    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20576    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21921    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22434    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23499    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24350    Delta sync client, credentials, and parallel transfer
+//    26655    Bulk logical-chunk transport (v2)
+//    27566    Recursive directory sync
+//    27871    Remote replication (`zeros3 replicate`)
+//    28784    Peer-assisted corruption repair (`zeros3 repair`)
+//    29356    Namespace (prefix/bucket) replication
+//    29672    Copy-on-write namespace fork (`zeros3 fork`)
+//    29880    Snapshots and restore
+//    31042    Structural diff and inspect (introspection)
+//    32454    Portable snapshot bundles (`zeros3 bundle`)
+//    33651    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34286    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    52939    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    60987    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    64278    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    64834    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    65729    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    66846    Windowed and estimated similarity deltas (extracted dcore)
+//    68683    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    76539    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    82811    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -17919,6 +17920,7 @@ func (s *Store) Verify(deep bool) (VerifyResult, error) {
 	res.AuthorityOrphans = len(rr.AuthOrphans)
 	res.AuthorityUnavailable = rr.AuthFaults
 	s.verifyPacks(deep, &res)
+	s.agVerify(&res)
 
 	// --- Deep only: whole-object digest ---
 	//
@@ -18099,7 +18101,8 @@ func (l *storeLock) release() {
 // GCResult reports one GC dry-run or apply pass: what was found (always),
 // and -- only when Applied is true -- what was actually deleted.
 type GCResult struct {
-	Applied bool `json:"applied"`
+	Applied      bool      `json:"applied"`
+	RecordGroups *AGReport `json:"record_groups,omitempty"`
 
 	CurrentRootCount    int `json:"current_root_count"`
 	HistoricalRootCount int `json:"historical_root_count"`
@@ -18272,20 +18275,22 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		}
 	}
 	// Orphan body records go before the chunks they alone kept alive.
-	shards := map[string]bool{}
+	var orphans [][32]byte
 	for _, hx := range rr.AuthOrphans {
 		sha, _ := decodeHexSHA256(hx)
 		fireTestHook(hookBeforeGCDelete)
-		if err := os.Remove(store.authPath(sha)); err != nil && !os.IsNotExist(err) {
-			return res, fmt.Errorf("gc: removing authority body %s: %w", hx, err)
-		}
-		shards[store.authShardDir(sha)] = true
-		res.AuthorityBodiesDeleted++
+		orphans = append(orphans, sha)
 	}
-	for d := range shards {
-		if err := syncDir(d); err != nil {
-			return res, fmt.Errorf("gc: syncing authority bodies: %w", err)
+	if len(orphans) > 0 {
+		if err := store.authRetireMany(orphans, true); err != nil {
+			return res, fmt.Errorf("gc: retiring authority bodies: %w", err)
 		}
+		res.AuthorityBodiesDeleted += len(orphans)
+		ag, err := store.agCompact(false)
+		if err != nil {
+			return res, fmt.Errorf("gc: compacting record groups: %w", err)
+		}
+		res.RecordGroups = &ag
 	}
 	for _, p := range unreachableChunkPaths {
 		fireTestHook(hookBeforeGCDelete)
@@ -19577,10 +19582,11 @@ func (o repackOptions) encoding() packEncoding {
 // RepackResult reports one repack pass. In a dry run the write figures are
 // estimates of what an apply would do.
 type RepackResult struct {
-	DryRun    bool          `json:"dry_run"`
-	LiveSetOK bool          `json:"live_set_ok"`
-	Issues    []VerifyIssue `json:"issues,omitempty"`
-	Recon     *reconPlan    `json:"recon,omitempty"` // -layout recon: the plan and its estimate
+	RecordGroups *AGReport     `json:"record_groups,omitempty"`
+	DryRun       bool          `json:"dry_run"`
+	LiveSetOK    bool          `json:"live_set_ok"`
+	Issues       []VerifyIssue `json:"issues,omitempty"`
+	Recon        *reconPlan    `json:"recon,omitempty"` // -layout recon: the plan and its estimate
 
 	PackCount        int   `json:"pack_count"`
 	PackedChunkCount int   `json:"packed_chunk_count"`
@@ -19916,6 +19922,13 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	}
 	if opt.MaxSourcePacks < 0 {
 		return res, errors.New("repack: source pack limit must be nonnegative")
+	}
+	if !opt.DryRun {
+		ag, err := s.agCompact(true)
+		if err != nil {
+			return res, fmt.Errorf("repack: record groups: %w", err)
+		}
+		res.RecordGroups = &ag
 	}
 	live := rr.liveSet()
 	us := s.packUsagesLive(live)
@@ -20796,6 +20809,7 @@ type maintEpoch struct {
 	jOff     int64
 	jSeq     uint64 // last sequence covered by the mark
 	packs0   map[[2]string]bool
+	agMark   agLoc // log end at T0: grouped records after it are too new to condemn
 	pinCount atomic.Int64
 }
 
@@ -20823,7 +20837,7 @@ func (s *Store) mpinManifest(uuid string, sha [32]byte, objSHA string) {
 	}
 	ep.pins.pin(uuidPinKey(uuid))
 	s.mpin(sha)
-	if s.auth.mayHave.Load() {
+	if s.authMay() {
 		if c, err := decodeHexSHA256(objSHA); err == nil {
 			s.mpinAuthClosure(c, nil) // best effort: a body that is gone leaves the chunks as roots
 		}
@@ -20944,6 +20958,7 @@ func (s *Store) maintBegin() (*maintEpoch, error) {
 	ep.objs, ep.hist, ep.release = objs, hist, func() { relObjs(); relHist() }
 	ep.uploads = s.snapshotUploadsLocked()
 	ep.jOff, ep.jSeq = s.journal.writeOffset, s.journal.nextSeq-1
+	ep.agMark = s.agEnd()
 	st := s.packSnap()
 	for i, p := range st.packs {
 		if !p.open && !st.isGone(uint32(i)) {
@@ -21155,6 +21170,7 @@ func defaultMaintOptions() MaintOptions {
 // MaintReport is the machine-readable outcome of one online pass. Byte figures
 // are physical file bytes.
 type MaintReport struct {
+	RecordGroups  *AGReport     `json:"record_groups,omitempty"`
 	Pass          uint64        `json:"pass"`
 	Started       time.Time     `json:"started"`
 	Finished      time.Time     `json:"finished"`
@@ -21207,6 +21223,7 @@ type doomedFile struct {
 	path string
 	size int64
 	kind uint8
+	sha  [32]byte // fileAuthGrouped: the content
 }
 
 const (
@@ -21214,6 +21231,7 @@ const (
 	fileAuthBody
 	fileChunk
 	fileManifest
+	fileAuthGrouped // a grouped record: retired by a tomb, its group reclaimed by compaction
 )
 
 // maintainOnline runs one pass on a live store (see the section comment).
@@ -21384,6 +21402,15 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	if err := s.maintUnlinkFiles(ep, files, &rep); err != nil {
 		return rep, err
 	}
+	if opt.GC {
+		ag, err := s.agCompact(false)
+		if err != nil {
+			return rep, fmt.Errorf("maintenance: record groups: %w", err)
+		}
+		rep.RecordGroups = &ag
+		rep.BytesReclaimed += ag.BytesReclaimed
+		rep.BytesWritten += ag.BytesCopied
+	}
 	if err := s.retire.unlinkSwapped(&rep); err != nil {
 		return rep, err
 	}
@@ -21416,7 +21443,7 @@ func (s *Store) maintDeadFiles(ep *maintEpoch, rr *reachabilityResult, live *liv
 	old := func(fi fs.FileInfo) bool { return fi.ModTime().Before(ep.t0) }
 	for _, u := range rr.RepOrphanRoots {
 		if fi, err := os.Stat(s.repRootPath(u)); err == nil && old(fi) {
-			add(doomedFile{uuidPinKey(u), s.repRootPath(u), fi.Size(), fileRepRoot})
+			add(doomedFile{uuidPinKey(u), s.repRootPath(u), fi.Size(), fileRepRoot, [32]byte{}})
 		}
 	}
 	for _, hx := range rr.AuthOrphans {
@@ -21424,8 +21451,12 @@ func (s *Store) maintDeadFiles(ep *maintEpoch, rr *reachabilityResult, live *liv
 		if err != nil {
 			continue
 		}
-		if fi, err := os.Stat(s.authPath(sha)); err == nil && old(fi) {
-			add(doomedFile{authPinKey(sha), s.authPath(sha), fi.Size(), fileAuthBody})
+		if loc, known, err := s.agLookup(sha); err == nil && known {
+			if loc.kind == agRecordFrame && loc.before(ep.agMark) {
+				add(doomedFile{authPinKey(sha), s.agPath(loc.seq), loc.n, fileAuthGrouped, sha})
+			}
+		} else if fi, err := os.Stat(s.authPath(sha)); err == nil && old(fi) {
+			add(doomedFile{authPinKey(sha), s.authPath(sha), fi.Size(), fileAuthBody, [32]byte{}})
 		}
 	}
 	walk := func(dir string, visit func(path string, d fs.DirEntry) bool) error {
@@ -21458,7 +21489,7 @@ func (s *Store) maintDeadFiles(ep *maintEpoch, rr *reachabilityResult, live *liv
 		if err != nil || !old(fi) {
 			return true
 		}
-		return add(doomedFile{sum, path, fi.Size(), fileChunk})
+		return add(doomedFile{sum, path, fi.Size(), fileChunk, [32]byte{}})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("maintenance: scanning chunks: %w", err)
@@ -21472,7 +21503,7 @@ func (s *Store) maintDeadFiles(ep *maintEpoch, rr *reachabilityResult, live *liv
 		if err != nil || !old(fi) {
 			return true
 		}
-		return add(doomedFile{uuidPinKey(uuid), path, fi.Size(), fileManifest})
+		return add(doomedFile{uuidPinKey(uuid), path, fi.Size(), fileManifest, [32]byte{}})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("maintenance: scanning manifests: %w", err)
@@ -21661,10 +21692,15 @@ func (s *Store) maintUnlinkFiles(ep *maintEpoch, files []doomedFile, rep *MaintR
 		ch := make(chan struct{})
 		revived := ep.pins.hold(keys, ch)
 		var err error
+		var grouped [][32]byte
 		for _, f := range part {
 			if slices.Contains(revived, f.key) {
 				rep.RetainedPinned++
 				rep.RetainedPinnedBytes += f.size
+				continue
+			}
+			if f.kind == fileAuthGrouped {
+				grouped = append(grouped, f.key)
 				continue
 			}
 			fireTestHook(hookMaintBeforeFileUnlink)
@@ -21694,6 +21730,10 @@ func (s *Store) maintUnlinkFiles(ep *maintEpoch, files []doomedFile, rep *MaintR
 				rep.ManifestsDeleted++
 			}
 		}
+		if err == nil && len(grouped) > 0 {
+			err = s.maintRetireGrouped(part, grouped, rep)
+			authTouched = true
+		}
 		ep.pins.release(keys, ch, true)
 		if err != nil {
 			return fmt.Errorf("maintenance: removing: %w", err)
@@ -21708,6 +21748,20 @@ func (s *Store) maintUnlinkFiles(ep *maintEpoch, files []doomedFile, rep *MaintR
 		}
 	}
 	return nil
+}
+
+// maintRetireGrouped retires condemned grouped records (keys are pin keys) with one tomb append.
+func (s *Store) maintRetireGrouped(part []doomedFile, keys [][32]byte, rep *MaintReport) error {
+	var shas [][32]byte
+	for _, f := range part {
+		if f.kind != fileAuthGrouped || !slices.Contains(keys, f.key) {
+			continue
+		}
+		fireTestHook(hookMaintBeforeFileUnlink)
+		shas = append(shas, f.sha) // its bytes are reclaimed when its group is compacted
+		rep.AuthBodiesDeleted++
+	}
+	return s.authRetireMany(shas, true)
 }
 
 // maintStagingPrefixes are the staging files a live pass may clear once they
@@ -24670,7 +24724,7 @@ func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Reque
 	var authoritative bool
 	components := man.Chunks
 	wantComponents := r.URL.Query().Get("closure") == "1"
-	if srv.store.auth.mayHave.Load() {
+	if srv.store.authMay() {
 		if digest, err := decodeHexSHA256(man.ObjectSHA256); err == nil {
 			rec, err := srv.store.authLoad(digest)
 			authoritative = err == nil && rec != nil && rec.Size == man.TotalLength
@@ -28890,7 +28944,7 @@ func (s *Store) annotateAffectedObjects(findings []RepairFinding) {
 // the components of every record in its authoritative closure (bases included)
 // when a body owns the content, otherwise the manifest's CDC chunk list.
 func (s *Store) rootDependencyChunks(man manifestV1) []chunkRef {
-	if !s.auth.mayHave.Load() {
+	if !s.authMay() {
 		return man.Chunks
 	}
 	sha, err := decodeHexSHA256(man.ObjectSHA256)
@@ -29161,7 +29215,7 @@ func (s *Store) repairFromPeer(cfg repairConfig) (repairStats, error) {
 		}
 	}
 	stats.Unresolved = len(findings) - stats.Repaired
-	if stats.Unresolved > 0 && s.auth.mayHave.Load() {
+	if stats.Unresolved > 0 && s.authMay() {
 		// Components of authoritative bodies the peer cannot supply by digest: rebuild those contents from the
 		// CDC chunks their manifests list, then recount what is still broken.
 		bad := map[string]bool{}
@@ -40400,7 +40454,7 @@ func (m *manifestReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		}
 		return n, err
 	}
-	if !m.aNone && m.s.auth.mayHave.Load() {
+	if !m.aNone && m.s.authMay() {
 		if !m.aInit {
 			m.aInit = true
 			m.initAuthBody()
@@ -41642,7 +41696,7 @@ func (s *Store) openObjectReader(man manifestV1, rng byteRange) objectReader {
 
 // openServedReader is openObjectReader for a manifest that is already in served form.
 func (s *Store) openServedReader(sm *servedManifest, rng byteRange) objectReader {
-	if s.auth.mayHave.Load() {
+	if s.authMay() {
 		rd, err := s.authOpenReader(sm.man, rng)
 		if rd != nil {
 			return rd
@@ -53532,9 +53586,10 @@ func unmarshalAuthRecord(b []byte) (*authRecord, error) {
 // ---- store-level state ----------------------------------------------------
 
 type authState struct {
-	mayHave atomic.Bool
-	pubMu   sync.Mutex
-	fmtMu   sync.Mutex
+	mayHave    atomic.Bool
+	mayChecked atomic.Int64 // unix nanoseconds of the last look for a bodies directory
+	pubMu      sync.Mutex
+	fmtMu      sync.Mutex
 
 	cacheMu     sync.Mutex
 	cacheBudget int64 // decoded-object cache bytes; 0 disables (never required for correctness)
@@ -53546,6 +53601,8 @@ type authState struct {
 	// active counts served authority reads in flight: prefetch only runs while the CPU has room for it.
 	active atomic.Int64
 
+	ag agLog // B9 grouped records (section 16e4)
+
 	vmu  sync.Mutex
 	vidx map[[32]byte]authVLoc
 	vkey [2]uint64 // journal sequence and authority generation the index was built at
@@ -53553,6 +53610,26 @@ type authState struct {
 }
 
 func (s *Store) authDir() string { return filepath.Join(s.root, "bodies") }
+
+// authMay reports whether records may exist; a store opened before another process created its first
+// record notices within authMayRecheck.
+func (s *Store) authMay() bool {
+	if s.auth.mayHave.Load() {
+		return true
+	}
+	now := time.Now().UnixNano()
+	if last := s.auth.mayChecked.Load(); now-last < int64(authMayRecheck) || !s.auth.mayChecked.CompareAndSwap(last, now) {
+		return false
+	}
+	if _, err := os.Lstat(s.authDir()); err == nil {
+		s.auth.mayHave.Store(true)
+		return true
+	}
+	return false
+}
+
+const authMayRecheck = 100 * time.Millisecond
+
 func (s *Store) authShardDir(sha [32]byte) string {
 	return filepath.Join(s.authDir(), hex.EncodeToString(sha[:1]))
 }
@@ -53605,15 +53682,29 @@ func (s *Store) authCachePut(key string, v []byte) {
 
 // authLoad returns the committed record for a content SHA-256, nil when none.
 func (s *Store) authLoad(sha [32]byte) (*authRecord, error) {
-	if !s.auth.mayHave.Load() {
+	if !s.authMay() {
 		return nil, nil
 	}
-	data, err := os.ReadFile(s.authPath(sha))
+	data, known, err := s.agLoadRecord(sha)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+		return nil, fmt.Errorf("body %x: %w", sha[:6], err)
+	}
+	if known && data == nil {
+		return nil, nil // retired by a tomb
+	}
+	if !known {
+		if data, err = os.ReadFile(s.authPath(sha)); os.IsNotExist(err) && s.auth.ag.last > 0 {
+			// Another process may have moved the record into the log since the lookup.
+			if data, known, err = s.agLoadRecord(sha); err == nil && data == nil {
+				return nil, nil
+			}
 		}
-		return nil, err
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
 	}
 	r, err := unmarshalAuthRecord(data)
 	if err != nil {
@@ -53625,7 +53716,26 @@ func (s *Store) authLoad(sha [32]byte) (*authRecord, error) {
 	return r, nil
 }
 
+// authFiles lists every content with a committed record: grouped records and legacy files the log does not decide.
 func (s *Store) authFiles() ([][32]byte, error) {
+	files, err := s.authLegacyFiles()
+	if err != nil {
+		return nil, err
+	}
+	live, decided, err := s.agLive()
+	if err != nil {
+		return nil, err
+	}
+	out := slices.DeleteFunc(files, func(sha [32]byte) bool { return decided[sha] })
+	for sha := range live {
+		out = append(out, sha)
+	}
+	slices.SortFunc(out, func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) })
+	return out, nil
+}
+
+// authLegacyFiles lists the record files (one file per record, the pre-B9 layout).
+func (s *Store) authLegacyFiles() ([][32]byte, error) {
 	shards, err := os.ReadDir(s.authDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -53707,6 +53817,15 @@ func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
 	fireTestHook(hookAuthAfterFormat)
 	s.auth.pubMu.Lock()
 	defer s.auth.pubMu.Unlock()
+	if s.agOn() {
+		fireTestHook(hookAuthBeforeWrite)
+		if err := s.authWriteGrouped(rec, data, recoverCorrupt); err != nil {
+			return err
+		}
+		s.authInvalidate()
+		fireTestHook(hookAuthPublished)
+		return nil
+	}
 	cur, err := s.authLoad(rec.SHA)
 	if err != nil && !(recoverCorrupt && errors.Is(err, errAuthCorrupt)) {
 		return err
@@ -53818,15 +53937,9 @@ func (s *Store) authInvalidate() {
 // depends on it being the only source (revert) or that nothing references it (gc).
 func (s *Store) authRetire(sha [32]byte) error {
 	fireTestHook(hookAuthBeforeRetire)
-	s.auth.pubMu.Lock()
-	defer s.auth.pubMu.Unlock()
-	if err := os.Remove(s.authPath(sha)); err != nil {
+	if err := s.authRetireMany([][32]byte{sha}, false); err != nil {
 		return err
 	}
-	if err := syncDir(s.authShardDir(sha)); err != nil {
-		return err
-	}
-	s.authInvalidate()
 	fireTestHook(hookAuthAfterRetire)
 	return nil
 }
@@ -55238,7 +55351,7 @@ func (r *authObjReader) close() { r.ctx.close() }
 // (nil, nil) means the content has no record. Errors before the first byte let
 // the caller fall back to the CDC chunk list while it still exists.
 func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, error) {
-	if !s.auth.mayHave.Load() || man.TotalLength < 1 {
+	if !s.authMay() || man.TotalLength < 1 {
 		return nil, nil
 	}
 	sha, err := decodeHexSHA256(man.ObjectSHA256)
@@ -55326,7 +55439,7 @@ type authReachCtx struct {
 
 func (s *Store) newAuthReachCtx(res *reachabilityResult) *authReachCtx {
 	a := &authReachCtx{s: s, res: res, files: map[[32]byte]bool{}, recs: map[[32]byte]*authRecord{}, visited: map[[32]byte]bool{}, faulty: map[[32]byte]bool{}, live: map[[32]byte]bool{}, depth: map[[32]byte]int{}}
-	if s.auth.mayHave.Load() {
+	if s.authMay() {
 		list, err := s.authFiles()
 		if err != nil {
 			res.addIssue("invalid", "bodies", err.Error())
@@ -55451,7 +55564,7 @@ func (a *authReachCtx) mark(sha [32]byte, want func([]chunkRef), path map[[32]by
 // observe reports whether the manifest's content is served by an authoritative
 // body; only a fully validated closure replaces the manifest's CDC chunk list.
 func (a *authReachCtx) observe(man manifestV1, want func([]chunkRef)) (handled bool) {
-	if !a.s.auth.mayHave.Load() {
+	if !a.s.authMay() {
 		return false
 	}
 	sha, err := decodeHexSHA256(man.ObjectSHA256)
@@ -57932,6 +58045,9 @@ func (s *Store) authLowerFloor() (int, error) {
 	if err := syncDir(s.root); err != nil {
 		return 0, err
 	}
+	s.auth.ag.mu.Lock()
+	s.auth.ag.reset()
+	s.auth.ag.mu.Unlock()
 	s.auth.mayHave.Store(false)
 	f := s.format
 	// Pack features describe pack records, not bodies: they stay while such packs may exist.
@@ -58020,29 +58136,17 @@ func (s *Store) authorityStorage(rr reachabilityResult) (AuthorityStorage, error
 		return st, err
 	}
 	for _, sum := range files {
-		size, err := fileSizeOrZero(s.authPath(sum))
-		if err != nil {
-			return st, err
-		}
-		st.RecordFileBytes += size
+		st.RecordFileBytes += s.authRecordBytes(sum)
 	}
 	for _, id := range rr.AuthOrphans {
 		sum, _ := decodeHexSHA256(id)
-		size, err := fileSizeOrZero(s.authPath(sum))
-		if err != nil {
-			return st, err
-		}
-		st.OrphanFileBytes += size
+		st.OrphanFileBytes += s.authRecordBytes(sum)
 	}
 	components := newDigestTable(1024)
 	dependents := make(map[[32]byte]int)
 	for _, id := range rr.AuthLive {
 		sum, _ := decodeHexSHA256(id)
-		size, err := fileSizeOrZero(s.authPath(sum))
-		if err != nil {
-			return st, err
-		}
-		st.LiveRecordFileBytes += size
+		st.LiveRecordFileBytes += s.authRecordBytes(sum)
 		r, err := s.authLoad(sum)
 		if err != nil {
 			return st, err
@@ -58127,10 +58231,7 @@ func (s *Store) AuthorityStatus() (AuthStatus, error) {
 		return st, err
 	}
 	for _, f := range files {
-		fi, _ := os.Stat(s.authPath(f))
-		if fi != nil {
-			st.RecordBytes += fi.Size()
-		}
+		st.RecordBytes += s.authRecordBytes(f)
 		r, err := s.authLoad(f)
 		if err != nil {
 			return st, err
@@ -58905,14 +59006,14 @@ func (s *Store) AuthorityReadCost(man manifestV1, off, n int64) (fetched int64, 
 // authAvailable reports whether the manifest's content has an authoritative
 // body and, if so, that its whole closure is physically present.
 func (s *Store) authAvailable(man manifestV1) (handled bool, err error) {
-	if !s.auth.mayHave.Load() {
+	if !s.authMay() {
 		return false, nil
 	}
 	sha, derr := decodeHexSHA256(man.ObjectSHA256)
 	if derr != nil {
 		return false, nil
 	}
-	if _, serr := os.Stat(s.authPath(sha)); serr != nil {
+	if r, lerr := s.authLoad(sha); lerr != nil || r == nil {
 		return false, nil
 	}
 	var res reachabilityResult
@@ -58985,7 +59086,7 @@ func (s *Store) authVirtualIndex() map[[32]byte]authVLoc {
 }
 
 func (s *Store) authHasVirtualChunk(sum [32]byte) bool {
-	if !s.auth.mayHave.Load() {
+	if !s.authMay() {
 		return false
 	}
 	_, ok := s.authVirtualIndex()[sum]
@@ -58995,7 +59096,7 @@ func (s *Store) authHasVirtualChunk(sum [32]byte) bool {
 // casStatOrVirtual is casStat that also accepts a chunk only an authoritative body holds.
 func (s *Store) casStatOrVirtual(sum [32]byte) (int64, error) {
 	n, err := s.casStat(sum)
-	if err == nil || !s.auth.mayHave.Load() {
+	if err == nil || !s.authMay() {
 		return n, err
 	}
 	if loc, ok := s.authVirtualIndex()[sum]; ok {
@@ -59008,7 +59109,7 @@ func (s *Store) casStatOrVirtual(sum [32]byte) (int64, error) {
 // authoritative body of a live object that lists it. virtual reports the fallback.
 func (s *Store) casReadOrVirtual(sum [32]byte) (data []byte, virtual bool, err error) {
 	data, err = s.casRead(sum)
-	if err == nil || !s.auth.mayHave.Load() {
+	if err == nil || !s.authMay() {
 		return data, false, err
 	}
 	loc, ok := s.authVirtualIndex()[sum]
@@ -60549,7 +60650,7 @@ func (q *authSimilarityQuery) postingWindow(feature uint64, limit int) ([]uint32
 // runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, optimize, status, features, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, optimize, status, features, groups, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -60612,7 +60713,13 @@ func runAuthority(args []string) {
 	discovery := fs.String("discovery", "region", "optimize: candidate discovery, region (B7 positional fingerprints, complementary bases) or sketch (B6)")
 	canonical := fs.Bool("canonical", false, "optimize: B8 canonical streams: gzip, zstd and ZIP containers share their decoded content")
 	anchorBytes := fs.Int("anchor-bytes", 8, "optimize: windowed bases (over 32 MiB) index one COPY anchor per this many bytes, at most 8 Mi (-1: the migration rule)")
+	groupsOn := fs.Bool("enable", false, "groups: raise the store feature \"recgroup\" and move record files into groups")
+	groupsOff := fs.Bool("disable", false, "groups: write grouped records back to files and lower \"recgroup\"")
+	recGroups := fs.Bool("record-groups", false, "migrate/optimize: publish records into groups (raises \"recgroup\"; older builds refuse the store)")
 	fs.Parse(args[1:])
+	if *recGroups {
+		agWanted = true
+	}
 	if sub == "recover" {
 		applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 		if *peer == "" || *bucket == "" || *key == "" {
@@ -60795,6 +60902,29 @@ func runAuthority(args []string) {
 		rep, err := store.AuthorityOptimize(ctx, pol)
 		if err != nil {
 			log.Fatalf("zeros3: authority optimize: %v", err)
+		}
+		enc.Encode(rep)
+	case "groups":
+		// B9: -enable raises "recgroup" and regroups record files; -disable writes them back as files.
+		switch {
+		case *groupsOff:
+			n, err := store.agUngroup()
+			if err != nil {
+				log.Fatalf("zeros3: authority groups: %v", err)
+			}
+			enc.Encode(map[string]int{"ungrouped": n})
+			return
+		case *groupsOn:
+			if err := store.ensureAuthFormat(); err != nil {
+				log.Fatalf("zeros3: authority groups: %v", err)
+			}
+			if err := store.ensureFeature(agFeature); err != nil {
+				log.Fatalf("zeros3: authority groups: %v", err)
+			}
+		}
+		rep, err := store.agCompact(true)
+		if err != nil {
+			log.Fatalf("zeros3: authority groups: %v", err)
 		}
 		enc.Encode(rep)
 	case "features":
@@ -61051,6 +61181,7 @@ type rgGraph struct {
 	craw      []bool // stored (or priced) without compression
 	ext       []int32
 	block     int64
+	grouped   bool // B9: records are priced as group entries (agEntryCost)
 	model     rgModel
 	encs      int
 	encNS     int64
@@ -61092,6 +61223,9 @@ func (g *rgGraph) roundMeta(n int64) int64 {
 	}
 	if g.pol.recordGroup > 0 {
 		return n + g.pol.recordGroup
+	}
+	if g.grouped {
+		return agEntryCost(n)
 	}
 	return (n + g.block - 1) / g.block * g.block
 }
@@ -61686,6 +61820,7 @@ func (s *Store) rgBuild(ctx context.Context, pol OptimizePolicy) (*rgGraph, erro
 	if pol.recordBlock > 0 {
 		g.block = pol.recordBlock
 	}
+	g.grouped = s.agOn() && pol.recordBlock == 0
 	s.formatMu.Lock()
 	blocked := slices.Contains(s.format.Features, packBlockedFeature)
 	s.formatMu.Unlock()
@@ -65588,6 +65723,1142 @@ func zipReadRange(c *repCall, off, n int64, w io.Writer) error {
 		lo = hi
 	}
 	return nil
+}
+
+// =============================================================================
+// 16e4. Grouped authority records (B9, store feature "recgroup")
+//
+// A record file costs a filesystem block however small the record is. Grouped
+// records share append-only group files instead:
+//
+//	bodies/groups/<seq:016x>.zrg = header (16 B) | frames | [seal frame | trailer (12 B)]
+//	frame = "ZRF1" | kind | u32 length | payload | u32 CRC-32C(kind..payload)
+//
+// Kinds: record (a marshalled authRecord), tomb (sha | gen: the content has no
+// record) and seal (an index of every frame of the group; nothing follows it).
+// The log is ordered by (group seq, offset); the latest frame of a content
+// decides it, and only a content the log never mentions is decided by its
+// legacy record file. An append is fsynced under the group directory's flock
+// before its frames enter the in-memory index (visible <=> durable). The index
+// is derived: seal indexes of sealed groups plus a scan of unsealed ones; a
+// torn tail is cut only by an appender and only when no valid frame follows.
+// Compaction re-appends a group's deciding frames at the log end, then unlinks
+// it (online: under the B4 reader lease); a tomb is carried while an older
+// frame of its content, or its legacy file, could otherwise reappear.
+// =============================================================================
+
+const (
+	agDirName      = "groups"
+	agSuffix       = ".zrg"
+	agMagic        = "ZRG1"
+	agFrameMagic   = "ZRF1"
+	agTrailMagic   = "ZRGE"
+	agHeaderLen    = 16
+	agFrameOver    = 13 // magic, kind, length, CRC
+	agTrailerLen   = 12
+	agRecordFrame  = byte(1)
+	agTombFrame    = byte(2)
+	agSealFrame    = byte(3)
+	agFeature      = "recgroup"
+	agMaxFrameBody = authMaxRecord + 1<<20
+)
+
+var (
+	// agTargetBytes is the size at which the active group is sealed; agCompactLive the live fraction
+	// below which a sealed group is rewritten. Variables so tests shrink them.
+	agTargetBytes int64 = 1 << 20
+	agCompactLive       = 0.75
+	// agWanted makes publication raise "recgroup" and group records (ZEROS3_RECORD_GROUPS=1).
+	agWanted = os.Getenv("ZEROS3_RECORD_GROUPS") == "1"
+	agSync   = func(f *os.File) error { return f.Sync() }
+	errAG    = errors.New("authority groups: invalid group file")
+)
+
+const (
+	hookAGCreated       = "ag-created"
+	hookAGFrameWritten  = "ag-frame-written" // appended, not yet fsynced
+	hookAGSynced        = "ag-synced"        // durable, not yet indexed
+	hookAGSealed        = "ag-sealed"
+	hookAGCopied        = "ag-compact-copied" // live frames re-appended, victims still present
+	hookAGUnlinked      = "ag-compact-unlinked"
+	hookAGBeforeFileDel = "ag-before-legacy-unlink"
+)
+
+// agLoc is the position of one frame.
+type agLoc struct {
+	seq  uint64
+	off  int64
+	n    int64
+	kind byte
+}
+
+func (a agLoc) before(b agLoc) bool { return a.seq < b.seq || (a.seq == b.seq && a.off < b.off) }
+
+type agEnt struct {
+	sha [32]byte
+	loc agLoc
+}
+
+type agGroup struct {
+	seq     uint64
+	f       *os.File // read handle; closed only under the index write lock
+	end     int64    // end of the last valid frame
+	size    int64    // file size when last looked at
+	sealed  bool
+	live    int64    // bytes of frames that decide their content
+	ents    []agEnt  // every frame, kept for unsealed groups (the seal index)
+	damaged []string // invalid regions skipped by the scan
+}
+
+// agLog is the derived index of every group file.
+type agLog struct {
+	mu        sync.RWMutex
+	loaded    bool
+	appending bool // an in-process append is between its write and its index update
+	groups    map[uint64]*agGroup
+	last      uint64
+	win       map[[32]byte]agLoc
+	older     map[[32]byte][]uint64 // groups holding superseded frames of a content (with multiplicity)
+}
+
+func (s *Store) agDir() string { return filepath.Join(s.authDir(), agDirName) }
+func (s *Store) agPath(seq uint64) string {
+	return filepath.Join(s.agDir(), fmt.Sprintf("%016x%s", seq, agSuffix))
+}
+
+// agOn reports whether publication writes grouped records.
+func (s *Store) agOn() bool {
+	return agWanted || slices.Contains(s.formatSnapshot().Features, agFeature)
+}
+
+func agFrame(kind byte, payload []byte) []byte {
+	b := make([]byte, 0, agFrameOver+len(payload))
+	b = append(b, agFrameMagic...)
+	b = append(b, kind)
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(payload)))
+	b = append(b, payload...)
+	return binary.LittleEndian.AppendUint32(b, crc32.Checksum(b[4:], castagnoliTable))
+}
+
+// agParse decodes the frame at the start of b: ok is false unless the whole frame is present and valid.
+func agParse(b []byte) (kind byte, payload []byte, n int64, ok bool) {
+	if len(b) < agFrameOver || string(b[:4]) != agFrameMagic {
+		return 0, nil, 0, false
+	}
+	kind, l := b[4], int64(binary.LittleEndian.Uint32(b[5:]))
+	if kind < agRecordFrame || kind > agSealFrame || l > agMaxFrameBody || int64(len(b)) < agFrameOver+l {
+		return 0, nil, 0, false
+	}
+	n = agFrameOver + l
+	if crc32.Checksum(b[4:9+l], castagnoliTable) != binary.LittleEndian.Uint32(b[9+l:]) {
+		return 0, nil, 0, false
+	}
+	payload = b[9 : 9+l]
+	switch kind {
+	case agRecordFrame:
+		ok = l >= 7+32 && string(payload[:4]) == authMagic
+	case agTombFrame:
+		ok = l > 32
+	default:
+		ok = true
+	}
+	return kind, payload, n, ok
+}
+
+// agFrameSHA is the content a record or tomb frame decides.
+func agFrameSHA(kind byte, payload []byte) (sha [32]byte) {
+	if kind == agRecordFrame {
+		copy(sha[:], payload[7:])
+	} else {
+		copy(sha[:], payload)
+	}
+	return sha
+}
+
+func agTomb(sha [32]byte, gen uint64) []byte {
+	return agFrame(agTombFrame, binary.AppendUvarint(append([]byte(nil), sha[:]...), gen))
+}
+
+func agHeader(seq uint64) []byte {
+	b := append([]byte(agMagic), 1, 0, 0, 0)
+	return binary.LittleEndian.AppendUint64(b, seq)
+}
+
+func agSealPayload(ents []agEnt) []byte {
+	b := binary.AppendUvarint(nil, uint64(len(ents)))
+	for _, e := range ents {
+		b = append(b, e.loc.kind)
+		b = append(b, e.sha[:]...)
+		b = binary.AppendUvarint(b, uint64(e.loc.off))
+		b = binary.AppendUvarint(b, uint64(e.loc.n))
+	}
+	return b
+}
+
+// agReadSeal returns the frames a sealed group's index lists, or ok false (the caller scans instead).
+func agReadSeal(f *os.File, seq uint64, size int64) (ents []agEnt, end int64, ok bool) {
+	if size < agHeaderLen+agFrameOver+agTrailerLen {
+		return nil, 0, false
+	}
+	var tr [agTrailerLen]byte
+	if _, err := f.ReadAt(tr[:], size-agTrailerLen); err != nil || string(tr[8:]) != agTrailMagic {
+		return nil, 0, false
+	}
+	so := int64(binary.LittleEndian.Uint64(tr[:]))
+	if so < agHeaderLen || so > size-agTrailerLen-agFrameOver {
+		return nil, 0, false
+	}
+	buf := make([]byte, size-agTrailerLen-so)
+	if _, err := f.ReadAt(buf, so); err != nil {
+		return nil, 0, false
+	}
+	kind, p, n, fok := agParse(buf)
+	if !fok || kind != agSealFrame || n != int64(len(buf)) {
+		return nil, 0, false
+	}
+	cnt, k := binary.Uvarint(p)
+	if k <= 0 || cnt > uint64(len(p))/34 {
+		return nil, 0, false
+	}
+	p = p[k:]
+	prev := int64(agHeaderLen)
+	for i := uint64(0); i < cnt; i++ {
+		if len(p) < 33 {
+			return nil, 0, false
+		}
+		e := agEnt{loc: agLoc{seq: seq, kind: p[0]}}
+		copy(e.sha[:], p[1:33])
+		p = p[33:]
+		off, k1 := binary.Uvarint(p)
+		if k1 <= 0 {
+			return nil, 0, false
+		}
+		ln, k2 := binary.Uvarint(p[k1:])
+		if k2 <= 0 || (e.loc.kind != agRecordFrame && e.loc.kind != agTombFrame) {
+			return nil, 0, false
+		}
+		p = p[k1+k2:]
+		e.loc.off, e.loc.n = int64(off), int64(ln)
+		if e.loc.off < prev || e.loc.n < agFrameOver || e.loc.off+e.loc.n > so {
+			return nil, 0, false
+		}
+		prev = e.loc.off + e.loc.n
+		ents = append(ents, e)
+	}
+	return ents, so + n + agTrailerLen, len(p) == 0
+}
+
+// agScan lists the valid frames of b (a whole group file from offset from). A region that fails is
+// skipped when a valid frame follows it (damage); otherwise the scan ends there (a torn tail).
+func agScan(b []byte, seq uint64, from int64) (ents []agEnt, end int64, sealed bool, damaged []string) {
+	off := from
+	for off < int64(len(b)) {
+		kind, p, n, ok := agParse(b[off:])
+		if !ok {
+			next := int64(-1)
+			for i := off + 1; i < int64(len(b)); {
+				j := bytes.Index(b[i:], []byte(agFrameMagic))
+				if j < 0 {
+					break
+				}
+				if _, _, _, ok := agParse(b[i+int64(j):]); ok {
+					next = i + int64(j)
+					break
+				}
+				i += int64(j) + 1
+			}
+			if next < 0 {
+				return ents, off, false, damaged
+			}
+			damaged = append(damaged, fmt.Sprintf("group %016x bytes %d-%d", seq, off, next))
+			off = next
+			continue
+		}
+		if kind == agSealFrame {
+			return ents, off + n, true, damaged
+		}
+		ents = append(ents, agEnt{agFrameSHA(kind, p), agLoc{seq, off, n, kind}})
+		off += n
+	}
+	return ents, off, false, damaged
+}
+
+// agOpenGroup indexes one group file.
+func agOpenGroup(path string, seq uint64) (*agGroup, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	g := &agGroup{seq: seq, f: f, size: fi.Size()}
+	var hd [agHeaderLen]byte
+	if _, err := f.ReadAt(hd[:], 0); err != nil || !bytes.Equal(hd[:], agHeader(seq)) {
+		f.Close()
+		return nil, fmt.Errorf("%w: %s header", errAG, filepath.Base(path))
+	}
+	if ents, end, ok := agReadSeal(f, seq, g.size); ok {
+		g.ents, g.end, g.sealed = ents, end, true
+		return g, nil
+	}
+	b, err := io.ReadAll(io.NewSectionReader(f, 0, g.size))
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	g.ents, g.end, g.sealed, g.damaged = agScan(b, seq, agHeaderLen)
+	return g, nil
+}
+
+// apply makes frames the latest of their contents (caller holds mu for writing).
+func (x *agLog) apply(g *agGroup, ents []agEnt) {
+	for _, e := range ents {
+		if prev, ok := x.win[e.sha]; ok {
+			if pg := x.groups[prev.seq]; pg != nil {
+				pg.live -= prev.n
+			}
+			x.older[e.sha] = append(x.older[e.sha], prev.seq)
+		}
+		x.win[e.sha] = e.loc
+		g.live += e.loc.n
+	}
+	if !g.sealed {
+		g.ents = append(g.ents, ents...)
+	}
+}
+
+func (x *agLog) reset() {
+	for _, g := range x.groups {
+		g.f.Close()
+	}
+	x.groups, x.win, x.older, x.last, x.loaded = map[uint64]*agGroup{}, map[[32]byte]agLoc{}, map[[32]byte][]uint64{}, 0, false
+}
+
+// agReload rebuilds the index from the group files (caller holds mu for writing).
+func (s *Store) agReloadLocked() error {
+	x := &s.auth.ag
+	x.reset()
+	ents, err := os.ReadDir(s.agDir())
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var seqs []uint64
+	for _, e := range ents {
+		name, ok := strings.CutSuffix(e.Name(), agSuffix)
+		if !ok || len(name) != 16 || e.IsDir() {
+			continue
+		}
+		if v, err := strconv.ParseUint(name, 16, 64); err == nil {
+			seqs = append(seqs, v)
+		}
+	}
+	slices.Sort(seqs)
+	for _, q := range seqs {
+		g, err := agOpenGroup(s.agPath(q), q)
+		if err != nil {
+			x.reset()
+			return err
+		}
+		x.groups[q] = g
+		x.last = q
+		fr := g.ents
+		g.ents = nil
+		x.apply(g, fr)
+		if g.sealed {
+			g.ents = nil
+		}
+	}
+	x.loaded = true
+	return nil
+}
+
+// agRefresh brings the index up to date with appends of other processes: one fstat of the last group
+// (and one stat of its successor once it is sealed) when nothing changed.
+func (s *Store) agRefresh() error {
+	x := &s.auth.ag
+	x.mu.RLock()
+	stale := !x.loaded
+	if !stale && !x.appending {
+		if g := x.groups[x.last]; g == nil {
+			_, err := os.Stat(s.agDir())
+			stale = err == nil
+		} else if g.sealed {
+			_, err := os.Stat(s.agPath(x.last + 1))
+			stale = err == nil
+		} else if fi, err := g.f.Stat(); err != nil || fi.Size() != g.size {
+			stale = true
+		}
+	}
+	x.mu.RUnlock()
+	if !stale {
+		return nil
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if !x.loaded {
+		return s.agReloadLocked()
+	}
+	if x.appending {
+		return nil
+	}
+	return s.agTailLocked()
+}
+
+// agTailLocked indexes frames appended after the last look: the unsealed last group's tail and groups after it.
+func (s *Store) agTailLocked() error {
+	x := &s.auth.ag
+	if g := x.groups[x.last]; g != nil && !g.sealed {
+		fi, err := g.f.Stat()
+		if err != nil {
+			return s.agReloadLocked()
+		}
+		if fi.Size() != g.size {
+			b, err := io.ReadAll(io.NewSectionReader(g.f, 0, fi.Size()))
+			if err != nil {
+				return err
+			}
+			g.size = fi.Size()
+			ents, end, sealed, dmg := agScan(b, g.seq, g.end)
+			g.end, g.damaged = end, append(g.damaged, dmg...)
+			x.apply(g, ents)
+			if sealed {
+				g.sealed, g.ents = true, nil
+			}
+		}
+	}
+	for {
+		next := x.last + 1
+		if len(x.groups) == 0 {
+			return s.agReloadLocked()
+		}
+		g, err := agOpenGroup(s.agPath(next), next)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		x.groups[next], x.last = g, next
+		fr := g.ents
+		g.ents = nil
+		x.apply(g, fr)
+		if g.sealed {
+			g.ents = nil
+		}
+	}
+}
+
+// agLookup returns the deciding frame of sha; known is false when the log never mentions it.
+func (s *Store) agLookup(sha [32]byte) (loc agLoc, known bool, err error) {
+	if err := s.agRefresh(); err != nil {
+		return loc, false, err
+	}
+	x := &s.auth.ag
+	x.mu.RLock()
+	loc, known = x.win[sha]
+	x.mu.RUnlock()
+	return loc, known, nil
+}
+
+// agReadRecord reads the record frame at loc. A group file that vanished (compaction by another
+// process) makes the caller reload and look again; any other mismatch is corruption.
+func (s *Store) agReadRecord(sha [32]byte, loc agLoc) ([]byte, error) {
+	x := &s.auth.ag
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	g := x.groups[loc.seq]
+	if g == nil {
+		return nil, os.ErrNotExist
+	}
+	buf := make([]byte, loc.n)
+	if _, err := g.f.ReadAt(buf, loc.off); err != nil {
+		return nil, fmt.Errorf("%w: group %016x at %d: %v", errAuthCorrupt, loc.seq, loc.off, err)
+	}
+	kind, p, n, ok := agParse(buf)
+	if !ok || kind != agRecordFrame || n != loc.n || agFrameSHA(kind, p) != sha {
+		return nil, fmt.Errorf("%w: group %016x frame at %d", errAuthCorrupt, loc.seq, loc.off)
+	}
+	return p, nil
+}
+
+// agLoadRecord resolves sha through the log: (nil, true, nil) is a content the log retired.
+func (s *Store) agLoadRecord(sha [32]byte) (data []byte, known bool, err error) {
+	for attempt := 0; ; attempt++ {
+		loc, known, err := s.agLookup(sha)
+		if err != nil || !known {
+			return nil, known, err
+		}
+		if loc.kind != agRecordFrame {
+			return nil, true, nil
+		}
+		data, err = s.agReadRecord(sha, loc)
+		if err == nil || attempt > 0 {
+			return data, true, err
+		}
+		x := &s.auth.ag
+		x.mu.Lock()
+		rerr := s.agReloadLocked()
+		x.mu.Unlock()
+		if rerr != nil {
+			return nil, true, rerr
+		}
+	}
+}
+
+// agLive lists the contents whose deciding frame is a record, and those the log decides at all.
+func (s *Store) agLive() (live, decided map[[32]byte]bool, err error) {
+	if err := s.agRefresh(); err != nil {
+		return nil, nil, err
+	}
+	x := &s.auth.ag
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	live, decided = map[[32]byte]bool{}, make(map[[32]byte]bool, len(x.win))
+	for sha, l := range x.win {
+		decided[sha] = true
+		if l.kind == agRecordFrame {
+			live[sha] = true
+		}
+	}
+	return live, decided, nil
+}
+
+// agFrameBytes is the physical size of the frame deciding sha (0 when none).
+func (s *Store) agFrameBytes(sha [32]byte) int64 {
+	x := &s.auth.ag
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	if l, ok := x.win[sha]; ok && l.kind == agRecordFrame {
+		return l.n
+	}
+	return 0
+}
+
+// agEntryCost is what a record of n bytes costs as a group entry: its frame, its seal-index entry and
+// a share of the group's header, trailer, seal frame and final-block slack (~2 KiB per 1 MiB group).
+func agEntryCost(n int64) int64 {
+	e := n + agFrameOver + 1 + 32 + 3 + int64(len(binary.AppendUvarint(nil, uint64(n+agFrameOver))))
+	return e + e*(agHeaderLen+agTrailerLen+agFrameOver+2048)/agTargetBytes
+}
+
+// agEnd is the current end of the log.
+func (s *Store) agEnd() agLoc {
+	_ = s.agRefresh()
+	x := &s.auth.ag
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	l := agLoc{seq: x.last}
+	if g := x.groups[x.last]; g != nil {
+		l.off = g.end
+	}
+	return l
+}
+
+// ---- appending ----------------------------------------------------------------
+
+// agAppend durably appends frames at the log end (sealing and rolling groups at agTargetBytes) and
+// indexes them; check runs under the cross-process append lock after the index is current. The
+// caller holds pubMu and has raised "recgroup".
+func (s *Store) agAppend(frames [][]byte, check func() error) error {
+	return s.agAppendHooks(frames, check, false)
+}
+
+// agAppendHooks is agAppend; pub fires the record-file publication hooks and faults at the equivalent
+// points (frame written, fsynced, indexed) so the record crash matrices cover grouped publication.
+func (s *Store) agAppendHooks(frames [][]byte, check func() error, pub bool) error {
+	for _, d := range []string{s.authDir(), s.agDir()} {
+		if _, err := os.Stat(d); os.IsNotExist(err) {
+			if err := os.Mkdir(d, 0o755); err != nil && !os.IsExist(err) {
+				return err
+			}
+			if err := syncDir(filepath.Dir(d)); err != nil {
+				return err
+			}
+		}
+	}
+	s.auth.mayHave.Store(true)
+	lk, err := flockStore(s.authDir(), agDirName, syscall.LOCK_EX, true)
+	if err != nil {
+		return err
+	}
+	defer lk.release()
+	if err := s.agRefresh(); err != nil {
+		return err
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	x := &s.auth.ag
+	for len(frames) > 0 {
+		g, err := s.agActive()
+		if err != nil {
+			return err
+		}
+		var buf []byte
+		var ents []agEnt
+		off := g.end
+		for len(frames) > 0 && (len(ents) == 0 || off+int64(len(frames[0])) <= agTargetBytes) {
+			fr := frames[0]
+			kind, p, n, _ := agParse(fr)
+			ents = append(ents, agEnt{agFrameSHA(kind, p), agLoc{g.seq, off, n, kind}})
+			buf = append(buf, fr...)
+			off += n
+			frames = frames[1:]
+		}
+		if err := s.agWrite(g, buf, g.end, pub); err != nil {
+			return err
+		}
+		fireTestHook(hookAGSynced)
+		if pub {
+			fireTestHook(hookAuthBeforeRename)
+		}
+		x.mu.Lock()
+		g.end, g.size = off, off
+		x.apply(g, ents)
+		x.appending = false
+		x.mu.Unlock()
+		if pub {
+			fireTestHook(hookAuthAfterRename)
+		}
+	}
+	return nil
+}
+
+// agWrite writes b at off of g and fsyncs it; the index ignores the tail until the caller applies it.
+func (s *Store) agWrite(g *agGroup, b []byte, off int64, pub bool) error {
+	x := &s.auth.ag
+	x.mu.Lock()
+	x.appending = true
+	x.mu.Unlock()
+	clear := func() { x.mu.Lock(); x.appending = false; x.mu.Unlock() }
+	f, err := os.OpenFile(s.agPath(g.seq), os.O_WRONLY, 0)
+	if err != nil {
+		clear()
+		return err
+	}
+	defer f.Close()
+	ferr := authFaultAt("group-write")
+	if ferr == nil && pub {
+		ferr = authFaultAt("record-write")
+	}
+	if ferr != nil {
+		f.WriteAt(b[:len(b)/2], off)
+		clear()
+		return ferr
+	}
+	if _, err := f.WriteAt(b, off); err != nil {
+		clear()
+		return err
+	}
+	fireTestHook(hookAGFrameWritten)
+	if pub {
+		fireTestHook(hookAuthRecordWritten)
+	}
+	if err := agSync(f); err != nil {
+		clear()
+		return err
+	}
+	return nil
+}
+
+// agActive returns the group the next frame goes to: the last group while it is unsealed, below the
+// target and has no damage after its end (a torn tail is cut first); otherwise a new group.
+func (s *Store) agActive() (*agGroup, error) {
+	x := &s.auth.ag
+	x.mu.RLock()
+	g := x.groups[x.last]
+	x.mu.RUnlock()
+	if g != nil && !g.sealed && g.end < agTargetBytes && len(g.damaged) == 0 {
+		if g.size > g.end {
+			f, err := os.OpenFile(s.agPath(g.seq), os.O_WRONLY, 0)
+			if err != nil {
+				return nil, err
+			}
+			err = f.Truncate(g.end)
+			if err == nil {
+				err = agSync(f)
+			}
+			f.Close()
+			if err != nil {
+				return nil, err
+			}
+			x.mu.Lock()
+			g.size = g.end
+			x.mu.Unlock()
+		}
+		return g, nil
+	}
+	if g != nil && !g.sealed {
+		if err := s.agSeal(g); err != nil {
+			return nil, err
+		}
+	}
+	return s.agCreate(x.last + 1)
+}
+
+// agSeal appends the group's index and trailer; a group that was damaged keeps its valid frames only.
+func (s *Store) agSeal(g *agGroup) error {
+	x := &s.auth.ag
+	x.mu.RLock()
+	fr := agFrame(agSealFrame, agSealPayload(g.ents))
+	x.mu.RUnlock()
+	at := g.end
+	if g.size > g.end && len(g.damaged) > 0 {
+		at = g.size // never overwrite bytes after a damaged region: they may hold valid frames
+	}
+	b := binary.LittleEndian.AppendUint64(fr, uint64(at))
+	b = append(b, agTrailMagic...)
+	if err := s.agWrite(g, b, at, false); err != nil {
+		return err
+	}
+	x.mu.Lock()
+	g.sealed, g.end, g.size, g.ents, x.appending = true, at+int64(len(b)), at+int64(len(b)), nil, false
+	x.mu.Unlock()
+	fireTestHook(hookAGSealed)
+	return nil
+}
+
+// agCreate publishes an empty group (header only) by rename, so a group file always has its header.
+func (s *Store) agCreate(seq uint64) (*agGroup, error) {
+	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "auth-group-*.tmp")
+	if err != nil {
+		return nil, err
+	}
+	name := tmp.Name()
+	_, err = tmp.Write(agHeader(seq))
+	if err == nil {
+		err = agSync(tmp)
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(name, s.agPath(seq))
+	}
+	if err != nil {
+		os.Remove(name)
+		return nil, err
+	}
+	if err := syncDir(s.agDir()); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(s.agPath(seq))
+	if err != nil {
+		return nil, err
+	}
+	g := &agGroup{seq: seq, f: f, end: agHeaderLen, size: agHeaderLen}
+	x := &s.auth.ag
+	x.mu.Lock()
+	x.groups[seq], x.last = g, seq
+	x.mu.Unlock()
+	fireTestHook(hookAGCreated)
+	return g, nil
+}
+
+// ---- record-store entry points (section 16e calls these) -------------------------
+
+// authWriteGrouped commits rec as a grouped record: gen checks against the current record under the
+// append lock, then removes a superseded legacy file (the log already decides the content).
+func (s *Store) authWriteGrouped(rec *authRecord, data []byte, recoverCorrupt bool) error {
+	if err := s.ensureFeature(agFeature); err != nil {
+		return err
+	}
+	err := s.agAppendHooks([][]byte{agFrame(agRecordFrame, data)}, func() error {
+		cur, err := s.authLoad(rec.SHA)
+		if err != nil && !(recoverCorrupt && errors.Is(err, errAuthCorrupt)) {
+			return err
+		}
+		if (cur == nil && rec.Gen != 1) || (cur != nil && rec.Gen != cur.Gen+1) {
+			return errAuthStale
+		}
+		return nil
+	}, true)
+	if err != nil {
+		return err
+	}
+	return s.agDropLegacy([][32]byte{rec.SHA})
+}
+
+// agDropLegacy unlinks legacy record files of contents the log decides.
+func (s *Store) agDropLegacy(shas [][32]byte) error {
+	dirs := map[string]bool{}
+	for _, sha := range shas {
+		fireTestHook(hookAGBeforeFileDel)
+		if err := os.Remove(s.authPath(sha)); err == nil {
+			dirs[s.authShardDir(sha)] = true
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	for _, d := range slices.Sorted(maps.Keys(dirs)) {
+		if err := syncDir(d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// authRetireMany retires records with one fsync for all grouped ones (tombs), then unlinks legacy files.
+// A content with neither is an error unless missingOK.
+func (s *Store) authRetireMany(shas [][32]byte, missingOK bool) error {
+	s.auth.pubMu.Lock()
+	defer s.auth.pubMu.Unlock()
+	return s.authRetireManyLocked(shas, missingOK)
+}
+
+func (s *Store) authRetireManyLocked(shas [][32]byte, missingOK bool) error {
+	var tombs [][]byte
+	var grouped, files [][32]byte
+	for _, sha := range shas {
+		loc, known, err := s.agLookup(sha)
+		if err != nil {
+			return err
+		}
+		if known {
+			if loc.kind == agRecordFrame {
+				r, _ := s.authLoad(sha)
+				gen := uint64(0)
+				if r != nil {
+					gen = r.Gen
+				}
+				tombs = append(tombs, agTomb(sha, gen))
+			}
+			grouped = append(grouped, sha)
+			continue
+		}
+		files = append(files, sha)
+	}
+	if len(tombs) > 0 {
+		if err := s.agAppend(tombs, nil); err != nil {
+			return err
+		}
+	}
+	if err := s.agDropLegacy(grouped); err != nil {
+		return err
+	}
+	dirs := map[string]bool{}
+	for _, sha := range files {
+		if err := os.Remove(s.authPath(sha)); err != nil {
+			if os.IsNotExist(err) && missingOK {
+				continue
+			}
+			return err
+		}
+		dirs[s.authShardDir(sha)] = true
+	}
+	for _, d := range slices.Sorted(maps.Keys(dirs)) {
+		if err := syncDir(d); err != nil {
+			return err
+		}
+	}
+	s.authInvalidate()
+	return nil
+}
+
+// authRecordBytes is the physical bytes of the record deciding sha: its frame or its legacy file.
+func (s *Store) authRecordBytes(sha [32]byte) int64 {
+	if _, known, _ := s.agLookup(sha); known {
+		return s.agFrameBytes(sha)
+	}
+	n, _ := fileSizeOrZero(s.authPath(sha))
+	return n
+}
+
+// ---- compaction -------------------------------------------------------------------
+
+// AGReport is what one group compaction did.
+type AGReport struct {
+	Groups          int   `json:"groups"`
+	GroupBytes      int64 `json:"group_bytes"`
+	LiveBytes       int64 `json:"live_bytes"`
+	Regrouped       int   `json:"regrouped_files,omitempty"`
+	Compacted       int   `json:"groups_compacted,omitempty"`
+	FramesCopied    int   `json:"frames_copied,omitempty"`
+	BytesCopied     int64 `json:"bytes_copied,omitempty"`
+	BytesReclaimed  int64 `json:"bytes_reclaimed,omitempty"`
+	TombsDropped    int   `json:"tombs_dropped,omitempty"`
+	LegacyUnlinked  int   `json:"legacy_unlinked,omitempty"`
+	DamagedRegions  int   `json:"damaged_regions,omitempty"`
+	DamagedRetained int   `json:"damaged_groups_retained,omitempty"`
+}
+
+// agCompact regroups legacy record files (when grouping is on) and rewrites sealed groups whose live
+// fraction is below agCompactLive. The caller owns reclamation: an exclusive store lock, or online
+// maintenance holding the reader lease. Readers of this process wait only for the index swap.
+func (s *Store) agCompact(regroup bool) (rep AGReport, err error) {
+	if !s.authMay() {
+		return rep, nil
+	}
+	s.auth.pubMu.Lock()
+	defer s.auth.pubMu.Unlock()
+	if regroup && s.agOn() {
+		if err := s.agRegroupLocked(&rep); err != nil {
+			return rep, err
+		}
+	}
+	if err := s.agRefresh(); err != nil {
+		return rep, err
+	}
+	x := &s.auth.ag
+	x.mu.RLock()
+	var victims []*agGroup
+	for _, q := range slices.Sorted(maps.Keys(x.groups)) {
+		g := x.groups[q]
+		if len(g.damaged) > 0 {
+			rep.DamagedRetained++ // never rewritten: verify reports it, repair is explicit
+			continue
+		}
+		if g.sealed && float64(g.live) < agCompactLive*float64(g.end-agHeaderLen) {
+			victims = append(victims, g)
+		}
+	}
+	x.mu.RUnlock()
+	if len(victims) > 0 {
+		if err := s.agRewrite(victims, &rep); err != nil {
+			return rep, err
+		}
+	}
+	x.mu.RLock()
+	for _, g := range x.groups {
+		rep.Groups++
+		rep.GroupBytes += g.size
+		rep.LiveBytes += g.live
+		rep.DamagedRegions += len(g.damaged)
+	}
+	x.mu.RUnlock()
+	return rep, nil
+}
+
+// agRewrite copies the deciding frames of victims to the log end, makes them durable, swaps the index
+// and only then unlinks the victims.
+func (s *Store) agRewrite(victims []*agGroup, rep *AGReport) error {
+	x := &s.auth.ag
+	in := map[uint64]bool{}
+	for _, g := range victims {
+		in[g.seq] = true
+	}
+	var frames [][]byte
+	var legacy [][32]byte
+	for _, g := range victims {
+		b, err := io.ReadAll(io.NewSectionReader(g.f, 0, g.end))
+		if err != nil {
+			return err
+		}
+		ents, _, _, dmg := agScan(b, g.seq, agHeaderLen)
+		if len(dmg) > 0 {
+			return fmt.Errorf("%w: group %016x changed under compaction", errAG, g.seq)
+		}
+		for _, e := range ents {
+			x.mu.RLock()
+			w := x.win[e.sha]
+			outside := slices.ContainsFunc(x.older[e.sha], func(q uint64) bool { return !in[q] })
+			x.mu.RUnlock()
+			if w != e.loc {
+				continue // superseded
+			}
+			if e.loc.kind == agTombFrame && !outside {
+				if _, err := os.Stat(s.authPath(e.sha)); err == nil {
+					legacy = append(legacy, e.sha)
+				}
+				rep.TombsDropped++
+				continue
+			}
+			frames = append(frames, b[e.loc.off:e.loc.off+e.loc.n])
+			rep.BytesCopied += e.loc.n
+		}
+	}
+	// A dropped tomb must not uncover its legacy file: unlink those first.
+	if err := s.agDropLegacy(legacy); err != nil {
+		return err
+	}
+	rep.LegacyUnlinked += len(legacy)
+	if len(frames) > 0 {
+		if err := s.agAppend(frames, nil); err != nil {
+			return err
+		}
+	}
+	rep.FramesCopied += len(frames)
+	fireTestHook(hookAGCopied)
+	x.mu.Lock()
+	for _, g := range victims {
+		delete(x.groups, g.seq)
+		g.f.Close()
+	}
+	for sha, qs := range x.older {
+		qs = slices.DeleteFunc(qs, func(q uint64) bool { return in[q] })
+		if len(qs) == 0 {
+			delete(x.older, sha)
+		} else {
+			x.older[sha] = qs
+		}
+	}
+	for sha, l := range x.win {
+		if in[l.seq] {
+			delete(x.win, sha) // a dropped tomb whose content nothing else names
+		}
+	}
+	x.mu.Unlock()
+	for _, g := range victims {
+		if err := os.Remove(s.agPath(g.seq)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		rep.Compacted++
+		rep.BytesReclaimed += g.size
+	}
+	if err := syncDir(s.agDir()); err != nil {
+		return err
+	}
+	fireTestHook(hookAGUnlinked)
+	s.authInvalidate()
+	return nil
+}
+
+// agRegroupLocked moves legacy record files into the log: each is validated, appended with its own
+// generation, made durable, and only then unlinked.
+func (s *Store) agRegroupLocked(rep *AGReport) error {
+	files, err := s.authLegacyFiles()
+	if err != nil {
+		return err
+	}
+	_, decided, err := s.agLive()
+	if err != nil {
+		return err
+	}
+	var frames [][]byte
+	var moved, stale [][32]byte
+	for _, sha := range files {
+		if decided[sha] {
+			stale = append(stale, sha)
+			continue
+		}
+		data, err := os.ReadFile(s.authPath(sha))
+		if err != nil {
+			return err
+		}
+		if r, err := unmarshalAuthRecord(data); err != nil || r.SHA != sha {
+			continue // a corrupt file stays where verify reports it
+		}
+		frames = append(frames, agFrame(agRecordFrame, data))
+		moved = append(moved, sha)
+	}
+	if len(frames) > 0 {
+		if err := s.ensureFeature(agFeature); err != nil {
+			return err
+		}
+		if err := s.agAppend(frames, nil); err != nil {
+			return err
+		}
+	}
+	if err := s.agDropLegacy(append(moved, stale...)); err != nil {
+		return err
+	}
+	rep.Regrouped += len(moved)
+	rep.LegacyUnlinked += len(stale)
+	if len(moved)+len(stale) > 0 {
+		s.authInvalidate()
+	}
+	return nil
+}
+
+// agUngroup writes every grouped record back to its own file, then removes the groups and lowers
+// "recgroup" (`authority groups -disable`): a crash before the groups are gone changes nothing.
+func (s *Store) agUngroup() (int, error) {
+	s.auth.pubMu.Lock()
+	defer s.auth.pubMu.Unlock()
+	live, _, err := s.agLive()
+	if err != nil {
+		return 0, err
+	}
+	for _, sha := range slices.SortedFunc(maps.Keys(live), func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) }) {
+		data, _, err := s.agLoadRecord(sha)
+		if err != nil {
+			return 0, err
+		}
+		if err := os.MkdirAll(s.authShardDir(sha), 0o755); err != nil {
+			return 0, err
+		}
+		if err := writeFileDurable(filepath.Join(s.root, "tmp"), s.authPath(sha), data); err != nil {
+			return 0, err
+		}
+		if err := syncDir(s.authShardDir(sha)); err != nil {
+			return 0, err
+		}
+	}
+	x := &s.auth.ag
+	x.mu.Lock()
+	x.reset()
+	x.loaded = false
+	x.mu.Unlock()
+	if err := os.RemoveAll(s.agDir()); err != nil {
+		return 0, err
+	}
+	if err := syncDir(s.authDir()); err != nil {
+		return 0, err
+	}
+	s.formatMu.Lock()
+	f := s.format
+	f.Features = slices.DeleteFunc(slices.Clone(f.Features), func(x string) bool { return x == agFeature })
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err == nil {
+		err = writeFileDurable(filepath.Join(s.root, "tmp"), filepath.Join(s.root, "FORMAT.json"), data)
+	}
+	if err == nil {
+		err = syncDir(s.root)
+	}
+	if err == nil {
+		s.format = f
+	}
+	s.formatMu.Unlock()
+	s.authInvalidate()
+	return len(live), err
+}
+
+// agVerify checks every frame of every group (CRC, record parse, content address) and the index.
+func (s *Store) agVerify(res *VerifyResult) {
+	if !s.authMay() {
+		return
+	}
+	if err := s.agRefresh(); err != nil {
+		res.addIssue("corrupt", "authority groups", err.Error())
+		return
+	}
+	x := &s.auth.ag
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	for _, q := range slices.Sorted(maps.Keys(x.groups)) {
+		g := x.groups[q]
+		for _, d := range g.damaged {
+			res.addIssue("corrupt", "authority groups", d)
+		}
+		b, err := io.ReadAll(io.NewSectionReader(g.f, 0, g.end))
+		if err != nil {
+			res.addIssue("corrupt", fmt.Sprintf("authority group %016x", q), err.Error())
+			continue
+		}
+		ents, _, _, dmg := agScan(b, q, agHeaderLen)
+		for _, d := range dmg {
+			res.addIssue("corrupt", "authority groups", d)
+		}
+		for _, e := range ents {
+			if e.loc.kind != agRecordFrame {
+				continue
+			}
+			r, err := unmarshalAuthRecord(b[e.loc.off+9 : e.loc.off+e.loc.n-4])
+			if err != nil || r.SHA != e.sha {
+				res.addIssue("corrupt", fmt.Sprintf("authority group %016x", q), fmt.Sprintf("record frame at %d does not parse", e.loc.off))
+			}
+		}
+		if g.sealed {
+			if se, _, ok := agReadSeal(g.f, q, g.size); !ok || !slices.Equal(se, ents) {
+				res.addIssue("corrupt", fmt.Sprintf("authority group %016x", q), "seal index disagrees with the frames")
+			}
+		}
+	}
 }
 
 // =============================================================================
@@ -75165,7 +76436,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != agFeature {
 			return x
 		}
 	}

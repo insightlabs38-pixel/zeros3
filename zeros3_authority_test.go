@@ -425,7 +425,24 @@ func TestAuthHelperProcess(t *testing.T) {
 			}
 		}
 	}
+	if v, err := strconv.ParseInt(os.Getenv("ZEROS3_AG_TARGET"), 10, 64); err == nil && v > 0 {
+		agTargetBytes = v
+	}
 	switch scenario {
+	case "groupmigrate": // B9: grouped publication (ZEROS3_RECORD_GROUPS=1)
+		lock, err := acquireStoreLock(dir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.release()
+		s, err := OpenStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if _, err := s.AuthorityMigrate(AuthPolicy{MinSaving: 0.01, MaxDepth: 2, Apply: true, AllowRep: true, AllowDelta: true, Order: "oldest"}); err != nil {
+			t.Fatal(err)
+		}
 	case "migrate", "revert":
 		lock, err := acquireStoreLock(dir, true)
 		if err != nil {

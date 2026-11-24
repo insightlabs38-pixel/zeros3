@@ -276,9 +276,16 @@ func b6Measured(t *testing.T, s *Store) int64 {
 			n += packPriceLen(b) + packRecordBytes
 		}
 	}
-	files, _ := s.authFiles()
+	files, _ := s.authLegacyFiles()
+	_, decided, _ := s.agLive()
 	for _, f := range files {
-		if st, err := os.Stat(s.authPath(f)); err == nil {
+		if st, err := os.Stat(s.authPath(f)); err == nil && !decided[f] {
+			n += (st.Size() + 4095) / 4096 * 4096
+		}
+	}
+	groups, _ := filepath.Glob(filepath.Join(s.agDir(), "*"+agSuffix)) // B9: grouped records cost their group files
+	for _, p := range groups {
+		if st, err := os.Stat(p); err == nil {
 			n += (st.Size() + 4095) / 4096 * 4096
 		}
 	}
