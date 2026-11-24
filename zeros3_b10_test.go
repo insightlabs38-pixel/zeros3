@@ -1,15 +1,22 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"slices"
-	"strings"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 )
 
 // ---- B10-0 grouped-record integration ------------------------------------------
@@ -324,4 +331,239 @@ func TestB10GroupStaleViews(t *testing.T) {
 	l.open()
 	l.exact("after maintenance")
 	l.verifyOK("after maintenance")
+}
+
+// ---- B10 deep canonical streams (kind 16) ----------------------------------------
+
+// b10Tar builds a tar of (name, data) members.
+func b10Tar(t testing.TB, files ...any) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for i := 0; i < len(files); i += 2 {
+		data := files[i+1].([]byte)
+		mustOKTB(t, tw.WriteHeader(&tar.Header{Name: files[i].(string), Mode: 0o644, Size: int64(len(data)), ModTime: time.Unix(1700000000, 0), Format: tar.FormatPAX}))
+		_, err := tw.Write(data)
+		mustOKTB(t, err)
+	}
+	mustOKTB(t, tw.Close())
+	return buf.Bytes()
+}
+
+func mustOKTB(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func b10Gzip(t testing.TB, data []byte, level int) []byte {
+	var buf bytes.Buffer
+	w, err := gzip.NewWriterLevel(&buf, level)
+	mustOKTB(t, err)
+	w.Write(data)
+	mustOKTB(t, w.Close())
+	return buf.Bytes()
+}
+
+func b10Zip(t testing.TB, files ...any) []byte {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < len(files); i += 2 {
+		m := zip.Deflate
+		if i%4 == 2 {
+			m = zip.Store
+		}
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: files[i].(string), Method: m, Modified: time.Unix(1700000000, 0)})
+		mustOKTB(t, err)
+		w.Write(files[i+1].([]byte))
+	}
+	mustOKTB(t, zw.Close())
+	return buf.Bytes()
+}
+
+// b10SpliceEnv builds the kind-16 representation of data (stored under key in l) in memory and returns an
+// environment that reads it, with its deep stream.
+func b10SpliceEnv(t *testing.T, l *authLab, key string, data []byte, hard bool) (*repEnv, *repRoot, *repCanon, *SpliceStats) {
+	t.Helper()
+	l.put(key, data)
+	mem := map[[32]byte][]byte{}
+	st := &SpliceStats{}
+	root, canon, err := l.s.spliceConstruct(l.man(key), bytes.NewReader(data), 0, mem, hard, st)
+	if err != nil {
+		t.Fatalf("%s: %v", key, err)
+	}
+	t.Cleanup(canon.close)
+	src := l.s.newRepSource(root.Descs, nil)
+	src.mem = mem
+	env := &repEnv{Src: src, Limits: repProdLimits, Body: func(sha [32]byte, n int64) (io.ReaderAt, error) {
+		if sha != canon.SHA || n != canon.Size {
+			return nil, errRepMissing
+		}
+		return canon.File, nil
+	}}
+	return env, root, canon, st
+}
+
+// b10CheckRanges reads the whole object and ranges around every segment boundary plus random ones.
+func b10CheckRanges(t *testing.T, env *repEnv, root *repRoot, want []byte, seed uint64) {
+	t.Helper()
+	var buf bytes.Buffer
+	n, sum, err := env.reconstruct(root.Rep, &buf)
+	if err != nil || n != int64(len(want)) || sum != sha256.Sum256(want) || !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("whole: %v", err)
+	}
+	call, err := env.open(root.Rep)
+	mustOK(t, err)
+	tb, err := splRecipe(call)
+	mustOK(t, err)
+	size := int64(len(want))
+	var offs []int64
+	for _, s := range tb.segs {
+		offs = append(offs, s.out, max(0, s.out-1), max(0, s.out-4000))
+	}
+	r := rand.New(rand.NewPCG(seed, 3))
+	for range 64 {
+		offs = append(offs, r.Int64N(size))
+	}
+	for i, off := range offs {
+		ln := []int64{1, 4096, 65536, 1 << 20}[i%4]
+		ln = min(ln, size-off)
+		if ln <= 0 {
+			continue
+		}
+		produce, err := repRangeReader(call, off, ln)
+		if err != nil || produce == nil {
+			t.Fatalf("range reader at %d: %v", off, err)
+		}
+		var b bytes.Buffer
+		if err := produce(&b); err != nil || !bytes.Equal(b.Bytes(), want[off:off+ln]) {
+			t.Fatalf("range [%d,+%d): %v (%d bytes)", off, ln, err, b.Len())
+		}
+	}
+}
+
+// TestB10SpliceExact: nested gzip and ZIP members of a tar, Parquet pages and RocksDB blocks are decoded
+// into one deep stream and every object reproduces exactly, whole and by range across every boundary.
+func TestB10SpliceExact(t *testing.T) {
+	l := newAuthLab(t)
+	text := func(seed uint64, n int) []byte { return b5Text(seed, n) }
+	inner := b10Tar(t, "a.txt", text(1, 90_000), "b.txt", text(2, 30_000))
+	jar := b10Zip(t, "x/A.class", text(3, 20_000), "x/B.class", text(4, 9_000), "META-INF/MANIFEST.MF", []byte("Manifest-Version: 1.0\n"), "x/C.class", text(5, 12_000))
+	gem := b10Tar(t, "metadata.gz", b10Gzip(t, text(6, 60_000), 9), "data.tar.gz", b10Gzip(t, inner, 6),
+		"lib/app.jar", jar, "README", text(7, 5_000), "small.gz", b10Gzip(t, text(8, 900), 6), "fake.gz", append([]byte{0x1f, 0x8b, 8}, text(9, 6000)...))
+	env, root, canon, st := b10SpliceEnv(t, l, "gem", gem, false)
+	if st.Children != 3 || st.Refused != 1 {
+		t.Fatalf("children %d refused %d (want the metadata, the data tarball and the jar; the fake refused)", st.Children, st.Refused)
+	}
+	if canon.Size < int64(len(gem))+90_000 {
+		t.Fatalf("deep stream of %d bytes for a %d-byte archive", canon.Size, len(gem))
+	}
+	b10CheckRanges(t, env, root, gem, 1)
+	for _, p := range []string{"testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet", "testing-harnesses/z3/parquetz3/testdata/pa_snappy_v2.parquet",
+		"testing-harnesses/z3/parquetz3/testdata/pa_zstd_v1.parquet", "testdata/p7/pa_lz4_raw.parquet", "testdata/p7/pa_brotli.parquet",
+		"testdata/p7/rocksdb_lz4_small.sst", "testdata/p7/rocksdb_lz4hc_small.sst", "testing-harnesses/z3/sstz3/testdata/rocksdb-zstd.sst"} {
+		data, err := os.ReadFile(p)
+		mustOK(t, err)
+		env, root, _, st := b10SpliceEnv(t, l, filepath.Base(p), data, true)
+		t.Logf("%s: %d pages, %d refused, deep %d of %d bytes", filepath.Base(p), st.Pages, st.Refused, st.PlainBytes, len(data))
+		if st.Pages == 0 {
+			t.Fatalf("%s: no page decoded", p)
+		}
+		b10CheckRanges(t, env, root, data, 2)
+	}
+}
+
+// b10Gem is a RubyGems-shaped package: an uncompressed tar holding metadata.gz and data.tar.gz.
+func b10Gem(t testing.TB, fs []b8File, mtime int64) []byte {
+	meta := []byte(fmt.Sprintf("--- !ruby/object:Gem::Specification\nname: demo\nversion: %d\n", mtime))
+	meta = append(meta, b5Text(uint64(mtime), 30_000)...)
+	return b10Tar(t, "metadata.gz", b10Gzip(t, meta, 9), "data.tar.gz", b10Gzip(t, b8Tar(t, fs, mtime), 6), "checksums.yaml.gz", b10Gzip(t, []byte("sha256: x\n"), 9))
+}
+
+// b10Lab holds three gem versions and a gzipped layer whose tar nests a jar and a tarball (three layers:
+// gzip -> tar -> ZIP / gzip -> tar).
+func b10Lab(t *testing.T) *authLab {
+	l := newAuthLab(t)
+	v := []([]b8File){b8Tree(3, 18)}
+	v = append(v, b8Edit(v[0], 11), b8Edit(b8Edit(v[0], 11), 23))
+	for i, fs := range v {
+		l.put(fmt.Sprintf("gems/demo-1.%d.gem", i), b10Gem(t, fs, 1700000000+int64(i)*86400))
+	}
+	jar := func(fs []b8File) []byte {
+		var args []any
+		for _, f := range fs[:8] {
+			args = append(args, f.name, f.data)
+		}
+		return b10Zip(t, args...)
+	}
+	for i := range 2 {
+		layer := b10Tar(t, "app/lib.jar", jar(v[i]), "app/vendor.tar.gz", b10Gzip(t, b8Tar(t, v[i][8:], 1700000000), 6), "etc/conf", b5Text(99, 7000))
+		l.put(fmt.Sprintf("oci/layer%d.tar.gz", i), b10Gzip(t, layer, 6))
+	}
+	l.reclaim()
+	return l
+}
+
+// TestB10SpliceOptimize: the optimizer selects deep streams for gems and nested layers, the plan equals the
+// materialized model, every object stays exact through apply, reclamation and reopen, "splice" is raised,
+// a rerun converges, the store is smaller than the B8 canonical store, and deleting a version keeps the
+// shared deep streams others need.
+func TestB10SpliceOptimize(t *testing.T) {
+	pol := OptimizePolicy{AuthPolicy: AuthPolicy{MaxDepth: 2}, Profile: "archive", Canonical: true}
+	base := b10Lab(t)
+	b8Optimize(t, base, pol)
+	base.reclaim()
+	b8Bytes := dirBytes(t, base.dir)
+
+	l := b10Lab(t)
+	pol.Splice = true
+	rep := b8Optimize(t, l, pol)
+	if rep.Splice == nil || rep.Splice.Built < 5 || rep.Splice.Children < 8 {
+		t.Fatalf("splice analysis %+v", rep.Splice)
+	}
+	if rep.Failed != 0 || rep.Applied == 0 {
+		t.Fatalf("applied %d failed %d: %+v", rep.Applied, rep.Failed, rep.Changes)
+	}
+	spliced := 0
+	for k, r := range b8Forms(t, l) {
+		if r != nil && r.Form == authFormRep && len(r.Bases) == 1 {
+			if kd, _, _ := l.s.repTopCodec(r.Root); kd == repKindSplice {
+				spliced++
+			}
+			t.Logf("%s: rep over %x (depth %d)", k, r.Bases[0].SHA[:4], r.Depth)
+		}
+	}
+	if spliced < 3 {
+		t.Fatalf("%d deep-stream records", spliced)
+	}
+	l.exact("applied")
+	l.reclaim()
+	l.exact("reclaimed")
+	after := dirBytes(t, l.dir)
+	t.Logf("store: B8 canonical %d bytes, B10 splice %d bytes", b8Bytes, after)
+	if after >= b8Bytes*85/100 {
+		t.Fatalf("deep streams saved too little: %d vs %d", after, b8Bytes)
+	}
+	l.offline(func() {})
+	l.exact("reopened")
+	l.verifyOK("splice")
+	g, err := l.s.rgBuild(context.Background(), b6Policy(pol).norm())
+	mustOK(t, err)
+	g.partition()
+	if m := newRGEval(g, g.currentSel()).state("m", false); m.Bytes != rep.Planned.Bytes {
+		t.Fatalf("materialized model %d bytes, plan %d", m.Bytes, rep.Planned.Bytes)
+	}
+	g.close()
+	if !slices.Contains(l.s.format.Features, spliceFeature) {
+		t.Fatalf("features %v lack %q", l.s.format.Features, spliceFeature)
+	}
+	if again := b8Optimize(t, l, pol); again.Applied != 0 || len(again.Changes) != 0 {
+		t.Fatalf("second run changed %d: %+v", again.Applied, again.Changes)
+	}
+	l.exact("rerun")
+	mustOK(t, l.s.DeleteObject("b", "gems/demo-1.0.gem"))
+	delete(l.want, "gems/demo-1.0.gem")
+	l.reclaim()
+	l.exact("version deleted")
+	l.verifyOK("version deleted")
 }

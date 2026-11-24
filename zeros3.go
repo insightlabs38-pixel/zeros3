@@ -34376,7 +34376,7 @@ const (
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip || k == repKindExe
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip || k == repKindExe || k == repKindSplice
 }
 
 type repRole uint8
@@ -34497,7 +34497,7 @@ func (r *repObject) validate(lim repLimits) error {
 				return repCorrupt("member %d: frame exceeds the framed length", i)
 			}
 		case repBody:
-			if r.Kind != repKindGzip && r.Kind != repKindZstd && r.Kind != repKindZip && r.Kind != repKindExe || m.Size < 1 {
+			if r.Kind != repKindGzip && r.Kind != repKindZstd && r.Kind != repKindZip && r.Kind != repKindExe && r.Kind != repKindSplice || m.Size < 1 {
 				return repCorrupt("member %d: body reference in kind %d", i, r.Kind)
 			}
 		case repVia:
@@ -34903,6 +34903,8 @@ func repDecoderFor(k repKind) (repDecoder, bool) {
 		return repZipDecoder{}, true
 	case repKindExe:
 		return repExeDecoder{}, true
+	case repKindSplice:
+		return repSpliceDecoder{}, true
 	}
 	return nil, false
 }
@@ -35566,6 +35568,9 @@ type repReach struct {
 	// use is checked against this instead of being re-walked: liveness never
 	// depends on the order of the root set.
 	Height map[[32]byte]int
+	// scoped holds representations walked only below a splice (B10): their body references were slices of
+	// the parent's body, so a later walk from elsewhere walks them again.
+	scoped map[[32]byte]bool
 }
 
 func (r *repReach) add(id [32]byte, role repDepRole, max int) error {
@@ -35616,7 +35621,7 @@ func (e *repEnv) walk(r *repReach, id [32]byte, depth int, path [][32]byte) erro
 			return fmt.Errorf("%w: %x", errRepCycle, id[:6])
 		}
 	}
-	if _, seen := r.Role[id]; seen {
+	if _, seen := r.Role[id]; seen && !r.scoped[id] {
 		// Shared descendant: its objects are already counted, but this use may sit
 		// deeper than the first one did, and reconstruction through it must stay
 		// within the limit.
@@ -35629,6 +35634,7 @@ func (e *repEnv) walk(r *repReach, id [32]byte, depth int, path [][32]byte) erro
 	if err != nil {
 		return err
 	}
+	delete(r.scoped, id)
 	if err := r.add(id, repDepRep, lim.MaxObjects); err != nil {
 		return err
 	}
@@ -35642,7 +35648,11 @@ func (e *repEnv) walk(r *repReach, id [32]byte, depth int, path [][32]byte) erro
 		m := &rep.Members[i]
 		if m.Role == repDerived {
 			r.Derived++
-			if err := e.walk(r, m.Child, depth+1, c.path); err != nil {
+			walk := e.walk
+			if rep.Kind == repKindSplice {
+				walk = e.walkSplice
+			}
+			if err := walk(r, m.Child, depth+1, c.path); err != nil {
 				return fmt.Errorf("child %x: %w", m.Child[:6], err)
 			}
 			if h := 1 + r.Height[m.Child]; h > height {
@@ -50523,6 +50533,8 @@ func repRangeReader(c *repCall, off, n int64) (func(w io.Writer) error, error) {
 		return func(w io.Writer) error { return zipReadRange(c, off, n, w) }, nil
 	case repKindExe:
 		return func(w io.Writer) error { return exeReadRange(c, off, n, w) }, nil
+	case repKindSplice:
+		return func(w io.Writer) error { return spliceReadRange(c, off, n, w) }, nil
 	}
 	return nil, nil
 }
@@ -54552,15 +54564,21 @@ func (b *authRepBody) readSeek(p []byte, off int64) (n int, ok bool, err error) 
 	if err != nil {
 		return 0, true, err
 	}
-	sk, err := repSeekerOf(call)
-	if sk == nil || err != nil {
-		b.noSeek = err == nil
-		return 0, err != nil, err
-	}
 	want := min(int64(len(p)), b.rec.Size-off)
 	buf := p[:0:want]
-	if err := sk.readRange(call, off, want, repAppendWriter{&buf}); err != nil {
-		return 0, true, err
+	if call.Rep.Kind == repKindSplice { // B10: a deep stream maps the range onto its segments
+		if err := spliceReadRange(call, off, want, repAppendWriter{&buf}); err != nil {
+			return 0, true, err
+		}
+	} else {
+		sk, err := repSeekerOf(call)
+		if sk == nil || err != nil {
+			b.noSeek = err == nil
+			return 0, err != nil, err
+		}
+		if err := sk.readRange(call, off, want, repAppendWriter{&buf}); err != nil {
+			return 0, true, err
+		}
 	}
 	if int64(len(buf)) != want {
 		return 0, true, fmt.Errorf("%w: range read returned %d of %d bytes", errAuthMismatch, len(buf), want)
@@ -56724,7 +56742,7 @@ type authRepCand struct {
 
 func repKindName(k repKind) string {
 	names := map[repKind]string{repKindConcat: "concat", repKindCAR: "car", repKindSQLite: "sqlite", repKindGit: "git", repKindMerkle: "merkle",
-		repKindGzip: "codec", repKindZstd: "codec", repKindZip: "zip", repKindModel: "model", repKindSST: "sst", repKindParquet: "parquet", repKindDEX: "dex", repKindCLR: "clr"}
+		repKindGzip: "codec", repKindZstd: "codec", repKindZip: "zip", repKindModel: "model", repKindSST: "sst", repKindParquet: "parquet", repKindDEX: "dex", repKindCLR: "clr", repKindSplice: "splice"}
 	if n, ok := names[k]; ok {
 		return n
 	}
@@ -58307,7 +58325,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature, authExeFeature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature, authExeFeature, spliceFeature},
 	}
 }
 
@@ -58476,6 +58494,9 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 			}
 			if need.exe {
 				addFeature(authExeFeature)
+			}
+			if need.splice {
+				addFeature(spliceFeature)
 			}
 		}
 	}
@@ -60762,6 +60783,7 @@ func runAuthority(args []string) {
 	cands := fs.Int("candidates", 4, "migrate/optimize: trial bases per target (max 8)")
 	discovery := fs.String("discovery", "region", "optimize: candidate discovery, region (B7 positional fingerprints, complementary bases) or sketch (B6)")
 	canonical := fs.Bool("canonical", false, "optimize: B8 canonical streams: gzip, zstd and ZIP containers share their decoded content")
+	splice := fs.Bool("splice", false, "optimize: B10 deep streams: nested gzip/zstd/ZIP members of tars, Parquet pages and SST blocks decoded in place (raises \"splice\")")
 	execs := fs.Bool("executables", false, "optimize: B9 normalized ELF/PE x86-64 Go executables (implies -canonical; raises \"exenorm\")")
 	anchorBytes := fs.Int("anchor-bytes", 8, "optimize: windowed bases (over 32 MiB) index one COPY anchor per this many bytes, at most 8 Mi (-1: the migration rule)")
 	groupsOn := fs.Bool("enable", false, "groups: raise the store feature \"recgroup\" and move record files into groups")
@@ -60932,7 +60954,7 @@ func runAuthority(args []string) {
 		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
-			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs}
+			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice}
 		pol.Locality = []int{}
 		for _, f := range strings.Split(*locality, ",") {
 			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
@@ -61078,6 +61100,7 @@ type OptimizePolicy struct {
 	StageReps         bool                                `json:"stage_reps,omitempty"`  // B6 behaviour: stage every representation candidate while planning
 	Canonical         bool                                `json:"canonical,omitempty"`   // B8: canonical streams of codec containers
 	Executables       bool                                `json:"executables,omitempty"` // B9: normalized ELF/PE executables (with Canonical)
+	Splice            bool                                `json:"splice,omitempty"`      // B10: deep streams of tar, Parquet and SST contents
 	B7Search          bool                                `json:"b7_search,omitempty"`   // B8 ablation: the B7 search (no group starts, exact search or incumbent)
 	noZip             bool                                // ablation: no ZIP adapter
 	recordGroup       int64                               // research (B8-G): price record files as grouped entries (exact bytes + this overhead)
@@ -61184,10 +61207,12 @@ type rgOpt struct {
 	sum    [32]byte
 	rep    *authRepCand
 	cur    bool
-	chunky bool  // pieces are CDC chunks (restartable blocks apply)
-	replay byte  // B8 read model: the codec a read of this option replays
-	plain  int64 // decoded plaintext size of a replayed container
-	canon  bool  // a canonical wrapper: its base is the container's stream
+	chunky bool    // pieces are CDC chunks (restartable blocks apply)
+	replay byte    // B8 read model: the codec a read of this option replays
+	plain  int64   // decoded plaintext size of a replayed container
+	canon  bool    // a canonical wrapper: its base is the container's stream
+	splice bool    // B10: a deep-stream representation (kind 16) over its base
+	rfix   float64 // B10: modeled fixed replay of a sparse read (µs, splice)
 }
 
 type rgNode struct {
@@ -61205,6 +61230,7 @@ type rgNode struct {
 	cdcRead  float64
 	cdcWhole float64
 	canon    *repCanon // B8: the planning copy of a canonical stream (synthetic manifest in obj)
+	deep     bool      // B10: a deep stream (never analyzed for units itself)
 }
 
 // rgModel is the calibrated read-cost model (µs): a cold record fetch and a decoded byte.
@@ -61246,6 +61272,7 @@ type rgGraph struct {
 	vops      map[int32]map[int32][]dwDcoreOp // plain programs discovery verified (target -> base), reused by the encoder
 	chunkRefs map[[32]byte]int32              // eligible contents holding each CDC chunk (B7 share discount)
 	canonSt   CanonStats                      // B8 canonical analysis
+	splSt     SpliceStats                     // B10 deep-stream analysis
 }
 
 // rgCandSet is what discovery hands the encoders for one target: single bases, best first, and
@@ -62156,6 +62183,9 @@ func (g *rgGraph) keepOpt(nd *rgNode) (*rgOpt, error) {
 		g.layoutLinear(o, nd.size)
 		if k, plain, err := g.s.repTopCodec(r.Root); err == nil && k != 0 {
 			o.replay, o.plain = rgReplayOf(k), plain
+			if k == repKindSplice {
+				o.splice, o.rfix = true, g.s.spliceFixedOf(r.Root)
+			}
 			if o.canon = len(r.Bases) == 1; o.canon {
 				o.units = nil
 				g.codecLayout(o, r.Root, nil, nd.size)
@@ -62437,6 +62467,13 @@ func (g *rgGraph) generate(ctx context.Context) error {
 		if !pol.canonNoDelta {
 			eligible = append(eligible, streams...)
 		}
+	}
+	if pol.Splice {
+		deep, err := g.spliceOpts(ctx, m, eligible)
+		if err != nil {
+			return err
+		}
+		eligible = append(eligible, deep...)
 	}
 	// Sketches (one read per node); CDC alternatives of record-holding nodes are priced from the bytes.
 	inv := map[uint64][]int32{}
@@ -63545,6 +63582,7 @@ type OptimizeReport struct {
 	Model            rgModel          `json:"model"`
 	Discovery        *DiscoveryStats  `json:"discovery,omitempty"`
 	Canon            *CanonStats      `json:"canon,omitempty"`
+	Splice           *SpliceStats     `json:"splice,omitempty"`
 	Nodes            int              `json:"nodes"`
 	Live             int              `json:"live"`
 	Partitions       int              `json:"partitions"`
@@ -63791,6 +63829,9 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	err = g.generate(ctx)
 	if pol.Canonical {
 		rep.Canon = &g.canonSt
+	}
+	if pol.Splice {
+		rep.Splice = &g.splSt
 	}
 	if err != nil {
 		return rep, err
@@ -64068,6 +64109,19 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 			}
 		case rgRep:
 			root := o.rep.root
+			if o.splice {
+				b := g.nodes[o.bases[0]]
+				r2, err := g.spliceApply(nd, root, b.sha)
+				if err != nil {
+					if cerr := ctx.Err(); cerr != nil {
+						return cerr
+					}
+					return fail(err)
+				}
+				rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormRep, Depth: byte(finalDepth(v)), Sketch: nd.sk, Root: r2,
+					Bases: []xdBaseRef{{b.sha, b.size}}}
+				break
+			}
 			if o.canon {
 				r2, c2, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, nil, g.pol.Executables)
 				if err == nil {
@@ -64968,7 +65022,7 @@ const (
 var rgReplayCost = [...]struct {
 	Fixed, Byte, Whole float64
 	Warm               int64
-}{{}, {15000, 0.11, 0.11, 128 << 10}, {45000, 0.17, 0.10, 2 << 20}, {3000, 0.11, 0.11, 0}, {1500, 0.004, 0.004, 0}}
+}{{}, {15000, 0.11, 0.11, 128 << 10}, {45000, 0.17, 0.10, 2 << 20}, {3000, 0.11, 0.11, 0}, {1500, 0.004, 0.004, 0}, {0, 0.004, 0.02, 64 << 10}}
 
 func rgReplayOf(k repKind) byte {
 	switch k {
@@ -64980,6 +65034,8 @@ func rgReplayOf(k repKind) byte {
 		return rgReplayZip
 	case repKindExe:
 		return rgReplayExe
+	case repKindSplice:
+		return rgReplaySplice
 	}
 	return rgReplayNone
 }
@@ -64993,7 +65049,7 @@ func (g *rgGraph) replayUS(o *rgOpt, a, b int64, whole bool) float64 {
 	if whole {
 		return c.Whole * float64(b-a)
 	}
-	return c.Fixed + c.Byte*float64(b-a)
+	return c.Fixed + o.rfix + c.Byte*float64(b-a)
 }
 
 // canonTouch maps a read of a canonical wrapper onto its stream: output [a, b) needs plaintext from a warm-up
@@ -68165,6 +68221,1074 @@ func winRangeReader(c *winCache, call *repCall, off, n int64) func(w io.Writer) 
 		}
 		return flush(end)
 	}
+}
+
+// =============================================================================
+// 16e7. Deep canonical streams (B10, kind 16, store feature "splice")
+//
+// An object whose bytes hold independently compressed units (the members of a tar, the pages of a Parquet
+// file, the data blocks of an SST) is represented over one body, its deep stream D: the object with every
+// unit decoded in place. The table lists segments in output order, each consuming D in order: COPY (bytes of
+// D verbatim), REP (a DERIVED member: a canonical gzip, zstd or ZIP representation whose body is the next
+// bytes of D) and PAGE (a Parquet page codec replayed exactly from the next bytes of D). D is an ordinary body
+// (CDC, delta, structural), so versions share decoded content however their units were compressed; a
+// child's body is a slice of D resolved only through this table, never a record base.
+//
+//	table = "ZSP1" | uvarint segments | per segment: type | COPY: n | REP: plain n | PAGE: out n, plain n, recipe
+//	recipe (Parquet page codec) = codec | comp id | uvarint n | Snappy commands, zstd table or LZ4/Brotli recipe
+//	representation = DERIVED children (REP order) | table members | BODY D; recipe = uvarint children, table
+// =============================================================================
+
+const (
+	repKindSplice   repKind = 16
+	spliceFeature           = "splice"
+	splMagic                = "ZSP1"
+	splCopy                 = 1
+	splRep                  = 2
+	splPage                 = 3
+	splMaxSegs              = 1 << 20
+	splMaxChildren          = 1 << 16
+	splMaxTable             = 64 << 20
+	splMaxPage              = 16 << 20
+	splMinUnit              = 4 << 10 // smaller nested containers stay COPY
+	splMaxExpand            = 32      // deep-stream bytes per object byte (bomb guard)
+	splMaxHeldPlain         = 512 << 20
+	rgReplaySplice          = rgReplayExe + 1
+	pqPageDataV2            = 3
+)
+
+var errSplice = fmt.Errorf("%w: splice", errRepCorrupt)
+
+type splSeg struct {
+	kind            byte
+	out, outLen     int64 // position and length in the object
+	plain, plainLen int64 // position and length in D
+	member          int   // REP: index of the DERIVED member
+	rec             []byte
+}
+
+type splTable struct {
+	segs     []splSeg
+	children int
+	tableN   int
+	plain    int64 // D's length
+	raw      int64 // table bytes
+	pageOut  int64 // object bytes produced by PAGE segments, REP and COPY likewise (read model)
+	repOut   int64
+}
+
+func splAppendSeg(b []byte, s splSeg) []byte {
+	b = append(b, s.kind)
+	switch s.kind {
+	case splCopy:
+		b = binary.AppendUvarint(b, uint64(s.outLen))
+	case splRep:
+		b = binary.AppendUvarint(b, uint64(s.plainLen))
+	case splPage:
+		b = binary.AppendUvarint(b, uint64(s.outLen))
+		b = binary.AppendUvarint(b, uint64(s.plainLen))
+		b = binary.AppendUvarint(b, uint64(len(s.rec)))
+		b = append(b, s.rec...)
+	}
+	return b
+}
+
+// splParse decodes a table against its representation: REP segments take the DERIVED members in order and
+// their output lengths; positions are derived and the totals must equal the object and D.
+func splParse(b []byte, rep *repObject, children int, dsize int64) (*splTable, error) {
+	if len(b) < 4 || string(b[:4]) != splMagic {
+		return nil, fmt.Errorf("%w: table magic", errSplice)
+	}
+	p := b[4:]
+	uv := func() (int64, error) {
+		v, k := binary.Uvarint(p)
+		if k <= 0 || v > uint64(math.MaxInt64>>2) {
+			return 0, fmt.Errorf("%w: table varint", errSplice)
+		}
+		p = p[k:]
+		return int64(v), nil
+	}
+	n, err := uv()
+	if err != nil || n > splMaxSegs {
+		return nil, fmt.Errorf("%w: segment count", errSplice)
+	}
+	t := &splTable{children: children, raw: int64(len(b))}
+	var out, plain int64
+	child := 0
+	for i := int64(0); i < n; i++ {
+		if len(p) == 0 {
+			return nil, fmt.Errorf("%w: table ends at segment %d", errSplice, i)
+		}
+		s := splSeg{kind: p[0], out: out, plain: plain, member: -1}
+		p = p[1:]
+		switch s.kind {
+		case splCopy:
+			if s.outLen, err = uv(); err != nil || s.outLen < 1 {
+				return nil, fmt.Errorf("%w: copy length", errSplice)
+			}
+			s.plainLen = s.outLen
+		case splRep:
+			if child >= children {
+				return nil, fmt.Errorf("%w: more REP segments than children", errSplice)
+			}
+			if s.plainLen, err = uv(); err != nil || s.plainLen < 1 {
+				return nil, fmt.Errorf("%w: child plain length", errSplice)
+			}
+			s.member = child
+			s.outLen = rep.Members[child].Size
+			t.repOut += s.outLen
+			child++
+		case splPage:
+			var rl int64
+			if s.outLen, err = uv(); err == nil {
+				if s.plainLen, err = uv(); err == nil {
+					rl, err = uv()
+				}
+			}
+			if err != nil || s.outLen < 1 || s.outLen > splMaxPage || s.plainLen > splMaxPage || rl < 2 || rl > int64(len(p)) {
+				return nil, fmt.Errorf("%w: page segment", errSplice)
+			}
+			s.rec, p = p[:rl:rl], p[rl:]
+			t.pageOut += s.outLen
+		default:
+			return nil, fmt.Errorf("%w: segment type %d", errSplice, s.kind)
+		}
+		out += s.outLen
+		plain += s.plainLen
+		if out > rep.Size || plain > dsize {
+			return nil, fmt.Errorf("%w: segments exceed the object or its body", errSplice)
+		}
+		t.segs = append(t.segs, s)
+	}
+	if len(p) != 0 || child != children || out != rep.Size || plain != dsize {
+		return nil, fmt.Errorf("%w: segments cover %d of %d bytes and %d of %d body bytes", errSplice, out, rep.Size, plain, dsize)
+	}
+	t.plain = plain
+	return t, nil
+}
+
+// splRecipe validates the representation's member layout and returns its table.
+func splRecipe(c *repCall) (*splTable, error) {
+	if c.env.Cache != nil {
+		if t, ok := c.env.Cache.getDerived(c.ID).(*splTable); ok {
+			return t, nil
+		}
+	}
+	r := c.Rep
+	nc, k1 := binary.Uvarint(r.Recipe)
+	if k1 <= 0 {
+		return nil, fmt.Errorf("%w: recipe", errSplice)
+	}
+	nt, k2 := binary.Uvarint(r.Recipe[k1:])
+	if k2 <= 0 || k1+k2 != len(r.Recipe) || nc > splMaxChildren || nt < 1 || nc+nt+1 != uint64(len(r.Members)) {
+		return nil, fmt.Errorf("%w: recipe counts", errSplice)
+	}
+	var table []byte
+	for i, m := range r.Members {
+		switch {
+		case i < int(nc):
+			if m.Role != repDerived || len(m.Frame.Prefix) != 0 || m.Frame.Zeros != 0 || m.Size < 1 {
+				return nil, fmt.Errorf("%w: member %d is not a plain child", errSplice, i)
+			}
+		case i < int(nc+nt):
+			if m.Role != repStored || int64(len(table))+m.Size > splMaxTable {
+				return nil, fmt.Errorf("%w: table member %d", errSplice, i)
+			}
+			b, err := c.getExact(m.SHA, m.Size)
+			if err != nil {
+				return nil, err
+			}
+			table = append(table, b...)
+		default:
+			if m.Role != repBody {
+				return nil, fmt.Errorf("%w: last member is not the body", errSplice)
+			}
+		}
+	}
+	t, err := splParse(table, r, int(nc), r.Members[len(r.Members)-1].Size)
+	if err != nil {
+		return nil, err
+	}
+	t.tableN = int(nt)
+	if c.env.Cache != nil {
+		c.env.Cache.putDerived(c.ID, t, t.raw+int64(len(t.segs))*64)
+	}
+	return t, nil
+}
+
+// splBody is the deep stream D.
+func splBody(c *repCall) (io.ReaderAt, error) {
+	return c.bodyAt(&c.Rep.Members[len(c.Rep.Members)-1])
+}
+
+// splChild opens the child of a REP segment in an environment whose only body is its slice of D.
+func splChild(c *repCall, s *splSeg, d io.ReaderAt) (*repEnv, *repObject, *repMember, error) {
+	m := &c.Rep.Members[s.member]
+	child, err := c.env.load(m.Child, c.depth+1, c.path)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("child %x: %w", m.Child[:6], err)
+	}
+	if child.Kind != repKindGzip && child.Kind != repKindZstd && child.Kind != repKindZip || child.Size != m.Size {
+		return nil, nil, nil, fmt.Errorf("%w: child %x is kind %d of %d bytes", errSplice, m.Child[:6], child.Kind, child.Size)
+	}
+	var body *repMember
+	for i := range child.Members {
+		if child.Members[i].Role == repBody {
+			if body != nil {
+				return nil, nil, nil, fmt.Errorf("%w: child with two bodies", errSplice)
+			}
+			body = &child.Members[i]
+		}
+	}
+	if body == nil || body.Size != s.plainLen {
+		return nil, nil, nil, fmt.Errorf("%w: child body does not match its segment", errSplice)
+	}
+	e := *c.env
+	slice := io.NewSectionReader(d, s.plain, s.plainLen)
+	e.Body = func(sha [32]byte, size int64) (io.ReaderAt, error) {
+		if sha != body.SHA || size != body.Size {
+			return nil, fmt.Errorf("%w: body %x is not this child's slice", errSplice, sha[:6])
+		}
+		return slice, nil
+	}
+	return &e, child, m, nil
+}
+
+// splPageReplay rebuilds a page's compressed bytes from its decoded bytes.
+func splPageReplay(rec, plain []byte, outLen int64) ([]byte, error) {
+	if len(rec) < 2 {
+		return nil, fmt.Errorf("%w: page recipe", errSplice)
+	}
+	r := repPQCompRec{ID: rec[1]}
+	if len(rec) > 2 {
+		n, k := binary.Uvarint(rec[2:])
+		if k <= 0 || uint64(len(rec)-2-k) != n {
+			return nil, fmt.Errorf("%w: page recipe payload", errSplice)
+		}
+		pl := rec[2+k:]
+		switch r.ID {
+		case repPQCompSnapCmds:
+			r.Cmds = pl
+		case repPQCompZstd:
+			r.Zstd = pl
+		default:
+			r.LZ4 = pl
+		}
+	}
+	codec := int(rec[0])
+	if codec != repPQCodecSnappy && codec != repPQCodecZstd && codec != repPQCodecLZ4Raw && codec != repPQCodecBrotli {
+		return nil, fmt.Errorf("%w: page codec %d", errSplice, codec)
+	}
+	out, err := repPQNewCompressor(codec, repStructuredParquetLimits()).Replay(r, plain)
+	if err != nil {
+		return nil, fmt.Errorf("%w: page replay: %v", errSplice, err)
+	}
+	if int64(len(out)) != outLen {
+		return nil, fmt.Errorf("%w: page replays to %d of %d bytes", errSplice, len(out), outLen)
+	}
+	return out, nil
+}
+
+func splMarshalPageRec(codec int, r repPQCompRec) []byte {
+	b := []byte{byte(codec), r.ID}
+	var pl []byte
+	switch {
+	case r.ID == repPQCompSnapCmds:
+		pl = r.Cmds
+	case r.ID == repPQCompZstd:
+		pl = r.Zstd
+	default:
+		pl = r.LZ4
+	}
+	if len(pl) > 0 {
+		b = binary.AppendUvarint(b, uint64(len(pl)))
+		b = append(b, pl...)
+	}
+	return b
+}
+
+func splReadD(d io.ReaderAt, off, n int64) ([]byte, error) {
+	b := make([]byte, n)
+	if k, err := d.ReadAt(b, off); int64(k) != n {
+		return nil, fmt.Errorf("%w: deep stream returned %d of %d bytes at %d: %v", errRepShort, k, n, off, err)
+	}
+	return b, nil
+}
+
+// splWrite produces object bytes [a, b) of segment s (relative to the object) to w.
+func splWrite(c *repCall, s *splSeg, d io.ReaderAt, a, b int64, w io.Writer) error {
+	switch s.kind {
+	case splCopy:
+		buf := make([]byte, min(b-a, 1<<20))
+		for at := a; at < b; {
+			n := min(int64(len(buf)), b-at)
+			if k, err := d.ReadAt(buf[:n], s.plain+at-s.out); int64(k) != n {
+				return fmt.Errorf("%w: deep stream at %d: %v", errRepShort, s.plain+at-s.out, err)
+			}
+			if _, err := w.Write(buf[:n]); err != nil {
+				return err
+			}
+			at += n
+		}
+		return nil
+	case splPage:
+		plain, err := splReadD(d, s.plain, s.plainLen)
+		if err != nil {
+			return err
+		}
+		out, err := splPageReplay(s.rec, plain, s.outLen)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(out[a-s.out : b-s.out])
+		return err
+	}
+	e, child, m, err := splChild(c, s, d)
+	if err != nil {
+		return err
+	}
+	if a == s.out && b == s.out+s.outLen {
+		h := sha256.New()
+		cw := &repBound{w: io.MultiWriter(w, h), max: m.Size}
+		if err := e.runWork(m.Child, child, c.depth+1, c.path, cw, c.decodeWork()); err != nil {
+			return fmt.Errorf("child %x: %w", m.Child[:6], err)
+		}
+		if cw.n != m.Size || [32]byte(h.Sum(nil)) != m.SHA {
+			return fmt.Errorf("%w: child %x output does not hash to its member", errRepMismatch, m.Child[:6])
+		}
+		return nil
+	}
+	cc := e.call(m.Child, child, c.depth+1, c.path, nil)
+	cc.work = c.decodeWork()
+	produce, err := repRangeReader(cc, a-s.out, b-a)
+	if err != nil {
+		return err
+	}
+	if produce == nil { // no native range: the whole child, bounded by the page limit
+		if m.Size > splMaxPage*4 {
+			return fmt.Errorf("%w: child of %d bytes without a range reader", errRepLimit, m.Size)
+		}
+		var buf bytes.Buffer
+		if err := e.runWork(m.Child, child, c.depth+1, c.path, &repBound{w: &buf, max: m.Size}, c.decodeWork()); err != nil {
+			return err
+		}
+		_, err = w.Write(buf.Bytes()[a-s.out : b-s.out])
+		return err
+	}
+	return produce(w)
+}
+
+type repSpliceDecoder struct{}
+
+func (repSpliceDecoder) Decode(c *repCall) error {
+	t, err := splRecipe(c)
+	if err != nil {
+		return err
+	}
+	d, err := splBody(c)
+	if err != nil {
+		return err
+	}
+	for i := range t.segs {
+		s := &t.segs[i]
+		if err := c.decodeWork().step(1); err != nil {
+			return err
+		}
+		if err := splWrite(c, s, d, s.out, s.out+s.outLen, c.W); err != nil {
+			return fmt.Errorf("segment %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// Expand: the table is a listed member and children are DERIVED members, so nothing is discovered.
+func (repSpliceDecoder) Expand(c *repCall, emit func([32]byte)) error {
+	_, err := splRecipe(c)
+	return err
+}
+
+// spliceReadRange produces [off, off+n) touching only the segments it overlaps.
+func spliceReadRange(c *repCall, off, n int64, w io.Writer) error {
+	t, err := splRecipe(c)
+	if err != nil {
+		return err
+	}
+	if off < 0 || n < 0 || off+n > c.Rep.Size {
+		return fmt.Errorf("%w: range", errRepLimit)
+	}
+	d, err := splBody(c)
+	if err != nil {
+		return err
+	}
+	end := off + n
+	i, _ := slices.BinarySearchFunc(t.segs, off, func(s splSeg, x int64) int { return cmp.Compare(s.out+s.outLen, x+1) })
+	for ; i < len(t.segs) && t.segs[i].out < end; i++ {
+		s := &t.segs[i]
+		if err := splWrite(c, s, d, max(off, s.out), min(end, s.out+s.outLen), w); err != nil {
+			return fmt.Errorf("segment %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// splNeedsHard reports whether a splice replays LZ4 or Brotli pages (store feature "hardcodec").
+func splNeedsHard(env *repEnv, id [32]byte, rep *repObject) bool {
+	t, err := splRecipe(env.call(id, rep, 1, nil, nil))
+	if err != nil {
+		return false
+	}
+	for _, sg := range t.segs {
+		if sg.kind == splPage && (sg.rec[0] == repPQCodecLZ4Raw || sg.rec[0] == repPQCodecBrotli) {
+			return true
+		}
+	}
+	return false
+}
+
+// walkSplice walks a splice child into its own reach set: the child's body is a slice of the parent's, so
+// it joins neither the parent's body references nor, for later walks, the set of fully walked objects.
+func (e *repEnv) walkSplice(r *repReach, id [32]byte, depth int, path [][32]byte) error {
+	lim := e.Limits.norm()
+	sub := &repReach{Role: map[[32]byte]repDepRole{}, Height: map[[32]byte]int{}}
+	if err := e.walk(sub, id, depth, path); err != nil {
+		return err
+	}
+	if len(sub.Bodies) != 1 {
+		return fmt.Errorf("%w: child %x has %d body references", errSplice, id[:6], len(sub.Bodies))
+	}
+	for _, x := range sub.Order {
+		_, had := r.Role[x]
+		if err := r.add(x, sub.Role[x], lim.MaxObjects); err != nil {
+			return err
+		}
+		if !had && sub.Role[x] == repDepRep {
+			if r.scoped == nil {
+				r.scoped = map[[32]byte]bool{}
+			}
+			r.scoped[x] = true
+		}
+	}
+	for k, h := range sub.Height {
+		if _, ok := r.Height[k]; !ok {
+			r.Height[k] = h
+		}
+	}
+	r.Derived += sub.Derived
+	return nil
+}
+
+// ---- construction ------------------------------------------------------------------
+
+// splUnit is one independently compressed unit of the object found by analysis.
+type splUnit struct {
+	off, n   int64
+	kind     byte
+	child    [32]byte // REP: the child representation
+	csha     [32]byte // REP: SHA-256 of the unit's bytes
+	plainF   *os.File // REP: the child's body
+	plainLen int64
+	plain    []byte // PAGE: decoded bytes
+	rec      []byte // PAGE: recipe
+}
+
+// SpliceStats reports deep-stream analysis (B10).
+type SpliceStats struct {
+	Objects     int     `json:"objects"`      // objects analyzed
+	Built       int     `json:"built"`        // with at least one decoded unit
+	Children    int     `json:"children"`     // nested canonical containers
+	Pages       int     `json:"pages"`        // replayed pages and blocks
+	Refused     int     `json:"refused"`      // units left verbatim (unsupported producer, limits)
+	PlainBytes  int64   `json:"plain_bytes"`  // deep-stream bytes
+	TableBytes  int64   `json:"table_bytes"`  // splice tables
+	RecipeBytes int64   `json:"recipe_bytes"` // priced bytes of the objects' own components
+	Seconds     float64 `json:"seconds"`
+}
+
+// splBuilder carries one construction: the components go to mem (a planning overlay).
+type splBuilder struct {
+	s     *Store
+	b     *repBuilder
+	mem   map[[32]byte][]byte
+	hard  bool
+	units []splUnit
+	held  int64
+	st    *SpliceStats
+}
+
+func (sb *splBuilder) close() {
+	for _, u := range sb.units {
+		if u.plainF != nil {
+			repRemoveTemp(u.plainF)
+		}
+	}
+	sb.units = nil
+}
+
+// child builds the canonical representation of a nested container and proves it against its bytes.
+func (sb *splBuilder) child(ra io.ReaderAt, off, n int64, kind repKind) bool {
+	if len(sb.units) >= splMaxChildren {
+		return false
+	}
+	cb := sb.s.newRepBuilder(n, sb.s.repDescLookup, nil)
+	cb.sink.Abort()
+	cb.src.mem = sb.mem
+	cb.sink = cb.newSink()
+	cb.seek, cb.canon, cb.reserve = true, &repCanon{}, sb.b.reserve
+	defer cb.close()
+	sec := io.NewSectionReader(ra, off, n)
+	rep, err := cb.encodeKind(kind, sec, n)
+	if err != nil || cb.canon.File == nil {
+		if os.Getenv("B10DBG") != "" {
+			log.Printf("splice child kind %d at %d+%d: %v", kind, off, n, err)
+		}
+		cb.canon.close()
+		return false
+	}
+	id, err := cb.finishRep(rep)
+	if err == nil && cb.canon.Size*1 > n*splMaxExpand+1<<20 {
+		err = errRepLimit
+	}
+	var want [32]byte
+	if err == nil {
+		h := sha256.New()
+		if _, err = io.Copy(h, io.NewSectionReader(ra, off, n)); err == nil {
+			h.Sum(want[:0])
+			var got [32]byte
+			var cn int64
+			if cn, got, err = cb.env.reconstruct(id, io.Discard); err == nil && (cn != n || got != want) {
+				err = errRepMismatch
+			}
+		}
+	}
+	if err != nil {
+		cb.canon.close()
+		return false
+	}
+	maps.Copy(sb.b.descs, cb.descs)
+	sb.units = append(sb.units, splUnit{off: off, n: n, kind: splRep, child: id, csha: want, plainF: cb.canon.File, plainLen: cb.canon.Size})
+	cb.canon.File = nil
+	sb.st.Children++
+	return true
+}
+
+// page analyzes one compressed page payload [off, off+n) holding want decoded bytes.
+func (sb *splBuilder) page(comp *repPQCompressor, ra io.ReaderAt, off, n, want int64) bool {
+	if n < 1 || n > splMaxPage || want < 0 || want > splMaxPage || sb.held+want > splMaxHeldPlain {
+		return false
+	}
+	payload := make([]byte, n)
+	if err := repReadFullAt(ra, payload, off); err != nil {
+		return false
+	}
+	body, rec, err := comp.Analyze(payload, want)
+	if err != nil {
+		return false
+	}
+	pr := splMarshalPageRec(comp.Codec, rec)
+	if out, err := splPageReplay(pr, body, n); err != nil || !bytes.Equal(out, payload) {
+		return false
+	}
+	sb.held += int64(len(body))
+	sb.units = append(sb.units, splUnit{off: off, n: n, kind: splPage, plain: body, plainLen: int64(len(body)), rec: pr})
+	sb.st.Pages++
+	return true
+}
+
+// tarUnits finds nested gzip, zstd and ZIP members of a tar archive.
+func (sb *splBuilder) tarUnits(ra io.ReaderAt, size int64) error {
+	if err := tarPrescan(ra, size); err != nil {
+		return err
+	}
+	hdr := make([]byte, tarBlock)
+	for pos := int64(0); pos+tarBlock <= size; {
+		if err := repReadFullAt(ra, hdr, pos); err != nil {
+			return err
+		}
+		if allZero(hdr) {
+			return nil
+		}
+		esz, _ := tarEntrySize(hdr)
+		body := pos + tarBlock
+		pos = body + (esz+tarBlock-1)/tarBlock*tarBlock
+		if esz < splMinUnit || hdr[156] != '0' && hdr[156] != 0 {
+			continue
+		}
+		var head [4]byte
+		if err := repReadFullAt(ra, head[:], body); err != nil {
+			return err
+		}
+		var kind repKind
+		switch {
+		case head[0] == 0x1f && head[1] == 0x8b && head[2] == 8:
+			kind = repKindGzip
+		case bytes.Equal(head[:], []byte{0x28, 0xb5, 0x2f, 0xfd}):
+			kind = repKindZstd
+		case bytes.Equal(head[:], []byte("PK\x03\x04")):
+			kind = repKindZip
+		default:
+			continue
+		}
+		if !sb.child(ra, body, esz, kind) {
+			sb.st.Refused++
+		}
+	}
+	return nil
+}
+
+// parquetUnits finds the compressed page payloads of a Parquet file (v2 pages: the values after the levels).
+func (sb *splBuilder) parquetUnits(ra io.ReaderAt, size int64) error {
+	lim := repStructuredParquetLimits()
+	lim.Hard = sb.hard
+	f, err := repPQOpen(ra, size, lim)
+	if err != nil {
+		return err
+	}
+	for ri := range f.RowGroups {
+		for ci := range f.RowGroups[ri].Chunks {
+			ch := &f.RowGroups[ri].Chunks[ci]
+			if ch.Codec == repPQCodecNone || !repPQCodecs(ch.Codec, sb.hard) {
+				continue
+			}
+			comp := repPQNewCompressor(ch.Codec, lim)
+			if err := f.Pages(ra, ch, func(p *repPQPage, _ []byte) error {
+				off, n, want := p.PayloadOff(), int64(p.Comp), int64(p.Uncomp)
+				if p.Type == pqPageDataV2 {
+					if !p.IsComp {
+						return nil
+					}
+					lv := int64(p.DefLen) + int64(p.RepLen)
+					off, n, want = off+lv, n-lv, want-lv
+				}
+				if !sb.page(comp, ra, off, n, want) {
+					sb.st.Refused++
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// sstUnits finds the compressed data blocks of a block-based table: Snappy payloads whole, LZ4 and zstd
+// payloads after their decoded-size prefix (kept verbatim in D).
+func (sb *splBuilder) sstUnits(ra io.ReaderAt, size int64) error {
+	lim := repStructuredSSTLimits()
+	lim.Hard = sb.hard
+	t, err := repSSOpen(ra, size, lim)
+	if err != nil {
+		return err
+	}
+	if t.Footer.Family == repSSFamilyLegacy {
+		return errRepUnsupported
+	}
+	plim := repStructuredParquetLimits()
+	comps := map[int]*repPQCompressor{}
+	for _, h := range t.Blocks {
+		rb, err := repSSReadBlock(ra, size, h, t.Footer.Checksum, true, lim)
+		if err != nil {
+			return err
+		}
+		codec, skip := 0, 0
+		switch rb.Comp() {
+		case repSSCompSnappy:
+			codec = repPQCodecSnappy
+		case repSSCompLZ4, repSSCompLZ4HC:
+			codec = repPQCodecLZ4Raw
+		case repSSCompZstd:
+			codec = repPQCodecZstd
+		default:
+			continue
+		}
+		want := int64(-1)
+		if codec != repPQCodecSnappy {
+			v, k := binary.Uvarint(rb.Payload)
+			if k <= 0 || k > 5 || v > uint64(lim.MaxDecoded) {
+				sb.st.Refused++
+				continue
+			}
+			skip, want = k, int64(v)
+		} else if v, k := binary.Uvarint(rb.Payload); k > 0 && v <= uint64(lim.MaxDecoded) {
+			want = int64(v)
+		}
+		if want < 0 || !repPQCodecs(codec, sb.hard) {
+			sb.st.Refused++
+			continue
+		}
+		if comps[codec] == nil {
+			comps[codec] = repPQNewCompressor(codec, plim)
+		}
+		if !sb.page(comps[codec], ra, int64(h.Off)+int64(skip), int64(h.Size)-int64(skip), want) {
+			sb.st.Refused++
+		}
+	}
+	return nil
+}
+
+// spliceKind sniffs the formats whose units the builder finds.
+func spliceKind(ra io.ReaderAt, size int64) byte {
+	var hd [tarBlock]byte
+	n, _ := ra.ReadAt(hd[:], 0)
+	switch {
+	case size >= 12 && bytes.HasPrefix(hd[:n], []byte("PAR1")):
+		return 'p'
+	case n == tarBlock && !allZero(hd[:]) && tarHeaderOK(hd[:]):
+		return 't'
+	}
+	if size >= 8 {
+		var tail [8]byte
+		if k, _ := ra.ReadAt(tail[:], size-8); k == 8 {
+			if m := binary.LittleEndian.Uint64(tail[:]); m == repSSblockBasedMagic {
+				return 's'
+			}
+		}
+	}
+	return 0
+}
+
+// spliceConstruct builds the deep-stream representation of an object in memory (components in mem) and
+// proves it through the production decoder; the returned canon holds D (a temp file the caller closes).
+func (s *Store) spliceConstruct(man manifestV1, src io.ReaderAt, reserve uint64, mem map[[32]byte][]byte, hard bool, st *SpliceStats) (*repRoot, *repCanon, error) {
+	size := man.TotalLength
+	objSHA, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return nil, nil, err
+	}
+	if size < splMinUnit || size > repMaxInspect {
+		return nil, nil, errRepUnsupported
+	}
+	if st == nil {
+		st = &SpliceStats{}
+	}
+	ra := src
+	if ra == nil {
+		mra := s.newManifestReaderAt(man)
+		defer mra.close()
+		ra = mra
+	}
+	kind := spliceKind(ra, size)
+	if kind == 0 {
+		return nil, nil, errRepUnsupported
+	}
+	s.repEnsure()
+	b := s.newRepBuilder(size, s.repDescLookup, nil)
+	b.sink.Abort()
+	b.src.mem = mem
+	b.sink = b.newSink()
+	b.reserve = reserve
+	defer b.close()
+	sb := &splBuilder{s: s, b: b, mem: mem, hard: hard, st: st}
+	defer sb.close()
+	st.Objects++
+	switch kind {
+	case 't':
+		err = sb.tarUnits(ra, size)
+	case 'p':
+		err = sb.parquetUnits(ra, size)
+	case 's':
+		err = sb.sstUnits(ra, size)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(sb.units) == 0 {
+		return nil, nil, fmt.Errorf("%w: no decodable unit", errRepUnsupported)
+	}
+	slices.SortFunc(sb.units, func(a, b splUnit) int { return cmp.Compare(a.off, b.off) })
+	f, err := b.codecTemp()
+	if err != nil {
+		return nil, nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			repRemoveTemp(f)
+		}
+	}()
+	h := sha256.New()
+	dw := io.MultiWriter(repCodecTempWriter{s, f, reserve}, h)
+	var dn int64
+	table := append([]byte(nil), splMagic...)
+	var segs []splSeg
+	var members []repMember
+	copyRaw := func(a, n int64) error {
+		if n == 0 {
+			return nil
+		}
+		if _, err := io.Copy(dw, io.NewSectionReader(ra, a, n)); err != nil {
+			return err
+		}
+		dn += n
+		segs = append(segs, splSeg{kind: splCopy, outLen: n})
+		return nil
+	}
+	pos := int64(0)
+	for _, u := range sb.units {
+		if u.off < pos || u.off+u.n > size {
+			return nil, nil, fmt.Errorf("%w: overlapping units", errSplice)
+		}
+		if err := copyRaw(pos, u.off-pos); err != nil {
+			return nil, nil, err
+		}
+		switch u.kind {
+		case splRep:
+			if _, err := io.Copy(dw, io.NewSectionReader(u.plainF, 0, u.plainLen)); err != nil {
+				return nil, nil, err
+			}
+			segs = append(segs, splSeg{kind: splRep, plainLen: u.plainLen})
+			members = append(members, repMember{Role: repDerived, SHA: u.csha, Size: u.n, Child: u.child})
+		case splPage:
+			if _, err := dw.Write(u.plain); err != nil {
+				return nil, nil, err
+			}
+			segs = append(segs, splSeg{kind: splPage, outLen: u.n, plainLen: u.plainLen, rec: u.rec})
+		}
+		dn += u.plainLen
+		pos = u.off + u.n
+		if dn > size*splMaxExpand+1<<20 || dn > repMaxInspect {
+			return nil, nil, fmt.Errorf("%w: deep stream expands beyond %d times the object", errRepLimit, splMaxExpand)
+		}
+	}
+	if err := copyRaw(pos, size-pos); err != nil {
+		return nil, nil, err
+	}
+	table = binary.AppendUvarint(table, uint64(len(segs)))
+	for _, sg := range segs {
+		table = splAppendSeg(table, sg)
+	}
+	if len(table) > splMaxTable {
+		return nil, nil, fmt.Errorf("%w: splice table of %d bytes", errRepLimit, len(table))
+	}
+	tm, err := b.codecTable(table)
+	if err != nil {
+		return nil, nil, err
+	}
+	var dsha [32]byte
+	h.Sum(dsha[:0])
+	rep := &repObject{Kind: repKindSplice, Size: size, Recipe: binary.AppendUvarint(binary.AppendUvarint(nil, uint64(len(members))), uint64(len(tm)))}
+	rep.Members = append(append(members, tm...), repMember{Role: repBody, SHA: dsha, Size: dn})
+	id, err := b.finishRep(rep)
+	if err != nil {
+		return nil, nil, err
+	}
+	b.env.Body = func(sha [32]byte, n int64) (io.ReaderAt, error) {
+		if sha != dsha || n != dn {
+			return nil, fmt.Errorf("%w: body %x is not this build's deep stream", errRepMissing, sha[:6])
+		}
+		return f, nil
+	}
+	if err := b.proof(id, size, objSHA); err != nil {
+		return nil, nil, fmt.Errorf("splice proof: %w", err)
+	}
+	reach, err := b.env.reachable(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(reach.Bodies) != 1 || reach.Bodies[dsha] != dn {
+		return nil, nil, fmt.Errorf("%w: splice body references", errSplice)
+	}
+	root := &repRoot{ManifestUUID: man.ManifestUUID, ObjSHA: objSHA, ObjSize: size, Rep: id, Descs: map[[32]byte]*repDesc{}}
+	for _, oid := range reach.Order {
+		if d := b.src.desc(oid); d != nil {
+			root.Descs[oid] = d
+		}
+	}
+	st.Built++
+	st.PlainBytes += dn
+	st.TableBytes += int64(len(table))
+	keep = true
+	return root, &repCanon{SHA: dsha, Size: dn, File: f}, nil
+}
+
+// ---- optimizer integration (B10-E) ------------------------------------------------
+
+// splFixed is the modeled fixed replay of a sparse read: per segment kind, weighted by the output share.
+func splFixed(t *splTable, kinds []repKind, size int64) float64 {
+	if size <= 0 {
+		return 0
+	}
+	var us float64
+	for _, sg := range t.segs {
+		var c float64
+		switch sg.kind {
+		case splPage:
+			per := 0.004
+			switch sg.rec[0] {
+			case repPQCodecZstd:
+				per = 0.012
+			case repPQCodecBrotli:
+				per = 0.05
+			}
+			c = 80 + per*float64(sg.plainLen+sg.outLen)
+		case splRep:
+			if sg.member < len(kinds) {
+				c = rgReplayCost[rgReplayOf(kinds[sg.member])].Fixed
+			}
+		}
+		us += c * float64(sg.outLen) / float64(size)
+	}
+	return us
+}
+
+// spliceFixedOf prices a committed splice record's replay (0 when unreadable: the record is kept as is).
+func (s *Store) spliceFixedOf(root *repRoot) float64 { return s.spliceFixedMem(root, nil) }
+
+// spliceOpts builds the deep-stream option of every eligible tar, Parquet and SST content (live objects and
+// canonical streams) and the node of its deep stream; the new stream nodes join discovery.
+func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []int32) ([]int32, error) {
+	s := g.s
+	t0 := time.Now()
+	defer func() { g.splSt.Seconds += time.Since(t0).Seconds() }()
+	var added []int32
+	for _, v := range eligible {
+		if err := ctx.Err(); err != nil {
+			return added, err
+		}
+		nd := g.nodes[v]
+		if nd.obj == nil || nd.deep || nd.size < splMinUnit || nd.size > repMaxInspect {
+			continue
+		}
+		var src io.ReaderAt
+		if nd.canon != nil && nd.canon.File != nil {
+			src = nd.canon.File
+		} else {
+			ra := s.newManifestReaderAt(nd.obj.man)
+			k := spliceKind(ra, nd.size)
+			ra.close()
+			if k == 0 {
+				continue
+			}
+		}
+		if err := s.checkAuthDiskReserve(g.pol.ReserveFreeBytes, 0, 0); err != nil {
+			return added, err
+		}
+		mem := map[[32]byte][]byte{}
+		root, canon, err := s.spliceConstruct(nd.obj.man, src, g.pol.ReserveFreeBytes, mem, s.rep.hardCodecs.Load(), &g.splSt)
+		if errors.Is(err, syscall.ENOSPC) {
+			return added, err
+		}
+		if err != nil {
+			continue
+		}
+		fixed := s.spliceFixedMem(root, mem)
+		cl, err := s.repClosureMem(root, mem)
+		if err != nil {
+			canon.close()
+			continue
+		}
+		for sum, d := range mem {
+			if _, ok := m.phys[sum]; !ok {
+				if _, err := s.casStat(sum); err != nil {
+					m.phys[sum] = packPriceLen(d) + packRecordBytes
+				}
+			}
+		}
+		u, fresh, err := g.canonNode(nd, canon)
+		if err != nil {
+			return added, err
+		}
+		g.nodes[u].deep = true
+		if fresh {
+			added = append(added, u)
+		}
+		o := &rgOpt{kind: rgRep, label: "splice", bases: []int32{u}, enc: []int32{u}, rep: &authRepCand{kind: repKindSplice, root: root, chunks: cl.chunks, lazy: true},
+			replay: rgReplaySplice, plain: g.nodes[u].size, canon: true, splice: true, rfix: fixed}
+		rec := authRecord{SHA: nd.sha, Size: nd.size, Gen: 1, Form: authFormRep, Depth: 1, Bases: []xdBaseRef{{g.nodes[u].sha, g.nodes[u].size}}, Root: root, Sketch: make([]uint64, 16)}
+		if b, err := rec.marshal(); err == nil {
+			o.meta = g.roundMeta(int64(len(b)))
+		}
+		o.write = o.meta
+		seen := map[int32]bool{}
+		for _, c := range cl.chunks {
+			sum, _ := decodeHexSHA256(c.SHA256)
+			id, ok := g.cid[sum]
+			if !ok {
+				id = g.comp(sum, c.Length, s.physChunk(sum, c.Length, m.phys, g.pol.PriceCurrentStorage))
+			}
+			o.pieces = append(o.pieces, id)
+			if !seen[id] {
+				seen[id] = true
+				o.comps = append(o.comps, id)
+				g.splSt.RecipeBytes += g.cphys[id]
+				if n, err := s.casStat(sum); err != nil || n != c.Length {
+					o.write += g.cphys[id]
+				}
+			}
+		}
+		g.codecLayout(o, root, mem, nd.size)
+		nd.opts = append(nd.opts, o)
+	}
+	return added, nil
+}
+
+// spliceFixedMem is the modeled fixed replay of a splice root (mem: a planning build's components).
+func (s *Store) spliceFixedMem(root *repRoot, mem map[[32]byte][]byte) float64 {
+	src := s.newRepSource(root.Descs, nil)
+	src.mem = mem
+	defer src.close()
+	env := &repEnv{Src: src, Limits: repProdLimits}
+	call, err := env.open(root.Rep)
+	if err != nil {
+		return 0
+	}
+	t, err := splRecipe(call)
+	if err != nil {
+		return 0
+	}
+	var kinds []repKind
+	for i := 0; i < t.children; i++ {
+		if rep, err := env.load(call.Rep.Members[i].Child, 2, call.path); err == nil {
+			kinds = append(kinds, rep.Kind)
+		} else {
+			kinds = append(kinds, 0)
+		}
+	}
+	return splFixed(t, kinds, call.Rep.Size)
+}
+
+// spliceApply constructs the planned splice again, checks it against the plan and stages its components
+// (everything but the deep stream, which is its own record).
+func (g *rgGraph) spliceApply(nd *rgNode, planned *repRoot, dsha [32]byte) (*repRoot, error) {
+	s := g.s
+	var src io.ReaderAt
+	if nd.canon != nil && nd.canon.File != nil {
+		src = nd.canon.File
+	}
+	mem := map[[32]byte][]byte{}
+	root, canon, err := s.spliceConstruct(nd.obj.man, src, g.pol.ReserveFreeBytes, mem, s.rep.hardCodecs.Load(), nil)
+	if err != nil {
+		return nil, err
+	}
+	canon.close()
+	if root.Rep != planned.Rep || canon.SHA != dsha {
+		return nil, errors.New("splice re-construction differs from the plan")
+	}
+	return root, s.repStageMem(root, mem)
+}
+
+// repStageMem writes a planning build's closure (components the store lacks) as durable CAS content.
+func (s *Store) repStageMem(root *repRoot, mem map[[32]byte][]byte) error {
+	cl, err := s.repClosureMem(root, mem)
+	if err != nil {
+		return err
+	}
+	b := s.newCASBatch()
+	defer b.Abort()
+	for _, c := range cl.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256)
+		if n, err := s.casStat(sum); err == nil && n == c.Length {
+			continue
+		}
+		data, ok := mem[sum]
+		if !ok || int64(len(data)) != c.Length {
+			return fmt.Errorf("%w: component %x of the plan is not held", errAuthMismatch, sum[:6])
+		}
+		if got, err := b.Add(data); err != nil || got != sum {
+			return cmp.Or(err, fmt.Errorf("%w: staged component digest", errAuthMismatch))
+		}
+	}
+	return b.Flush()
 }
 
 // =============================================================================
@@ -77742,7 +78866,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != agFeature && x != authExeFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != agFeature && x != authExeFeature && x != spliceFeature {
 			return x
 		}
 	}
@@ -77774,7 +78898,7 @@ func (s *Store) authRecordFeatures(rec *authRecord) ([]string, error) {
 		for _, f := range []struct {
 			on   bool
 			name string
-		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}, {need.exe, authExeFeature}} {
+		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}, {need.exe, authExeFeature}, {need.splice, spliceFeature}} {
 			if f.on {
 				out = append(out, f.name)
 			}
@@ -86255,6 +87379,7 @@ type repReplayNeeds struct {
 	reach        bool // a zstd recipe carries the per-block model reach (after its seek index)
 	canon        bool // B8: body references or ZIP representations
 	exe          bool // B9: normalized executable representations
+	splice       bool // B10: deep canonical streams (kind 16)
 }
 
 func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
@@ -86283,6 +87408,8 @@ func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
 		}
 		need.canon = need.canon || obj.Kind == repKindZip
 		need.exe = need.exe || obj.Kind == repKindExe
+		need.splice = need.splice || obj.Kind == repKindSplice
+		need.hard = need.hard || obj.Kind == repKindSplice && splNeedsHard(env, id, obj)
 		switch obj.Kind {
 		case repKindGzip:
 			g, err := gzipRecipe(obj)
@@ -86316,7 +87443,7 @@ func repFloorOf(env *repEnv, reach *repReach) (int, error) {
 			return 0, err
 		}
 		switch obj.Kind {
-		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd, repKindZip, repKindExe: // zip, exe: gated by the authority features "canon", "exenorm"
+		case repKindConcat, repKindCAR, repKindSQLite, repKindGit, repKindMerkle, repKindGzip, repKindZstd, repKindZip, repKindExe, repKindSplice: // zip, exe, splice: gated by the authority features "canon", "exenorm", "splice"
 		case repKindModel:
 			floor = max(floor, storeFormatVersionModel)
 		case repKindSST, repKindParquet:
