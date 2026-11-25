@@ -85,6 +85,7 @@ producer's run-specific bytes.
   --families package oci tensor shift entropy coreutils lodash --profiles plain archive archive-delta --repetitions 1
 "$P" local_s3.py "$W" "$W/s3-codecs.jsonl" --lane histories --systems zeros3 \
   --families parquet sst --profiles plain archive archive-delta --repetitions 1
+"$P" backup.py "$W" "$W/backup-codecs.jsonl" --families parquet sst --repetitions 1
 "$P" backup.py "$W" "$W/backup-kopia-zstd.jsonl" --systems kopia --kopia-compression zstd-fastest
 "$P" local_xet.py "$W" "$W/openxet-no-chunk-cache" "$W/xet-local-no-chunk-cache.jsonl" --chunk-cache-mib 0
 "$P" xet_comparison.py "$W" "$W/zeros3-xet-trace.jsonl"

@@ -52,6 +52,7 @@ writes to disk, and its timing is presented separately from S3 GET.
 Single-run archive cut tensors to 2.11 MiB versus 2.34 for generic deltas,
 but grew lodash from 0.98 to 4.48 MiB versus default CDC. Generic deltas
 matched archive on SST and used 1.92 MiB versus archive's 2.50 on Parquet.
+Restic retained 1.84 MiB on Parquet and 6.24 MiB on SST in these diagnostics.
 [Full tables](results/tables.md) · [Storage and timing chart](results/history-tradeoffs.png)
 
 ## Xet
