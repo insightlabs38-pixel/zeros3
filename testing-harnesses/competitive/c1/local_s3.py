@@ -21,6 +21,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from corpus import FAMILIES, MIB, blob
+from external_corpus import FAMILIES as EXTERNAL_FAMILIES
 
 PORT = 19800
 BUCKET = "c1-bench"
@@ -352,7 +353,7 @@ def main():
     parser.add_argument("work", type=Path)
     parser.add_argument("result", type=Path)
     parser.add_argument("--systems", nargs="+", choices=SYSTEMS, default=SYSTEMS)
-    parser.add_argument("--families", nargs="+", choices=(*FAMILIES, "combined"), default=FAMILIES)
+    parser.add_argument("--families", nargs="+", choices=(*FAMILIES, *EXTERNAL_FAMILIES, "combined"), default=FAMILIES)
     parser.add_argument("--lane", choices=("requests", "histories"), required=True)
     parser.add_argument("--profiles", nargs="+", default=["plain", "archive", "mixed", "hot", "structured"])
     parser.add_argument("--repetitions", type=int, choices=(1, 2, 3), default=3)

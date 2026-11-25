@@ -13,3 +13,6 @@ original result files and are reported as diagnostics.
   structural representations disabled. Keep the same input, bases, depth,
   grouping, storage accounting and restore checks. The base CDC lane
   identifies savings shared by the two offline optimizers.
+- Add independent Coreutils source and lodash npm release histories. Pin
+  downloaded artifact URLs and SHA-256 before comparison. Analyze separately
+  from the unchanged 12-family synthetic composite.

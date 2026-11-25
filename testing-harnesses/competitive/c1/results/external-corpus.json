@@ -1,0 +1,128 @@
+[
+  {
+    "path": "coreutils/0/src/cat.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.3/src/cat.c",
+    "bytes": 23902,
+    "sha256": "b2fa9b197b75adfc3664deeb2ea02ea210d57bd06f6089cdc74af727a6d95da8"
+  },
+  {
+    "path": "coreutils/0/src/cp.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.3/src/cp.c",
+    "bytes": 41799,
+    "sha256": "33068b6939e519c1ec18861f5de2f39b6004ed041ef5ee456cbb9a6079e715f4"
+  },
+  {
+    "path": "coreutils/0/src/copy.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.3/src/copy.c",
+    "bytes": 125337,
+    "sha256": "c19afb5dc625880db0281221587e817de2d9f5912fc0ccb6da4e13377f49dc08"
+  },
+  {
+    "path": "coreutils/0/src/ls.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.3/src/ls.c",
+    "bytes": 170536,
+    "sha256": "d56d36bc12eadbb9e4eac3922316ae21e692a2124d4f089571ef7368914ed7b9"
+  },
+  {
+    "path": "coreutils/0/src/sort.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.3/src/sort.c",
+    "bytes": 147228,
+    "sha256": "5f55cfcf28d2485affb37f3200e9fd3d5bfa960ba70381ba101ea8b04edcee27"
+  },
+  {
+    "path": "coreutils/0/src/wc.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.3/src/wc.c",
+    "bytes": 31471,
+    "sha256": "74d7a405dcfafb5a2a5201c6eb501dceb9e1b4b5446aa7d241c72d57d731e8dd"
+  },
+  {
+    "path": "coreutils/1/src/cat.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.4/src/cat.c",
+    "bytes": 23810,
+    "sha256": "f52880ce866aa8f95d5830851054755d9d58e0e750905632e2db0a0378726983"
+  },
+  {
+    "path": "coreutils/1/src/cp.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.4/src/cp.c",
+    "bytes": 42871,
+    "sha256": "ce5e0a085c4b36a02538d4e916ddcc441073d00601a4c46e0c8e6030df8237ca"
+  },
+  {
+    "path": "coreutils/1/src/copy.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.4/src/copy.c",
+    "bytes": 126055,
+    "sha256": "2dbc888a8e20203f87108d96fea7c35e6d2d1404b3b1405a1b8123467641f8dd"
+  },
+  {
+    "path": "coreutils/1/src/ls.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.4/src/ls.c",
+    "bytes": 169687,
+    "sha256": "a8b6e1cb4ad4cbf20280a7fdcee7baee5bf377dd375d8411da61a9771d64ae98"
+  },
+  {
+    "path": "coreutils/1/src/sort.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.4/src/sort.c",
+    "bytes": 147323,
+    "sha256": "b66f95276c54f7872a214d0f63b6323909b36fecc8fe476dfa0554acd2883e3c"
+  },
+  {
+    "path": "coreutils/1/src/wc.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.4/src/wc.c",
+    "bytes": 30659,
+    "sha256": "b659507f9873b5e92eacb112c32ee9eb172756d90e16e3a970b6275473a41816"
+  },
+  {
+    "path": "coreutils/2/src/cat.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.5/src/cat.c",
+    "bytes": 23789,
+    "sha256": "5433b048830dafd99d67c04f847ca1ee732f76c817c594776b4b0d9a911f4e1c"
+  },
+  {
+    "path": "coreutils/2/src/cp.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.5/src/cp.c",
+    "bytes": 43444,
+    "sha256": "a248c9ae1e7d633c737f81b82732278913e71fc5da126365f65b66fe5c810f67"
+  },
+  {
+    "path": "coreutils/2/src/copy.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.5/src/copy.c",
+    "bytes": 126367,
+    "sha256": "20c0198320200e678ce71194450b1e23715032e393e3681bff970f596696e9f9"
+  },
+  {
+    "path": "coreutils/2/src/ls.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.5/src/ls.c",
+    "bytes": 169997,
+    "sha256": "1c21d6419a8ea1595c4156b9d7ed2fa11f1753d3251dcdfd4c41c78300872d94"
+  },
+  {
+    "path": "coreutils/2/src/sort.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.5/src/sort.c",
+    "bytes": 148854,
+    "sha256": "e58ccf9a37d0790a82140f6c3dd39135ddbf708664994f4dd3b062929269b30c"
+  },
+  {
+    "path": "coreutils/2/src/wc.c",
+    "url": "https://raw.githubusercontent.com/coreutils/coreutils/v9.5/src/wc.c",
+    "bytes": 29801,
+    "sha256": "67367bc868612b5abcc94c73ac73fafc1c6116ed4841d27b8e090f13814aad2a"
+  },
+  {
+    "path": "lodash/0/lodash.tgz",
+    "url": "https://registry.npmjs.org/lodash/-/lodash-4.17.19.tgz",
+    "bytes": 315311,
+    "sha256": "d36e4d3da7ef0b9d6a60d1a9ca49d0acfe2213041b0ad56373176922255e415f"
+  },
+  {
+    "path": "lodash/1/lodash.tgz",
+    "url": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",
+    "bytes": 316680,
+    "sha256": "d2aa8c6afc3c8591765785a37d1c5acae482a8eb3ab9729ed28922692454f2e2"
+  },
+  {
+    "path": "lodash/2/lodash.tgz",
+    "url": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+    "bytes": 318961,
+    "sha256": "6a087ac9e5702a0c9d60fbcd48696012646ec8df1491dea472b150e79fcaf804"
+  }
+]
