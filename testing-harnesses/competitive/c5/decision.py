@@ -43,7 +43,7 @@ def main():
     metrics = {system: {op: {
         "operations_per_second": median(x["operations"] / x["seconds"] for x in values),
         "median_p99_ms": median(x["p99_ms"] for x in values) if values[0]["p99_ms"] else None,
-        "median_cpu_seconds": median(x["server_cpu_seconds"] for x in values),
+        "median_cpu_seconds": median(x["cpu_seconds"] for x in values),
     } for op, values in by_op.items()} for system, by_op in request.items()}
     sensitivity = {}
     for family, values in storage.items():
