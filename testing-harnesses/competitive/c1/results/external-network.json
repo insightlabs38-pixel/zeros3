@@ -1,0 +1,7 @@
+{
+  "network": "Execution environment HTTPS proxy. The tests use different service destinations.",
+  "upload": {"target": "speed.cloudflare.com", "http_status": 200, "bytes": 2097152, "bytes_per_second": 22814969, "seconds": 0.091920},
+  "download": {"target": "speed.cloudflare.com", "http_status": 200, "bytes": 8388608, "bytes_per_second": 38117041, "seconds": 0.220075},
+  "samples_per_direction": 1,
+  "collected_local_date": "2026-11-24"
+}

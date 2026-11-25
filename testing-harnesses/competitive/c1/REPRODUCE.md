@@ -23,7 +23,7 @@ cmp "$W/corpus.json" results/corpus.json
 cp results/external-corpus.json "$W/external-corpus.json"
 "$P" external_corpus.py "$W/corpus" "$W/external-corpus.json"
 ./install.sh "$W" rustfs weed garage restic borg kopia
-(cd "$W" && awk '$2 ~ /^bin\// {print}' "$OLDPWD/results/binaries.sha256" | sha256sum -c -)
+(cd "$W" && awk '$2 ~ /^bin\/(rustfs|weed|garage|restic|borg|kopia)$/ {print}' "$OLDPWD/results/binaries.sha256" | sha256sum -c -)
 ```
 
 Result files below require fresh destinations. These commands use the

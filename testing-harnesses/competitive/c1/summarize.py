@@ -19,7 +19,10 @@ def spread(values):
 
 def requests():
     trials = defaultdict(list)
-    for row in load("s3-requests") + load("minio-requests"):
+    all_rows = load("s3-requests") + load("minio-requests")
+    for row in load("seaweed-8-volumes"):
+        all_rows.append({**row, "system": "seaweed (8 volumes)"})
+    for row in all_rows:
         if row["phase"] != "requests" or row["status"] != "verified":
             continue
         trials[row["system"], row["operation"], row["concurrency"]].append(row)
@@ -39,7 +42,8 @@ def requests():
 def histories():
     trials = defaultdict(list)
     for name in ("backup-combined", "s3-history-combined", "s3-history-families",
-                 "backup-families", "minio-history"):
+                 "backup-families", "backup-kopia-zstd", "minio-history",
+                 "s3-codecs", "backup-codecs"):
         for row in load(name):
             trials[row["system"], row["family"], row.get("profile", "snapshot"),
                    row["repetition"]].append(row)
@@ -70,7 +74,10 @@ def histories():
 
 
 def xet():
-    for k, title in (("xet-local", "OpenXet loopback"), ("xet-hosted", "Hugging Face hosted")):
+    for k, title in (("xet-local", "OpenXet loopback"),
+                     ("xet-local-repeat", "OpenXet loopback repeat"),
+                     ("xet-local-no-chunk-cache", "OpenXet without the client chunk cache"),
+                     ("xet-hosted", "Hugging Face hosted")):
         rows = load(k)
         if not rows:
             continue
@@ -82,7 +89,7 @@ def xet():
         for row in rows:
             if "seconds" in row:
                 print(f"| {row['resource']} | {row['phase']} | {row['case'] or '—'} | "
-                      f"{row['status']} | {row['seconds']:.3f} | {row['logical_bytes'] / MIB:.3f} | "
+                      f"{row.get('http_status') or row['status']} | {row['seconds']:.3f} | {row['logical_bytes'] / MIB:.3f} | "
                       f"{row.get('interface_tx_bytes', 0) / 1024:.1f} | "
                       f"{row.get('interface_rx_bytes', 0) / 1024:.1f} |")
 

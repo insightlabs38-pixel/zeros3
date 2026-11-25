@@ -1,0 +1,7 @@
+{"phase": "loopback-tcp", "throughput_mib_s": [2958.5640849619917, 4944.590837816103, 5020.824260865201]}
+{"phase": "range", "system": "garage", "mode": "keepalive", "p50_ms": 44.0161880001142, "minimum_ms": 43.701738999970985, "maximum_ms": 49.93649099992581, "operations": 30}
+{"phase": "range", "system": "garage", "mode": "fresh-connection", "p50_ms": 2.0076839999774165, "minimum_ms": 1.794493000033981, "maximum_ms": 2.1471949999067874, "operations": 30}
+{"phase": "range", "system": "garage", "mode": "quickack", "p50_ms": 44.004154500044024, "minimum_ms": 43.78508499985401, "maximum_ms": 48.46477299997787, "operations": 30}
+{"phase": "range", "system": "zeros3", "mode": "keepalive", "p50_ms": 0.14997099992797303, "minimum_ms": 0.11019599992323492, "maximum_ms": 0.19875899988619494, "operations": 30}
+{"phase": "range", "system": "zeros3", "mode": "fresh-connection", "p50_ms": 0.3444284999432057, "minimum_ms": 0.2008819999446132, "maximum_ms": 0.6088769998768839, "operations": 30}
+{"phase": "range", "system": "zeros3", "mode": "quickack", "p50_ms": 0.1182280000193714, "minimum_ms": 0.0925599999845872, "maximum_ms": 0.15924900003483344, "operations": 30}
