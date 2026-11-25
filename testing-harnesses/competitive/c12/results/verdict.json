@@ -1,0 +1,13 @@
+{
+  "batch": 12,
+  "outcome": "C12_RESEARCH_ONLY",
+  "production_baseline": "498bf8e",
+  "lab_checkpoint": "9202f2c",
+  "aligned_xor": "RESEARCH_ONLY",
+  "anchor_xor": "RESEARCH_ONLY",
+  "packed_streams": "KILL",
+  "exact_fresh_process_restores": 131,
+  "exact_lab_ranges": 9728,
+  "volume_shifted_patch_allocated_bytes": {"xd": 32768, "xor": 1564672, "anchor_xor": 28672},
+  "promoted_format": false
+}
