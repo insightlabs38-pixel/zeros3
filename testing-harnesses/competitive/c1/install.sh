@@ -36,8 +36,19 @@ for system in "$@"; do
       fetch https://garagehq.deuxfleurs.fr/_releases/v2.2.0/x86_64-unknown-linux-musl/garage "$work/bin/garage"
       ;;
     minio)
-      GOCACHE="$work/minio-go-build" GOMODCACHE="$work/minio-go-mod" GOBIN="$work/bin" \
-        "${C1_GO:-go}" install -p 2 github.com/minio/minio@v0.0.0-20250907161309-07c3a429bfed
+      (
+        export GOCACHE="$work/minio-go-build" GOMODCACHE="$work/minio-go-mod"
+        export GODEBUG=http2client=0
+        go_compiler=${C1_GO:-go}
+        module=github.com/minio/minio@v0.0.0-20250907161309-07c3a429bfed
+        source_dir=$("$go_compiler" mod download -json "$module" |
+          python3 -c 'import json, sys; print(json.load(sys.stdin)["Dir"])')
+        mkdir "$work/minio-source"
+        cp -a "$source_dir/." "$work/minio-source/"
+        chmod -R u+w "$work/minio-source"
+        cd "$work/minio-source"
+        "$go_compiler" build -p 2 -buildvcs=false -o "$work/bin/minio" .
+      )
       ;;
     openxet)
       CARGO_TARGET_DIR="$work/openxet-build" "${C1_CARGO:-cargo}" install --jobs 2 \

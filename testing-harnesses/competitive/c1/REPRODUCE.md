@@ -55,8 +55,11 @@ unmeasured. Hosted runs leave the two authorized public resources in place.
 ```
 
 For OpenXet, install Rust 1.97 or later in isolated scratch, point
-`C1_CARGO` at Cargo, and use the pinned source revision. MinIO has a
-separate source-build route after the archived binary returned HTTP 410.
+`C1_CARGO` at Cargo, and use the pinned source revision. MinIO was built from
+`07c3a429bfed433e49018cb0f78a52145d4bedeb` after the archived binary returned
+HTTP 410 and the Go installer stalled in the module proxy. Go 1.27.0 stamped
+the source build as DEVELOPMENT.GOGET. Its SHA-256 records the tested
+binary. MinIO repetitions ran separately after it became available.
 
 ```bash
 ./install.sh "$W" openxet
