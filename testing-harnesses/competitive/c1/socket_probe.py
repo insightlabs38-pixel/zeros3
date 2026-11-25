@@ -8,10 +8,12 @@ import shutil
 import socket
 from statistics import median
 import time
-from urllib.parse import urlsplit
+from botocore.auth import S3SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.credentials import Credentials
 
 from corpus import MIB, blob
-from local_s3 import BUCKET, put, server
+from local_s3 import BUCKET, KEY, PORT, SECRET, put, server
 
 
 def loopback():
@@ -39,12 +41,12 @@ def loopback():
     return 128 / (time.perf_counter() - start)
 
 
-def range_samples(api, key, expected, mode):
-    url = urlsplit(api.generate_presigned_url("get_object", Params={
-        "Bucket": BUCKET, "Key": key, "Range": "bytes=32-287",
-    }, ExpiresIn=60))
-    path = url.path + "?" + url.query
-    conn = HTTPConnection(url.hostname, url.port, timeout=10)
+def range_samples(key, expected, mode):
+    path = f"/{BUCKET}/{key}"
+    request = AWSRequest(method="GET", url=f"http://127.0.0.1:{PORT}{path}",
+                         headers={"Range": "bytes=32-287"})
+    S3SigV4Auth(Credentials(KEY, SECRET), "s3", "us-east-1").add_auth(request)
+    conn = HTTPConnection("127.0.0.1", PORT, timeout=10)
     timings = []
     try:
         for i in range(35):
@@ -53,12 +55,14 @@ def range_samples(api, key, expected, mode):
                 conn.connect()
             if mode == "quickack":
                 conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
-            headers = {"Range": "bytes=32-287"}
+            headers = dict(request.headers.items())
             if mode == "fresh-connection":
                 headers["Connection"] = "close"
             conn.request("GET", path, headers=headers)
             response = conn.getresponse()
-            assert response.status == 206 and response.read() == expected
+            actual = response.read()
+            if response.status != 206 or actual != expected:
+                raise ValueError(f"expected matching 206 range, got {response.status} with {len(actual)} bytes")
             if i >= 5:
                 timings.append((time.perf_counter() - start) * 1000)
     finally:
@@ -83,7 +87,7 @@ def main():
                     put(api, "one", data)
                     for mode in ("keepalive", "fresh-connection", "quickack"):
                         print(json.dumps({"phase": "range", "system": name, "mode": mode,
-                                          **range_samples(api, "one", data[32:288], mode)}), file=out)
+                                          **range_samples("one", data[32:288], mode)}), file=out)
             except Exception as exc:
                 print(json.dumps({"phase": "error", "system": name, "error": str(exc)}), file=out)
             finally:

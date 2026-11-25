@@ -15,6 +15,7 @@ def main():
     parser.add_argument("work", type=Path)
     parser.add_argument("scratch", type=Path)
     parser.add_argument("result", type=Path)
+    parser.add_argument("--chunk-cache-mib", type=int, choices=(0, 64), default=64)
     args = parser.parse_args()
     args.scratch.mkdir(mode=0o700)
     args.store = args.scratch / "store"

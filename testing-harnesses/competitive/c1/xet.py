@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import shutil
 import time
 from urllib.parse import urlparse
@@ -36,7 +37,7 @@ def run(args, token, out):
     os.environ["HF_HUB_VERBOSITY"] = "error"
     os.environ["HF_HOME"] = str(args.scratch / "hf-home")
     os.environ["HF_XET_CACHE"] = str(args.scratch / "xet")
-    os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = str(64 * MIB)
+    os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = str(args.chunk_cache_mib * MIB)
     os.environ["HF_XET_SHARD_CACHE_SIZE_LIMIT"] = str(64 * MIB)
     os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = "4"
     os.environ["HF_XET_LOG_DEST"] = str(args.scratch / "xet-log")
@@ -70,6 +71,11 @@ def run(args, token, out):
             status = "error"
             info = {"error_type": type(error).__name__,
                     "http_status": getattr(getattr(error, "response", None), "status_code", None)}
+            if args.store:
+                message = str(error).replace(token, "[token]")
+                message = re.sub(r'https?://[^\s\]\)"]+', "[url]", message)
+                info["local_error"] = re.sub(r"(?:oxt|hf)_[A-Za-z0-9_-]+",
+                                             "[token]", message)[:700]
         after = resource.getrusage(resource.RUSAGE_SELF)
         elapsed = time.monotonic() - started
         network = counter(args.interface)
@@ -170,6 +176,7 @@ def main():
     parser.add_argument("--resources", choices=("bucket", "dataset"), nargs="+",
                         default=["bucket", "dataset"])
     parser.add_argument("--interface")
+    parser.add_argument("--chunk-cache-mib", type=int, choices=(0, 64), default=64)
     parser.add_argument("--store", type=Path)
     args = parser.parse_args()
     endpoint = urlparse(args.endpoint)

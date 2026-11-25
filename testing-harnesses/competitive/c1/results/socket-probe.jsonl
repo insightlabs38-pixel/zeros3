@@ -1,0 +1,3 @@
+{"phase": "loopback-tcp", "throughput_mib_s": [3804.6631259029004, 4808.845751522914, 3457.3311450784963]}
+{"phase": "error", "system": "garage", "error": ""}
+{"phase": "error", "system": "zeros3", "error": ""}
