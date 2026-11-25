@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC10Read-2   	       4	 976218045 ns/op	   4.28 MB/s	91393542 B/op	   34981 allocs/op
+--- BENCH: BenchmarkC10Read-2
+    read_test.go:24: authority form 2 with 1 bases
+    read_test.go:24: authority form 2 with 1 bases
+PASS
+File: read.test
+Build ID: ae76ea7f87d62da1a6fa59e395474e66b72368d6
+Type: cpu
+Time: 2026-11-25 14:30:00 EST
+Duration: 4.87s, Total samples = 8.71s (178.69%)
+Showing nodes accounting for 8.15s, 93.57% of 8.71s total
+Dropped 113 nodes (cum <= 0.04s)
+Showing top 18 nodes out of 63
+      flat  flat%   sum%        cum   cum%
+     5.95s 68.31% 68.31%      6.75s 77.50%  zeros3.(*repIRwindow).search
+     0.48s  5.51% 73.82%      0.59s  6.77%  zeros3.(*repIRwindow).insertTo
+     0.44s  5.05% 78.87%      0.45s  5.17%  zeros3.repIRmatchLen
+     0.21s  2.41% 81.29%      0.22s  2.53%  zeros3.(*repDFbitWriter).put
+     0.18s  2.07% 83.35%      0.18s  2.07%  runtime.memmove
+     0.17s  1.95% 85.30%      7.19s 82.55%  zeros3.(*repIRpredictor).token
+     0.10s  1.15% 86.45%      0.14s  1.61%  compress/flate.(*decompressor).huffSym
+     0.10s  1.15% 87.60%      0.10s  1.15%  crypto/internal/fips140/sha256.blockSHANI
+     0.10s  1.15% 88.75%      0.10s  1.15%  zeros3.repIRhashAt (inline)
+     0.09s  1.03% 89.78%      0.27s  3.10%  zeros3.repIRReconstructStream.func4
+     0.05s  0.57% 90.36%      0.05s  0.57%  bytes.(*Reader).ReadByte
+     0.05s  0.57% 90.93%      0.05s  0.57%  zeros3.repIRdistCodeOf (inline)
+     0.04s  0.46% 91.39%      0.21s  2.41%  compress/flate.(*decompressor).huffmanBlock
+     0.04s  0.46% 91.85%      7.60s 87.26%  zeros3.(*repIRpredictor).decodeUnit
+     0.04s  0.46% 92.31%      0.65s  7.46%  zeros3.repIRReconstructStream
+     0.04s  0.46% 92.77%      0.29s  3.33%  zeros3.repIRReconstructStream.func1
+     0.04s  0.46% 93.23%      0.05s  0.57%  zeros3.repIRlengthCode (inline)
+     0.03s  0.34% 93.57%      0.25s  2.87%  zeros3.(*repDFStreamWriter).Token

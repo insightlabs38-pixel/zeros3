@@ -1,14 +1,67 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 )
+
+func TestC10ConcurrentRead(t *testing.T) {
+	key, fixture := os.Getenv("C10_KEY"), os.Getenv("C10_SOURCE")
+	if fixture == "" {
+		t.Skip("requires a finalized canonical gzip fixture")
+	}
+	want, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(os.Getenv("C10_STORE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, man, err := store.HeadObject("frontier", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := store.authLoadFromManifestForC10(man)
+	if err != nil || rec == nil || rec.Form != authFormRep || len(rec.Bases) != 1 {
+		t.Fatalf("fixture has no canonical representation: %v", err)
+	}
+	whole := byteRange{0, int64(len(want)) - 1}
+	var workers sync.WaitGroup
+	for range 4 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for _, span := range []byteRange{whole, {1024, 5119}, {2048, 6143}} {
+				reader := store.openObjectReader(man, span)
+				var got []byte
+				for {
+					piece, err := reader.next()
+					got = append(got, piece...)
+					if err != nil {
+						if err != io.EOF {
+							t.Errorf("exact read %v: %v", span, err)
+						}
+						break
+					}
+				}
+				reader.close()
+				if !bytes.Equal(got, want[span.start:span.end+1]) {
+					t.Errorf("different bytes at %v", span)
+				}
+			}
+		}()
+	}
+	workers.Wait()
+}
 
 func BenchmarkC10Read(b *testing.B) {
 	store, err := OpenStore(os.Getenv("C10_STORE"))

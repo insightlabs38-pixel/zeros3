@@ -1,0 +1,76 @@
+=== RUN   TestB8CanonicalCrossFormat
+=== RUN   TestB8CanonicalCrossFormat/sequential_gzip
+--- PASS: TestB8CanonicalCrossFormat (13.92s)
+    --- PASS: TestB8CanonicalCrossFormat/sequential_gzip (0.12s)
+=== RUN   TestC2StructuredDeltaBasesUseNativeRanges
+=== RUN   TestC2StructuredDeltaBasesUseNativeRanges/testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet
+=== RUN   TestC2StructuredDeltaBasesUseNativeRanges/testdata/p7/rocksdb_lz4_small.sst
+--- PASS: TestC2StructuredDeltaBasesUseNativeRanges (0.02s)
+    --- PASS: TestC2StructuredDeltaBasesUseNativeRanges/testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet (0.02s)
+    --- PASS: TestC2StructuredDeltaBasesUseNativeRanges/testdata/p7/rocksdb_lz4_small.sst (0.00s)
+=== RUN   TestC2SpliceWindowReuseAndExactFailure
+--- PASS: TestC2SpliceWindowReuseAndExactFailure (0.00s)
+=== RUN   TestRepCodecSeekableRanges
+=== RUN   TestRepCodecSeekableRanges/sequential
+=== RUN   TestRepCodecSeekableRanges/sequential/fx_repeat_tables.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/go-speed.gz
+=== RUN   TestRepCodecSeekableRanges/sequential/text.l9.gz
+=== RUN   TestRepCodecSeekableRanges/sequential/text.l3.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/reach.l9w23.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/reach.l19.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/skip_concat.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/ref157_json.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/nested.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/text.l6.gz
+=== RUN   TestRepCodecSeekableRanges/sequential/text.l19.zst
+=== RUN   TestRepCodecSeekableRanges/sequential/reach.l3.zst
+=== RUN   TestRepCodecSeekableRanges/parallel
+=== RUN   TestRepCodecSeekableRanges/parallel/skip_concat.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/fx_repeat_tables.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/ref157_json.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/go-speed.gz
+=== RUN   TestRepCodecSeekableRanges/parallel/text.l6.gz
+=== RUN   TestRepCodecSeekableRanges/parallel/text.l9.gz
+=== RUN   TestRepCodecSeekableRanges/parallel/reach.l3.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/reach.l19.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/nested.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/text.l3.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/text.l19.zst
+=== RUN   TestRepCodecSeekableRanges/parallel/reach.l9w23.zst
+--- PASS: TestRepCodecSeekableRanges (84.16s)
+    --- PASS: TestRepCodecSeekableRanges/sequential (37.59s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/fx_repeat_tables.zst (0.08s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/go-speed.gz (0.03s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/text.l9.gz (0.82s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/text.l3.zst (0.37s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/reach.l9w23.zst (14.25s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/reach.l19.zst (9.95s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/skip_concat.zst (0.00s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/ref157_json.zst (0.16s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/nested.zst (0.06s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/text.l6.gz (0.70s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/text.l19.zst (0.20s)
+        --- PASS: TestRepCodecSeekableRanges/sequential/reach.l3.zst (10.97s)
+    --- PASS: TestRepCodecSeekableRanges/parallel (46.57s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/skip_concat.zst (0.00s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/fx_repeat_tables.zst (0.07s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/ref157_json.zst (0.18s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/go-speed.gz (0.04s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/text.l6.gz (0.79s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/text.l9.gz (0.85s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/reach.l3.zst (12.30s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/reach.l19.zst (12.53s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/nested.zst (0.05s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/text.l3.zst (0.46s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/text.l19.zst (0.25s)
+        --- PASS: TestRepCodecSeekableRanges/parallel/reach.l9w23.zst (19.05s)
+=== RUN   TestRepCodecSeekIndexIntegrity
+=== RUN   TestRepCodecSeekIndexIntegrity/text.l9.gz
+=== RUN   TestRepCodecSeekIndexIntegrity/text.l3.zst
+--- PASS: TestRepCodecSeekIndexIntegrity (0.24s)
+    --- PASS: TestRepCodecSeekIndexIntegrity/text.l9.gz (0.13s)
+    --- PASS: TestRepCodecSeekIndexIntegrity/text.l3.zst (0.10s)
+=== RUN   TestAuthoritySeekableCodecReplay
+--- PASS: TestAuthoritySeekableCodecReplay (1.96s)
+PASS
+ok  	zeros3	100.310s

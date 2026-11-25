@@ -1,0 +1,14 @@
+{
+  "batch": 10,
+  "outcome": "C10_SPECIALIZED",
+  "baseline": "3cf73e37205c98525686fbf470756dc4a2e46c66",
+  "tested_read_checkpoint": "9208500a300be6ca07d8c74aecc0a24e36ddd185",
+  "sequential_gzip": "SPECIALIZED",
+  "predictor_early_exit": "KILL",
+  "whole_cpu_us_per_compressed_byte_typescript": {"c9": 0.51, "c10": 0.40},
+  "whole_cpu_ms_per_object_httpx_canonical": {"c9": 51.67, "c10": 50.00},
+  "typescript_allocated_bytes": {"cdc": 12689408, "canonical": 5296128, "deep": 5296128},
+  "coverage": {"lifecycle": "pass", "focused_race": "pass", "broader_race": "timeout in optimizer"},
+  "known_limits": ["ambient kernel cache", "insufficient whole observations for p99",
+    "cost anchors are workload-specific", "predictor CPU remains dominant"]
+}

@@ -1,0 +1,4 @@
+=== RUN   TestC10ConcurrentRead
+--- PASS: TestC10ConcurrentRead (2.04s)
+PASS
+ok  	zeros3	3.061s

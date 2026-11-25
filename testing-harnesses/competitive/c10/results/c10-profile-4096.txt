@@ -1,0 +1,35 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC10Read-2   	       4	  17894152 ns/op	   0.23 MB/s	 3239176 B/op	     798 allocs/op
+--- BENCH: BenchmarkC10Read-2
+    read_test.go:24: authority form 2 with 1 bases
+    read_test.go:24: authority form 2 with 1 bases
+PASS
+File: read.test
+Build ID: ae76ea7f87d62da1a6fa59e395474e66b72368d6
+Type: cpu
+Time: 2026-11-25 14:30:05 EST
+Duration: 96.53ms, Total samples = 100ms (103.59%)
+Showing nodes accounting for 100ms, 100% of 100ms total
+Showing top 18 nodes out of 43
+      flat  flat%   sum%        cum   cum%
+      50ms 50.00% 50.00%       60ms 60.00%  zeros3.(*repIRwindow).search
+      20ms 20.00% 70.00%       20ms 20.00%  compress/flate.(*decompressor).huffSym
+      10ms 10.00% 80.00%       10ms 10.00%  runtime.getGCMaskOnDemand
+      10ms 10.00% 90.00%       10ms 10.00%  runtime.memmove
+      10ms 10.00%   100%       10ms 10.00%  zeros3.repIRmatchLen
+         0     0%   100%       20ms 20.00%  compress/flate.(*decompressor).Read
+         0     0%   100%       20ms 20.00%  compress/flate.(*decompressor).huffmanBlock
+         0     0%   100%       10ms 10.00%  compress/flate.(*decompressor).nextBlock
+         0     0%   100%       20ms 20.00%  io.ReadAtLeast
+         0     0%   100%       20ms 20.00%  io.ReadFull
+         0     0%   100%       10ms 10.00%  runtime.gcBgMarkWorker
+         0     0%   100%       10ms 10.00%  runtime.gcBgMarkWorker.func2
+         0     0%   100%       10ms 10.00%  runtime.gcDrain
+         0     0%   100%       10ms 10.00%  runtime.gcDrainMarkWorkerFractional (inline)
+         0     0%   100%       10ms 10.00%  runtime.getGCMask (inline)
+         0     0%   100%       10ms 10.00%  runtime.growslice
+         0     0%   100%       10ms 10.00%  runtime.scanObject
+         0     0%   100%       10ms 10.00%  runtime.systemstack

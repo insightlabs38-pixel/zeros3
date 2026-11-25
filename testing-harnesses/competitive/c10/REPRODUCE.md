@@ -39,6 +39,16 @@ export ZEROS3_GZIP_SEQUENTIAL=1
   1/package.tgz worktree
 ```
 
+Reuse that standalone profiling directory to run the race check against the
+already finalized HTTPX lane.
+
+```bash
+(cd "$WORK/c10-profile" &&
+  C10_STORE="$WORK/stores/httpx/canonical/store" C10_KEY=0/source.tar.gz \
+  C10_SOURCE="$CORPUS/httpx/0/source.tar.gz" \
+  GOMAXPROCS=2 go test -race -count=1 -timeout=45s -run '^TestC10ConcurrentRead$')
+```
+
 Profile C9 by passing its commit as the last argument. The baseline ignores
 the sequential flag. To reproduce the early-exit ablation, apply
 `frontier-stop.patch` with `git apply --unidiff-zero` to the C10 replay

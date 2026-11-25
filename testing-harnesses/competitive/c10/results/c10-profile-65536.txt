@@ -1,0 +1,35 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC10Read-2   	       4	  84769921 ns/op	   0.77 MB/s	 5980252 B/op	    1445 allocs/op
+--- BENCH: BenchmarkC10Read-2
+    read_test.go:24: authority form 2 with 1 bases
+    read_test.go:24: authority form 2 with 1 bases
+PASS
+File: read.test
+Build ID: ae76ea7f87d62da1a6fa59e395474e66b72368d6
+Type: cpu
+Time: 2026-11-25 14:30:06 EST
+Duration: 406.18ms, Total samples = 420ms (103.40%)
+Showing nodes accounting for 420ms, 100% of 420ms total
+Showing top 18 nodes out of 90
+      flat  flat%   sum%        cum   cum%
+     190ms 45.24% 45.24%      220ms 52.38%  zeros3.(*repIRwindow).search
+      30ms  7.14% 52.38%       30ms  7.14%  runtime.memclrNoHeapPointers
+      30ms  7.14% 59.52%       30ms  7.14%  runtime.memmove
+      20ms  4.76% 64.29%       20ms  4.76%  internal/runtime/syscall/linux.Syscall6
+      20ms  4.76% 69.05%       40ms  9.52%  zeros3.(*repIRwindow).insertTo
+      20ms  4.76% 73.81%       20ms  4.76%  zeros3.repIRmatchLen
+      10ms  2.38% 76.19%       10ms  2.38%  cmpbody
+      10ms  2.38% 78.57%       10ms  2.38%  compress/flate.(*decompressor).huffSym
+      10ms  2.38% 80.95%       10ms  2.38%  internal/runtime/atomic.(*Uint32).Load
+      10ms  2.38% 83.33%       10ms  2.38%  runtime.(*gcBits).bytep
+      10ms  2.38% 85.71%       10ms  2.38%  runtime.mallocgcSmallNoScanSC4
+      10ms  2.38% 88.10%       10ms  2.38%  runtime.nextFreeFast (inline)
+      10ms  2.38% 90.48%       10ms  2.38%  zeros3.(*authCtx).keepPiece
+      10ms  2.38% 92.86%      370ms 88.10%  zeros3.(*gzTokens).at
+      10ms  2.38% 95.24%       10ms  2.38%  zeros3.(*repIRwindow).headGet (inline)
+      10ms  2.38% 97.62%       10ms  2.38%  zeros3.(*repIRwindow).headSet (inline)
+      10ms  2.38%   100%       10ms  2.38%  zeros3.repIRzlibBlock
+         0     0%   100%       10ms  2.38%  bytes.Compare (inline)
