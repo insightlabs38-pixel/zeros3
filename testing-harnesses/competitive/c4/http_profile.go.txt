@@ -1,0 +1,75 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"math/rand"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+// Run in an isolated copy of the frozen engine with the normal serving path.
+func BenchmarkC4DefaultHTTP(b *testing.B) {
+	for _, operation := range []string{"Sign", "PUT", "GET", "Range", "HEAD"} {
+		b.Run(operation, func(b *testing.B) {
+			store, err := OpenStore(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer store.Close()
+			if err := store.CreateBucket("probe"); err != nil {
+				b.Fatal(err)
+			}
+			creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+			server := NewServer(store, creds, defaultRegion)
+			payload := make([]byte, 65536)
+			rand.New(rand.NewSource(73)).Read(payload)
+			seed := httptest.NewRequest(http.MethodPut, "/probe/body", bytes.NewReader(payload))
+			payloadSum := fmt.Sprintf("%x", sha256.Sum256(payload))
+			if err := signSigV4Request(seed, creds, defaultRegion, payloadSum, time.Now()); err != nil {
+				b.Fatal(err)
+			}
+			initial := httptest.NewRecorder()
+			server.ServeHTTP(initial, seed)
+			if initial.Code != http.StatusOK {
+				b.Fatalf("seed HTTP %d: %s", initial.Code, initial.Body.String())
+			}
+			method, path, digest, contentRange, expected := http.MethodGet, "/probe/body", fmt.Sprintf("%x", sha256.Sum256(nil)), "", 200
+			var body []byte
+			switch operation {
+			case "PUT":
+				method, body, digest = http.MethodPut, payload, payloadSum
+			case "Range":
+				contentRange, expected = "bytes=2048-2559", 206
+			case "HEAD":
+				method = http.MethodHead
+			}
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if method == http.MethodPut {
+					path = fmt.Sprintf("/probe/%d", i)
+				}
+				request := httptest.NewRequest(method, path, bytes.NewReader(body))
+				if contentRange != "" {
+					request.Header.Set("Range", contentRange)
+				}
+				if err := signSigV4Request(request, creds, defaultRegion, digest, time.Now()); err != nil {
+					b.Fatal(err)
+				}
+				if operation == "Sign" {
+					continue
+				}
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, request)
+				if response.Code != expected {
+					b.Fatalf("HTTP %d: %s", response.Code, response.Body.String())
+				}
+			}
+			b.StopTimer()
+		})
+	}
+}

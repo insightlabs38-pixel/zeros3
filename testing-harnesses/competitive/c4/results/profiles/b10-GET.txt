@@ -1,0 +1,86 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC4DefaultHTTP/GET-2         	    1200	     45151 ns/op	  136186 B/op	     137 allocs/op
+PASS
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: cpu
+Time: 2026-11-25 02:14:52 EST
+Duration: 59.48ms, Total samples = 80ms (134.50%)
+Showing nodes accounting for 80ms, 100% of 80ms total
+Showing top 12 nodes out of 47
+      flat  flat%   sum%        cum   cum%
+      20ms 25.00% 25.00%       20ms 25.00%  runtime.spanOf
+      10ms 12.50% 37.50%       10ms 12.50%  runtime.extractHeapBitsSmall
+      10ms 12.50% 50.00%       10ms 12.50%  runtime.madvise
+      10ms 12.50% 62.50%       10ms 12.50%  runtime.step
+      10ms 12.50% 75.00%       10ms 12.50%  runtime.tryDeferToSpanScan
+      10ms 12.50% 87.50%       10ms 12.50%  runtime.typePointers.next
+      10ms 12.50%   100%       10ms 12.50%  strings.Count
+         0     0%   100%       10ms 12.50%  runtime.(*pageAlloc).scavenge
+         0     0%   100%       10ms 12.50%  runtime.(*pageAlloc).scavenge.func1
+         0     0%   100%       10ms 12.50%  runtime.(*pageAlloc).scavengeOne
+         0     0%   100%       10ms 12.50%  runtime.(*scavengerState).init.func2
+         0     0%   100%       10ms 12.50%  runtime.(*scavengerState).run
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: alloc_space
+Time: 2026-11-25 02:14:52 EST
+Showing nodes accounting for 160.25MB, 95.40% of 167.97MB total
+Dropped 32 nodes (cum <= 0.84MB)
+Showing top 12 nodes out of 57
+      flat  flat%   sum%        cum   cum%
+  140.26MB 83.50% 83.50%   140.26MB 83.50%  bytes.growSlice
+    7.83MB  4.66% 88.16%     7.83MB  4.66%  bufio.NewReaderSize
+    2.50MB  1.49% 89.65%     2.50MB  1.49%  net/http.Header.Clone
+    1.50MB  0.89% 90.54%     1.50MB  0.89%  encoding/hex.EncodeToString (inline)
+    1.16MB  0.69% 91.23%     1.16MB  0.69%  runtime/pprof.StartCPUProfile
+       1MB   0.6% 91.83%        1MB   0.6%  internal/bytealg.MakeNoZero
+       1MB   0.6% 92.42%        1MB   0.6%  strings.(*Builder).WriteString (inline)
+       1MB   0.6% 93.02%        1MB   0.6%  net/textproto.MIMEHeader.Set (inline)
+       1MB   0.6% 93.61%        3MB  1.79%  zeros3.hmacSHA256
+       1MB   0.6% 94.21%        4MB  2.38%  zeros3.signSigV4Request
+       1MB   0.6% 94.81%        1MB   0.6%  crypto/internal/fips140/sha256.New (inline)
+       1MB   0.6% 95.40%        2MB  1.19%  crypto/internal/fips140/hmac.New[go.shape.interface { BlockSize int; Reset; Size int; Sum []uint8; Write  }]
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: delay
+Time: 2026-11-25 02:14:52 EST
+Showing nodes accounting for 116.87ms, 100% of 116.87ms total
+Dropped 11 nodes (cum <= 0.58ms)
+Showing top 12 nodes out of 14
+      flat  flat%   sum%        cum   cum%
+  116.87ms   100%   100%   116.87ms   100%  runtime.chanrecv1
+         0     0%   100%    58.98ms 50.47%  main.main
+         0     0%   100%    58.98ms 50.47%  runtime.main
+         0     0%   100%   116.57ms 99.74%  testing.(*B).Run
+         0     0%   100%    56.27ms 48.15%  testing.(*B).doBench
+         0     0%   100%    56.27ms 48.15%  testing.(*B).run
+         0     0%   100%    60.29ms 51.59%  testing.(*B).run1
+         0     0%   100%    57.89ms 49.53%  testing.(*B).run1.func1
+         0     0%   100%   116.57ms 99.74%  testing.(*B).runN
+         0     0%   100%    58.98ms 50.47%  testing.(*M).Run
+         0     0%   100%    56.27ms 48.15%  testing.(*benchState).processBench
+         0     0%   100%    58.68ms 50.21%  testing.runBenchmarks
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: delay
+Time: 2026-11-25 02:14:52 EST
+Showing nodes accounting for 364.26us, 100% of 364.26us total
+Dropped 2 nodes (cum <= 1.82us)
+Showing top 12 nodes out of 45
+      flat  flat%   sum%        cum   cum%
+  364.26us   100%   100%   364.26us   100%  runtime.unlock (partial-inline)
+         0     0%   100%    22.50us  6.18%  bytes.(*Buffer).Write
+         0     0%   100%    22.50us  6.18%  bytes.(*Buffer).grow
+         0     0%   100%    22.50us  6.18%  bytes.growSlice
+         0     0%   100%    22.50us  6.18%  net/http/httptest.(*ResponseRecorder).Write
+         0     0%   100%    11.30us  3.10%  runtime.(*mcache).allocLarge
+         0     0%   100%    11.30us  3.10%  runtime.(*mheap).alloc
+         0     0%   100%    11.30us  3.10%  runtime.(*mheap).alloc.func1
+         0     0%   100%    32.66us  8.97%  runtime.(*mheap).freeSpan (inline)
+         0     0%   100%    32.66us  8.97%  runtime.(*mheap).freeSpan.func1
+         0     0%   100%    11.30us  3.10%  runtime.(*mheap).reclaim
+         0     0%   100%    11.30us  3.10%  runtime.(*mheap).reclaimChunk

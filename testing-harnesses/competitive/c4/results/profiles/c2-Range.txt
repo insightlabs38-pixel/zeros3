@@ -1,0 +1,84 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC4DefaultHTTP/Range-2         	    1200	     15296 ns/op	   14010 B/op	     147 allocs/op
+PASS
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: cpu
+Time: 2026-11-25 02:14:54 EST
+Duration: 23.16ms, Total samples = 40ms (172.67%)
+Showing nodes accounting for 40ms, 100% of 40ms total
+Showing top 12 nodes out of 45
+      flat  flat%   sum%        cum   cum%
+      10ms 25.00% 25.00%       10ms 25.00%  runtime.(*pallocBits).summarize
+      10ms 25.00% 50.00%       10ms 25.00%  runtime.madvise
+      10ms 25.00% 75.00%       10ms 25.00%  runtime.nanotime
+      10ms 25.00%   100%       10ms 25.00%  runtime.tgkill
+         0     0%   100%       10ms 25.00%  bufio.NewReader (inline)
+         0     0%   100%       10ms 25.00%  bufio.NewReaderSize (inline)
+         0     0%   100%       10ms 25.00%  net/http/httptest.NewRequest
+         0     0%   100%       10ms 25.00%  net/http/httptest.NewRequestWithContext
+         0     0%   100%       10ms 25.00%  runtime.(*mcache).nextFree
+         0     0%   100%       10ms 25.00%  runtime.(*mcache).refill
+         0     0%   100%       10ms 25.00%  runtime.(*mcentral).cacheSpan
+         0     0%   100%       10ms 25.00%  runtime.(*mcentral).grow
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: alloc_space
+Time: 2026-11-25 02:14:54 EST
+Showing nodes accounting for 19842.86kB, 82.89% of 23939.25kB total
+Showing top 12 nodes out of 81
+      flat  flat%   sum%        cum   cum%
+ 9050.58kB 37.81% 37.81%  9050.58kB 37.81%  bufio.NewReaderSize
+ 2048.19kB  8.56% 46.36%  2048.19kB  8.56%  internal/bytealg.MakeNoZero
+ 1536.19kB  6.42% 52.78%  1536.19kB  6.42%  strings.(*Builder).WriteString
+ 1184.27kB  4.95% 57.73%  1184.27kB  4.95%  runtime/pprof.StartCPUProfile
+ 1024.18kB  4.28% 62.00%  1024.18kB  4.28%  net/textproto.MIMEHeader.Set
+ 1024.12kB  4.28% 66.28%  1024.12kB  4.28%  crypto/internal/fips140/sha256.New
+ 1024.06kB  4.28% 70.56%  1024.06kB  4.28%  encoding/hex.EncodeToString
+  688.56kB  2.88% 73.44%   688.56kB  2.88%  compress/flate.(*fastGen).addBlock
+  655.29kB  2.74% 76.17%   655.29kB  2.74%  zeros3.getRunBuf
+  583.01kB  2.44% 78.61%   583.01kB  2.44%  compress/flate.newFastEnc
+  512.25kB  2.14% 80.75%   512.25kB  2.14%  bytes.growSlice
+  512.16kB  2.14% 82.89%   512.16kB  2.14%  net/http.(*Request).WithContext
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: delay
+Time: 2026-11-25 02:14:54 EST
+Showing nodes accounting for 44.40ms, 100% of 44.40ms total
+Dropped 3 nodes (cum <= 0.22ms)
+Showing top 12 nodes out of 22
+      flat  flat%   sum%        cum   cum%
+   44.40ms   100%   100%    44.40ms   100%  runtime.chanrecv1
+         0     0%   100%    22.69ms 51.11%  main.main
+         0     0%   100%    22.69ms 51.11%  runtime.main
+         0     0%   100%     0.24ms  0.53%  runtime/pprof.StopCPUProfile
+         0     0%   100%     0.24ms  0.53%  sync.(*Once).Do (inline)
+         0     0%   100%     0.24ms  0.53%  sync.(*Once).doSlow
+         0     0%   100%    44.17ms 99.46%  testing.(*B).Run
+         0     0%   100%    20.12ms 45.31%  testing.(*B).doBench
+         0     0%   100%    20.12ms 45.31%  testing.(*B).run
+         0     0%   100%    24.05ms 54.16%  testing.(*B).run1
+         0     0%   100%    21.71ms 48.89%  testing.(*B).run1.func1
+         0     0%   100%    44.17ms 99.47%  testing.(*B).runN
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: delay
+Time: 2026-11-25 02:14:54 EST
+Showing nodes accounting for 164.39us, 100% of 164.39us total
+Showing top 12 nodes out of 32
+      flat  flat%   sum%        cum   cum%
+  164.39us   100%   100%   164.39us   100%  runtime.unlock (inline)
+         0     0%   100%     2.69us  1.64%  bufio.NewReader (inline)
+         0     0%   100%     2.69us  1.64%  bufio.NewReaderSize (inline)
+         0     0%   100%     2.69us  1.64%  net/http/httptest.NewRequest
+         0     0%   100%     2.69us  1.64%  net/http/httptest.NewRequestWithContext
+         0     0%   100%     2.69us  1.64%  runtime.(*mcache).nextFree
+         0     0%   100%     2.69us  1.64%  runtime.(*mcache).refill
+         0     0%   100%     2.69us  1.64%  runtime.(*mcentral).cacheSpan
+         0     0%   100%     2.69us  1.64%  runtime.(*mcentral).grow
+         0     0%   100%     2.69us  1.64%  runtime.(*mheap).alloc
+         0     0%   100%     2.69us  1.64%  runtime.(*mheap).alloc.func1
+         0     0%   100%     2.69us  1.64%  runtime.(*mheap).allocSpan

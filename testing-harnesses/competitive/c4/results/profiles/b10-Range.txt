@@ -1,0 +1,84 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC4DefaultHTTP/Range-2         	    1200	     16600 ns/op	   13779 B/op	     147 allocs/op
+PASS
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: cpu
+Time: 2026-11-25 02:14:52 EST
+Duration: 24.73ms, Total samples = 30ms (121.31%)
+Showing nodes accounting for 30ms, 100% of 30ms total
+Showing top 12 nodes out of 18
+      flat  flat%   sum%        cum   cum%
+      10ms 33.33% 33.33%       10ms 33.33%  runtime.memmove
+      10ms 33.33% 66.67%       10ms 33.33%  runtime.notewakeup
+      10ms 33.33%   100%       10ms 33.33%  strings.Split
+         0     0%   100%       10ms 33.33%  runtime.findRunnable
+         0     0%   100%       10ms 33.33%  runtime.gopreempt_m (inline)
+         0     0%   100%       10ms 33.33%  runtime.goschedImpl
+         0     0%   100%       10ms 33.33%  runtime.morestack
+         0     0%   100%       10ms 33.33%  runtime.newstack
+         0     0%   100%       10ms 33.33%  runtime.runSafePointFn
+         0     0%   100%       10ms 33.33%  runtime.schedule
+         0     0%   100%       10ms 33.33%  strings.(*Builder).WriteString (inline)
+         0     0%   100%       10ms 33.33%  strings.Join
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: alloc_space
+Time: 2026-11-25 02:14:52 EST
+Showing nodes accounting for 17557.94kB, 74.07% of 23702.97kB total
+Showing top 12 nodes out of 102
+      flat  flat%   sum%        cum   cum%
+ 5966.56kB 25.17% 25.17%  5966.56kB 25.17%  bufio.NewReaderSize
+ 1536.35kB  6.48% 31.65%  1536.35kB  6.48%  net/textproto.MIMEHeader.Set
+ 1536.27kB  6.48% 38.14%  1536.27kB  6.48%  internal/bytealg.MakeNoZero
+ 1536.21kB  6.48% 44.62%  2560.27kB 10.80%  zeros3.hmacSHA256
+ 1536.05kB  6.48% 51.10%  1536.05kB  6.48%  unicode/utf8.AppendRune
+ 1184.27kB  5.00% 56.09%  1184.27kB  5.00%  runtime/pprof.StartCPUProfile
+ 1024.06kB  4.32% 60.41%  1024.06kB  4.32%  crypto/internal/fips140/hmac.New[go.shape.interface { BlockSize int; Reset; Size int; Sum []uint8; Write  }]
+ 1024.06kB  4.32% 64.73%  1024.06kB  4.32%  encoding/hex.EncodeToString
+  655.29kB  2.76% 67.50%   655.29kB  2.76%  compress/flate.NewWriter
+  528.17kB  2.23% 69.73%   528.17kB  2.23%  reflect.compiledTypelinks
+  516.01kB  2.18% 71.90%   516.01kB  2.18%  hash/crc32.slicingMakeTable
+  514.63kB  2.17% 74.07%   514.63kB  2.17%  math/rand.newSource
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: delay
+Time: 2026-11-25 02:14:52 EST
+Showing nodes accounting for 47790.73us, 100% of 47790.73us total
+Dropped 3 nodes (cum <= 238.95us)
+Showing top 12 nodes out of 22
+      flat  flat%   sum%        cum   cum%
+47790.73us   100%   100% 47790.73us   100%  runtime.chanrecv1
+         0     0%   100% 24691.89us 51.67%  main.main
+         0     0%   100% 24691.89us 51.67%  runtime.main
+         0     0%   100%   814.71us  1.70%  runtime/pprof.StopCPUProfile
+         0     0%   100%   814.71us  1.70%  sync.(*Once).Do (inline)
+         0     0%   100%   814.71us  1.70%  sync.(*Once).doSlow
+         0     0%   100% 46974.21us 98.29%  testing.(*B).Run
+         0     0%   100% 21511.94us 45.01%  testing.(*B).doBench
+         0     0%   100% 21511.94us 45.01%  testing.(*B).run
+         0     0%   100% 25462.27us 53.28%  testing.(*B).run1
+         0     0%   100% 23098.83us 48.33%  testing.(*B).run1.func1
+         0     0%   100% 46976.01us 98.30%  testing.(*B).runN
+File: bench
+Build ID: 2cc9dbb43fb7e1c09a2bc9d63e89bf57613f943b
+Type: delay
+Time: 2026-11-25 02:14:52 EST
+Showing nodes accounting for 108.84us, 100% of 108.84us total
+Showing top 12 nodes out of 17
+      flat  flat%   sum%        cum   cum%
+  108.84us   100%   100%   108.84us   100%  runtime.unlock (inline)
+         0     0%   100%    15.07us 13.85%  runtime.findRunnable
+         0     0%   100%    10.47us  9.62%  runtime.forEachP (inline)
+         0     0%   100%    10.47us  9.62%  runtime.forEachP.func1
+         0     0%   100%    10.47us  9.62%  runtime.forEachPInternal
+         0     0%   100%    93.77us 86.15%  runtime.gcBgMarkWorker
+         0     0%   100%    93.77us 86.15%  runtime.gcMarkDone
+         0     0%   100%    83.30us 76.53%  runtime.gcMarkTermination
+         0     0%   100%    83.30us 76.53%  runtime.gcMarkTermination.func3
+         0     0%   100%    15.07us 13.85%  runtime.gopreempt_m (inline)
+         0     0%   100%    15.07us 13.85%  runtime.goschedImpl
+         0     0%   100%    15.07us 13.85%  runtime.morestack

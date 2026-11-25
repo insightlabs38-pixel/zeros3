@@ -1,0 +1,85 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC4DefaultHTTP/PUT-2         	    1200	    219128 ns/op	   23386 B/op	     204 allocs/op
+PASS
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: cpu
+Time: 2026-11-25 02:14:53 EST
+Duration: 268.75ms, Total samples = 280ms (104.19%)
+Showing nodes accounting for 280ms, 100% of 280ms total
+Showing top 12 nodes out of 43
+      flat  flat%   sum%        cum   cum%
+     160ms 57.14% 57.14%      160ms 57.14%  crypto/md5.block
+      70ms 25.00% 82.14%       70ms 25.00%  crypto/internal/fips140/sha256.blockSHANI
+      10ms  3.57% 85.71%       10ms  3.57%  runtime.mallocgcSmallScanNoHeaderSC1
+      10ms  3.57% 89.29%       10ms  3.57%  runtime.nextFreeFast
+      10ms  3.57% 92.86%       10ms  3.57%  runtime.sweepone
+      10ms  3.57% 96.43%       10ms  3.57%  runtime.unlock2
+      10ms  3.57%   100%       10ms  3.57%  zeros3.cdcScan
+         0     0%   100%       10ms  3.57%  bufio.NewReader
+         0     0%   100%       10ms  3.57%  bufio.NewReaderSize (inline)
+         0     0%   100%       70ms 25.00%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0%   100%       70ms 25.00%  crypto/internal/fips140/sha256.block
+         0     0%   100%      160ms 57.14%  crypto/md5.(*digest).Write
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: alloc_space
+Time: 2026-11-25 02:14:53 EST
+Showing nodes accounting for 21.17MB, 70.16% of 30.17MB total
+Showing top 12 nodes out of 85
+      flat  flat%   sum%        cum   cum%
+    4.82MB 15.98% 15.98%     4.82MB 15.98%  bufio.NewReaderSize
+    3.16MB 10.49% 26.47%     3.16MB 10.49%  zeros3.init.func1
+       2MB  6.63% 33.10%        2MB  6.63%  encoding/hex.EncodeToString
+    1.53MB  5.06% 38.15%     2.53MB  8.38%  zeros3.(*segMgr).runBatch
+    1.50MB  4.97% 43.13%     1.50MB  4.97%  bytes.Clone
+    1.50MB  4.97% 48.10%     1.50MB  4.97%  internal/bytealg.MakeNoZero
+    1.50MB  4.97% 53.07%     1.50MB  4.97%  unicode/utf8.AppendRune
+    1.16MB  3.83% 56.90%     1.16MB  3.83%  runtime/pprof.StartCPUProfile
+       1MB  3.32% 60.22%        1MB  3.32%  net/http.(*Request).WithContext
+       1MB  3.31% 63.53%        1MB  3.31%  fmt.Sprintf
+       1MB  3.31% 66.85%     1.50MB  4.97%  zeros3.hmacSHA256
+       1MB  3.31% 70.16%     3.53MB 11.69%  zeros3.(*segMgr).commit
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: delay
+Time: 2026-11-25 02:14:53 EST
+Showing nodes accounting for 534.77ms, 100% of 534.77ms total
+Dropped 11 nodes (cum <= 2.67ms)
+Showing top 12 nodes out of 14
+      flat  flat%   sum%        cum   cum%
+  534.77ms   100%   100%   534.77ms   100%  runtime.chanrecv1
+         0     0%   100%   268.07ms 50.13%  main.main
+         0     0%   100%   268.07ms 50.13%  runtime.main
+         0     0%   100%   534.39ms 99.93%  testing.(*B).Run
+         0     0%   100%   264.92ms 49.54%  testing.(*B).doBench
+         0     0%   100%   264.92ms 49.54%  testing.(*B).run
+         0     0%   100%   269.47ms 50.39%  testing.(*B).run1
+         0     0%   100%   266.71ms 49.87%  testing.(*B).run1.func1
+         0     0%   100%   534.39ms 99.93%  testing.(*B).runN
+         0     0%   100%   268.07ms 50.13%  testing.(*M).Run
+         0     0%   100%   264.92ms 49.54%  testing.(*benchState).processBench
+         0     0%   100%   267.69ms 50.06%  testing.runBenchmarks
+File: bench
+Build ID: 9a4bb6847dc7651ba4d13a07c46dbe4d1ee248c0
+Type: delay
+Time: 2026-11-25 02:14:53 EST
+Showing nodes accounting for 41.06us, 100% of 41.06us total
+Dropped 5 nodes (cum <= 0.20us)
+Showing top 12 nodes out of 36
+      flat  flat%   sum%        cum   cum%
+   41.06us   100%   100%    41.06us   100%  runtime.unlock (partial-inline)
+         0     0%   100%     2.30us  5.61%  runtime.(*mcache).allocLarge
+         0     0%   100%     2.30us  5.61%  runtime.(*mheap).alloc
+         0     0%   100%     2.30us  5.61%  runtime.(*mheap).alloc.func1
+         0     0%   100%     2.30us  5.61%  runtime.(*mheap).freeSpan (inline)
+         0     0%   100%     2.30us  5.61%  runtime.(*mheap).freeSpan.func1
+         0     0%   100%     2.30us  5.61%  runtime.(*mheap).reclaim
+         0     0%   100%     2.30us  5.61%  runtime.(*mheap).reclaimChunk
+         0     0%   100%     1.11us  2.69%  runtime.(*spanSet).push
+         0     0%   100%     3.41us  8.30%  runtime.(*sweepLocked).sweep
+         0     0%   100%     1.11us  2.69%  runtime.bgsweep
+         0     0%   100%    37.66us 91.70%  runtime.findRunnable

@@ -1,0 +1,11 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC4DefaultHTTP/Sign-2         	    1200	      7194 ns/op	    8546 B/op	      65 allocs/op
+BenchmarkC4DefaultHTTP/Sign-2         	    1200	      5795 ns/op	    8546 B/op	      65 allocs/op
+BenchmarkC4DefaultHTTP/Sign-2         	    1200	      6664 ns/op	    8548 B/op	      65 allocs/op
+BenchmarkC4DefaultHTTP/HEAD-2         	    1200	     12667 ns/op	   12750 B/op	     132 allocs/op
+BenchmarkC4DefaultHTTP/HEAD-2         	    1200	     13507 ns/op	   12749 B/op	     132 allocs/op
+BenchmarkC4DefaultHTTP/HEAD-2         	    1200	     13243 ns/op	   12750 B/op	     132 allocs/op
+PASS
