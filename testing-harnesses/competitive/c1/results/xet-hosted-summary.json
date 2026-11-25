@@ -1,0 +1,112 @@
+[
+  {
+    "resource": "bucket",
+    "operation": "create",
+    "count": 1,
+    "median_seconds": 0.6299050109998916,
+    "min_seconds": 0.6299050109998916,
+    "max_seconds": 0.6299050109998916,
+    "logical_bytes": 0,
+    "interface_tx_bytes": 2474,
+    "interface_rx_bytes": 3874
+  },
+  {
+    "resource": "bucket",
+    "operation": "download-new-target",
+    "count": 9,
+    "median_seconds": 5.742925786000114,
+    "min_seconds": 3.5574301130000094,
+    "max_seconds": 7.795255017000045,
+    "logical_bytes": 37773488,
+    "interface_tx_bytes": 373148,
+    "interface_rx_bytes": 32348104
+  },
+  {
+    "resource": "bucket",
+    "operation": "download-same-target",
+    "count": 9,
+    "median_seconds": 6.32739114900005,
+    "min_seconds": 4.331447158000174,
+    "max_seconds": 7.834617154000171,
+    "logical_bytes": 37773488,
+    "interface_tx_bytes": 479225,
+    "interface_rx_bytes": 32460081
+  },
+  {
+    "resource": "bucket",
+    "operation": "upload",
+    "count": 9,
+    "median_seconds": 5.319815052999957,
+    "min_seconds": 1.574870411999882,
+    "max_seconds": 7.071910181000021,
+    "logical_bytes": 37773488,
+    "interface_tx_bytes": 9851009,
+    "interface_rx_bytes": 3488541
+  },
+  {
+    "resource": "dataset",
+    "operation": "create",
+    "count": 1,
+    "median_seconds": 1.4501750160000029,
+    "min_seconds": 1.4501750160000029,
+    "max_seconds": 1.4501750160000029,
+    "logical_bytes": 0,
+    "interface_tx_bytes": 3106,
+    "interface_rx_bytes": 5161
+  },
+  {
+    "resource": "dataset",
+    "operation": "download-cached",
+    "count": 8,
+    "median_seconds": 0.005600711999932173,
+    "min_seconds": 0.005497611000009783,
+    "max_seconds": 0.005913535999980013,
+    "logical_bytes": 33579184,
+    "interface_tx_bytes": 555,
+    "interface_rx_bytes": 132
+  },
+  {
+    "resource": "dataset",
+    "operation": "download-forced",
+    "count": 8,
+    "median_seconds": 3.8057698644998936,
+    "min_seconds": 2.374174036000113,
+    "max_seconds": 4.974977115999991,
+    "logical_bytes": 33579184,
+    "interface_tx_bytes": 279914,
+    "interface_rx_bytes": 27776653
+  },
+  {
+    "resource": "dataset",
+    "operation": "download-fresh-hub-cache",
+    "count": 8,
+    "median_seconds": 5.1506779939999205,
+    "min_seconds": 2.9566343649999,
+    "max_seconds": 5.770161547000043,
+    "logical_bytes": 33579184,
+    "interface_tx_bytes": 355110,
+    "interface_rx_bytes": 27879449
+  },
+  {
+    "resource": "dataset",
+    "operation": "metadata",
+    "count": 8,
+    "median_seconds": 0.40340702400010287,
+    "min_seconds": 0.3695636050001667,
+    "max_seconds": 0.5125493470000038,
+    "logical_bytes": 0,
+    "interface_tx_bytes": 15030,
+    "interface_rx_bytes": 36577
+  },
+  {
+    "resource": "dataset",
+    "operation": "upload",
+    "count": 8,
+    "median_seconds": 3.1789875194999695,
+    "min_seconds": 2.3350563240001065,
+    "max_seconds": 4.167208160999962,
+    "logical_bytes": 33579184,
+    "interface_tx_bytes": 145961,
+    "interface_rx_bytes": 247805
+  }
+]

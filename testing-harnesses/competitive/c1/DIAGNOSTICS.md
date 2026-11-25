@@ -21,3 +21,14 @@ original result files and are reported as diagnostics.
   SHA-256 captured in the run. RocksDB regenerates equal-length SSTs with
   different byte checksums across invocations. SST reproducibility is
   at the workload level, and its raw row results identify the staged files.
+
+- Garage showed a stable 44 ms floor on persistent HTTP range reads.
+  The header-signed probe measured a 2.01 ms median with a fresh connection
+  and a 44.00 ms median when requesting QUICKACK on the client. The result
+  isolates a connection-reuse effect. The precise TCP or server cause
+  remains unverified.
+- The OpenXet tensor-edit reconstruction failed independently with the
+  Xet chunk cache set to 64 MiB and disabled. The official client reported
+  an out-of-bounds range during reconstruction. The failing path remains
+  excluded from download latency summaries. Repeated failures demonstrate
+  incompatibility for the specific pinned local server and client pair.
