@@ -66,13 +66,17 @@ func TestC11GzipProofCheckpoint(t *testing.T) {
 		source := lab.s.newRepSource(root.Descs, nil)
 		called := 0
 		env := &repEnv{Src: source, Limits: repProdLimits}
-		env.gzipReplay = &repIRStreamDecodeOptions{Workers: 1, Checkpoint: func() error {
-			called++
-			if cancel {
-				return context.Canceled
-			}
-			return nil
-		}}
+		env.gzipReplay = &repIRStreamDecodeOptions{
+			Workers:        2,
+			ForegroundBusy: func() bool { return called < 3 },
+			Checkpoint: func() error {
+				called++
+				if cancel && called == 2 {
+					return context.Canceled
+				}
+				return nil
+			},
+		}
 		var got bytes.Buffer
 		_, _, err := env.reconstruct(root.Rep, &got)
 		source.close()

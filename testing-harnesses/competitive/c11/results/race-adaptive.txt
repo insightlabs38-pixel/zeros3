@@ -1,0 +1,6 @@
+=== RUN   TestC11BackgroundYield
+--- PASS: TestC11BackgroundYield (0.01s)
+=== RUN   TestC11GzipProofCheckpoint
+--- PASS: TestC11GzipProofCheckpoint (0.77s)
+PASS
+ok  	zeros3	1.796s

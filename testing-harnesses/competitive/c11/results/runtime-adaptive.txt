@@ -1,0 +1,60 @@
+SCHED 0ms: gomaxprocs=2 idleprocs=0 threads=6 spinningthreads=1 needspinning=0 idlethreads=1 runqueue=0 [ 0 0 ] schedticks=[ 0 5 ]
+gc 1 @0.002s 42026/11/25 14:55:43 zeros3: listening on 127.0.0.1:42531 (store=/workspace/work/c11/stores/runtime-trace-0-4-mixed-adaptive-2/destination, tls=false)
+gc 2 @0.037s 0%: 0.019+0.56+0.002 ms clock, 0.039+0.17/0.17/0.029+0.004 ms cpu, 4->4->2 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 3 @0.045s 2%: 0.19+1.7+0.002 ms clock, 0.38+0.12/1.0/0+0.005 ms cpu, 5->5->2 MB, 5 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 4 @0.051s 2%: 0.27+0.66+0.002 ms clock, 0.55+0.063/0.19/0.32+0.004 ms cpu, 4->4->2 MB, 5 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 5 @0.052s 2%: 0.27+4.1+0.002 ms clock, 0.55+0.019/0.24/0.079+0.004 ms cpu, 4->5->4 MB, 5 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 6 @0.061s 3%: 0.086+1.3+0.002 ms clock, 0.17+0.83/0.19/0+0.005 ms cpu, 9->9->6 MB, 9 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 7 @0.068s 3%: 0.050+3.0+0.051 ms clock, 0.10+0.23/0.16/0+0.10 ms cpu, 11->12->9 MB, 13 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 8 @0.109s 3%: 0.087+5.1+0.026 ms clock, 0.17+1.8/1.1/0+0.053 ms cpu, 17->18->11 MB, 19 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 9 @0.157s 2%: 0.030+1.3+0.024 ms clock, 0.061+0.13/0.56/0+0.048 ms cpu, 21->21->12 MB, 22 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 10 @0.182s 2%: 0.071+1.9+0.026 ms clock, 0.14+0.52/0.087/0+0.052 ms cpu, 23->25->11 MB, 25 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 11 @0.214s 2%: 0.091+5.4+0.024 ms clock, 0.18+0.20/0.29/0+0.048 ms cpu, 20->23->13 MB, 24 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 256ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=2 runqueue=5 [ 1 1 ] schedticks=[ 134 9059 ]
+gc 12 @0.257s 2%: 0.062+1.8+0.061 ms clock, 0.12+0.055/0.43/0+0.12 ms cpu, 23->23->13 MB, 27 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 13 @0.292s 1%: 0.090+10+0.023 ms clock, 0.18+0.45/0.15/0+0.047 ms cpu, 23->26->16 MB, 27 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 14 @0.378s 1%: 0.074+17+0.003 ms clock, 0.14+0.064/0.57/0+0.006 ms cpu, 29->31->16 MB, 33 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 15 @0.471s 1%: 0.075+5.2+0.003 ms clock, 0.15+0.43/0.24/0+0.007 ms cpu, 30->34->22 MB, 32 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 507ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=2 runqueue=0 [ 0 0 ] schedticks=[ 271 9136 ]
+gc 16 @0.652s 1%: 0.68+11+0.030 ms clock, 1.3+0.11/4.1/0+0.060 ms cpu, 38->39->29 MB, 44 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 762ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=2 runqueue=4 [ 0 0 ] schedticks=[ 388 9194 ]
+gc 17 @0.980s 0%: 0.047+16+0.025 ms clock, 0.095+0.21/1.5/0+0.050 ms cpu, 54->60->33 MB, 60 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 1017ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=0 runqueue=3 [ 3 0 ] schedticks=[ 588 9249 ]
+gc 18 @1.252s 0%: 0.078+5.1+0.025 ms clock, 0.15+0.032/0.60/0+0.051 ms cpu, 60->60->31 MB, 66 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 1277ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=2 runqueue=2 [ 0 0 ] schedticks=[ 774 9311 ]
+SCHED 1536ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=2 runqueue=0 [ 0 0 ] schedticks=[ 824 9421 ]
+gc 19 @1.587s 0%: 0.95+1.4+0.024 ms clock, 1.9+0/0.63/0+0.049 ms cpu, 56->56->30 MB, 62 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 1791ms: gomaxprocs=2 idleprocs=1 threads=9 spinningthreads=0 needspinning=0 idlethreads=2 runqueue=0 [ 0 0 ] schedticks=[ 1070 9524 ]
+gc 20 @2.039s 0%: 0.042+0.57+0.018 ms clock, 0.085+0.024/0.33/0.19+0.037 ms cpu, 54->54->18 MB, 60 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 2050ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 0 1 ] schedticks=[ 1187 9544 ]
+gc 21 @2.299s 0%: 0.043+0.62+0.018 ms clock, 0.087+0/0.38/0.30+0.037 ms cpu, 31->31->15 MB, 36 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 2300ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=0 idlethreads=1 runqueue=1 [ 0 0 ] schedticks=[ 1208 9626 ]
+gc 22 @2.515s 0%: 0.33+0.81+0.019 ms clock, 0.67+0/0.51/0.35+0.038 ms cpu, 26->26->15 MB, 30 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 2556ms: gomaxprocs=2 idleprocs=1 threads=9 spinningthreads=0 needspinning=0 idlethreads=2 runqueue=0 [ 0 0 ] schedticks=[ 1236 9694 ]
+gc 23 @2.737s 0%: 0.076+0.67+0.024 ms clock, 0.15+0/0.39/0.21+0.048 ms cpu, 25->25->15 MB, 30 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 2813ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=1 needspinning=0 idlethreads=1 runqueue=1 [ 0 0 ] schedticks=[ 1308 9711 ]
+gc 24 @2.931s 0%: 0.057+0.57+0.026 ms clock, 0.11+0.028/0.26/0.27+0.052 ms cpu, 27->27->15 MB, 31 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 3065ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=1 needspinning=0 idlethreads=1 runqueue=1 [ 0 0 ] schedticks=[ 1383 9731 ]
+gc 25 @3.101s 0%: 0.037+0.56+0.028 ms clock, 0.074+0/0.24/0.31+0.057 ms cpu, 26->26->15 MB, 31 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 26 @3.283s 0%: 0.038+0.54+0.024 ms clock, 0.077+0.026/0.26/0.27+0.049 ms cpu, 25->25->15 MB, 30 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 3319ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=1 needspinning=0 idlethreads=1 runqueue=1 [ 0 0 ] schedticks=[ 1408 9854 ]
+gc 27 @3.348s 0%: 0.070+11+0.019 ms clock, 0.14+0.24/0.34/0+0.039 ms cpu, 26->28->8 MB, 30 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 28 @3.404s 0%: 0.076+16+0.021 ms clock, 0.15+0.31/0.22/0+0.042 ms cpu, 15->17->10 MB, 17 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 29 @3.461s 0%: 0.071+8.7+0.040 ms clock, 0.14+0.32/0.18/0+0.080 ms cpu, 20->21->13 MB, 21 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 3571ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=2 runqueue=0 [ 0 0 ] schedticks=[ 1480 9997 ]
+gc 30 @3.591s 0%: 0.044+20+0.028 ms clock, 0.089+0.14/0.42/0+0.057 ms cpu, 25->27->18 MB, 27 MB goal, 0 MB stacks, 0 MB globals, 2 P
+gc 31 @3.778s 0%: 0.071+11+0.030 ms clock, 0.14+0.32/0.24/0+0.060 ms cpu, 34->35->24 MB, 36 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 3827ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 0 0 ] schedticks=[ 1601 10016 ]
+gc 32 @4.006s 0%: 0.099+2.7+0.025 ms clock, 0.19+0/0.64/0+0.051 ms cpu, 47->47->26 MB, 49 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 4079ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 0 0 ] schedticks=[ 1654 10035 ]
+gc 33 @4.147s 0%: 0.075+13+0.020 ms clock, 0.15+0.14/0.51/0+0.040 ms cpu, 51->52->29 MB, 53 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 4331ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 0 0 ] schedticks=[ 1672 10137 ]
+gc 34 @4.422s 0%: 0.10+0.69+0.028 ms clock, 0.21+0/0.39/0.35+0.056 ms cpu, 57->57->33 MB, 59 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 4584ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 0 0 ] schedticks=[ 1819 10157 ]
+gc 35 @4.756s 0%: 0.22+10+0.024 ms clock, 0.45+0.043/0.68/0+0.049 ms cpu, 65->66->28 MB, 67 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 4837ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 1 0 ] schedticks=[ 1835 10172 ]
+SCHED 5094ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 0 0 ] schedticks=[ 1955 10185 ]
+gc 36 @5.166s 0%: 2.2+0.63+0.038 ms clock, 4.5+0.035/0.74/0+0.076 ms cpu, 54->54->28 MB, 56 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 5346ms: gomaxprocs=2 idleprocs=0 threads=9 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=0 [ 1 0 ] schedticks=[ 1979 10211 ]
+gc 37 @5.401s 0%: 0.078+6.0+0.024 ms clock, 0.15+0.17/0.47/0+0.049 ms cpu, 55->55->29 MB, 56 MB goal, 0 MB stacks, 0 MB globals, 2 P
+SCHED 5599ms: gomaxprocs=2 idleprocs=1 threads=9 spinningthreads=0 needspinning=0 idlethreads=2 runqueue=0 [ 0 0 ] schedticks=[ 2004 10292 ]

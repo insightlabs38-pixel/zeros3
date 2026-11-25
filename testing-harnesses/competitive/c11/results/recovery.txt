@@ -1,0 +1,14 @@
+=== RUN   TestAuthorityClosureSyncImportRejectsBadPayload
+--- PASS: TestAuthorityClosureSyncImportRejectsBadPayload (0.70s)
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts/auth-import-chunks
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts/after-manifest-published
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts/after-journal-sync
+--- PASS: TestAuthorityThinImportNamespaceCrashCuts (0.28s)
+    --- PASS: TestAuthorityThinImportNamespaceCrashCuts/auth-import-chunks (0.03s)
+    --- PASS: TestAuthorityThinImportNamespaceCrashCuts/after-manifest-published (0.03s)
+    --- PASS: TestAuthorityThinImportNamespaceCrashCuts/after-journal-sync (0.04s)
+=== RUN   TestB4SharedReaderProcessDefersUnlink
+--- PASS: TestB4SharedReaderProcessDefersUnlink (0.05s)
+PASS
+ok  	zeros3	1.026s

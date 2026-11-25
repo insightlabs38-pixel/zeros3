@@ -123,18 +123,18 @@ import (
 //    32724    Portable snapshot bundles (`zeros3 bundle`)
 //    33921    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    34556    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53281    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61504    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65228    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65787    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66694    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67849    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68793    Verified decoded-window cache (B9)
-//    69074    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70364    Windowed and estimated similarity deltas (extracted dcore)
-//    72201    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    80057    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86329    CLI dispatch, HTTP server/startup, and main
+//    53286    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61509    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65233    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65792    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66699    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67854    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68798    Verified decoded-window cache (B9)
+//    69079    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70369    Windowed and estimated similarity deltas (extracted dcore)
+//    72206    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    80062    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86334    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -45933,6 +45933,8 @@ type repIRStreamDecodeOptions struct {
 
 	// Checkpoint allows a live import to yield between units.
 	Checkpoint func() error
+	// ForegroundBusy limits queued units only while ordinary requests are active.
+	ForegroundBusy func() bool
 }
 
 // Port source: zeros3-z3/ir/stream.go
@@ -46048,6 +46050,9 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 	sem := make(chan struct{}, workers)
 	issue := func() error {
 		for nextIssue < len(sk.Units) && len(ahead) < 2*workers {
+			if opt.ForegroundBusy != nil && len(ahead) >= max(1, workers/2) && opt.ForegroundBusy() {
+				break
+			}
 			u := sk.Units[nextIssue]
 			end := startPos[nextIssue] + int64(u.PlainLen)
 			if len(ahead) > 0 && end-pos > repIRdecodeAhead {
@@ -56652,8 +56657,8 @@ func (s *Store) authProveWithOutput(runCtx context.Context, rec *authRecord, pin
 		ctx.gzipReplay = &repIRStreamDecodeOptions{Checkpoint: func() error {
 			return s.yieldBackground(runCtx)
 		}}
-		if s.backgroundYield == "adaptive" && s.fg.n.Load() > 0 {
-			ctx.gzipReplay.Workers = max(1, runtime.GOMAXPROCS(0)/2)
+		if s.backgroundYield == "adaptive" {
+			ctx.gzipReplay.ForegroundBusy = func() bool { return s.fg.n.Load() > 0 }
 		}
 	}
 	if rec.Size > authWindowMin {

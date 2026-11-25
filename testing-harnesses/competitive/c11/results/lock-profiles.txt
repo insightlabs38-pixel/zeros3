@@ -1,0 +1,40 @@
+File: qos.test
+Build ID: cf3cb6bdc2066a8bffe24f54912625b3a4e79702
+Type: delay
+Time: 2026-11-25 14:56:14 EST
+Showing nodes accounting for 666.27ms, 99.71% of 668.21ms total
+Dropped 38 nodes (cum <= 3.34ms)
+Showing top 12 nodes out of 63
+      flat  flat%   sum%        cum   cum%
+     514ms 76.92% 76.92%      514ms 76.92%  runtime.chanrecv1
+  115.20ms 17.24% 94.16%   115.20ms 17.24%  runtime.selectgo
+   18.44ms  2.76% 96.92%    18.44ms  2.76%  sync.(*WaitGroup).Wait
+   14.53ms  2.17% 99.10%    14.53ms  2.17%  runtime.chanrecv2
+    4.10ms  0.61% 99.71%     4.10ms  0.61%  sync.(*Cond).Wait
+         0     0% 99.71%    12.90ms  1.93%  io.(*PipeWriter).Write
+         0     0% 99.71%    12.90ms  1.93%  io.(*multiWriter).Write
+         0     0% 99.71%    12.90ms  1.93%  io.(*pipe).write
+         0     0% 99.71%   221.31ms 33.12%  main.main
+         0     0% 99.71%   221.31ms 33.12%  runtime.main
+         0     0% 99.71%   221.31ms 33.12%  testing.(*M).Run
+         0     0% 99.71%   395.69ms 59.22%  testing.(*T).Run
+File: qos.test
+Build ID: cf3cb6bdc2066a8bffe24f54912625b3a4e79702
+Type: delay
+Time: 2026-11-25 14:56:14 EST
+Showing nodes accounting for 36.81us, 100% of 36.81us total
+Dropped 14 nodes (cum <= 0.18us)
+Showing top 12 nodes out of 20
+      flat  flat%   sum%        cum   cum%
+   36.81us   100%   100%    36.81us   100%  runtime.unlock (partial-inline)
+         0     0%   100%    25.29us 68.69%  runtime.gcBgMarkWorker
+         0     0%   100%    25.29us 68.69%  runtime.gcMarkDone
+         0     0%   100%    25.29us 68.69%  runtime.gcMarkTermination
+         0     0%   100%    25.29us 68.69%  runtime.gcMarkTermination.func3
+         0     0%   100%    11.39us 30.93%  runtime.mProf_Malloc
+         0     0%   100%    11.53us 31.31%  runtime.mallocgc
+         0     0%   100%    11.53us 31.31%  runtime.mallocgcLarge
+         0     0%   100%    11.39us 30.93%  runtime.newobject
+         0     0%   100%    11.39us 30.93%  runtime.profilealloc
+         0     0%   100%    25.29us 68.69%  runtime.startTheWorldWithSema
+         0     0%   100%    11.39us 30.93%  runtime.stkbucket
