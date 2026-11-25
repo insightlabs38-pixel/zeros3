@@ -44223,3 +44223,63 @@ func TestUploadPartCopy_ProtocolAndFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestRepack_KeepUnchangedChecksReplacement(t *testing.T) {
+	useLooseLayout(t, "stage the pack layout before testing recompression")
+	for _, scenario := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"identical", genRandomBytes(588, 2<<20)},
+		{"mixed-unchanged", bytes.Repeat([]byte("already compressed revision payload"), 80000)},
+		{"compressible", bytes.Repeat([]byte("compressible revision payload"), 80000)},
+		{"corrupt", genRandomBytes(589, 2<<20)},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			lab := newAuthLab(t)
+			lab.put("object", scenario.payload)
+			mixed := scenario.name == "mixed-unchanged"
+			if mixed {
+				lab.put("other", genRandomBytes(998, 1<<20))
+			}
+			lab.close()
+			if _, err := compactStore(lab.dir, compactOptions{TargetBytes: 4 << 20, MinBytes: 1, Compress: mixed}); err != nil {
+				t.Fatal(err)
+			}
+			before := packFileSet(t, lab.dir)
+			if len(before) != 1 {
+				t.Fatalf("fixture needs one pack, got %v", before)
+			}
+			if scenario.name == "corrupt" {
+				lab.open()
+				manifest := lab.man("object")
+				sum, err := decodeHexSHA256(manifest.Chunks[0].SHA256)
+				mustOK(t, err)
+				flipPackedByte(t, lab.s, sum)
+				lab.close()
+			}
+			options := repackOptions{TargetBytes: 4 << 20, MaxLivePercent: 100, Compress: true,
+				Recompress: true, KeepUnchanged: true}
+			report, err := repackStore(lab.dir, options)
+			switch scenario.name {
+			case "identical", "mixed-unchanged":
+				if err != nil || report.PacksKeptUnchanged != 1 || report.BytesWritten != 0 ||
+					report.PreflightReadBytes == 0 || !reflect.DeepEqual(before, packFileSet(t, lab.dir)) {
+					t.Fatalf("identical pack should be kept without writes: %+v %v", report, err)
+				}
+			case "compressible":
+				if err != nil || report.PacksKeptUnchanged != 0 || report.BytesWritten == 0 || report.BytesReclaimed <= 0 {
+					t.Fatalf("compressible pack should follow ordinary repack: %+v %v", report, err)
+				}
+			case "corrupt":
+				if err == nil || report.PacksKeptUnchanged != 0 || !reflect.DeepEqual(before, packFileSet(t, lab.dir)) {
+					t.Fatalf("corrupt pack cannot pass the no-write proof: %+v %v", report, err)
+				}
+				return
+			}
+			lab.open()
+			lab.exact("after recompress reopen")
+			lab.verifyOK("after recompress reopen")
+		})
+	}
+}

@@ -386,7 +386,13 @@ them is live. `-recompress` (with `-compression auto`) also rewrites such fully 
 packs so their records are deflated when that saves space; use it on cold stores, and
 after `authority migrate` + `gc -apply`, so that the retired CDC copies and the new
 components are compared on the same compressed footing. A pack whose raw records are
-incompressible is rewritten identically by every run.
+incompressible can be rewritten identically by every run. The experimental
+`-keep-unchanged` flag verifies and retains a fully live pack when the
+planned batch has the same tier and ordered records and every raw or DEFLATE
+payload would be written identically. This avoids staging an identical pack. It applies
+with `-recompress -compression auto` and ordinary non-restartable encoding.
+Changes in order, compression, liveness or batch boundaries use the normal
+replacement path.
 
 ### Online maintenance
 

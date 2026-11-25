@@ -89,52 +89,52 @@ import (
 //      549    Content-defined chunking (CDC)
 //      736    Content-addressed chunk storage (CAS)
 //     2531    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5319    Small-object segments (inline manifests, store level 11)
-//     6569    Manifests (immutable, JSON)
-//     7367    Visibility journal (append-only, checksummed)
-//     7889    Store: format, namespace, and object CRUD
-//     8406    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12058    Version history/restore, history pruning, ListObjectsV2
-//    12664    SigV4 authentication (header and presigned-URL)
-//    13641    Request payload checksums and S3-shaped XML error/response types
-//    13858    HTTP routing and S3 operation handlers
-//    14290    Conditional operations (PUT/GET/HEAD preconditions)
-//    14985    CopyObject
-//    15290    Multipart upload
-//    16234    Stats and reachability scanning
-//    17822    Verify
-//    18038    Store locking and safe offline GC
-//    18348    Offline compaction (`zeros3 compact`)
-//    19531    Pack reclamation and repacking (`zeros3 repack`)
-//    20127    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20587    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21932    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22445    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23510    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24361    Delta sync client, credentials, and parallel transfer
-//    26696    Bulk logical-chunk transport (v2)
-//    27607    Recursive directory sync
-//    27912    Remote replication (`zeros3 replicate`)
-//    28885    Peer-assisted corruption repair (`zeros3 repair`)
-//    29457    Namespace (prefix/bucket) replication
-//    29773    Copy-on-write namespace fork (`zeros3 fork`)
-//    29981    Snapshots and restore
-//    31143    Structural diff and inspect (introspection)
-//    32555    Portable snapshot bundles (`zeros3 bundle`)
-//    33752    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34387    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53072    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61221    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    64880    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65436    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66343    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67498    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68442    Verified decoded-window cache (B9)
-//    68723    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70013    Windowed and estimated similarity deltas (extracted dcore)
-//    71850    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    79706    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    85978    CLI dispatch, HTTP server/startup, and main
+//     5331    Small-object segments (inline manifests, store level 11)
+//     6581    Manifests (immutable, JSON)
+//     7379    Visibility journal (append-only, checksummed)
+//     7901    Store: format, namespace, and object CRUD
+//     8418    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12070    Version history/restore, history pruning, ListObjectsV2
+//    12676    SigV4 authentication (header and presigned-URL)
+//    13653    Request payload checksums and S3-shaped XML error/response types
+//    13870    HTTP routing and S3 operation handlers
+//    14302    Conditional operations (PUT/GET/HEAD preconditions)
+//    14997    CopyObject
+//    15302    Multipart upload
+//    16246    Stats and reachability scanning
+//    17834    Verify
+//    18050    Store locking and safe offline GC
+//    18360    Offline compaction (`zeros3 compact`)
+//    19543    Pack reclamation and repacking (`zeros3 repack`)
+//    20207    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20667    Online maintenance: epochs, pins, live GC and repack (B4)
+//    22012    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22525    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23590    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24441    Delta sync client, credentials, and parallel transfer
+//    26776    Bulk logical-chunk transport (v2)
+//    27687    Recursive directory sync
+//    27992    Remote replication (`zeros3 replicate`)
+//    28965    Peer-assisted corruption repair (`zeros3 repair`)
+//    29537    Namespace (prefix/bucket) replication
+//    29853    Copy-on-write namespace fork (`zeros3 fork`)
+//    30061    Snapshots and restore
+//    31223    Structural diff and inspect (introspection)
+//    32635    Portable snapshot bundles (`zeros3 bundle`)
+//    33832    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34467    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    53152    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61301    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    64960    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65516    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66423    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67578    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68522    Verified decoded-window cache (B9)
+//    68803    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70093    Windowed and estimated similarity deltas (extracted dcore)
+//    71930    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    79786    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86058    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -3068,6 +3068,14 @@ func loadPackFile(path string) (packInfo, []packEntry, error) {
 // logical bytes against the digest in its record. It gates publication in
 // compaction. Memory is at most two chunk buffers plus a read buffer.
 func verifyPackFile(path string) (packInfo, []packEntry, error) {
+	return verifyPackFileWhile(path, nil)
+}
+
+var errPackNeedsRewrite = errors.New("pack: replacement encoding differs")
+
+// verifyPackFileWhile can stop a read-only physical proof when the caller
+// determines that a replacement is required.
+func verifyPackFileWhile(path string, accept func(packEntry, []byte, []byte) bool) (packInfo, []packEntry, error) {
 	info, entries, err := statPackFile(path)
 	if err != nil {
 		return info, nil, err
@@ -3101,8 +3109,12 @@ func verifyPackFile(path string) (packInfo, []packEntry, error) {
 		if e.codec != packCodecRaw && decoded == nil {
 			decoded = make([]byte, maxPackedChunkBytes)
 		}
-		if _, err := decodePackPayloadD(e.codec, buf, e.logical, e.sha, decoded, dicts, true); err != nil {
+		logical, err := decodePackPayloadD(e.codec, buf, e.logical, e.sha, decoded, dicts, true)
+		if err != nil {
 			return info, nil, fmt.Errorf("pack: record %d: %w", i, err)
+		}
+		if accept != nil && !accept(e, logical, buf) {
+			return info, nil, errPackNeedsRewrite
 		}
 	}
 	if _, err := io.Copy(io.Discard, r); err != nil {
@@ -19563,8 +19575,9 @@ const defaultRepackMaxLivePercent = 50
 
 // packEncoding is how replacement packs are written.
 type packEncoding struct {
-	Compress bool
-	BlockLog uint8 // restartable records (codec 2) of 1<<BlockLog byte blocks; 0: none
+	Compress      bool
+	keepUnchanged bool
+	BlockLog      uint8 // restartable records (codec 2) of 1<<BlockLog byte blocks; 0: none
 	// order, when set, reorders the records carried into tier t (default: their source physical order).
 	order func(t tier, cands []compactCandidate)
 }
@@ -19579,15 +19592,17 @@ type repackOptions struct {
 	// Recompress also selects fully live packs that still hold raw records, so
 	// `repack -compression auto` can compress direct-ingest packs that never
 	// became partly dead. It only has an effect together with Compress, and a
-	// pack whose raw records are incompressible is selected (and rewritten
-	// identically) by every run: opt-in for cold-tier maintenance.
-	Recompress bool
-	BlockLog   uint8      // restartable records in replacements (0: none)
-	Layout     packLayout // layoutRecon reorders carried records by reconstruction co-access
+	// pack whose raw records are incompressible can be selected on every run.
+	// KeepUnchanged permits a proof before staging such a replacement.
+	Recompress    bool
+	KeepUnchanged bool
+	BlockLog      uint8      // restartable records in replacements (0: none)
+	Layout        packLayout // layoutRecon reorders carried records by reconstruction co-access
 }
 
 func (o repackOptions) encoding() packEncoding {
-	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog}
+	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog,
+		keepUnchanged: o.KeepUnchanged && o.Compress && o.Recompress && o.BlockLog == 0}
 }
 
 // RepackResult reports one repack pass. In a dry run the write figures are
@@ -19603,11 +19618,13 @@ type RepackResult struct {
 	PackedChunkCount int   `json:"packed_chunk_count"`
 	PackFileBytes    int64 `json:"pack_file_bytes"`
 
-	PacksSelected  int         `json:"packs_selected"`
-	PacksDeferred  int         `json:"packs_deferred,omitempty"`
-	PacksFullyDead int         `json:"packs_fully_dead"`
-	PacksRewritten int         `json:"packs_rewritten"`
-	Selected       []packUsage `json:"selected,omitempty"`
+	PacksSelected      int         `json:"packs_selected"`
+	PacksDeferred      int         `json:"packs_deferred,omitempty"`
+	PacksFullyDead     int         `json:"packs_fully_dead"`
+	PacksRewritten     int         `json:"packs_rewritten"`
+	PacksKeptUnchanged int         `json:"packs_kept_unchanged,omitempty"`
+	PreflightReadBytes int64       `json:"preflight_read_bytes,omitempty"`
+	Selected           []packUsage `json:"selected,omitempty"`
 
 	// BytesRead is the logical (decoded) bytes of the copied chunks;
 	// BytesWritten, BytesDeleted and BytesReclaimed are physical pack-file
@@ -19715,6 +19732,9 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 		return err
 	}
 	doomed, paths := c.doomed, c.paths
+	if len(doomed) == 0 && res.PacksKeptUnchanged > 0 && res.PacksWritten == 0 {
+		return nil
+	}
 	sort.Slice(doomed, func(i, j int) bool {
 		if doomed[i].tier != doomed[j].tier {
 			return doomed[i].tier < doomed[j].tier
@@ -19767,12 +19787,21 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 	// Replacements keep the tier of the pack whose record they carry (the
 	// hottest, if several doomed packs hold it): tiers are never merged.
 	var required [numTiers][]compactCandidate
+	var packByFirst map[[32]byte][]packUsage
+	if enc.keepUnchanged && dest == nil {
+		packByFirst = make(map[[32]byte][]packUsage)
+	}
 	paths := map[int32]string{}
 	for _, u := range doomed {
 		path := s.packSnap().packs[u.idx].path
 		info, entries, err := loadPackFile(path)
 		if err != nil || info.id != u.ID {
 			return nil, fmt.Errorf("pack %s changed or is unreadable (%v); nothing was removed", u.ID, err)
+		}
+		if packByFirst != nil && u.DeadRecords == 0 && u.LiveRecords > 0 &&
+			len(entries) == u.LiveRecords {
+			first := entries[0].sha
+			packByFirst[first] = append(packByFirst[first], u)
 		}
 		skip[u.idx] = true
 		paths[u.idx] = path
@@ -19847,8 +19876,52 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 	if dest != nil {
 		fireTestHook(hookRebalanceBeforeStage)
 	}
+	// Only retain a whole pack that matches the planned output in tier,
+	// logical sizes and order. A changed batch still follows the existing
+	// stage, publication and removal gates.
+	keep := func(t tier, batch []compactCandidate) bool {
+		if packByFirst == nil || len(batch) == 0 {
+			return false
+		}
+		for _, u := range packByFirst[batch[0].sum] {
+			if u.tier != t || u.LiveRecords != len(batch) || !skip[u.idx] {
+				continue
+			}
+			_, entries, err := loadPackFile(paths[u.idx])
+			if err != nil || len(entries) != len(batch) {
+				continue
+			}
+			match := true
+			for i, e := range entries {
+				if (e.codec != packCodecRaw && e.codec != packCodecDeflate) ||
+					e.sha != batch[i].sum || int64(e.logical) != batch[i].size {
+					match = false
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+			info, _, err := verifyPackFileWhile(paths[u.idx], func(e packEntry, data, stored []byte) bool {
+				res.PreflightReadBytes += int64(len(data))
+				encoded, codec := comp.encode(data)
+				return codec == e.codec && bytes.Equal(encoded, stored)
+			})
+			if err == nil && info.id == u.ID {
+				delete(skip, u.idx)
+				res.PacksKeptUnchanged++
+				res.PacksRewritten--
+				return true
+			}
+		}
+		return false
+	}
+
 	for _, pl := range plans {
 		for _, batch := range pl.batches {
+			if keep(pl.t, batch) {
+				continue
+			}
 			path, entries, err := s.stagePack(pl.t, batch, read, abort, comp)
 			if err != nil {
 				return nil, err
@@ -19899,6 +19972,9 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 		}
 	}
 
+	if res.PacksKeptUnchanged > 0 {
+		doomed = slices.DeleteFunc(doomed, func(u packUsage) bool { return !skip[u.idx] })
+	}
 	return &packCarry{doomed: doomed, skip: skip, paths: paths}, nil
 }
 
@@ -20051,6 +20127,9 @@ func printRepackHuman(w io.Writer, r RepackResult) {
 	if r.PacksDeferred > 0 {
 		fmt.Fprintf(w, "deferred         %d packs under the source limit\n", r.PacksDeferred)
 	}
+	if r.PacksKeptUnchanged > 0 {
+		fmt.Fprintf(w, "kept unchanged   %d verified packs (%d logical bytes checked)\n", r.PacksKeptUnchanged, r.PreflightReadBytes)
+	}
 	for _, u := range r.Selected {
 		fmt.Fprintf(w, "  %s %.12s  %d bytes | %d/%d chunks live | %.0f%% live | %d reclaimable\n", u.Tier, u.ID, u.Size, u.LiveRecords, u.Records, u.Utilization*100, u.Reclaimable)
 	}
@@ -20080,6 +20159,7 @@ func runRepack(args []string) {
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	tierName := fs.String("tier", "all", "only repack packs in this tier: hot, warm, cold, or all (replacements always stay in their tier)")
 	recompress := fs.Bool("recompress", false, "also rewrite fully live packs that hold raw records (compresses direct-ingest packs; needs -compression auto)")
+	keepUnchanged := fs.Bool("keep-unchanged", false, "prove and retain identical replacement packs during recompress (research)")
 	blocksFlag := fs.String("record-blocks", "off", "restartable compressed records in rewritten packs: off, or the block size in KiB (research)")
 	layoutName := fs.String("layout", "locality", "record order of rewritten packs: locality (keep the physical order) or recon (also relayout authority families by reconstruction co-access; research)")
 	fs.Parse(args)
@@ -20100,7 +20180,7 @@ func runRepack(args []string) {
 		fmt.Fprintf(os.Stderr, "zeros3: repack: %v\n", err)
 		os.Exit(2)
 	}
-	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress, BlockLog: blockLog, Layout: layout})
+	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress, KeepUnchanged: *keepUnchanged, BlockLog: blockLog, Layout: layout})
 	if err != nil {
 		switch {
 		case errors.Is(err, errGCStoreInUse):
