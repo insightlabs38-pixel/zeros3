@@ -1,0 +1,560 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"math/rand/v2"
+	"os"
+	"slices"
+	"sort"
+	"testing"
+	"time"
+)
+
+const (
+	c12Frame = 64 << 10
+	c12Limit = 32 << 20
+	c12Magic = "ZC12LAB1"
+	c12Head  = 80
+	c12Entry = 36
+)
+
+var errC12 = errors.New("invalid C12 delta")
+
+type c12Index struct {
+	size int
+	base [32]byte
+	want [32]byte
+	rows []c12Row
+}
+
+type c12Row struct {
+	at    int64
+	bytes int
+	hash  [32]byte
+}
+
+func c12Literal(b []byte) []byte {
+	if len(b) > 0 {
+		if z := xdDeflate(b, 6); len(z) < len(b) {
+			return append([]byte{1}, z...)
+		}
+	}
+	return append([]byte{0}, b...)
+}
+
+func c12LiteralRead(b []byte, max int) ([]byte, error) {
+	if len(b) == 0 {
+		return nil, errC12
+	}
+	switch b[0] {
+	case 0:
+		if len(b)-1 <= max {
+			return b[1:], nil
+		}
+	case 1:
+		return xdInflate(b[1:], int64(max))
+	}
+	return nil, errC12
+}
+
+func c12Residual(base, data []byte, at int) []byte {
+	if at+len(data) > len(base) {
+		return c12Literal(data)
+	}
+	prior := base[at : at+len(data)]
+	if bytes.Equal(prior, data) {
+		return []byte{2}
+	}
+	literal := c12Literal(data)
+	// Co-located samples cheaply rule out independent entropy and many
+	// shifted regions. A rejected frame still has an exact literal mode.
+	same := 0
+	for i := 0; i < len(data); i += 37 {
+		if data[i] == prior[i] {
+			same++
+		}
+	}
+	if same < max(1, len(data)/148) {
+		return literal
+	}
+	residual := make([]byte, len(data))
+	for i, b := range data {
+		residual[i] = b ^ prior[i]
+	}
+	if z := xdDeflate(residual, 6); len(z)+1 < len(literal) {
+		return append([]byte{3}, z...)
+	}
+	return literal
+}
+
+func c12SplitOps(base, target []byte) ([][]xdOp, error) {
+	idx, err := dwDcoreBuildIndex([][]byte{base}, dwDcoreDefaultParams())
+	if err != nil {
+		return nil, err
+	}
+	rows := make([][]xdOp, (len(target)+c12Frame-1)/c12Frame)
+	for _, op := range xdFromDw(idx.Match(target)) {
+		for used := int64(0); used < op.n; {
+			at := op.tpos + used
+			n := min(op.n-used, c12Frame-at%c12Frame)
+			part := xdOp{tpos: at, n: n, base: op.base, off: op.off + used}
+			if op.base < 0 {
+				part.lit = op.lit[used : used+n]
+			}
+			rows[at/c12Frame] = append(rows[at/c12Frame], part)
+			used += n
+		}
+	}
+	return rows, nil
+}
+
+func c12Packed(ops []xdOp, target []byte) []byte {
+	if len(ops) == 1 && ops[0].base >= 0 && ops[0].off == ops[0].tpos {
+		return []byte{2}
+	}
+	literal := c12Literal(target)
+	var control, addresses, data []byte
+	var displacement int64
+	for _, op := range ops {
+		token := uint64(op.n) << 1
+		if op.base < 0 {
+			data = append(data, op.lit...)
+		} else {
+			token |= 1
+			next := op.off - op.tpos
+			addresses = binary.AppendVarint(addresses, next-displacement)
+			displacement = next
+		}
+		control = binary.AppendUvarint(control, token)
+	}
+	p := []byte{4}
+	for _, block := range [][]byte{control, addresses, data} {
+		encoded := c12Literal(block)
+		p = binary.LittleEndian.AppendUint32(p, uint32(len(encoded)))
+		p = append(p, encoded...)
+	}
+	if len(p) < len(literal) {
+		return p
+	}
+	return literal
+}
+
+func c12Encode(method string, base, target []byte) ([]byte, error) {
+	if len(target) == 0 || len(target) > c12Limit || len(base) == 0 || len(base) > c12Limit {
+		return nil, errC12
+	}
+	baseHash, targetHash := sha256.Sum256(base), sha256.Sum256(target)
+	if method == "xd" {
+		p, _, err := xdEncode([]xdSrc{{sha: baseHash, data: base}}, target, c12Frame)
+		return p, err
+	}
+	var rows [][]xdOp
+	switch method {
+	case "xor":
+	case "packed":
+		var err error
+		rows, err = c12SplitOps(base, target)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errC12
+	}
+
+	out := append([]byte(c12Magic), baseHash[:]...)
+	out = append(out, targetHash[:]...)
+	out = binary.LittleEndian.AppendUint64(out, uint64(len(target)))
+	var body []byte
+	for at := 0; at < len(target); at += c12Frame {
+		block := target[at:min(at+c12Frame, len(target))]
+		var p []byte
+		if method == "xor" {
+			p = c12Residual(base, block, at)
+		} else {
+			p = c12Packed(rows[at/c12Frame], block)
+		}
+		out = binary.LittleEndian.AppendUint32(out, uint32(len(p)))
+		hash := sha256.Sum256(block)
+		out = append(out, hash[:]...)
+		body = append(body, p...)
+	}
+	return append(out, body...), nil
+}
+
+func c12ReadAt(r io.ReaderAt, n int, at int64) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := r.ReadAt(b, at)
+	return b, err
+}
+
+func c12Open(r io.ReaderAt, size int64) (c12Index, error) {
+	p, err := c12ReadAt(r, c12Head, 0)
+	var index c12Index
+	if err != nil || string(p[:8]) != c12Magic {
+		return index, errC12
+	}
+	total := binary.LittleEndian.Uint64(p[72:])
+	if total == 0 || total > c12Limit {
+		return index, errC12
+	}
+	copy(index.base[:], p[8:40])
+	copy(index.want[:], p[40:72])
+	index.size = int(total)
+	n := (index.size + c12Frame - 1) / c12Frame
+	table, err := c12ReadAt(r, n*c12Entry, c12Head)
+	if err != nil {
+		return index, errC12
+	}
+	at := int64(c12Head + len(table))
+	for len(table) > 0 {
+		payload := int(binary.LittleEndian.Uint32(table))
+		if payload <= 0 || payload > c12Frame+1 || int64(payload) > size-at {
+			return index, errC12
+		}
+		row := c12Row{at: at, bytes: payload}
+		copy(row.hash[:], table[4:c12Entry])
+		index.rows = append(index.rows, row)
+		table = table[c12Entry:]
+		at += int64(payload)
+	}
+	if at != size {
+		return index, errC12
+	}
+	return index, nil
+}
+
+func c12Unpack(p []byte, base io.ReaderAt, off, n int) ([]byte, error) {
+	var streams [3][]byte
+	for i, limit := range []int{4 * n, 12 * n, n} {
+		if len(p) < 4 {
+			return nil, errC12
+		}
+		length := int(binary.LittleEndian.Uint32(p))
+		if length <= 0 || length > len(p)-4 {
+			return nil, errC12
+		}
+		var err error
+		streams[i], err = c12LiteralRead(p[4:4+length], limit)
+		if err != nil {
+			return nil, err
+		}
+		p = p[4+length:]
+	}
+	if len(p) != 0 {
+		return nil, errC12
+	}
+	control, addresses, literals := streams[0], streams[1], streams[2]
+	out := make([]byte, n)
+	at := 0
+	var displacement int64
+	for len(control) > 0 {
+		tag, width := binary.Uvarint(control)
+		length := tag >> 1
+		if width <= 0 || length == 0 || length > uint64(n-at) {
+			return nil, errC12
+		}
+		control = control[width:]
+		span := out[at : at+int(length)]
+		if tag&1 == 0 {
+			if length > uint64(len(literals)) {
+				return nil, errC12
+			}
+			copy(span, literals[:length])
+			literals = literals[length:]
+		} else {
+			step, width := binary.Varint(addresses)
+			if width <= 0 || step < -2*c12Limit || step > 2*c12Limit {
+				return nil, errC12
+			}
+			addresses = addresses[width:]
+			displacement += step
+			src := int64(off+at) + displacement
+			if src < 0 || src+int64(length) > c12Limit {
+				return nil, errC12
+			}
+			if _, err := base.ReadAt(span, src); err != nil {
+				return nil, err
+			}
+		}
+		at += int(length)
+	}
+	if at != n || len(addresses) != 0 || len(literals) != 0 {
+		return nil, errC12
+	}
+	return out, nil
+}
+
+func (index c12Index) read(program, base io.ReaderAt, start, end int) ([]byte, error) {
+	if start < 0 || end <= start || end > index.size {
+		return nil, errC12
+	}
+	out := make([]byte, 0, end-start)
+	for i := start / c12Frame; i*c12Frame < end; i++ {
+		row, at := index.rows[i], i*c12Frame
+		n := min(index.size-at, c12Frame)
+		p, err := c12ReadAt(program, row.bytes, row.at)
+		if err != nil {
+			return nil, err
+		}
+		var b []byte
+		switch p[0] {
+		case 0, 1:
+			b, err = c12LiteralRead(p, n)
+		case 2:
+			if len(p) != 1 {
+				return nil, errC12
+			}
+			b, err = c12ReadAt(base, n, int64(at))
+		case 3:
+			b, err = c12ReadAt(base, n, int64(at))
+			if err == nil {
+				var d []byte
+				d, err = xdInflate(p[1:], int64(n))
+				if err == nil && len(d) != n {
+					err = errC12
+				}
+				for j, x := range d {
+					b[j] ^= x
+				}
+			}
+		case 4:
+			b, err = c12Unpack(p[1:], base, at, n)
+		default:
+			return nil, errC12
+		}
+		if err != nil || len(b) != n || sha256.Sum256(b) != row.hash {
+			return nil, errC12
+		}
+		out = append(out, b[max(start-at, 0):min(end-at, n)]...)
+	}
+	return out, nil
+}
+
+func c12OpenXD(program io.ReaderAt, size int64) (xdHeader, error) {
+	for span := 4096; span <= 262144; span *= 2 {
+		b, err := c12ReadAt(program, min(span, int(size)), 0)
+		if err != nil {
+			return xdHeader{}, err
+		}
+		header, more, err := xdParseHeader(b)
+		if err == nil && !more && header.total == size {
+			return header, nil
+		}
+		if !more || len(b) == int(size) {
+			break
+		}
+	}
+	return xdHeader{}, errC12
+}
+
+func c12ReadXD(header xdHeader, program, base io.ReaderAt, start, end int) ([]byte, error) {
+	if start < 0 || end <= start || int64(end) > header.size {
+		return nil, errC12
+	}
+	out := make([]byte, end-start)
+	f := sort.Search(len(header.frames), func(i int) bool {
+		p := header.frames[i]
+		return p.tpos+p.span > int64(start)
+	})
+	for i := f; i < len(header.frames) && header.frames[i].tpos < int64(end); i++ {
+		row := header.frames[i]
+		p, err := c12ReadAt(program, int(row.plen), row.poff)
+		if err != nil {
+			return nil, err
+		}
+		ops, err := xdDecodeFrame(&header, i, p)
+		if err != nil {
+			return nil, err
+		}
+		for _, op := range ops {
+			lo, hi := max(int(op.tpos), start), min(int(op.tpos+op.n), end)
+			if lo >= hi {
+				continue
+			}
+			dest := out[lo-start : hi-start]
+			pos := int64(lo) - op.tpos
+			if op.base < 0 {
+				copy(dest, op.lit[pos:pos+int64(len(dest))])
+			} else if _, err := base.ReadAt(dest, op.off+pos); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+type c12Counter struct {
+	io.ReaderAt
+	total int64
+}
+
+func (r *c12Counter) ReadAt(p []byte, off int64) (int, error) {
+	n, err := r.ReaderAt.ReadAt(p, off)
+	r.total += int64(n)
+	return n, err
+}
+
+func TestC12Process(t *testing.T) {
+	env := os.Getenv
+	method, action := env("C12_METHOD"), env("C12_ACTION")
+	if action == "" {
+		t.Skip("run with the C12 experiment driver")
+	}
+	dir, baseName, targetName := env("C12_PROGRAM"), env("C12_BASE"), env("C12_TARGET")
+	if action == "encode" {
+		base, err := os.ReadFile(baseName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, err := os.ReadFile(targetName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := c12Encode(method, base, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dir, p, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	program, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer program.Close()
+	base, err := os.Open(baseName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	info, err := program.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	progRead, baseRead := &c12Counter{ReaderAt: program}, &c12Counter{ReaderAt: base}
+	var size int
+	var want [32]byte
+	var sourceHashes [][32]byte
+	var read func(start, end int) ([]byte, error)
+	if method == "xd" {
+		h, err := c12OpenXD(progRead, info.Size())
+		if err != nil || len(h.bases) > 1 {
+			t.Fatalf("opening native XD: %v", err)
+		}
+		size, want = int(h.size), h.sha
+		for _, ref := range h.bases {
+			sourceHashes = append(sourceHashes, ref.SHA)
+		}
+		read = func(a, b int) ([]byte, error) { return c12ReadXD(h, progRead, baseRead, a, b) }
+	} else {
+		h, err := c12Open(progRead, info.Size())
+		if err != nil {
+			t.Fatal(err)
+		}
+		size, want, sourceHashes = h.size, h.want, [][32]byte{h.base}
+		read = func(a, b int) ([]byte, error) { return h.read(progRead, baseRead, a, b) }
+	}
+	if action == "decode" {
+		if len(sourceHashes) == 1 {
+			hash := sha256.New()
+			if _, err := io.Copy(hash, base); err != nil || !bytes.Equal(hash.Sum(nil), sourceHashes[0][:]) {
+				t.Fatal("delta base identity differs")
+			}
+		}
+		got, err := read(0, size)
+		if err != nil || sha256.Sum256(got) != want {
+			t.Fatalf("whole digest differs: %v", err)
+		}
+		if err := os.WriteFile(env("C12_OUTPUT"), got, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if action != "ranges" {
+		t.Fatalf("unknown action %q", action)
+	}
+	fixture, err := os.Open(targetName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fixture.Close()
+	rng := rand.New(rand.NewPCG(1212, 2026))
+	latencies := make([]int64, 128)
+	openBytes := progRead.total
+	for i := range latencies {
+		n := min(4096, size)
+		at := rng.IntN(size - n + 1)
+		start := time.Now()
+		got, err := read(at, at+n)
+		latencies[i] = time.Since(start).Nanoseconds()
+		expect, ferr := c12ReadAt(fixture, n, int64(at))
+		if err != nil || ferr != nil || !bytes.Equal(got, expect) {
+			t.Fatalf("sparse decode differs at %d: %v %v", at, err, ferr)
+		}
+	}
+	slices.Sort(latencies)
+	row := map[string]int64{"samples": int64(len(latencies)), "program_open_bytes": openBytes,
+		"program_read_bytes": progRead.total - openBytes, "base_read_bytes": baseRead.total}
+	for _, p := range []int{50, 95, 99} {
+		row[fmt.Sprintf("p%d_ns", p)] = latencies[int(math.Ceil(float64(len(latencies)*p)/100))-1]
+	}
+	data, _ := json.Marshal(row)
+	fmt.Printf("C12 %s\n", data)
+}
+
+func TestC12Integrity(t *testing.T) {
+	rng := rand.New(rand.NewPCG(12, 19))
+	base := make([]byte, 2*c12Frame+601)
+	for i := range base {
+		base[i] = byte(rng.Uint64())
+	}
+	target := slices.Clone(base)
+	for i := c12Frame + 16; i < 2*c12Frame; i += 53 {
+		target[i] ^= 17
+	}
+	target = append(target, []byte("appended record")...)
+	for _, method := range []string{"xor", "packed"} {
+		t.Run(method, func(t *testing.T) {
+			p, err := c12Encode(method, base, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, ref := bytes.NewReader(p), bytes.NewReader(base)
+			h, err := c12Open(body, int64(len(p)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, span := range [][2]int{{0, len(target)}, {c12Frame - 17, c12Frame + 87}, {len(target) - 177, len(target)}} {
+				got, err := h.read(body, ref, span[0], span[1])
+				if err != nil || !bytes.Equal(got, target[span[0]:span[1]]) {
+					t.Fatalf("inexact span %v: %v", span, err)
+				}
+			}
+			if _, err := h.read(body, ref, -1, len(target)); err == nil {
+				t.Fatal("invalid range passed")
+			}
+			if _, err := c12Open(bytes.NewReader(p[:len(p)-1]), int64(len(p)-1)); err == nil {
+				t.Fatal("truncation passed")
+			}
+			wrong := slices.Clone(base)
+			wrong[8] ^= 1
+			if _, err := h.read(body, bytes.NewReader(wrong), 0, 8); err == nil {
+				t.Fatal("range escaped frame authentication")
+			}
+			broken := slices.Clone(p)
+			broken[h.rows[0].at] = 255
+			if _, err := h.read(bytes.NewReader(broken), ref, 0, 8); err == nil {
+				t.Fatal("corrupted frame passed")
+			}
+		})
+	}
+}
