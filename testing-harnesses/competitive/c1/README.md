@@ -48,9 +48,9 @@ and GC pass after 1.92 s ingest. Median verified full reads rose from 1.04 s
 to 1.25 s. The optimizer used up to about 61.3 MiB of sampled store allocation.
 Borg and Restic overlap the default ZeroS3 footprint. Snapshot reconstruction
 writes to disk, and its timing is presented separately from S3 GET.
-In single-run diagnostics, archive used 2.11 MiB for tensors versus 2.34
-for generic deltas. Archive grew the lodash history to 4.48 MiB from
-0.98 MiB in default CDC. Shifted and entropy controls showed little benefit.
+Single-run archive cut tensors to 2.11 MiB versus 2.34 for generic deltas,
+but grew lodash from 0.98 to 4.48 MiB versus default CDC. Generic deltas
+matched archive on SST and used 1.92 MiB versus archive's 2.50 on Parquet.
 [Full tables](results/tables.md) · [Storage and timing chart](results/history-tradeoffs.png)
 
 ## Xet
@@ -58,7 +58,8 @@ for generic deltas. Archive grew the lodash history to 4.48 MiB from
 OpenXet loopback used official huggingface_hub 2.4.0 and hf_xet 1.8.0.
 A 4 MiB new upload used about 4.24 MiB on loopback. The exact repeat used
 7 KiB, an 8 KiB insertion used 96 KiB, and unrelated 4 MiB data used 4.02 MiB.
-The local store retained 14.75 MiB after 32.02 MiB of logical commits.
+OpenXet retained 14.75 MiB after 32.02 MiB of logical commits. ZeroS3
+retained 14.02 MiB on the same trace and sent the full body on exact repeat.
 Seven of eight committed files reconstructed and passed SHA-256. One tensor
 revision triggered a client range-bounds error on three independent runs,
 including a run with the Xet chunk cache disabled.
