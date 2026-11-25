@@ -153,9 +153,11 @@ def run(args, family, out):
         if not items:
             raise ValueError(f"missing input for {family}")
         began = time.perf_counter()
-        with server("zeros3", root, seed) as (api, _, store):
+        with server("zeros3", root, seed) as (api, pid, store):
+            ingress_before = sample(pid)
             for key, content in items:
                 put(api, key, content)
+            ingress_after = sample(pid)
             initial = inventory(store)
         for lane in args.lanes:
             txn = root / lane
@@ -168,7 +170,10 @@ def run(args, family, out):
 
             report = inventory(store)
             emit("ingest", {"seconds_including_server": time.perf_counter() - began if lane == args.lanes[0] else None,
-                            "allocated": sum(report.values()), "paths": report, "serving_paths": initial})
+                             "allocated": sum(report.values()), "paths": report, "serving_paths": initial,
+                            "ingest_server_cpu_seconds": ingress_after["cpu_seconds"] - ingress_before["cpu_seconds"],
+                            "ingest_server_peak_rss_bytes": ingress_after["peak_rss_bytes"],
+                            "logical_bytes": sum(len(body) for _, body in items)})
             opts = ["authority", "optimize", "-profile", "archive", "-order", "oldest",
                     "-max-depth", "2", "-max-bases", "2", "-min-saving", ".10", *LANES[lane]]
             if lane != "cdc":
