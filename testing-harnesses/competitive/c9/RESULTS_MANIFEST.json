@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "engine_checkpoint": "8f1eb34a626dc1e89bcf8232733421124bb22ee9",
+  "stable_main": "2ac9caba60cc050a595cefef7b791aa718803c0e",
+  "comparison_revisions": {
+    "b10": "dcefbcb5c2539c74a0d33bfc0d6e4a380f671743",
+    "c1": "fe14dfd2de3915852e143aa4c557f5596bdb47e9",
+    "c2": "4bc66f3af3d1d97f90c483c2b26676d3912fbb02"
+  },
+  "environment": {
+    "architecture": "x86_64",
+    "kernel": "Linux",
+    "cpu_quota": 2.0,
+    "memory_bytes": 8589934592,
+    "go": "go version go1.27.0 linux/amd64",
+    "paced_transfer_bytes_per_second_per_leg": 768000,
+    "s3_cache": "ordinary loopback with uncontrolled Linux page cache"
+  },
+  "inputs": {
+    "c1/results/corpus.json": {
+      "bytes": 99688,
+      "sha256": "09de47c0b985fe5b764b1e39505d4d8a8948fbad7266fe96c16ede85e3655e4d"
+    },
+    "c1/results/codec-corpus.json": {
+      "bytes": 903,
+      "sha256": "c8e25a5dcce1165527fb964bbe9b0a8441fe7bf8d2e5ab811af17484b187ba09"
+    },
+    "c3/inputs.jsonl": {
+      "bytes": 3113,
+      "sha256": "674e5a9ea9e9415dace4446dd078865d976ecec13528799038eed67d34c54687"
+    },
+    "c5/inputs.json": {
+      "bytes": 6176,
+      "sha256": "63dd6cf44686ee03afb0675e7d9058500d5f1a6fffa1eca28706fba1d2c5bd07"
+    }
+  },
+  "binaries": {
+    "zeros3": {
+      "bytes": 21943488,
+      "sha256": "00498ec35ff12380c834d0579487f2f459544d5c508f5871b637e166ef86230d"
+    },
+    "minio": {
+      "bytes": 147157806,
+      "sha256": "f7615059270c91ba410f8706a6ac76596df226686485d0a9dad2cc2042d63873"
+    },
+    "rustfs": {
+      "bytes": 378579368,
+      "sha256": "250be6671ba447e93c1da14b6f042038aae913811990c6f3aef7efde463fec7f"
+    },
+    "restic": {
+      "bytes": 39133344,
+      "sha256": "c109579d3a1a4d26094bef5400ac5645fceb1043414c05f51b8fb48272001c72"
+    },
+    "openxet": {
+      "bytes": 41585240,
+      "sha256": "c8222d8128f4dd1f38b88a99b5f8c39f7ea86febadf0823132fd3fd1b669aea1"
+    }
+  },
+  "outputs": {
+    "acceptance.log": {
+      "bytes": 354,
+      "sha256": "fd946fe2f7fbeef94f21f0fa48958574720decd456f9d4cedeb0f24bad8ea34d"
+    },
+    "compatibility.json": {
+      "bytes": 2757,
+      "sha256": "13e47b541ad497d2a6825594a0438768fa0ca397f856911a4e23e8b139ebc028"
+    },
+    "durability.json": {
+      "bytes": 3798,
+      "sha256": "63b8303e2ceeed60109a49088d1fae27b444821109f3f694a77b48ead52a59c6"
+    },
+    "final-arm64.jsonl": {
+      "bytes": 6875,
+      "sha256": "3a48849ef9e7962563529f7d23b8fc4bbcf985520df4648b5f1f4c11b2849dac"
+    },
+    "requests-rustfs-repeat.jsonl": {
+      "bytes": 12079,
+      "sha256": "36dd9b42036741a9a4e72996b0b6dbe072f6ab76852dcbf7eda24106a326a9b0"
+    },
+    "requests.jsonl": {
+      "bytes": 62243,
+      "sha256": "02e3a57b22a695073f3ac01dfa91996762331360353e3efc0a84420843d3c913"
+    },
+    "summary.json": {
+      "bytes": 7531,
+      "sha256": "d664a565d506eb3951ed81b6afbf74acd27d162e265df596a4b9e23b5b9aba1f"
+    },
+    "transfer.jsonl": {
+      "bytes": 11690,
+      "sha256": "6282c08d81d941bf07b7bfd93a7c489f647bacf82f077437c0c79fd41c4e80be"
+    },
+    "verdict.json": {
+      "bytes": 707,
+      "sha256": "2a577e74e5a054c2cc76395a79951a5a8b02324100d6f1eaeaf3552262069e6d"
+    },
+    "workflows.jsonl": {
+      "bytes": 13233,
+      "sha256": "3c4011058c6ab8fd63799629b4c80abeacb320e12d8961fcc0df54b29800443d"
+    },
+    "xet.jsonl": {
+      "bytes": 13314,
+      "sha256": "dcb228eb8d16b7a8da8fdcf0ae5cec826b6f94b72629b910a95b14a629ccaaa4"
+    }
+  }
+}

@@ -1,0 +1,272 @@
+{
+  "requests_4_clients": {
+    "minio/delete": {
+      "trials": 2,
+      "ops_per_second": 906.9523155538257,
+      "cpu_seconds": 0.11999999999999988,
+      "p99_ms": 14.025427500000001
+    },
+    "minio/get-random": {
+      "trials": 2,
+      "ops_per_second": 766.6942178421614,
+      "cpu_seconds": 0.14500000000000002,
+      "p99_ms": 13.548871
+    },
+    "minio/get-sequential": {
+      "trials": 2,
+      "ops_per_second": 710.7732784024986,
+      "cpu_seconds": 0.18499999999999994,
+      "p99_ms": 19.0302845
+    },
+    "minio/head": {
+      "trials": 2,
+      "ops_per_second": 925.2376036238923,
+      "cpu_seconds": 0.06499999999999984,
+      "p99_ms": 14.190166999999999
+    },
+    "minio/list": {
+      "trials": 2,
+      "ops_per_second": 119.0225496499612,
+      "cpu_seconds": 0.08000000000000007,
+      "p99_ms": null
+    },
+    "minio/mixed": {
+      "trials": 2,
+      "ops_per_second": 512.1381526022433,
+      "cpu_seconds": 0.265,
+      "p99_ms": 32.92518
+    },
+    "minio/put": {
+      "trials": 2,
+      "ops_per_second": 486.5172085679628,
+      "cpu_seconds": 0.32499999999999996,
+      "p99_ms": 16.9964095
+    },
+    "minio/range": {
+      "trials": 2,
+      "ops_per_second": 814.1825385584791,
+      "cpu_seconds": 0.1200000000000001,
+      "p99_ms": 16.52157
+    },
+    "rustfs/delete": {
+      "trials": 2,
+      "ops_per_second": 497.6614268035462,
+      "cpu_seconds": 0.2600000000000001,
+      "p99_ms": 25.4165165
+    },
+    "rustfs/get-random": {
+      "trials": 2,
+      "ops_per_second": 813.5892423119512,
+      "cpu_seconds": 0.07499999999999984,
+      "p99_ms": 15.245542499999999
+    },
+    "rustfs/get-sequential": {
+      "trials": 2,
+      "ops_per_second": 790.2603411006583,
+      "cpu_seconds": 0.11000000000000015,
+      "p99_ms": 14.7406765
+    },
+    "rustfs/head": {
+      "trials": 2,
+      "ops_per_second": 983.7955786932623,
+      "cpu_seconds": 0.025000000000000133,
+      "p99_ms": 11.509179499999998
+    },
+    "rustfs/list": {
+      "trials": 2,
+      "ops_per_second": 122.33056618208266,
+      "cpu_seconds": 0.0749999999999999,
+      "p99_ms": null
+    },
+    "rustfs/mixed": {
+      "trials": 2,
+      "ops_per_second": 650.9578353569527,
+      "cpu_seconds": 0.16499999999999998,
+      "p99_ms": 17.752056
+    },
+    "rustfs/put": {
+      "trials": 2,
+      "ops_per_second": 435.29611525422916,
+      "cpu_seconds": 0.37499999999999994,
+      "p99_ms": 28.6621955
+    },
+    "rustfs/range": {
+      "trials": 2,
+      "ops_per_second": 854.9340630619763,
+      "cpu_seconds": 0.09000000000000002,
+      "p99_ms": 12.2986385
+    },
+    "zeros3/delete": {
+      "trials": 2,
+      "ops_per_second": 1162.6109492666887,
+      "cpu_seconds": 0.03500000000000003,
+      "p99_ms": 9.4645445
+    },
+    "zeros3/get-random": {
+      "trials": 2,
+      "ops_per_second": 903.7868557498402,
+      "cpu_seconds": 0.05000000000000002,
+      "p99_ms": 13.0682735
+    },
+    "zeros3/get-sequential": {
+      "trials": 2,
+      "ops_per_second": 930.8614615332459,
+      "cpu_seconds": 0.05000000000000002,
+      "p99_ms": 12.1179625
+    },
+    "zeros3/head": {
+      "trials": 2,
+      "ops_per_second": 1033.5414922949408,
+      "cpu_seconds": 0.015000000000000013,
+      "p99_ms": 13.047041499999999
+    },
+    "zeros3/list": {
+      "trials": 2,
+      "ops_per_second": 125.48353142802124,
+      "cpu_seconds": 0.015000000000000013,
+      "p99_ms": null
+    },
+    "zeros3/mixed": {
+      "trials": 2,
+      "ops_per_second": 809.595323409596,
+      "cpu_seconds": 0.06499999999999989,
+      "p99_ms": 15.2692695
+    },
+    "zeros3/put": {
+      "trials": 2,
+      "ops_per_second": 500.3708790942536,
+      "cpu_seconds": 0.235,
+      "p99_ms": 33.58508
+    },
+    "zeros3/range": {
+      "trials": 2,
+      "ops_per_second": 930.9442142453265,
+      "cpu_seconds": 0.01999999999999999,
+      "p99_ms": 21.2155255
+    }
+  },
+  "transfer": {
+    "closure-cross": {
+      "trials": 2,
+      "seconds": 1.5134943479988578,
+      "server_cpu_seconds": 1.8250000000000002,
+      "http_stream_bytes": 350034.0
+    },
+    "replicate": {
+      "trials": 2,
+      "seconds": 11.04421763999926,
+      "server_cpu_seconds": 0.15500000000000014,
+      "http_stream_bytes": 8381025.0
+    },
+    "s3": {
+      "trials": 2,
+      "seconds": 5.523569948500153,
+      "server_cpu_seconds": 0.08,
+      "http_stream_bytes": 4175570.0
+    },
+    "sync": {
+      "trials": 2,
+      "seconds": 5.560891869999978,
+      "server_cpu_seconds": 0.105,
+      "http_stream_bytes": 4192302.0
+    }
+  },
+  "workflows": {
+    "artifact/full_archive": {
+      "workflow": "artifact",
+      "phase": "full_archive",
+      "seconds": 24.948836682000547,
+      "cpu_seconds": 42.470141,
+      "peak_rss_bytes": 205717504,
+      "input_blocks": 40,
+      "output_blocks": 458288,
+      "before_allocated": 12713984,
+      "allocated": 5300224,
+      "changes": [
+        "canon-codec",
+        "canon-codec",
+        "canon-codec",
+        "delta",
+        "delta-local32"
+      ],
+      "elapsed": 24.949863578000077
+    },
+    "artifact/repeat_repack": {
+      "workflow": "artifact",
+      "phase": "repeat_repack",
+      "seconds": 0.0502229650010122,
+      "cpu_seconds": 0.071347,
+      "peak_rss_bytes": 84484096,
+      "input_blocks": 0,
+      "output_blocks": 1592,
+      "allocated": 5300224,
+      "pack_bytes_written": 812613,
+      "kept_unchanged": 0
+    },
+    "artifact/bundle_restore": {
+      "workflow": "artifact",
+      "phase": "bundle_restore",
+      "seconds": 0.05971171299825073,
+      "cpu_seconds": 0.008005,
+      "peak_rss_bytes": 91303936,
+      "input_blocks": 0,
+      "output_blocks": 0,
+      "stdout": "Objects discovered:      3\nRestored:                3\nFailed:                  0\n\nLogical bytes restored:  12.00 MiB\nNew CAS payload:         0 B\nPayload bytes avoided:   12.00 MiB\n",
+      "bundle_bytes": 12609159,
+      "verified_objects": 3
+    },
+    "artifact/deep_verify": {
+      "workflow": "artifact",
+      "phase": "deep_verify",
+      "stores": 2
+    },
+    "database/full_archive": {
+      "workflow": "database",
+      "phase": "full_archive",
+      "seconds": 15.200263481998263,
+      "cpu_seconds": 17.707919,
+      "peak_rss_bytes": 240627712,
+      "input_blocks": 0,
+      "output_blocks": 80608,
+      "before_allocated": 13459456,
+      "allocated": 4493312,
+      "changes": [
+        "delta-local32",
+        "delta-local32",
+        "rep-parquet",
+        "delta",
+        "delta-local32"
+      ],
+      "elapsed": 15.2009589900008
+    },
+    "database/repeat_repack": {
+      "workflow": "database",
+      "phase": "repeat_repack",
+      "seconds": 0.16657816500082845,
+      "cpu_seconds": 0.275089,
+      "peak_rss_bytes": 91303936,
+      "input_blocks": 0,
+      "output_blocks": 8576,
+      "allocated": 4489216,
+      "pack_bytes_written": 4388825,
+      "kept_unchanged": 0
+    },
+    "database/bundle_restore": {
+      "workflow": "database",
+      "phase": "bundle_restore",
+      "seconds": 0.13024823700106936,
+      "cpu_seconds": 0.014313,
+      "peak_rss_bytes": 103776256,
+      "input_blocks": 0,
+      "output_blocks": 0,
+      "stdout": "Objects discovered:      6\nRestored:                6\nFailed:                  0\n\nLogical bytes restored:  16.24 MiB\nNew CAS payload:         0 B\nPayload bytes avoided:   16.24 MiB\n",
+      "bundle_bytes": 11544573,
+      "verified_objects": 6
+    },
+    "database/deep_verify": {
+      "workflow": "database",
+      "phase": "deep_verify",
+      "stores": 2
+    }
+  }
+}

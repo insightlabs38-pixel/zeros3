@@ -1,0 +1,19 @@
+{
+  "batch": "C9",
+  "status": "C9_SPECIALIZED_VALUE",
+  "engine_checkpoint": "8f1eb34a626dc1e89bcf8232733421124bb22ee9",
+  "stable_main": "2ac9caba60cc050a595cefef7b791aa718803c0e",
+  "artifact_objects_restored": 3,
+  "database_objects_restored": 6,
+  "restic_verified_revisions": 3,
+  "all_request_systems_valid_trials": 2,
+  "openxet_verified_events": 31,
+  "paced_transfer_pairs_per_lane": 2,
+  "scoped_type_script_http_bytes": 350034,
+  "peer_cdc_type_script_http_bytes": 8381025,
+  "focused_recovery_partition_passes": 14,
+  "root_suite": "targeted coverage",
+  "arm64": "QEMU user-mode runtime",
+  "completed_batches": ["C3", "C4", "C5", "C6", "C7", "C8", "C9"],
+  "disposition": "stop this queue"
+}
