@@ -1,5 +1,6 @@
 """Replay the immutable C1 history and audit each maintenance stage."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "c1"))
-from local_s3 import FAMILIES, put, sample, server, verified
+from local_s3 import FAMILIES, measure, put, sample, server, verified
 
 LANES = {
     "cdc": [],
@@ -125,6 +126,23 @@ def measure_reads(api, objects):
     return latencies
 
 
+def concurrent_reads(api, pid, items):
+    rng = random.Random(776)
+    scans = []
+    for _ in range(36):
+        key, body = rng.choice(items)
+        start = rng.randrange(max(1, len(body)-4096+1))
+        end = min(start+4096, len(body))
+        scans.append((key, body[start:end], f"bytes={start}-{end-1}"))
+    for width in (1, 4):
+        before = sample(pid)
+        with ThreadPoolExecutor(width) as pool:
+            row = measure(pool, scans, lambda key, expected, span: verified(api, key, expected, span))
+        after = sample(pid)
+        yield {"concurrency": width,
+               "server_cpu_seconds": after["cpu_seconds"]-before["cpu_seconds"], **row}
+
+
 def run(args, family, out):
     root = args.scratch / family
     root.mkdir()
@@ -188,6 +206,9 @@ def run(args, family, out):
                 else:
                     for key, content in items:
                         verified(api, key, content)
+                if args.concurrent_reads:
+                    for result in concurrent_reads(api, pid, items):
+                        emit("concurrent-reads", result)
                 emit("restore", {"objects_verified": len(items)})
             shutil.rmtree(txn)
     finally:
@@ -207,6 +228,7 @@ def main():
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--integrated", action="store_true")
     parser.add_argument("--reads", action="store_true")
+    parser.add_argument("--concurrent-reads", action="store_true")
     parser.add_argument("--reoptimize", action="store_true")
     parser.add_argument("--memo", action="store_true", help="measure convergence pass and a memo hit")
     args = parser.parse_args()

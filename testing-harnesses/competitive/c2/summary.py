@@ -1,4 +1,5 @@
 """Summarize matched C2 storage, read, and reoptimization evidence."""
+import argparse
 import json
 from pathlib import Path
 from statistics import median
@@ -16,6 +17,10 @@ def row(rows, family, lane, stage):
 
 
 def main():
+    global RESULTS
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results", type=Path, nargs="?", default=RESULTS)
+    RESULTS = parser.parse_args().results
     original, full, c2 = map(load, ("b10-primary", "b10-finalized", "c2-finalized"))
     comparatives = {}
     for family in FAMILIES:
@@ -40,7 +45,39 @@ def main():
                     "run_p50_ms": [obs[k]["p50_ms"] for obs in observations]}
                 for k in ("4096/0", "65536/0", "1048576/0", "0/0")}
 
-    result = {"retained_storage": comparatives,
+    history = {}
+    for family in ("rubocop", "typescript", "django", "coreutils-files", "go-files", "urllib3"):
+        pair = {}
+        for build in ("b10", "c2"):
+            name = build + "-" + family
+            if not (RESULTS / (name + ".jsonl")).exists():
+                continue
+            records = load(name)
+            verified = next((r for r in records if r["stage"] == "restore"), None)
+            if verified:
+                pair[build] = {"allocated_bytes": row(records, family, "c1", "final-gc")["allocated"],
+                               "verified_objects": verified["objects_verified"]}
+        if pair:
+            history[family] = pair
+    s3, concurrent = {}, {}
+    for build in ("b10", "c2"):
+        trials = []
+        for suffix in ("", "-2", "-3"):
+            name = build + "-default-s3" + suffix
+            if (RESULTS / (name + ".jsonl")).exists():
+                trials.extend(load(name))
+        if trials:
+            s3[build] = {operation: [r["operations"] / r["seconds"] for r in trials
+                                    if r.get("concurrency") == 4 and r.get("status") == "verified"
+                                    and r["operation"] == operation]
+                         for operation in ("put", "get-sequential", "get-random", "range")}
+        name = build + "-concurrent"
+        if (RESULTS / (name + ".jsonl")).exists():
+            concurrent[build] = {str(r["concurrency"]): r["operations"] / r["seconds"]
+                                 for r in load(name) if r["stage"] == "concurrent-reads"}
+    result = {"retained_storage": comparatives, "historical_storage": history,
+              "default_s3_four_client_ops_per_second": s3,
+              "parquet_4k_concurrent_ops_per_second": concurrent,
               "parquet_read_b10": parquet_performance("b10", full),
               "parquet_read_c2": parquet_performance("c2", c2),
               "composite_b10_apply": metrics(full, "combined", "apply"),

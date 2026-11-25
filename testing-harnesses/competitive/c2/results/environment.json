@@ -1,0 +1,13 @@
+{
+  "kernel": "6.18.57",
+  "architecture": "x86_64",
+  "cpu_max": "200000 100000",
+  "memory_max": 8589934592,
+  "workspace": "overlayfs",
+  "scratch_target_bytes": 4294967296,
+  "filesystem_block_bytes": 4096,
+  "b10_revision": "dcefbcb5c2539c74a0d33bfc0d6e4a380f671743",
+  "c2_source_checkpoint": "5ca27bedaf6f63f7a91086a657366502ebe989d5",
+  "b10_binary_sha256": "932c4ec075590c1839bc83cc77774443111292abec7245b70d6c74ebce664afe",
+  "c2_binary_sha256": "f945a45dac1c0f7d7aa631f66e2efa304c9e0a04d4045184b4de3daff8ed9f73"
+}

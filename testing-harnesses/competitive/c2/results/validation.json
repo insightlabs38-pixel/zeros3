@@ -1,0 +1,32 @@
+{
+  "source_checkpoint": "5ca27be",
+  "race": {
+    "command": "go test -race -run 'TestC2|TestB10SpliceConcurrentReads|TestB10SpliceWindowCache' -count=1 -timeout 12m .",
+    "result": "ok  \tzeros3\t112.579s"
+  },
+  "root_first_invocation": {
+    "command": "go test -count=1 -timeout 18m .",
+    "status": "timeout",
+    "cutoff_test": "TestP2_RangeReadsMatchReferenceOnEveryLayout",
+    "earlier_top_level_test_slots": 364,
+    "earlier_reported_assertion_failures": []
+  },
+  "root_resumed": {
+    "selection": "Test binary list starting at the timed-out top-level test",
+    "expected_top_level_tests": 1151,
+    "passed": 1139,
+    "skipped": 12,
+    "failed": 0,
+    "elapsed_seconds": 273.064
+  },
+  "root_recorded_test_list_size": 1515,
+  "archive_finalization_process_kill_points": [
+    "authority-archive-after-gc",
+    "authority-archive-after-repack"
+  ],
+  "fixture_verification": {
+    "c1_manifest_files": 849,
+    "c1_manifest_revisions": 48,
+    "exact_sst_revisions_regenerated": 3
+  }
+}

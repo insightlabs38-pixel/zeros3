@@ -41,6 +41,124 @@
       "c2_finalized_archive_bytes": 28295168
     }
   },
+  "historical_storage": {
+    "rubocop": {
+      "b10": {
+        "allocated_bytes": 1007616,
+        "verified_objects": 3
+      },
+      "c2": {
+        "allocated_bytes": 1007616,
+        "verified_objects": 3
+      }
+    },
+    "typescript": {
+      "b10": {
+        "allocated_bytes": 5296128,
+        "verified_objects": 3
+      },
+      "c2": {
+        "allocated_bytes": 5296128,
+        "verified_objects": 3
+      }
+    },
+    "django": {
+      "b10": {
+        "allocated_bytes": 14368768,
+        "verified_objects": 3
+      },
+      "c2": {
+        "allocated_bytes": 14368768,
+        "verified_objects": 3
+      }
+    },
+    "coreutils-files": {
+      "b10": {
+        "allocated_bytes": 1851392,
+        "verified_objects": 192
+      },
+      "c2": {
+        "allocated_bytes": 1851392,
+        "verified_objects": 192
+      }
+    },
+    "go-files": {
+      "b10": {
+        "allocated_bytes": 1032192,
+        "verified_objects": 192
+      },
+      "c2": {
+        "allocated_bytes": 1032192,
+        "verified_objects": 192
+      }
+    },
+    "urllib3": {
+      "b10": {
+        "allocated_bytes": 233472,
+        "verified_objects": 3
+      },
+      "c2": {
+        "allocated_bytes": 233472,
+        "verified_objects": 3
+      }
+    }
+  },
+  "default_s3_four_client_ops_per_second": {
+    "b10": {
+      "put": [
+        682.1876581444217,
+        659.1336810959339,
+        637.0270175641406
+      ],
+      "get-sequential": [
+        973.8958116425849,
+        954.7253967961364,
+        909.4072151485985
+      ],
+      "get-random": [
+        979.48573911033,
+        991.2658464925794,
+        917.014744342883
+      ],
+      "range": [
+        1129.1575669806957,
+        1123.0633474320848,
+        1062.931454661898
+      ]
+    },
+    "c2": {
+      "put": [
+        691.1267925340272,
+        609.4668408233051,
+        626.2713934480323
+      ],
+      "get-sequential": [
+        691.0226294144778,
+        915.4532630499956,
+        895.4614153750379
+      ],
+      "get-random": [
+        891.8089632008862,
+        885.1580460819926,
+        911.9435652857107
+      ],
+      "range": [
+        1011.7199252124803,
+        1012.5964751458973,
+        1073.2877709827042
+      ]
+    }
+  },
+  "parquet_4k_concurrent_ops_per_second": {
+    "b10": {
+      "1": 20.292592270300542,
+      "4": 37.734144137771686
+    },
+    "c2": {
+      "1": 142.36084132846702,
+      "4": 301.2692775944425
+    }
+  },
   "parquet_read_b10": {
     "4096/0": {
       "median_run_p50_ms": 88.67121799994493,

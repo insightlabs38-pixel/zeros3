@@ -1,5 +1,6 @@
 # ZeroS3 C2 · Storage frontier and read performance
 
+**C2_PERF_EFFECTIVE.**
 Frozen B10: `dcefbcb5c2539c74a0d33bfc0d6e4a380f671743`. C1 corpus and immutable
 keys are preserved. Tests ran on Debian 13, overlayfs, two quota CPUs and
 8 GiB cgroup memory. Read timings are process-cold and repeated, with the
@@ -33,6 +34,7 @@ components consistently. It rejected the lodash expansion and selected
 generic deltas for Parquet, recovering 610,304 bytes without repack.
 These checks bound modeled closure. Pack slack, directory overhead,
 interrupted maintenance and peak staging still depend on the actual store.
+Finalization is store-wide even when candidate analysis uses a narrower scope.
 
 ## Read and optimization costs
 
@@ -44,6 +46,7 @@ replay can reuse up to 128 KiB within one request. No stored format changes.
 Across three matched Parquet trials, median run-level p50 at 4 KiB fell
 from 88.67 to 4.08 ms. Medians at 64 KiB were 88.58 and 87.65 ms.
 At 1 MiB they were 88.58 and 90.72 ms. Whole reads were 91.84 and 98.14 ms.
+Four-client 4 KiB throughput rose from 37.7 to 301.3 verified GETs/s.
 The initial unbounded seek trial regressed 64 KiB and whole reads. It is
 retained separately. No broad canonical-read speedup was established.
 
@@ -56,8 +59,20 @@ A completed no-change pass makes an opt-in memo reusable. On the composite,
 a memo hit took 0.052 s wall and 0.024 CPU s, versus B10's 10.05 and 10.75 s.
 The memo is disposable, covers unchanged local stores and confers no integrity
 validation. New revisions, changed policy and GC can force fresh analysis.
+The memo falls back above 100,000 inventory entries or a 32 MiB journal.
 
 ## Validation and replay
+
+RubyGems, TypeScript, Django, Coreutils and Go subsets, and held-out urllib3
+matched finalized B10 storage and restored exactly. Their storage-only passes overlapped
+the root suite, so their wall times are excluded from speed comparisons.
+
+Focused race tests and two archive phase SIGKILL tests passed. The uninterrupted
+root invocation timed out at 18 minutes. The remaining 1,151 tests ran separately
+with 1,139 passes, 12 skips and zero failures. [Validation evidence](results/validation.json)
+All 18,504 default S3 operations verified. Four-client median rates in the
+PUT, random, sequential and range GET lanes fell 5–10%. Client read CPU
+also rose. The source of the timing change remains unisolated.
 
 C2 keeps advanced analysis explicit. Use a bounded or delta-only pass where
 retention economics warrant it, then archive finalization for worthwhile
@@ -66,8 +81,9 @@ rewarming need further evidence. C3 should measure dependency transfer and
 reconstruction against generic CDC on the same versions and network.
 
 `./replay.sh WORK C1_CORPUS core` builds both binaries and validates the input
-manifest. Use `external` for the pinned release subsets and `tests` for Go
-validation. Use the pinned C1 Python requirements and Go 1.27.0.
+manifest. Use `external` for release subsets, `requests` for serving checks
+and `tests` for Go validation. Use the pinned C1 Python requirements and Go 1.27.0.
 For exact SST input replay, install C1 codec requirements and run
 `python sst_replay.py C1_CORPUS results/sst-replay.json`.
-[Machine-readable summary](results/summary.json) · [Raw results](results/)
+[Machine-readable summary](results/summary.json) · [Raw results](results/) ·
+[Storage and read tradeoffs](results/storage-read-tradeoffs.png)
