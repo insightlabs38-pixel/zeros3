@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "c3"))
 from transfer import file_digest, run
 
 
-METHODS = ("xd", "xor", "packed", "xdelta3", "bsdiff", "zstd")
-LAB = METHODS[:3]
+METHODS = ("xd", "xor", "packed", "anchor-xor", "xdelta3", "bsdiff", "zstd")
+LAB = METHODS[:4]
 
 
 def allocated(path):
@@ -28,7 +28,8 @@ def native_lab(args, method, env, action):
 def external(args, method, env, encode, base, target, program, output):
     if method == "xdelta3":
         binary = args.tools / "xdelta3"
-        flags = ["-e" if encode else "-d", "-f", "-s", str(base)]
+        # The CLI otherwise may unpack gzip sources and regenerate a different gzip wrapper.
+        flags = ["-e" if encode else "-d", "-D", "-R", "-f", "-s", str(base)]
         if encode:
             flags += ["-9", str(target), str(program)]
         else:

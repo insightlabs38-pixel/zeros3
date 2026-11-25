@@ -64,17 +64,16 @@ func c12LiteralRead(b []byte, max int) ([]byte, error) {
 	return nil, errC12
 }
 
-func c12Residual(base, data []byte, at int) []byte {
-	if at+len(data) > len(base) {
-		return c12Literal(data)
-	}
-	prior := base[at : at+len(data)]
+func c12Residual(prior, data []byte, sourceAt, targetAt int) []byte {
+	shifted := sourceAt != targetAt
 	if bytes.Equal(prior, data) {
+		if shifted {
+			return binary.AppendUvarint([]byte{5}, uint64(sourceAt))
+		}
 		return []byte{2}
 	}
-	literal := c12Literal(data)
 	// Co-located samples cheaply rule out independent entropy and many
-	// shifted regions. A rejected frame still has an exact literal mode.
+	// shifted regions. The caller retains the literal fallback.
 	same := 0
 	for i := 0; i < len(data); i += 37 {
 		if data[i] == prior[i] {
@@ -82,14 +81,81 @@ func c12Residual(base, data []byte, at int) []byte {
 		}
 	}
 	if same < max(1, len(data)/148) {
-		return literal
+		return nil
 	}
 	residual := make([]byte, len(data))
 	for i, b := range data {
 		residual[i] = b ^ prior[i]
 	}
-	if z := xdDeflate(residual, 6); len(z)+1 < len(literal) {
-		return append([]byte{3}, z...)
+	prefix := []byte{3}
+	if shifted {
+		prefix = binary.AppendUvarint([]byte{6}, uint64(sourceAt))
+	}
+	return append(prefix, xdDeflate(residual, 6)...)
+}
+
+const c12Page = 4096
+
+func c12Anchors(base []byte) map[[16]byte]int {
+	result := make(map[[16]byte]int, len(base)/c12Page)
+	for at := 0; at+16 <= len(base); at += c12Page {
+		key := [16]byte(base[at : at+16])
+		if key == ([16]byte{}) {
+			continue
+		}
+		if _, found := result[key]; found {
+			result[key] = -1
+		} else {
+			result[key] = at
+		}
+	}
+	return result
+}
+
+// Only unique nonzero page anchors vote. Two exact anchors must agree on
+// the displacement before the frame encoder spends work on an alternate.
+func c12AlignedBase(anchors map[[16]byte]int, data []byte, targetAt, baseLen int) int {
+	votes := make(map[int]int)
+	for inner := 0; inner+16 <= len(data); inner += c12Page {
+		key := [16]byte(data[inner : inner+16])
+		if page, found := anchors[key]; found && page >= inner && page-inner+len(data) <= baseLen {
+			votes[page-inner]++
+		}
+	}
+	distance := func(at int) int { return max(at-targetAt, targetAt-at) }
+	best, count := targetAt, 1
+	for at, n := range votes {
+		if n < 2 {
+			continue
+		}
+		d, closest := distance(at), distance(best)
+		if n > count || n == count && (d < closest || d == closest && at < best) {
+			best, count = at, n
+		}
+	}
+	return best
+}
+
+func c12ChooseResidual(base, data []byte, at int, anchors map[[16]byte]int) []byte {
+	var chosen []byte
+	if at+len(data) <= len(base) {
+		chosen = c12Residual(base[at:at+len(data)], data, at, at)
+		if len(chosen) == 1 {
+			return chosen
+		}
+	}
+	if anchors != nil {
+		aligned := c12AlignedBase(anchors, data, at, len(base))
+		if aligned != at {
+			candidate := c12Residual(base[aligned:aligned+len(data)], data, aligned, at)
+			if len(candidate) > 0 && (len(chosen) == 0 || len(candidate) < len(chosen)) {
+				chosen = candidate
+			}
+		}
+	}
+	literal := c12Literal(data)
+	if len(chosen) > 0 && len(chosen) < len(literal) {
+		return chosen
 	}
 	return literal
 }
@@ -156,8 +222,11 @@ func c12Encode(method string, base, target []byte) ([]byte, error) {
 		return p, err
 	}
 	var rows [][]xdOp
+	var anchors map[[16]byte]int
 	switch method {
 	case "xor":
+	case "anchor-xor":
+		anchors = c12Anchors(base)
 	case "packed":
 		var err error
 		rows, err = c12SplitOps(base, target)
@@ -175,10 +244,10 @@ func c12Encode(method string, base, target []byte) ([]byte, error) {
 	for at := 0; at < len(target); at += c12Frame {
 		block := target[at:min(at+c12Frame, len(target))]
 		var p []byte
-		if method == "xor" {
-			p = c12Residual(base, block, at)
-		} else {
+		if method == "packed" {
 			p = c12Packed(rows[at/c12Frame], block)
+		} else {
+			p = c12ChooseResidual(base, block, at, anchors)
 		}
 		out = binary.LittleEndian.AppendUint32(out, uint32(len(p)))
 		hash := sha256.Sum256(block)
@@ -291,6 +360,36 @@ func c12Unpack(p []byte, base io.ReaderAt, off, n int) ([]byte, error) {
 	return out, nil
 }
 
+func c12ExpandResidual(p []byte, base io.ReaderAt, at, n int) ([]byte, error) {
+	mode := p[0]
+	p = p[1:]
+	if mode == 5 || mode == 6 {
+		off, width := binary.Uvarint(p)
+		if width <= 0 || off > uint64(c12Limit-n) {
+			return nil, errC12
+		}
+		at, p = int(off), p[width:]
+	}
+	out, err := c12ReadAt(base, n, int64(at))
+	if err != nil {
+		return nil, err
+	}
+	if mode == 2 || mode == 5 {
+		if len(p) != 0 {
+			return nil, errC12
+		}
+		return out, nil
+	}
+	delta, err := xdInflate(p, int64(n))
+	if err != nil || len(delta) != n {
+		return nil, errC12
+	}
+	for i, x := range delta {
+		out[i] ^= x
+	}
+	return out, nil
+}
+
 func (index c12Index) read(program, base io.ReaderAt, start, end int) ([]byte, error) {
 	if start < 0 || end <= start || end > index.size {
 		return nil, errC12
@@ -307,23 +406,8 @@ func (index c12Index) read(program, base io.ReaderAt, start, end int) ([]byte, e
 		switch p[0] {
 		case 0, 1:
 			b, err = c12LiteralRead(p, n)
-		case 2:
-			if len(p) != 1 {
-				return nil, errC12
-			}
-			b, err = c12ReadAt(base, n, int64(at))
-		case 3:
-			b, err = c12ReadAt(base, n, int64(at))
-			if err == nil {
-				var d []byte
-				d, err = xdInflate(p[1:], int64(n))
-				if err == nil && len(d) != n {
-					err = errC12
-				}
-				for j, x := range d {
-					b[j] ^= x
-				}
-			}
+		case 2, 3, 5, 6:
+			b, err = c12ExpandResidual(p, base, at, n)
 		case 4:
 			b, err = c12Unpack(p[1:], base, at, n)
 		default:
@@ -556,5 +640,38 @@ func TestC12Integrity(t *testing.T) {
 				t.Fatal("corrupted frame passed")
 			}
 		})
+	}
+}
+
+func TestC12AnchoredShift(t *testing.T) {
+	rng := rand.New(rand.NewPCG(12, 21))
+	base := make([]byte, c12Frame*3)
+	for i := range base {
+		base[i] = byte(rng.Uint64())
+	}
+	target := append(make([]byte, c12Page), base...)
+	target[c12Frame+101] ^= 65
+	aligned, err := c12Encode("xor", base, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shifted, err := c12Encode("anchor-xor", base, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shifted) >= len(aligned) {
+		t.Fatal("agreement did not reduce the stored shifted patch")
+	}
+	prog, ref := bytes.NewReader(shifted), bytes.NewReader(base)
+	h, err := c12Open(prog, int64(len(shifted)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ := shifted[h.rows[1].at]; typ != 6 {
+		t.Fatalf("dispersed change did not use the shifted residual, got %d", typ)
+	}
+	got, err := h.read(prog, ref, 0, len(target))
+	if err != nil || !bytes.Equal(got, target) {
+		t.Fatalf("shifted reconstruction differs: %v", err)
 	}
 }

@@ -1,0 +1,10 @@
+=== RUN   TestC12Integrity
+=== RUN   TestC12Integrity/xor
+=== RUN   TestC12Integrity/packed
+--- PASS: TestC12Integrity (0.01s)
+    --- PASS: TestC12Integrity/xor (0.00s)
+    --- PASS: TestC12Integrity/packed (0.01s)
+=== RUN   TestC12AnchoredShift
+--- PASS: TestC12AnchoredShift (0.00s)
+PASS
+ok  	zeros3	0.017s

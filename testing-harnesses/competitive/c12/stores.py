@@ -32,6 +32,8 @@ def main():
            "AWS_REGION": "us-east-1", "GOMAXPROCS": "2"}
     with args.results.open("x") as out:
         def emit(row):
+            if row["stage"] == "read":
+                row["build"] = "c11"
             print(json.dumps(row), file=out, flush=True)
         for family in args.families:
             (prepare if args.prepare else replay)(args, env, family, emit)
