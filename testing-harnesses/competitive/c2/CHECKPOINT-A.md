@@ -11,8 +11,8 @@ recompression model for reachable components and authority records.
 | lodash | 1,036,288 | 4,694,016 | 3,739,648 | 507,904 |
 | Parquet | 2,191,360 | 2,625,536 | 2,625,536 | 712,704 |
 | SST | 11,337,728 | 4,546,560 | 4,546,560 | 3,878,912 |
-| tensor | 2,453,504 | 2,207,744 | 2,207,744 | 344,064 |
-| composite | 42,364,928 | 37,294,080 | 37,285,888 | 28,295,168 |
+| tensor | 2,457,600 | 2,207,744 | 2,207,744 | 344,064 |
+| composite | 42,364,928 | 37,285,888 | 37,285,888 | 28,295,168 |
 
 Lodash replaced the original pack with a canonical graph. The optimizer
 predicted 411,014 bytes of live components and records. The old 955,489-byte

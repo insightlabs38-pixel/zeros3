@@ -23,6 +23,8 @@ LANES = {
     "standalone": ["-canonical", "-codec-replay", "-hard-codecs", "-splice"],
     "sketch": ["-record-groups", "-canonical", "-codec-replay", "-hard-codecs", "-splice",
                "-discovery", "sketch"],
+    "current": ["-record-groups", "-canonical", "-codec-replay", "-hard-codecs", "-splice",
+                "-price-current-storage"],
     "mixed": ["-record-groups", "-canonical", "-codec-replay", "-hard-codecs", "-splice",
               "-profile", "mixed", "-order", "newest"],
 }
@@ -151,9 +153,12 @@ def run(args, family, out):
             if lane != "cdc":
                 if args.dry_plan:
                     emit("plan", command(args.binary, store, opts, txn))
-                emit("apply", command(args.binary, store, [*opts, "-apply"], txn))
-            steps = [("gc", ["gc", "-apply", "-json"])]
-            if not args.gc_only:
+                flags = [*opts, "-apply"]
+                if args.integrated:
+                    flags.append("-finalize")
+                emit("apply", command(args.binary, store, flags, txn))
+            steps = [] if args.integrated else [("gc", ["gc", "-apply", "-json"])]
+            if not args.gc_only and not args.integrated:
                 repack = ["repack", "-apply", "-json"]
                 compact = ["compact", "-json"]
                 if args.full:
@@ -190,6 +195,7 @@ def main():
     parser.add_argument("--dry-plan", action="store_true")
     parser.add_argument("--gc-only", action="store_true")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--integrated", action="store_true")
     parser.add_argument("--reads", action="store_true")
     parser.add_argument("--reoptimize", action="store_true")
     args = parser.parse_args()

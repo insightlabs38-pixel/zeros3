@@ -18165,7 +18165,11 @@ func gcCollect(storeDir string, apply bool) (GCResult, error) {
 		return GCResult{}, err
 	}
 	defer store.Close()
+	return store.gcOffline(apply)
+}
 
+// gcOffline requires exclusive ownership, also held across archive finalization.
+func (store *Store) gcOffline(apply bool) (GCResult, error) {
 	store.sealSegments() // maintenance sees sealed packs only (section 4d)
 	rr, err := store.reachabilityScan(false, nil)
 	if err != nil {
@@ -56057,6 +56061,14 @@ func (s *Store) eachLiveManifest(want func(bucket, key string) bool, fn func(liv
 	return nil
 }
 
+// authStagedChunkPrice uses the same policy for every candidate constructor.
+func authStagedChunkPrice(data []byte, current bool) int64 {
+	if current {
+		return int64(len(data)) + packRecordBytes
+	}
+	return packPriceLen(data) + packRecordBytes
+}
+
 // physChunk prices a chunk under the selected pack policy, including its
 // record header and index entry.
 func (s *Store) physChunk(sum [32]byte, logical int64, memo map[[32]byte]int64, current bool) int64 {
@@ -56962,7 +56974,7 @@ func (m *authMigrator) planRepGroupsUnion(kinds map[int]repKind, count map[repKi
 				for sum, d := range mem {
 					if _, ok := m.phys[sum]; !ok {
 						if _, err := m.s.casStat(sum); err != nil {
-							m.phys[sum] = packPriceLen(d) + packRecordBytes
+							m.phys[sum] = authStagedChunkPrice(d, m.pol.PriceCurrentStorage)
 						}
 					}
 				}
@@ -60800,7 +60812,14 @@ func runAuthority(args []string) {
 	groupsOn := fs.Bool("enable", false, "groups: raise the store feature \"recgroup\" and move record files into groups")
 	groupsOff := fs.Bool("disable", false, "groups: write grouped records back to files and lower \"recgroup\"")
 	recGroups := fs.Bool("record-groups", false, "migrate/optimize: publish records into groups (raises \"recgroup\"; older builds refuse the store)")
+	finalize := fs.Bool("finalize", false, "optimize: after archive apply, collect, recompress packs, compact loose chunks, and collect again")
 	fs.Parse(args[1:])
+	if *finalize && (sub != "optimize" || !*apply || !*archive && *profile != "archive" || *priceCurrent) {
+		log.Fatal("zeros3: authority -finalize requires archive optimize -apply with recompression pricing")
+	}
+	if (sub == "optimize" || sub == "migrate") && *reserveMiB > math.MaxUint64>>20 {
+		log.Fatal("zeros3: authority: reserve-free-mib is too large")
+	}
 	if *recGroups {
 		agWanted = true
 	}
@@ -60926,9 +60945,6 @@ func runAuthority(args []string) {
 			log.Fatalf("zeros3: authority index-status: %v", err)
 		}
 	case "migrate":
-		if *reserveMiB > math.MaxUint64>>20 {
-			log.Fatal("zeros3: authority migrate: reserve-free-mib is too large")
-		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		pol := AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, MaxReadAmp: *amp, MinReadRatio: *ratio, Bucket: *bucket, Prefix: *prefix, AllowRep: !*noRep, AllowDelta: !*noDelta, NoZN7: *noZN7, HardCodecs: *hard, Workers: *workers, Apply: *apply, Tier: *tier, NoReadCost: *noCost, WindowKiB: *windowKiB, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20, PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}
@@ -60986,6 +61002,15 @@ func runAuthority(args []string) {
 		rep, err := store.AuthorityOptimize(ctx, pol)
 		if err != nil {
 			log.Fatalf("zeros3: authority optimize: %v", err)
+		}
+		if *finalize {
+			if rep.Failed != 0 {
+				log.Fatal("zeros3: authority finalization requires successful publication")
+			}
+			rep.Finalization, err = store.finishAuthorityArchive(ctx, pol.ReserveFreeBytes)
+			if err != nil {
+				log.Fatalf("zeros3: authority finalize: %v", err)
+			}
 		}
 		enc.Encode(rep)
 	case "groups":
@@ -61312,9 +61337,23 @@ func (g *rgGraph) comp(sha [32]byte, logical, phys int64) int32 {
 	id := int32(len(g.cphys))
 	g.cid[sha] = id
 	g.csha = append(g.csha, sha)
+	raw := phys-packRecordBytes >= logical*15/16
+	if g.pol.PriceCurrentStorage {
+		if _, packed := g.s.packLookup(sha); !packed {
+			// Loose components occupy independent filesystem allocations. A new
+			// component might be packed, so price a loose allocation conservatively.
+			phys = (logical + g.block - 1) / g.block * g.block
+			if info, err := os.Stat(g.s.chunkPath(sha)); err == nil && info.Size() == logical {
+				if st, ok := info.Sys().(*syscall.Stat_t); ok {
+					phys = st.Blocks * 512
+				}
+			}
+			raw = true
+		}
+	}
 	g.cphys = append(g.cphys, phys)
 	g.clen = append(g.clen, logical)
-	g.craw = append(g.craw, phys-packRecordBytes >= logical*15/16)
+	g.craw = append(g.craw, raw)
 	g.ext = append(g.ext, 0)
 	return id
 }
@@ -61362,6 +61401,7 @@ type rgEval struct {
 	tmp      rgTouch
 	single   bool // ablation: single-node moves only
 	maxBases int  // restricted start: options with at most this many bases (0 = any)
+	noRep    bool // generic incumbent: exclude new structural options
 	noCanon  bool // B8 incumbent: canonical options excluded
 	noSplice bool // B10 incumbent: deep-stream options excluded (the B9 plan)
 }
@@ -62994,7 +63034,7 @@ func (e *rgEval) allowed(v, o int32) bool {
 	if e.g.pol.Order == "newest" && nd.newest && opt.kind != rgCDC && !opt.cur {
 		return false
 	}
-	if e.noCanon && opt.canon && !opt.cur || e.noSplice && opt.splice && !opt.cur {
+	if !opt.cur && (e.noRep && opt.kind == rgRep || e.noCanon && opt.canon || e.noSplice && opt.splice) {
 		return false
 	}
 	return e.maxBases == 0 || len(opt.bases) <= e.maxBases || opt.cur
@@ -63642,6 +63682,74 @@ type OptimizeReport struct {
 	ApplySeconds     float64          `json:"apply_seconds"`
 	HeapMiB          int              `json:"heap_mib"`
 	Seconds          float64          `json:"seconds"`
+	Finalization     *archiveFinish   `json:"finalization,omitempty"`
+}
+
+type archiveFinish struct {
+	FirstGC GCResult      `json:"first_gc"`
+	Repack  RepackResult  `json:"repack"`
+	Compact CompactResult `json:"compact"`
+	FinalGC GCResult      `json:"final_gc"`
+	Seconds float64       `json:"seconds"`
+}
+
+// finishAuthorityArchive uses the same reachability and publication paths as offline
+// maintenance. Each completed phase is durable and can be repeated after interruption.
+func (s *Store) finishAuthorityArchive(ctx context.Context, reserve uint64) (*archiveFinish, error) {
+	start := time.Now()
+	out := &archiveFinish{}
+	check := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return s.checkAuthDiskReserve(reserve, 0, 0)
+	}
+	var err error
+	if err = check(); err != nil {
+		return nil, err
+	}
+	if out.FirstGC, err = s.gcOffline(true); err != nil {
+		return nil, fmt.Errorf("initial GC: %w", err)
+	}
+	if err = check(); err != nil {
+		return nil, err
+	}
+	rr, err := s.reachabilityScan(false, nil)
+	if err != nil {
+		return nil, err
+	}
+	if !rr.OK() {
+		return nil, errGCUnsafe
+	}
+	out.Repack, err = s.repack(rr, repackOptions{TargetBytes: defaultPackTargetBytes,
+		MaxLivePercent: 100, Compress: true, Recompress: true, Layout: layoutLocality})
+	if err != nil {
+		return nil, fmt.Errorf("repack: %w", err)
+	}
+	if err = check(); err != nil {
+		return nil, err
+	}
+	rr, err = s.reachabilityScan(false, nil)
+	if err != nil {
+		return nil, err
+	}
+	if !rr.OK() {
+		return nil, errGCUnsafe
+	}
+	const packTarget = 1 << 20
+	out.Compact, err = s.compactLive(rr.liveSet(), compactOptions{TargetBytes: packTarget,
+		MinBytes: packTarget / packMinFraction, Compress: true, Layout: layoutLocality})
+	if err != nil {
+		return nil, fmt.Errorf("compact: %w", err)
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if out.FinalGC, err = s.gcOffline(true); err != nil {
+		return nil, fmt.Errorf("final GC: %w", err)
+	}
+	out.Seconds = time.Since(start).Seconds()
+	return out, nil
 }
 
 // solve runs the policy's algorithm over every partition from the current selection.
@@ -63671,8 +63779,9 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 				}
 			}
 		}
-		j0 := e.objective()
+		j0, bytes0 := e.objective(), e.bytes
 		saved := slices.Clone(e.sel)
+		valid := e.feasibleAll(part)
 		switch alg {
 		case "current":
 		case "local":
@@ -63690,8 +63799,26 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 				e.localSearch(part, g.pol.MaxEvals)
 			}
 		default:
+			var generic []int32
+			var genericCost float64
+			if !g.pol.B7Search && g.legacyRepIn(part) {
+				e.noRep = true
+				g.searchB7(e, part, saved)
+				g.searchGroups(e, part)
+				if e.feasibleAll(part) {
+					generic, genericCost = snapshotSel(e, part), e.objective()
+				}
+				e.noRep = false
+				restoreSel(e, part, saved)
+			}
 			if g.pol.B7Search || !g.canonIn(part) {
 				g.searchB7(e, part, saved)
+				if !g.pol.B7Search {
+					g.searchGroups(e, part)
+				}
+				if generic != nil && (genericCost < e.objective() || !e.feasibleAll(part)) {
+					restoreSel(e, part, generic)
+				}
 				break
 			}
 			// B8: the best plan without canonical options is the incumbent the full search must beat;
@@ -63717,9 +63844,15 @@ func (g *rgGraph) solve(alg string, readWeight float64) (*rgEval, int) {
 			if ji < e.objective() || !e.feasibleAll(part) {
 				restoreSel(e, part, selI)
 			}
+			if generic != nil && (genericCost < e.objective() || !e.feasibleAll(part)) {
+				restoreSel(e, part, generic)
+			}
 		}
-		if alg == "global" && !g.pol.B7Search && !g.canonIn(part) {
-			g.searchGroups(e, part)
+		// Preserve a valid current selection when a search loses it. Archive
+		// also requires a non-increasing modeled retained closure.
+		if valid && alg != "local" && alg != "current" &&
+			(e.objective() > j0 || !e.feasibleAll(part) || g.pol.Profile == "archive" && e.bytes > bytes0) {
+			restoreSel(e, part, saved)
 		}
 		// MinGain: a partition is rewritten only for a real improvement over its current form.
 		var stored int64
@@ -63842,6 +63975,18 @@ func (g *rgGraph) searchGroups(e *rgEval, part []int32) {
 	if e.oracle(part, limit) && (!(e.objective() <= j0) || !e.feasibleAll(part)) {
 		restoreSel(e, part, sel0)
 	}
+}
+
+// legacyRepIn detects structural options present even in the canonical-free search.
+func (g *rgGraph) legacyRepIn(part []int32) bool {
+	for _, v := range part {
+		for _, o := range g.nodes[v].opts {
+			if o.kind == rgRep && !o.canon && !o.cur {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // spliceIn reports whether any node of part has a deep-stream option (B10).
@@ -65203,7 +65348,7 @@ func (g *rgGraph) canonOpts(ctx context.Context, m *authMigrator, eligible []int
 		for sum, d := range mem {
 			if _, ok := m.phys[sum]; !ok {
 				if _, err := s.casStat(sum); err != nil {
-					m.phys[sum] = packPriceLen(d) + packRecordBytes
+					m.phys[sum] = authStagedChunkPrice(d, m.pol.PriceCurrentStorage)
 				}
 			}
 		}
@@ -65293,7 +65438,7 @@ func (g *rgGraph) canonAttach(nd, wrap *rgNode, c *repCanon) error {
 		if _, ok := g.cid[sum]; ok {
 			continue
 		}
-		phys := packPriceLen(chunk) + packRecordBytes
+		phys := authStagedChunkPrice(chunk, g.pol.PriceCurrentStorage)
 		if n, err := g.s.casStat(sum); err == nil && n == int64(len(chunk)) {
 			phys = g.s.physChunk(sum, n, map[[32]byte]int64{}, g.pol.PriceCurrentStorage)
 		}
@@ -69371,7 +69516,7 @@ func (g *rgGraph) spliceOpts(ctx context.Context, m *authMigrator, eligible []in
 		for sum, d := range mem {
 			if _, ok := m.phys[sum]; !ok {
 				if _, err := s.casStat(sum); err != nil {
-					m.phys[sum] = packPriceLen(d) + packRecordBytes
+					m.phys[sum] = authStagedChunkPrice(d, m.pol.PriceCurrentStorage)
 				}
 			}
 		}
