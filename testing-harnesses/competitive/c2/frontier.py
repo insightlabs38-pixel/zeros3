@@ -11,7 +11,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "c1"))
-from local_s3 import BUCKET, FAMILIES, put, server, verified
+from local_s3 import FAMILIES, put, sample, server, verified
 
 LANES = {
     "cdc": [],
@@ -23,6 +23,8 @@ LANES = {
     "standalone": ["-canonical", "-codec-replay", "-hard-codecs", "-splice"],
     "sketch": ["-record-groups", "-canonical", "-codec-replay", "-hard-codecs", "-splice",
                "-discovery", "sketch"],
+    "budget": ["-record-groups", "-canonical", "-codec-replay", "-hard-codecs", "-splice",
+               "-max-targets", "32"],
     "current": ["-record-groups", "-canonical", "-codec-replay", "-hard-codecs", "-splice",
                 "-price-current-storage"],
     "mixed": ["-record-groups", "-canonical", "-codec-replay", "-hard-codecs", "-splice",
@@ -118,6 +120,7 @@ def measure_reads(api, objects):
             times.sort()
             latencies[f"{size}/{repeat}"] = {"n": len(times), "p50_ms": statistics.median(times),
                                             "p95_ms": times[(95 * len(times) - 1) // 100],
+                                            "p99_ms": times[(99 * len(times) - 1) // 100] if len(times) >= 100 else None,
                                             "max_ms": times[-1]}
     return latencies
 
@@ -170,11 +173,18 @@ def run(args, family, out):
                 emit(stage, command(args.binary, store, flags, txn))
             emit("deep-verify", command(args.binary, store, ["verify", "-deep", "-json"], txn))
             if args.reoptimize and lane != "cdc":
-                emit("reoptimize", command(args.binary, store, [*opts, "-apply"], txn))
-            with server("zeros3", root, txn) as (api, _, store):
+                extra = ["-reuse-analysis"] if args.memo else []
+                for phase in ("reoptimize", "memo-hit") if args.memo else ("reoptimize",):
+                    emit(phase, command(args.binary, store, [*opts, "-apply", *extra], txn))
+            with server("zeros3", root, txn) as (api, pid, store):
                 if args.reads:
+                    before = sample(pid)
+                    latency = measure_reads(api, items)
+                    after = sample(pid)
                     emit("reads", {"cache": "fresh process then repeated, OS cache uncontrolled",
-                                   "latency": measure_reads(api, items)})
+                                   "latency": latency, "server_cpu_seconds": after["cpu_seconds"]-before["cpu_seconds"],
+                                   "server_peak_rss_bytes": after["peak_rss_bytes"],
+                                   "disk_read_bytes": after["disk_read_bytes"]-before["disk_read_bytes"]})
                 else:
                     for key, content in items:
                         verified(api, key, content)
@@ -198,6 +208,7 @@ def main():
     parser.add_argument("--integrated", action="store_true")
     parser.add_argument("--reads", action="store_true")
     parser.add_argument("--reoptimize", action="store_true")
+    parser.add_argument("--memo", action="store_true", help="measure convergence pass and a memo hit")
     args = parser.parse_args()
     args.scratch.mkdir(parents=True, exist_ok=True)
     with args.output.open("x") as out:

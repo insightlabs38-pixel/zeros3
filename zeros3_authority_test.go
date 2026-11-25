@@ -528,6 +528,15 @@ func TestAuthHelperProcess(t *testing.T) {
 			Profile: "archive", Canonical: true, Splice: true}); err != nil {
 			t.Fatal(err)
 		}
+	case "archive-finish":
+		lock, err := acquireStoreLock(dir, true)
+		mustOK(t, err)
+		defer lock.release()
+		s, err := OpenStore(dir)
+		mustOK(t, err)
+		defer s.Close()
+		_, err = s.finishAuthorityArchive(context.Background(), 0)
+		mustOK(t, err)
 	case "repair", "repairobject", "audit", "maint", "b10online":
 		authRepairHelper(t, scenario, dir)
 	case "repack":

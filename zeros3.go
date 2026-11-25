@@ -54015,8 +54015,9 @@ type authCtx struct {
 	pieceCap   int64
 	// sparse lets a ranged read of at most authSpanReadMax bytes read only the blocks of restartable
 	// pieces it needs; spans holds them (same budget as pieces). Longer reads decode pieces whole.
-	sparse bool
-	win    *packWindows // sparse reads: raw pack windows around the records they missed
+	sparse          bool
+	structuredRange bool         // native structured base seeks for small output requests
+	win             *packWindows // sparse reads: raw pack windows around the records they missed
 	// prefetch lets bodies read the pieces a read will need on up to authPrefetchWorkers
 	// goroutines ahead of it (served reads); fly single-flights a piece being read.
 	prefetch  bool
@@ -54423,8 +54424,9 @@ var authPackWindows = os.Getenv("ZEROS3_PACK_WINDOWS") == "1"
 var authPrefetch = true
 
 const (
-	authSpanReadMax = 1 << 20 // longest served range that reads restartable pieces in part
-	authSpanPromote = 3       // spans of one piece after which the request reads it whole
+	authSpanReadMax        = 1 << 20  // longest served range that reads restartable pieces in part
+	authStructuredRangeMax = 16 << 10 // legacy structured delta base: sparse native replay threshold
+	authSpanPromote        = 3        // spans of one piece after which the request reads it whole
 )
 
 // authSpan is the verified blocks [at, at+len(data)) of one restartable piece.
@@ -54581,11 +54583,9 @@ func (b *authRepBody) readSeek(p []byte, off int64) (n int, ok bool, err error) 
 	}
 	want := min(int64(len(p)), b.rec.Size-off)
 	buf := p[:0:want]
-	if call.Rep.Kind == repKindSplice { // B10: a deep stream maps the range onto its segments
-		if err := spliceReadRange(call, off, want, repAppendWriter{&buf}); err != nil {
-			return 0, true, err
-		}
-	} else {
+	switch call.Rep.Kind {
+	case repKindGzip, repKindZstd:
+		// A delta may issue several base reads; keep codec seek serial here.
 		sk, err := repSeekerOf(call)
 		if sk == nil || err != nil {
 			b.noSeek = err == nil
@@ -54594,6 +54594,24 @@ func (b *authRepBody) readSeek(p []byte, off int64) (n int, ok bool, err error) 
 		if err := sk.readRange(call, off, want, repAppendWriter{&buf}); err != nil {
 			return 0, true, err
 		}
+	case repKindParquet, repKindSST, repKindSplice:
+		if call.Rep.Kind != repKindSplice && !b.c.structuredRange {
+			b.noSeek = true
+			return 0, false, nil
+		}
+		read, err := repRangeReader(call, off, want)
+		if err != nil {
+			return 0, true, err
+		}
+		if read == nil {
+			return 0, false, nil
+		}
+		if err := read(repAppendWriter{&buf}); err != nil {
+			return 0, true, err
+		}
+	default:
+		b.noSeek = true
+		return 0, false, nil
 	}
 	if int64(len(buf)) != want {
 		return 0, true, fmt.Errorf("%w: range read returned %d of %d bytes", errAuthMismatch, len(buf), want)
@@ -55446,6 +55464,9 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 		return nil, fmt.Errorf("%w: record is %d bytes, manifest says %d", errAuthMismatch, rec.Size, man.TotalLength)
 	}
 	whole := rng.start == 0 && rng.end == man.TotalLength-1
+	// Many structured base seeks for a large result can cost more than one
+	// full reconstruction. Short output ranges benefit from seeking.
+	structuredRange := !whole && rng.end-rng.start+1 <= authStructuredRangeMax
 	if rec.Form == authFormRep {
 		// Whole reads stream; ranges use the kind's native range decoder when it has one. A rep built
 		// on bodies (B8) resolves them through an authority context of its own.
@@ -55454,6 +55475,7 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 			rd, err = s.repOpenRootReader(rec.Root, rng)
 		} else {
 			ctx := s.newAuthCtx()
+			ctx.structuredRange = structuredRange
 			src := s.newRepSource(rec.Root.Descs, nil)
 			rb := &authRepBody{c: ctx, rec: rec, depth: 1}
 			rd, err = s.repOpenEnvReader(rb.env(src, s.repCache()), src, rec.Root, rng, ctx.close)
@@ -55468,6 +55490,7 @@ func (s *Store) authOpenReader(man manifestV1, rng byteRange) (objectReader, err
 		}
 	}
 	ctx := s.newAuthCtx()
+	ctx.structuredRange = structuredRange
 	ctx.prefetch = authPrefetch && s.auth.active.Add(1) <= int64(max(1, runtime.GOMAXPROCS(0)/2))
 	if authPrefetch {
 		ctx.release = func() { s.auth.active.Add(-1) }
@@ -60813,12 +60836,20 @@ func runAuthority(args []string) {
 	groupsOff := fs.Bool("disable", false, "groups: write grouped records back to files and lower \"recgroup\"")
 	recGroups := fs.Bool("record-groups", false, "migrate/optimize: publish records into groups (raises \"recgroup\"; older builds refuse the store)")
 	finalize := fs.Bool("finalize", false, "optimize: after archive apply, collect, recompress packs, compact loose chunks, and collect again")
+	maxTargets := fs.Int("max-targets", 0, "optimize: analyze at most this many original contents, newest first (0 = unlimited)")
+	reuseAnalysis := fs.Bool("reuse-analysis", false, "optimize: skip a repeated no-change apply while local store metadata and policy are unchanged")
 	fs.Parse(args[1:])
 	if *finalize && (sub != "optimize" || !*apply || !*archive && *profile != "archive" || *priceCurrent) {
 		log.Fatal("zeros3: authority -finalize requires archive optimize -apply with recompression pricing")
 	}
 	if (sub == "optimize" || sub == "migrate") && *reserveMiB > math.MaxUint64>>20 {
 		log.Fatal("zeros3: authority: reserve-free-mib is too large")
+	}
+	if *maxTargets < 0 || *maxTargets > 0 && sub != "optimize" {
+		log.Fatal("zeros3: authority -max-targets requires optimize and a nonnegative value")
+	}
+	if *reuseAnalysis && (sub != "optimize" || !*apply || *finalize) {
+		log.Fatal("zeros3: authority -reuse-analysis requires optimize -apply without -finalize")
 	}
 	if *recGroups {
 		agWanted = true
@@ -60981,7 +61012,7 @@ func runAuthority(args []string) {
 		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
-			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice}
+			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice, MaxTargets: *maxTargets}
 		pol.Locality = []int{}
 		for _, f := range strings.Split(*locality, ",") {
 			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
@@ -60999,7 +61030,11 @@ func runAuthority(args []string) {
 		if *archive {
 			pol.Order, pol.Profile = "oldest", "archive"
 		}
-		rep, err := store.AuthorityOptimize(ctx, pol)
+		run := store.AuthorityOptimize
+		if *reuseAnalysis {
+			run = store.optimizeWithMemo
+		}
+		rep, err := run(ctx, pol)
 		if err != nil {
 			log.Fatalf("zeros3: authority optimize: %v", err)
 		}
@@ -61114,16 +61149,17 @@ func runAuthority(args []string) {
 // objective of the global optimizer.
 type OptimizePolicy struct {
 	AuthPolicy
-	Profile           string                              `json:"profile"`           // archive | mixed | hot: default weights below
-	ReadWeight        float64                             `json:"read_weight"`       // retained bytes one modeled µs of a content's sparse cold read is worth
-	ReadBudget        float64                             `json:"read_budget"`       // modeled sparse read at most this multiple of the content's CDC read (0 = none)
-	WholeWeight       float64                             `json:"whole_weight"`      // retained bytes one modeled µs of a content's whole-object read is worth
-	WholeBudget       float64                             `json:"whole_budget"`      // modeled whole read at most this multiple of the content's CDC whole read (0 = none)
-	MigrationWeight   float64                             `json:"migration_weight"`  // retained-byte equivalent of one byte a transition writes
-	MinGain           float64                             `json:"min_gain"`          // a partition changes only for this fraction of its stored bytes
-	Locality          []int                               `json:"locality"`          // COPY locality slacks programs are generated with (0 = the plain matcher)
-	Algorithm         string                              `json:"algorithm"`         // global | local | oracle | current (ablations: single, edmonds)
-	Pareto            []float64                           `json:"pareto,omitempty"`  // read weights of a frontier sweep reported beside the plan
+	Profile           string                              `json:"profile"`          // archive | mixed | hot: default weights below
+	ReadWeight        float64                             `json:"read_weight"`      // retained bytes one modeled µs of a content's sparse cold read is worth
+	ReadBudget        float64                             `json:"read_budget"`      // modeled sparse read at most this multiple of the content's CDC read (0 = none)
+	WholeWeight       float64                             `json:"whole_weight"`     // retained bytes one modeled µs of a content's whole-object read is worth
+	WholeBudget       float64                             `json:"whole_budget"`     // modeled whole read at most this multiple of the content's CDC whole read (0 = none)
+	MigrationWeight   float64                             `json:"migration_weight"` // retained-byte equivalent of one byte a transition writes
+	MinGain           float64                             `json:"min_gain"`         // a partition changes only for this fraction of its stored bytes
+	Locality          []int                               `json:"locality"`         // COPY locality slacks programs are generated with (0 = the plain matcher)
+	Algorithm         string                              `json:"algorithm"`        // global | local | oracle | current (ablations: single, edmonds)
+	Pareto            []float64                           `json:"pareto,omitempty"` // read weights of a frontier sweep reported beside the plan
+	MaxTargets        int                                 `json:"max_targets,omitempty"`
 	MaxEvals          int64                               `json:"max_evals"`         // move evaluations per partition
 	Blocked           *bool                               `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
 	Oracle            bool                                `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
@@ -61229,31 +61265,32 @@ type rgCopy struct {
 }
 
 type rgOpt struct {
-	kind   byte
-	label  string
-	bases  []int32 // node indexes
-	enc    []int32 // bases in the encoder's order (a multi-base program is refined in this order)
-	pieces []int32 // own components in record order
-	comps  []int32 // distinct components
-	hdr    []int32 // own pieces every read fetches (envelope header, frame table)
-	units  []rgUnit
-	copies []rgCopy
-	meta   int64 // allocated bytes of the record file (CDC: of a pin, charged while it has dependents)
-	write  int64 // bytes a transition to the option writes
-	depth  int   // recorded depth of a kept delta (dependents' bases must stay below it)
-	loc    int   // locality slack of the encoder
-	win    bool  // windowed codec
-	union  bool  // multi-base program matched over the union of its bases (B7), else refined base by base
-	sum    [32]byte
-	rep    *authRepCand
-	cur    bool
-	chunky bool    // pieces are CDC chunks (restartable blocks apply)
-	replay byte    // B8 read model: the codec a read of this option replays
-	plain  int64   // decoded plaintext size of a replayed container
-	canon  bool    // a canonical wrapper: its base is the container's stream
-	splice bool    // B10: a deep-stream representation (kind 16) over its base
-	rfix   float64 // B10: modeled fixed replay of a sparse read (µs, splice)
-	segs   []rgSeg // B10: the splice table, for the read model
+	kind       byte
+	label      string
+	bases      []int32 // node indexes
+	enc        []int32 // bases in the encoder's order (a multi-base program is refined in this order)
+	pieces     []int32 // own components in record order
+	comps      []int32 // distinct components
+	hdr        []int32 // own pieces every read fetches (envelope header, frame table)
+	units      []rgUnit
+	copies     []rgCopy
+	meta       int64 // allocated bytes of the record file (CDC: of a pin, charged while it has dependents)
+	write      int64 // bytes a transition to the option writes
+	depth      int   // recorded depth of a kept delta (dependents' bases must stay below it)
+	loc        int   // locality slack of the encoder
+	win        bool  // windowed codec
+	union      bool  // multi-base program matched over the union of its bases (B7), else refined base by base
+	sum        [32]byte
+	rep        *authRepCand
+	cur        bool
+	structured bool    // legacy Parquet or SST: large requests materialize a delta base
+	chunky     bool    // pieces are CDC chunks (restartable blocks apply)
+	replay     byte    // B8 read model: the codec a read of this option replays
+	plain      int64   // decoded plaintext size of a replayed container
+	canon      bool    // a canonical wrapper: its base is the container's stream
+	splice     bool    // B10: a deep-stream representation (kind 16) over its base
+	rfix       float64 // B10: modeled fixed replay of a sparse read (µs, splice)
+	segs       []rgSeg // B10: the splice table, for the read model
 }
 
 // rgSeg is one splice segment as the read model sees it: output and deep-stream spans and its replay.
@@ -61309,6 +61346,7 @@ type rgGraph struct {
 	grouped   bool // B9: records are priced as group entries (agEntryCost)
 	model     rgModel
 	encs      int
+	skipped   int
 	encNS     int64
 	parts     [][]int32
 	partOf    []int32
@@ -61764,10 +61802,11 @@ func (e *rgEval) objective() float64 {
 // whole); own holds those the content's own record names (the rest are reached through COPYs and are
 // fetched by the dependency prefetch in parallel).
 type rgTouch struct {
-	m      map[int32]uint64
-	own    map[int32]bool
-	replay *float64 // B8: modeled codec replay CPU of the read (µs)
-	whole  bool     // a whole-object read (replay priced per output byte)
+	m               map[int32]uint64
+	own             map[int32]bool
+	replay          *float64 // B8: modeled codec replay CPU of the read (µs)
+	whole           bool     // a whole-object read (replay priced per output byte)
+	structuredRange bool     // derived once from the top-level span
 }
 
 func newRGTouch() rgTouch {
@@ -61792,8 +61831,23 @@ func (g *rgGraph) touch(e *rgEval, v int32, a, b int64, t rgTouch, depth int) {
 		return
 	}
 	o := e.opt(v)
+	if depth == 0 {
+		t.structuredRange = b-a <= authStructuredRangeMax && (a > 0 || b < g.nodes[v].size)
+	}
+	_, touched := t.m[-1-v]
 	if o.kind != rgCDC {
 		t.mark(-1-v, 0, depth) // the body record file a read of v resolves
+	}
+	if depth > 0 && o.structured && !t.structuredRange {
+		// Large output requests materialize a structured base once. Count
+		// all fetched components; the codec CPU remains a lower bound.
+		if !touched {
+			for _, p := range o.comps {
+				t.mark(p, ^uint64(0), depth)
+			}
+			*t.replay += g.model.Copy * float64(g.nodes[v].size)
+		}
+		return
 	}
 	for _, p := range o.hdr {
 		t.mark(p, ^uint64(0), depth)
@@ -62250,12 +62304,14 @@ func (g *rgGraph) keepOpt(nd *rgNode) (*rgOpt, error) {
 	default:
 		g.layoutLinear(o, nd.size)
 		if k, plain, err := g.s.repTopCodec(r.Root); err == nil && k != 0 {
+			o.structured = k == repKindParquet || k == repKindSST
 			o.replay, o.plain = rgReplayOf(k), plain
 			if k == repKindSplice {
 				o.splice = true
 				o.rfix, o.segs = g.s.spliceFixedOf(r.Root)
 			}
-			if o.canon = len(r.Bases) == 1; o.canon {
+			o.canon = o.replay != rgReplayNone && len(r.Bases) == 1
+			if o.canon {
 				o.units = nil
 				g.codecLayout(o, r.Root, nil, nd.size)
 			}
@@ -62264,14 +62320,17 @@ func (g *rgGraph) keepOpt(nd *rgNode) (*rgOpt, error) {
 	return o, nil
 }
 
-// repTopCodec is the codec kind of a root's top representation and its plaintext size (0: not a codec).
+// repTopCodec returns the representation kind and, for replay codecs, the plaintext size.
 func (s *Store) repTopCodec(root *repRoot) (repKind, int64, error) {
 	src := s.newRepSource(root.Descs, nil)
 	defer src.close()
 	env := &repEnv{Src: src, Limits: repProdLimits}
 	rep, err := env.loadRep(root.Rep)
-	if err != nil || rgReplayOf(rep.Kind) == rgReplayNone || len(rep.Members) == 0 {
+	if err != nil {
 		return 0, 0, err
+	}
+	if rgReplayOf(rep.Kind) == rgReplayNone || len(rep.Members) == 0 {
+		return rep.Kind, 0, nil
 	}
 	return rep.Kind, rep.Members[len(rep.Members)-1].Size, nil
 }
@@ -62527,6 +62586,14 @@ func (g *rgGraph) generate(ctx context.Context) error {
 		if nd.live && !nd.fixed && nd.size >= pol.MinObject {
 			eligible = append(eligible, int32(i))
 		}
+	}
+	if pol.MaxTargets > 0 && len(eligible) > pol.MaxTargets {
+		slices.SortStableFunc(eligible, func(a, b int32) int {
+			at, bt := g.nodes[a].obj.t, g.nodes[b].obj.t
+			return bt.Compare(at)
+		})
+		g.skipped = len(eligible) - pol.MaxTargets
+		eligible = eligible[:pol.MaxTargets]
 	}
 	if pol.Canonical {
 		streams, err := g.canonOpts(ctx, m, eligible)
@@ -62911,7 +62978,8 @@ func (g *rgGraph) repOpts(ctx context.Context, m *authMigrator, eligible []int32
 		}
 		v := g.idx[m.order[i].sha]
 		nd := g.nodes[v]
-		o := &rgOpt{kind: rgRep, label: "rep-" + repKindName(rc.kind), rep: rc}
+		o := &rgOpt{kind: rgRep, label: "rep-" + repKindName(rc.kind), rep: rc,
+			structured: rc.kind == repKindParquet || rc.kind == repKindSST}
 		if rc.kind == repKindGzip { // B8: the read model prices the replay (zstd groups with gzip)
 			ra := g.s.newManifestReaderAt(nd.obj.man)
 			o.replay = rgReplayOf(canonKind(ra, nd.size))
@@ -63661,6 +63729,8 @@ type OptimizeReport struct {
 	Options          int              `json:"options"`
 	Components       int              `json:"components"`
 	Encodes          int              `json:"encodes"`
+	SkippedTargets   int              `json:"skipped_targets,omitempty"`
+	AnalysisReused   bool             `json:"analysis_reused,omitempty"`
 	EncodeSeconds    float64          `json:"encode_seconds"`
 	CandidateSeconds float64          `json:"candidate_seconds"`
 	SearchSeconds    float64          `json:"search_seconds"`
@@ -63684,6 +63754,9 @@ type OptimizeReport struct {
 	Seconds          float64          `json:"seconds"`
 	Finalization     *archiveFinish   `json:"finalization,omitempty"`
 }
+
+const hookArchiveAfterGC = "authority-archive-after-gc"
+const hookArchiveAfterRepack = "authority-archive-after-repack"
 
 type archiveFinish struct {
 	FirstGC GCResult      `json:"first_gc"`
@@ -63711,6 +63784,7 @@ func (s *Store) finishAuthorityArchive(ctx context.Context, reserve uint64) (*ar
 	if out.FirstGC, err = s.gcOffline(true); err != nil {
 		return nil, fmt.Errorf("initial GC: %w", err)
 	}
+	fireTestHook(hookArchiveAfterGC)
 	if err = check(); err != nil {
 		return nil, err
 	}
@@ -63726,6 +63800,7 @@ func (s *Store) finishAuthorityArchive(ctx context.Context, reserve uint64) (*ar
 	if err != nil {
 		return nil, fmt.Errorf("repack: %w", err)
 	}
+	fireTestHook(hookArchiveAfterRepack)
 	if err = check(); err != nil {
 		return nil, err
 	}
@@ -64043,6 +64118,7 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	rep.Discovery = g.disc
 	rep.CandidateSeconds = time.Since(t0).Seconds()
 	rep.Encodes, rep.EncodeSeconds = g.encs, float64(g.encNS)/1e9
+	rep.SkippedTargets = g.skipped
 	g.partition()
 	// CDC reads anchor the read budget: price each live node's CDC option alone.
 	cdc := g.currentSel()
@@ -64127,6 +64203,133 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	rep.HeapMiB = int(ms.HeapAlloc >> 20) // live: the graph, its options and the caches are still referenced
 	rep.Seconds = time.Since(t0).Seconds()
 	return rep, ctx.Err()
+}
+
+const authorityMemo = "authority-no-change.json"
+
+type authorityNoChange struct {
+	Key    [32]byte
+	Report OptimizeReport
+}
+
+// authorityMemoKey fingerprints metadata only. The memo records an analysis
+// result, never a content or integrity check. Callers hold the offline lock.
+func (s *Store) authorityMemoKey(ctx context.Context, pol OptimizePolicy) ([32]byte, error) {
+	var key [32]byte
+	h := sha256.New()
+	enc := json.NewEncoder(h)
+	if err := enc.Encode(pol); err != nil {
+		return key, err
+	}
+	if err := enc.Encode(agWanted); err != nil {
+		return key, err
+	}
+	path, err := os.Executable()
+	if err != nil {
+		return key, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return key, err
+	}
+	_, err = io.Copy(h, f)
+	f.Close()
+	if err != nil {
+		return key, err
+	}
+	var files int
+	err = filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		files++
+		if files > 100000 {
+			return errors.New("authority memo: inventory limit")
+		}
+		rel, err := filepath.Rel(s.root, path)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// The store's startup and offline GC treat tmp files as
+			// uncommitted staging, never as optimizer input.
+			if d.Name() == "tmp" && rel != "." {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return errors.New("authority memo: unsupported store inventory")
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return errors.New("authority memo: file metadata unavailable")
+		}
+		if rel == filepath.Join("journal", "visibility.log") {
+			// Replay can truncate a clean journal to its existing size,
+			// changing timestamps. Bind its contents instead.
+			const maxJournal = 32 << 20
+			if st.Size > maxJournal {
+				return errors.New("authority memo: journal limit")
+			}
+			if err := enc.Encode([]any{rel, st.Size}); err != nil {
+				return err
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.CopyN(h, f, st.Size)
+			return err
+		}
+		return enc.Encode([]any{rel, st.Dev, st.Ino, st.Mode, st.Size, st.Blocks, st.Mtim, st.Ctim})
+	})
+	if err != nil {
+		return key, err
+	}
+	copy(key[:], h.Sum(nil))
+	return key, nil
+}
+
+func (s *Store) optimizeWithMemo(ctx context.Context, pol OptimizePolicy) (OptimizeReport, error) {
+	start := time.Now()
+	key, keyErr := s.authorityMemoKey(ctx, pol)
+	path := filepath.Join(s.root, "tmp", authorityMemo)
+	if keyErr == nil {
+		var memo authorityNoChange
+		if f, err := os.Open(path); err == nil {
+			err = json.NewDecoder(io.LimitReader(f, 256<<10)).Decode(&memo)
+			f.Close()
+			if err == nil && memo.Key == key && memo.Report.Applied == 0 && memo.Report.Failed == 0 && len(memo.Report.Changes) == 0 {
+				r := memo.Report
+				r.AnalysisReused = true
+				r.CandidateSeconds, r.EncodeSeconds, r.SearchSeconds, r.ApplySeconds = 0, 0, 0, 0
+				r.Encodes, r.Evals, r.HeapMiB = 0, 0, 0
+				r.Discovery, r.Canon, r.Splice = nil, nil, nil
+				r.Seconds = time.Since(start).Seconds()
+				return r, nil
+			}
+		}
+	}
+	r, err := s.AuthorityOptimize(ctx, pol)
+	if keyErr == nil && err == nil && len(r.Changes) == 0 && r.Applied == 0 && r.Failed == 0 &&
+		r.Bridges == 0 && r.Retired == 0 && r.Written == 0 {
+		if end, err := s.authorityMemoKey(ctx, pol); err == nil && end == key {
+			if data, err := json.Marshal(authorityNoChange{Key: key, Report: r}); err == nil {
+				// Losing the memo on interruption merely causes another analysis.
+				_ = writeFileDurable(filepath.Dir(path), path, data)
+			}
+		}
+	}
+	return r, err
 }
 
 // ---- transitions -------------------------------------------------------------------
@@ -68802,6 +69005,35 @@ func splWrite(c *repCall, s *splSeg, d io.ReaderAt, a, b int64, w io.Writer) err
 	return produce(w)
 }
 
+// splBodyWindow reuses reads from the same verified deep body across adjacent
+// table segments. It never outlives one decode or serves a nested codec.
+type splBodyWindow struct {
+	src        io.ReaderAt
+	size, base int64
+	buf        []byte
+}
+
+func (r *splBodyWindow) ReadAt(p []byte, off int64) (int, error) {
+	const capacity = 128 << 10
+	n := int64(len(p))
+	if off < 0 || n == 0 || n >= capacity || off > r.size-n {
+		return r.src.ReadAt(p, off)
+	}
+	if off >= r.base && off+n-r.base <= int64(len(r.buf)) {
+		return copy(p, r.buf[off-r.base:]), nil
+	}
+	length := min(int64(capacity), r.size-off)
+	r.buf = slices.Grow(r.buf[:0], int(length))[:length]
+	if k, err := r.src.ReadAt(r.buf, off); int64(k) != length || err != nil && err != io.EOF {
+		// A failure in speculative bytes must not change the result of the
+		// exact read. Requested bytes still go through the original verifier.
+		r.buf = r.buf[:0]
+		return r.src.ReadAt(p, off)
+	}
+	r.base = off
+	return copy(p, r.buf), nil
+}
+
 type repSpliceDecoder struct{}
 
 func (repSpliceDecoder) Decode(c *repCall) error {
@@ -68813,12 +69045,17 @@ func (repSpliceDecoder) Decode(c *repCall) error {
 	if err != nil {
 		return err
 	}
+	window := splBodyWindow{src: d, size: t.plain}
 	for i := range t.segs {
 		s := &t.segs[i]
 		if err := c.decodeWork().step(1); err != nil {
 			return err
 		}
-		if err := splWrite(c, s, d, s.out, s.out+s.outLen, c.W); err != nil {
+		body := d
+		if s.kind != splRep && len(t.segs) > 1 {
+			body = &window
+		}
+		if err := splWrite(c, s, body, s.out, s.out+s.outLen, c.W); err != nil {
 			return fmt.Errorf("segment %d: %w", i, err)
 		}
 	}
@@ -68846,9 +69083,15 @@ func spliceReadRange(c *repCall, off, n int64, w io.Writer) error {
 	}
 	end := off + n
 	i, _ := slices.BinarySearchFunc(t.segs, off, func(s splSeg, x int64) int { return cmp.Compare(s.out+s.outLen, x+1) })
+	multiple := i+1 < len(t.segs) && t.segs[i+1].out < end
+	window := splBodyWindow{src: d, size: t.plain}
 	for ; i < len(t.segs) && t.segs[i].out < end; i++ {
 		s := &t.segs[i]
-		if err := splWrite(c, s, d, max(off, s.out), min(end, s.out+s.outLen), w); err != nil {
+		body := d
+		if multiple && s.kind != splRep {
+			body = &window
+		}
+		if err := splWrite(c, s, body, max(off, s.out), min(end, s.out+s.outLen), w); err != nil {
 			return fmt.Errorf("segment %d: %w", i, err)
 		}
 	}
