@@ -66,7 +66,8 @@ def replay(args, env, family, emit):
                             rng = random.Random(10 + pair)
                             keys = list(payload)
                             refs = []
-                            for i in range(max(len(keys), args.samples)):
+                            samples = args.full_samples if size == 0 and args.full_samples else args.samples
+                            for i in range(max(len(keys), samples)):
                                 key = keys[i % len(keys)]
                                 data = payload[key]
                                 n = min(size or len(data), len(data))
@@ -104,6 +105,7 @@ def main():
     p.add_argument("--sizes", nargs="+", type=int, default=[4096, 65536, 1048576, 0])
     p.add_argument("--widths", nargs="+", type=int, default=[1, 4])
     p.add_argument("--samples", type=int, default=12)
+    p.add_argument("--full-samples", type=int, help="override samples for whole-object reads")
     p.add_argument("--repeats", type=int, default=2)
     args = p.parse_args()
     for name, value in vars(args).items():

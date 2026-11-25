@@ -123,18 +123,18 @@ import (
 //    32686    Portable snapshot bundles (`zeros3 bundle`)
 //    33883    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    34518    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53203    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61411    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65135    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65694    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66601    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67756    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68700    Verified decoded-window cache (B9)
-//    68981    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70271    Windowed and estimated similarity deltas (extracted dcore)
-//    72108    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    79964    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86236    CLI dispatch, HTTP server/startup, and main
+//    53206    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61414    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65138    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65697    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66604    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67759    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68703    Verified decoded-window cache (B9)
+//    68984    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70274    Windowed and estimated similarity deltas (extracted dcore)
+//    72111    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    79967    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86239    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -41880,8 +41880,11 @@ func (s *Store) repOpenEnvReader(env *repEnv, src *storeRepSource, root *repRoot
 			return nil
 		}
 		// A zstd frame replays block after block; its seek index lets workers regenerate parts of it concurrently
-		// (B8: so does a gzip stream whose plaintext is a body, which would otherwise feed one decoder).
-		if call, err := env.open(root.Rep); err == nil && (call.Rep.Kind == repKindZstd || env.Body != nil && call.Rep.Kind == repKindGzip) && call.Rep.Size == root.ObjSize {
+		// So can canonical gzip. The opt-in sequential schedule instead walks the verified
+		// plaintext source once. Sparse reads always keep their seek path.
+		seekGzip := env.Body != nil && os.Getenv("ZEROS3_GZIP_SEQUENTIAL") != "1"
+		if call, err := env.open(root.Rep); err == nil && call.Rep.Size == root.ObjSize &&
+			(call.Rep.Kind == repKindZstd || seekGzip && call.Rep.Kind == repKindGzip) {
 			if sk, err := repSeekerOf(call); err == nil && sk != nil {
 				produce = func(w io.Writer) error {
 					h := sha256.New()

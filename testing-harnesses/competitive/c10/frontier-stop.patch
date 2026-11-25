@@ -1,0 +1,11 @@
+--- a/zeros3.go
++++ b/zeros3.go
+@@ -43726,0 +43727 @@
++	decode    bool
+@@ -43767,0 +43769 @@
++	w.decode = false
+@@ -43891 +43893 @@
+-					if nice > 0 && l >= nice {
++					if nice > 0 && l >= nice || w.decode && lmax == capLen && (frontier || len(out) == maxc) {
+@@ -44280,0 +44283 @@
++	w.decode = true

@@ -169,6 +169,20 @@ func TestB8CanonicalCrossFormat(t *testing.T) {
 	l.exact("reclaimed")
 	l.offline(func() {})
 	l.exact("reopened")
+	man := l.man("rel/v1.tar.gz")
+	t.Run("sequential gzip", func(t *testing.T) {
+		t.Setenv("ZEROS3_GZIP_SEQUENTIAL", "1")
+		whole := byteRange{0, man.TotalLength - 1}
+		_, _, got, err := l.s.GetObjectRange("b", "rel/v1.tar.gz", whole)
+		if err != nil || !bytes.Equal(got, l.want["rel/v1.tar.gz"]) {
+			t.Fatalf("sequential gzip differs after reopen: %v", err)
+		}
+		rd, err := l.s.authOpenReader(man, whole)
+		if err != nil || rd == nil {
+			t.Fatalf("open canonical gzip for cancellation: %v", err)
+		}
+		rd.close()
+	})
 	l.verifyOK("canonical")
 	g, err := l.s.rgBuild(context.Background(), OptimizePolicy{}.norm())
 	if err != nil {

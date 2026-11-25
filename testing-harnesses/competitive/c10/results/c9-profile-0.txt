@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkC10Read-2   	       4	1161106542 ns/op	   3.60 MB/s	115091218 B/op	   35843 allocs/op
+--- BENCH: BenchmarkC10Read-2
+    read_test.go:24: authority form 2 with 1 bases
+    read_test.go:24: authority form 2 with 1 bases
+PASS
+File: read.test
+Build ID: b86460432ad1bef20ab0f3e4e5cbc04fba15f504
+Type: cpu
+Time: 2026-11-25 14:11:19 EST
+Duration: 5.86s, Total samples = 10.79s (184.27%)
+Showing nodes accounting for 10.10s, 93.61% of 10.79s total
+Dropped 145 nodes (cum <= 0.05s)
+Showing top 18 nodes out of 48
+      flat  flat%   sum%        cum   cum%
+     6.98s 64.69% 64.69%      7.96s 73.77%  zeros3.(*repIRwindow).search
+     0.66s  6.12% 70.81%      0.90s  8.34%  zeros3.(*repIRwindow).insertTo
+     0.48s  4.45% 75.25%      0.50s  4.63%  zeros3.repIRmatchLen
+     0.42s  3.89% 79.15%      8.96s 83.04%  zeros3.(*repIRpredictor).token
+     0.23s  2.13% 81.28%      0.24s  2.22%  zeros3.repIRhashAt (inline)
+     0.20s  1.85% 83.13%      0.20s  1.85%  zeros3.(*repDFbitWriter).put
+     0.15s  1.39% 84.52%      0.28s  2.59%  zeros3.(*repIRdecoder).decode
+     0.13s  1.20% 85.73%      0.13s  1.20%  runtime.memmove
+     0.12s  1.11% 86.84%     10.22s 94.72%  zeros3.(*gzTokens).decode
+     0.11s  1.02% 87.86%      0.13s  1.20%  compress/flate.(*decompressor).huffSym
+     0.11s  1.02% 88.88%      0.12s  1.11%  zeros3.repIRdistCodeOf (inline)
+     0.09s  0.83% 89.71%     10.70s 99.17%  zeros3.(*gzSeek).deflate
+     0.09s  0.83% 90.55%      0.09s  0.83%  zeros3.(*repIRbitModel).update (inline)
+     0.08s  0.74% 91.29%      0.30s  2.78%  compress/flate.(*decompressor).huffmanBlock
+     0.08s  0.74% 92.03%      0.30s  2.78%  zeros3.(*repDFStreamWriter).Token
+     0.06s  0.56% 92.59%      9.59s 88.88%  zeros3.(*repIRpredictor).decodeUnit
+     0.06s  0.56% 93.14%      0.06s  0.56%  zeros3.(*repIRwindow).afterMatch
+     0.05s  0.46% 93.61%     10.27s 95.18%  zeros3.(*gzTokens).at

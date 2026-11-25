@@ -1,0 +1,35 @@
+{
+  "entropy": {
+    "0/payload.bin": "f811becca3e268fd599afe5f65c705a68623537e48278a1221d1ca35e7990911",
+    "1/payload.bin": "f23be41a1a1ae971a4b548d9de03242ca08b742236c3d397fe1402f5e417c48b",
+    "2/payload.bin": "8a607a13209759d79676057ed2f8a684f6e65f97de4092240c7d1503b33412ed"
+  },
+  "httpx": {
+    "0/source.tar.gz": "0858d3bab51ba7e386637f22a61d8ccddaeec5f3fe4209da3a6168dbb91573e0",
+    "1/source.tar.gz": "75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc"
+  },
+  "parquet": {
+    "0/snapshot.parquet": "79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718",
+    "1/snapshot.parquet": "0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2",
+    "2/snapshot.parquet": "7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244"
+  },
+  "rubygems": {
+    "0/rubocop-1.66.0.gem": "348f65716380cb2d789936e61021186eff831e4f7d3c44cb045952e33b337791",
+    "1/rubocop-1.66.1.gem": "0679c263b1164fd003b8590ae83b3e9e9bf72282d411755f227f1d6268ee5ee7"
+  },
+  "sst": {
+    "0/snapshot.sst": "c5cd91aebbde78a34c6ff3f03394c3f86d9375f492ed83347518f420708655b7",
+    "1/snapshot.sst": "3c61e5ca24749f9a5e9ebb9cd5dac838696adfaaa25b5af6db3026c7f18f4744",
+    "2/snapshot.sst": "a27828949025cdc4eab980b96d543fa851e0b2e7828ee28c675d64749e2fa77c"
+  },
+  "typescript": {
+    "0/package.tgz": "6e954963e7689a13573927021cf1fe2d7f85d7808eba49f03f84cb5d77cdd6bf",
+    "1/package.tgz": "ef67f8d8ad895858024b7339d3e34bf112cae3c5db1f538c3079038b17ae30fa",
+    "2/package.tgz": "6826f763112d55de0093fd94a4257cabadf1f40b387757e7c68485fc971e886b"
+  },
+  "zip": {
+    "0/package.zip": "a2f0d05f6e68d57e0e2d5909ba0e2adc8dcc016c140446cb34cb6759cfbed091",
+    "1/package.zip": "30945c8766f3ce00382b788f0dcb7fa726faa3645464b2764119bb94a3d82969",
+    "2/package.zip": "cf46a5110754b51b53dcba5706aa6e066d3378513acc567eb71ffe008f38ad85"
+  }
+}
