@@ -104,37 +104,37 @@ import (
 //    16234    Stats and reachability scanning
 //    17822    Verify
 //    18038    Store locking and safe offline GC
-//    18344    Offline compaction (`zeros3 compact`)
-//    19527    Pack reclamation and repacking (`zeros3 repack`)
-//    20123    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20583    Online maintenance: epochs, pins, live GC and repack (B4)
-//    21928    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22441    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23506    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24357    Delta sync client, credentials, and parallel transfer
-//    26662    Bulk logical-chunk transport (v2)
-//    27573    Recursive directory sync
-//    27878    Remote replication (`zeros3 replicate`)
-//    28791    Peer-assisted corruption repair (`zeros3 repair`)
-//    29363    Namespace (prefix/bucket) replication
-//    29679    Copy-on-write namespace fork (`zeros3 fork`)
-//    29887    Snapshots and restore
-//    31049    Structural diff and inspect (introspection)
-//    32461    Portable snapshot bundles (`zeros3 bundle`)
-//    33658    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34293    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    52978    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61071    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    64442    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    64998    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    65905    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67060    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68004    Verified decoded-window cache (B9)
-//    68285    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    69535    Windowed and estimated similarity deltas (extracted dcore)
-//    71372    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    79228    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    85500    CLI dispatch, HTTP server/startup, and main
+//    18348    Offline compaction (`zeros3 compact`)
+//    19531    Pack reclamation and repacking (`zeros3 repack`)
+//    20127    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20587    Online maintenance: epochs, pins, live GC and repack (B4)
+//    21932    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22445    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23510    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24361    Delta sync client, credentials, and parallel transfer
+//    26696    Bulk logical-chunk transport (v2)
+//    27607    Recursive directory sync
+//    27912    Remote replication (`zeros3 replicate`)
+//    28885    Peer-assisted corruption repair (`zeros3 repair`)
+//    29457    Namespace (prefix/bucket) replication
+//    29773    Copy-on-write namespace fork (`zeros3 fork`)
+//    29981    Snapshots and restore
+//    31143    Structural diff and inspect (introspection)
+//    32555    Portable snapshot bundles (`zeros3 bundle`)
+//    33752    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34387    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    53072    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61221    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    64880    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65436    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66343    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67498    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68442    Verified decoded-window cache (B9)
+//    68723    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70013    Windowed and estimated similarity deltas (extracted dcore)
+//    71850    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    79706    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    85978    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -24546,6 +24546,7 @@ type syncObjectDescriptor struct {
 	RetainedVersion     string                `json:"retained_version,omitempty"`
 	ObjectSHA256        string                `json:"object_sha256,omitempty"`
 	AuthorityComponents []string              `json:"authority_components,omitempty"`
+	AuthorityBases      []string              `json:"authority_bases,omitempty"`
 	Authoritative       bool                  `json:"authoritative,omitempty"`
 	Size                int64                 `json:"size"`
 	ETag                string                `json:"etag"`
@@ -24732,15 +24733,35 @@ func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Reque
 	for _, kv := range man.Metadata {
 		metadata[kv.Key] = kv.Value
 	}
-	var authoritative bool
+	var authoritative *authRecord
 	components := man.Chunks
 	wantComponents := r.URL.Query().Get("closure") == "1"
 	if srv.store.authMay() {
 		if digest, err := decodeHexSHA256(man.ObjectSHA256); err == nil {
 			rec, err := srv.store.authLoad(digest)
-			authoritative = err == nil && rec != nil && rec.Size == man.TotalLength
-			if authoritative && wantComponents {
-				components, _ = srv.store.authRecordChunks(rec)
+			if err == nil && rec != nil && rec.Size == man.TotalLength {
+				authoritative = rec
+				if wantComponents {
+					components, _ = srv.store.authRecordChunks(rec)
+				}
+			}
+		}
+	}
+	var bases []string
+	if authoritative != nil && wantComponents && r.URL.Query().Get("closure-bases") == "1" {
+		// The walk starts at this authenticated, named object. The request
+		// provides neither an arbitrary digest nor a store-wide query.
+		queue := slices.Clone(authoritative.Bases)
+		seen := map[[32]byte]bool{authoritative.SHA: true}
+		for i := 0; i < len(queue) && i < maxAuthAdvertisedBases; i++ {
+			ref := queue[i]
+			if seen[ref.SHA] {
+				continue
+			}
+			seen[ref.SHA] = true
+			if base, err := srv.store.authLoad(ref.SHA); err == nil && base != nil && base.Size == ref.Size {
+				bases = append(bases, hex.EncodeToString(ref.SHA[:]))
+				queue = append(queue, base.Bases...)
 			}
 		}
 	}
@@ -24761,7 +24782,7 @@ func (srv *Server) handleSyncDescribeObject(w http.ResponseWriter, r *http.Reque
 		Bucket: bucket, Key: key, VersionID: entry.manifestUUID,
 		RetainedVersion: version,
 		ObjectSHA256:    man.ObjectSHA256,
-		Authoritative:   authoritative, AuthorityComponents: held,
+		Authoritative:   authoritative != nil, AuthorityComponents: held, AuthorityBases: bases,
 		Size: entry.size, ETag: entry.etag, ContentType: entry.contentType,
 		Metadata: metadata, Chunks: chunks,
 	})
@@ -25010,6 +25031,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 }
 
 const maxAuthAdvertisedComponents = 96
+const maxAuthAdvertisedBases = 8
 
 type authExportRequest struct {
 	Bucket          string   `json:"bucket"`
@@ -25018,6 +25040,7 @@ type authExportRequest struct {
 	RetainedVersion string   `json:"retained_version,omitempty"`
 	Peer            AuthCaps `json:"peer"`
 	KnownBase       string   `json:"known_base,omitempty"`
+	KnownBases      []string `json:"known_bases,omitempty"`
 	KnownComponents []string `json:"known_components,omitempty"`
 	MaxBytes        int64    `json:"max_bytes,omitempty"`
 }
@@ -25171,14 +25194,21 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	var held func([32]byte) bool
+	if len(req.KnownBases) > maxAuthAdvertisedBases {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "too many known bases")
+		return
+	}
+	heldBases := make(map[[32]byte]bool, len(req.KnownBases)+1)
 	if req.KnownBase != "" {
-		known, err := decodeHexSHA256(req.KnownBase)
+		req.KnownBases = append(req.KnownBases, req.KnownBase)
+	}
+	for _, value := range req.KnownBases {
+		known, err := decodeHexSHA256(value)
 		if err != nil {
 			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "invalid known base SHA-256")
 			return
 		}
-		held = func(digest [32]byte) bool { return known == digest }
+		heldBases[known] = true
 	}
 	if len(req.KnownComponents) > maxAuthAdvertisedComponents {
 		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "too many known component digests")
@@ -25193,7 +25223,7 @@ func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
 		}
 		components[sum] = true
 	}
-	recs, err := srv.store.authorityClosureFor(sha, req.Peer, held)
+	recs, err := srv.store.authorityClosureFor(sha, req.Peer, func(digest [32]byte) bool { return heldBases[digest] })
 	if errors.Is(err, errAuthMissing) {
 		writeSyncError(w, http.StatusConflict, "UnavailableClosure", "the source does not hold the requested closure")
 		return
@@ -27963,14 +27993,23 @@ func fetchSourceDescriptor(cfg syncClientConfig) (syncObjectDescriptor, error) {
 	return fetchSyncDescriptor(cfg, false)
 }
 
+var errSyncDescriptorMissing = errors.New("source object descriptor failed")
+
 func fetchSyncDescriptor(cfg syncClientConfig, components bool) (syncObjectDescriptor, error) {
 	return fetchSyncDescriptorVersion(cfg, components, "")
 }
 
 func fetchSyncDescriptorVersion(cfg syncClientConfig, components bool, version string) (syncObjectDescriptor, error) {
+	return requestSyncDescriptor(cfg, components, false, version)
+}
+
+func requestSyncDescriptor(cfg syncClientConfig, components, bases bool, version string) (syncObjectDescriptor, error) {
 	q := url.Values{"bucket": {cfg.Bucket}, "key": {cfg.Key}}
 	if components {
 		q.Set("closure", "1")
+	}
+	if bases {
+		q.Set("closure-bases", "1")
 	}
 	if version != "" {
 		q.Set("retained-version", version)
@@ -27978,6 +28017,9 @@ func fetchSyncDescriptorVersion(cfg syncClientConfig, components bool, version s
 	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SyncObjectPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor request failed: %w", err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return syncObjectDescriptor{}, fmt.Errorf("%w: status %d: %s", errSyncDescriptorMissing, resp.StatusCode, body)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return syncObjectDescriptor{}, fmt.Errorf("source object descriptor failed: status %d: %s", resp.StatusCode, body)
@@ -28039,6 +28081,8 @@ type replicateConfig struct {
 	Dest            syncClientConfig
 	Out             io.Writer
 	PreferAuthority bool
+	// AuthorityBaseKey optionally names another object in the destination bucket.
+	AuthorityBaseKey string
 
 	// DestMustBeAbsent, when set, switches the destination-conflict
 	// precondition from the ordinary "matches whatever I last observed
@@ -28275,11 +28319,12 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	}
 	export := authExportRequest{Bucket: p.cfg.Source.Bucket, Key: p.cfg.Source.Key, VersionID: p.desc.VersionID, Peer: *dstCaps}
 	if p.destExists {
-		dst, err := fetchSyncDescriptor(p.cfg.Dest, true)
+		dst, err := requestSyncDescriptor(p.cfg.Dest, true, p.cfg.AuthorityBaseKey == p.cfg.Dest.Key, "")
 		if err != nil {
 			return stats, false, err
 		}
 		export.KnownComponents = dst.AuthorityComponents[:min(len(dst.AuthorityComponents), maxAuthAdvertisedComponents)]
+		export.KnownBases = dst.AuthorityBases[:min(len(dst.AuthorityBases), maxAuthAdvertisedBases)]
 		if dst.Authoritative {
 			if dst.ObjectSHA256 == p.desc.ObjectSHA256 && dst.ContentType == p.desc.ContentType &&
 				slices.Equal(sortedMetadataKV(dst.Metadata), sortedMetadataKV(p.desc.Metadata)) {
@@ -28301,6 +28346,34 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	if len(header) > maxAuthCommitHeader || budget <= 0 {
 		return stats, false, nil
 	}
+	if key := p.cfg.AuthorityBaseKey; key != "" && key != p.cfg.Dest.Key {
+		base := p.cfg.Dest
+		base.Key = key
+		hint, err := requestSyncDescriptor(base, true, true, "")
+		if err != nil && !errors.Is(err, errSyncDescriptorMissing) {
+			return stats, false, err
+		}
+		if err == nil {
+			if hint.Bucket != base.Bucket || hint.Key != base.Key {
+				return stats, false, errors.New("replicate: authority base descriptor identity mismatch")
+			}
+			export.KnownBases = hint.AuthorityBases[:min(len(hint.AuthorityBases), maxAuthAdvertisedBases)]
+			if hint.Authoritative {
+				export.KnownBase = hint.ObjectSHA256
+			}
+			components := slices.Clone(hint.AuthorityComponents)
+			for _, digest := range export.KnownComponents {
+				if len(components) >= maxAuthAdvertisedComponents {
+					break
+				}
+				if !slices.Contains(components, digest) {
+					components = append(components, digest)
+				}
+			}
+			export.KnownComponents = components[:min(len(components), maxAuthAdvertisedComponents)]
+		}
+	}
+
 	export.MaxBytes = budget
 	control, err := json.Marshal(export)
 	if err != nil {
@@ -28372,7 +28445,7 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	}
 	if result.StatusCode != http.StatusOK {
 		var problem syncErrorBody
-		if result.StatusCode == http.StatusConflict && json.Unmarshal(ack, &problem) == nil && problem.Code == "MissingAuthorityDependency" {
+		if result.StatusCode == http.StatusConflict && json.Unmarshal(ack, &problem) == nil && (problem.Code == "MissingAuthorityDependency" || p.cfg.AuthorityBaseKey != "" && problem.Code == "ClosureRejected") {
 			return syncStats{UploadedBytes: total, AuthorityBytes: total, AuthorityProbeBytes: n}, false, nil
 		}
 		return stats, false, fmt.Errorf("replicate: authority import status %d: %s", result.StatusCode, ack)
@@ -28494,6 +28567,7 @@ func runReplicate(args []string) {
 	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket, instead of a single object")
 	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything")
 	authority := fs.Bool("authority-closure", false, "attempt negotiated native closures when they cost less than transferring missing CDC chunks")
+	authorityBase := fs.String("authority-base", "", "optional s3:// URI of a related object in the destination bucket; requires -authority-closure and a single real replication")
 	from := fs.String("from", "http://127.0.0.1:9000", "source ZeroS3 endpoint base URL (scheme://host[:port])")
 	to := fs.String("to", "http://127.0.0.1:9001", "destination ZeroS3 endpoint base URL (scheme://host[:port])")
 	fromAccessKey := fs.String("from-access-key", defaultAccessKeyID, "source access key ID")
@@ -28516,6 +28590,11 @@ func runReplicate(args []string) {
 	}
 	if err := validateWorkers(*workers); err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: replicate: -workers: %v\n", err)
+		os.Exit(2)
+	}
+
+	if *authorityBase != "" && (!*authority || *recursive || *dryRun) {
+		fmt.Fprintln(os.Stderr, "zeros3: replicate: -authority-base requires -authority-closure and a single real replication")
 		os.Exit(2)
 	}
 
@@ -28580,6 +28659,16 @@ func runReplicate(args []string) {
 		os.Exit(2)
 	}
 
+	var baseKey string
+	if *authorityBase != "" {
+		bucket, key, err := parseS3URI(*authorityBase)
+		if err != nil || bucket != dstBucket {
+			fmt.Fprintln(os.Stderr, "zeros3: replicate: -authority-base must name an object in the destination bucket")
+			os.Exit(2)
+		}
+		baseKey = key
+	}
+
 	cfg := replicateConfig{
 		Source: syncClientConfig{
 			Endpoint: *from, Bucket: srcBucket, Key: srcKey,
@@ -28589,9 +28678,10 @@ func runReplicate(args []string) {
 			Endpoint: *to, Bucket: dstBucket, Key: dstKey,
 			Creds: Credentials{AccessKeyID: *toAccessKey, SecretAccessKey: *toSecretKey}, Region: *region,
 		},
-		Out:             os.Stdout,
-		Workers:         *workers,
-		PreferAuthority: *authority,
+		Out:              os.Stdout,
+		Workers:          *workers,
+		PreferAuthority:  *authority,
+		AuthorityBaseKey: baseKey,
 	}
 	if *dryRun {
 		p, err := planReplication(cfg)

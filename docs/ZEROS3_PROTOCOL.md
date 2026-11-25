@@ -389,6 +389,22 @@ receiver independently proves reconstruction using the components it holds. Outd
 source identity fails the transfer. Older peers, unsupported forms, uneconomical
 frames and missing destination dependencies use the existing CDC replication path.
 
+For single-object replication, an additional `-authority-base s3://BUCKET/KEY`
+can name a prior object already present in the destination bucket. The client
+queries that key with the same destination credentials, using
+`closure=1&closure-bases=1` on the signed object descriptor request. The
+descriptor can include up to eight authority bases reachable from the named
+object. This supports a compressed archive whose shared decoded stream is a
+dependency of the prior object. The inventory walk starts at the authenticated
+bucket and key.
+
+The export request retains the version 1 `known_base` hint and adds optional
+`known_bases` for the dependency digests. Older peers can ignore the new fields.
+Hints can become stale. The importer verifies
+the resulting closure and target bytes before committing. A missing hinted key
+or a rejected dependency leaves the CDC route available. This option is most
+useful when reusing previously materialized authority across a slow link.
+
 Import receives a four-byte big-endian header length, a JSON object descriptor
 and the closure frame. It checks the signed whole-request SHA-256 as well as
 the frame digest, proves each new authority record and verifies reconstructed

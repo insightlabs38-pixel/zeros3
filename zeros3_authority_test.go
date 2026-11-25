@@ -484,6 +484,17 @@ func TestAuthHelperProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.Close()
+	case "import-request":
+		s, err := OpenStore(dir)
+		mustOK(t, err)
+		defer s.Close()
+		wire, err := os.ReadFile(os.Getenv("ZS3_AUTH_FILE"))
+		mustOK(t, err)
+		rec := authorityImportRequestForTest(t, s, wire)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("import request status %d: %s", rec.Code, rec.Body.String())
+		}
+
 	case "revertall":
 		lock, err := acquireStoreLock(dir, true)
 		if err != nil {
@@ -7526,6 +7537,164 @@ func TestAuthorityTierGateOnHardCodecs(t *testing.T) {
 			}
 			l.exact("tiered")
 			l.verifyOK("tiered")
+		})
+	}
+}
+
+func TestAuthorityCrossKeyHints(t *testing.T) {
+	srcRoot := authMigratedLab(t)
+	srcRoot.reclaim()
+	want := srcRoot.want["k3"]
+	rec := mustLoad(t, srcRoot.s, sha256.Sum256(want))
+	if len(rec.Bases) == 0 {
+		t.Fatal("fixture requires a base")
+	}
+	ref := rec.Bases[0]
+	var baseBytes []byte
+	for _, data := range srcRoot.want {
+		if sha256.Sum256(data) == ref.SHA {
+			baseBytes = data
+			break
+		}
+	}
+	if baseBytes == nil {
+		t.Fatal("fixture is missing exact base bytes")
+	}
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	src := httptest.NewServer(NewServer(srcRoot.s, creds, defaultRegion))
+	defer src.Close()
+	source := syncClientConfig{Endpoint: src.URL, Bucket: "b", Key: "k3", Creds: creds, Region: defaultRegion}
+	inventory, err := requestSyncDescriptor(source, true, true, "")
+	if err != nil || !slices.Contains(inventory.AuthorityBases, hex.EncodeToString(ref.SHA[:])) {
+		t.Fatalf("scoped dependency inventory: %+v %v", inventory, err)
+	}
+
+	for _, key := range []string{"prior", "missing"} {
+		t.Run(key, func(t *testing.T) {
+			dstRoot := newAuthLab(t)
+			var frame bytes.Buffer
+			if err := srcRoot.s.ExportAuthorityClosure(ref.SHA, &frame); err != nil {
+				t.Fatal(err)
+			}
+			if err := dstRoot.s.ImportAuthorityClosure(&frame); err != nil {
+				t.Fatal(err)
+			}
+			dstRoot.put("prior", baseBytes)
+			dst := httptest.NewServer(NewServer(dstRoot.s, creds, defaultRegion))
+			defer dst.Close()
+			base := syncClientConfig{Endpoint: dst.URL, Bucket: "b", Key: "prior", Creds: creds, Region: defaultRegion}
+			legacy, err := fetchSyncDescriptor(base, true)
+			if err != nil || len(legacy.AuthorityBases) != 0 {
+				t.Fatalf("legacy object descriptor: %+v %v", legacy, err)
+			}
+			scoped, err := requestSyncDescriptor(base, true, true, "")
+			if err != nil || !scoped.Authoritative {
+				t.Fatalf("scoped inventory: %+v %v", scoped, err)
+			}
+			unknown := base
+			unknown.Creds.SecretAccessKey = "wrong-test-key"
+			if _, err := requestSyncDescriptor(unknown, true, true, ""); err == nil {
+				t.Fatal("unauthenticated inventory was accepted")
+			}
+			base.Key = "replica"
+			cfg := replicateConfig{
+				Source:           source,
+				Dest:             base,
+				PreferAuthority:  true,
+				AuthorityBaseKey: key,
+			}
+			stats, err := replicateObject(cfg)
+			if err != nil || (key == "prior" && stats.AuthorityBytes == 0) {
+				t.Fatalf("replication via %s: %+v %v", key, stats, err)
+			}
+			version, _, err := dstRoot.s.HeadObject("b", "replica")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := replicateObject(cfg); err != nil {
+				t.Fatal(err)
+			}
+			again, _, err := dstRoot.s.HeadObject("b", "replica")
+			if err != nil || stats.AuthorityBytes > 0 && version.manifestUUID != again.manifestUUID {
+				t.Fatalf("replication retry changed the version: %v", err)
+			}
+			dst.Close()
+			dstRoot.offline(func() {})
+			dstRoot.want["replica"] = want
+			dstRoot.exact("reopened scoped replica")
+			dstRoot.verifyOK("reopened scoped replica")
+		})
+	}
+}
+
+func authorityImportRequestForTest(t *testing.T, store *Store, wire []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	creds := Credentials{AccessKeyID: defaultAccessKeyID, SecretAccessKey: defaultSecretAccessKey}
+	req := httptest.NewRequest(http.MethodPost, zeros3AuthImportPath, bytes.NewReader(wire))
+	digest := fmt.Sprintf("%x", sha256.Sum256(wire))
+	mustOK(t, signSigV4Request(req, creds, defaultRegion, digest, time.Now()))
+	res := httptest.NewRecorder()
+	NewServer(store, creds, defaultRegion).ServeHTTP(res, req)
+	return res
+}
+
+func TestAuthorityThinImportNamespaceCrashCuts(t *testing.T) {
+	src := authMigratedLab(t)
+	target := src.man("k3")
+	sum, err := decodeHexSHA256(target.ObjectSHA256)
+	mustOK(t, err)
+	root := mustLoad(t, src.s, sum)
+	if len(root.Bases) == 0 {
+		t.Fatal("fixture requires an authority base")
+	}
+	held := root.Bases[0].SHA
+	var base, thin bytes.Buffer
+	mustOK(t, src.s.ExportAuthorityClosure(held, &base))
+	mustOK(t, src.s.ExportAuthorityClosureThin(sum, func(h [32]byte) bool { return h == held }, &thin))
+	control := authImportRequest{
+		Version: authXferVersion,
+		SHA256:  target.ObjectSHA256,
+		syncCommitRequest: syncCommitRequest{
+			Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
+			Bucket: "b", Key: "replica", ContentType: target.ContentType, ExpectAbsent: true,
+			Metadata: map[string]string{"revision": "next"},
+		},
+	}
+	for _, ref := range target.Chunks {
+		control.Chunks = append(control.Chunks, syncChunkDescriptor{SHA256: ref.SHA256, Length: ref.Length})
+	}
+	header, err := json.Marshal(control)
+	mustOK(t, err)
+	wire := binary.BigEndian.AppendUint32(nil, uint32(len(header)))
+	wire = append(append(wire, header...), thin.Bytes()...)
+	file := filepath.Join(t.TempDir(), "request.bin")
+	mustOK(t, os.WriteFile(file, wire, 0o600))
+	for _, point := range []string{hookAuthImportChunks, hookAfterManifestPublished, hookAfterJournalSync} {
+		t.Run(point, func(t *testing.T) {
+			dst := newAuthLab(t)
+			mustOK(t, dst.s.ImportAuthorityClosure(bytes.NewReader(base.Bytes())))
+			dst.close()
+			if killed, trace := runHelper(t, "import-request", dst.dir, point, 1, "ZS3_AUTH_FILE="+file); !killed {
+				t.Fatalf("receiver did not reach cut: %s", trace)
+			}
+			dst.open()
+			entry, _, err := dst.s.HeadObject("b", "replica")
+			committed := point == hookAfterJournalSync
+			if committed && err != nil || !committed && !errors.Is(err, errNoSuchKey) {
+				t.Fatalf("unexpected visibility after restart: %v", err)
+			}
+			dst.verifyOK("before retry")
+			if res := authorityImportRequestForTest(t, dst.s, wire); res.Code != http.StatusOK {
+				t.Fatalf("retry status %d: %s", res.Code, res.Body.String())
+			}
+			after, _, err := dst.s.HeadObject("b", "replica")
+			mustOK(t, err)
+			if committed && after.manifestUUID != entry.manifestUUID {
+				t.Fatal("retry changed the durable version")
+			}
+			dst.want["replica"] = src.want["k3"]
+			dst.exact("after retry")
+			dst.verifyOK("after retry")
 		})
 	}
 }
