@@ -1,0 +1,23 @@
+{
+  "os": "Debian 13.6",
+  "kernel": "6.18.57",
+  "architecture": "x86_64",
+  "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+  "available_cpu_count": 3,
+  "cpu_max": "200000 100000",
+  "cgroup_memory_bytes": 8589934592,
+  "host_visible_ram_gib": 9.7,
+  "swap_bytes": 0,
+  "filesystem": "overlayfs over virtual storage, rw,relatime,index=off,metacopy=off",
+  "filesystem_block_bytes": 4096,
+  "available_disk_gib": 60,
+  "available_inodes": 4194199,
+  "virtual_device": "vda 64G, guest ROTA=1; physical media unknown",
+  "scratch_budget_gib": 4,
+  "disk_probe": "128 MiB sequential direct zero-write with fdatasync, 1.1 GB/s; direct read, 2.4 GB/s; single probe, underlying virtual caching unknown",
+  "proc_io": true,
+  "privileged_cache_drop": false,
+  "network_shaping": false,
+  "docker_server": "28.4.0",
+  "hosted_probe": "Hugging Face health HTTPS via environment proxy; TCP connect 0.74 ms to proxy, TLS 57.73 ms, TTFB 924.28 ms; backend RTT and location unknown"
+}
