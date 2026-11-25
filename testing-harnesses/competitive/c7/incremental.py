@@ -108,7 +108,21 @@ def run_case(args, env, work, case, emit):
         record(args.candidate, seed, "prune", ["versions", "prune", "-apply", "-json",
                                               "-bucket", BUCKET, "-prefix", "unrelated/00000", "-keep-last", "0"], "index")
         record(args.candidate, seed, "delete-refresh", ["authority", "index-refresh", "-apply"], "index")
-    record(args.candidate, seed, "integrity", ["authority", "index-status"], "index")
+    status = record(args.candidate, seed, "integrity", ["authority", "index-status"], "index")
+    if case == "binary":
+        # The seed is disposable. Damage the active index and exercise CLI fallback.
+        catalog = Path(status["result"]["directory"]) / "catalog.zsc"
+        with catalog.open("r+b") as file:
+            first = file.read(1)
+            file.seek(0)
+            file.write(bytes([first[0] ^ 128]))
+        proof = record(args.candidate, seed, "corrupt-index-fallback",
+                       [*OPT, "-max-targets", "1", "-indexed-discovery"], "index")
+        if not proof["result"]["discovery"]["index_fallback"]:
+            raise ValueError("corrupt catalog was silently accepted")
+        expected.pop("unrelated/00000", None)
+        emit({"case": case, "lane": "index", "phase": "fallback-exact",
+              "verified": verify_reads(args.candidate, seed, log, env, expected)})
 
 
 def main():

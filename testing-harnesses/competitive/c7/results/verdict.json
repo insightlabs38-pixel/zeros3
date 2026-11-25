@@ -1,0 +1,15 @@
+{
+  "batch": "C7",
+  "status": "C7_INDEX_EFFECTIVE",
+  "candidate_commit": "a0fde91a918bc7cf217343d3cda148607d98ceca",
+  "full_baseline": "4bc66f3af3d1d97f90c483c2b26676d3912fbb02",
+  "main": "2ac9caba60cc050a595cefef7b791aa718803c0e",
+  "dense_entries_before_new_revision": 1031,
+  "dense_original_index_allocated_bytes": 495616,
+  "dense_full_and_indexed_cpu_seconds": [1.487528, 0.314418],
+  "dense_full_and_indexed_retained_bytes_excluding_index": [6230016, 6225920],
+  "corrupt_index_fallback_verified_objects": 72,
+  "namespace_metadata_only_counts": [1000, 10000, 100000, 1000000],
+  "focused_root_suite": "passed",
+  "next": "C8"
+}
