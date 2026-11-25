@@ -82,7 +82,8 @@ def server(system, work, run, representations=False):
             "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}))
         cmd = [str(work / "bin/weed"), "server", "-s3", "-ip=127.0.0.1",
                "-ip.bind=127.0.0.1", f"-dir={store}", f"-s3.port={PORT}",
-               f"-s3.config={config}", "-volume.max=2", "-master.defaultReplication=000",
+               f"-s3.config={config}", f"-volume.max={env.get('C1_WEED_VOLUMES', '2')}",
+               "-master.defaultReplication=000",
                "-master.port=19801", "-filer.port=19802", "-volume.port=19803",
                "-s3.port.iceberg=0", "-s3.port.lance=0"]
     elif system == "garage":
@@ -285,11 +286,14 @@ def histories(args, family, system, run, profile):
             yield from restore(api, records, store)
             return
     binary = str(args.work / "zeros3")
-    order = "oldest" if profile == "archive" else "newest"
+    order = "oldest" if profile.startswith("archive") else "newest"
     optimize = [binary, "authority", "optimize", "-store", str(store), "-apply",
-                "-profile", profile, "-order", order, "-max-depth", "2", "-max-bases", "2",
-                "-min-saving", "0.10", "-canonical", "-codec-replay", "-hard-codecs",
-                "-splice", "-record-groups"]
+                "-profile", profile.removesuffix("-delta"), "-order", order, "-max-depth", "2", "-max-bases", "2",
+                 "-min-saving", "0.10", "-record-groups"]
+    if profile == "archive-delta":
+        optimize += ["-no-rep"]
+    else:
+        optimize += ["-canonical", "-codec-replay", "-hard-codecs", "-splice"]
     reuse = [binary, "gc", "-store", str(store), "-apply"]
     yield {"phase": "maintenance", **maintenance(run, store, [optimize, reuse])}
     with server(system, args.work, run) as (api, _, store):

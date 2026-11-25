@@ -20,7 +20,7 @@ def digest_tree(path):
             for p in path.rglob("*") if p.is_file()}
 
 
-def run_test(system, work, run, family):
+def run_test(system, work, run, family, compression):
     run.mkdir(parents=True)
     store = run / "store"
     source = run / "source"
@@ -59,6 +59,8 @@ def run_test(system, work, run, family):
     else:
         _, metrics = command("repository", "create", "filesystem", f"--path={store}")
         command("maintenance", "set", "--enable-quick=false", "--enable-full=false")
+        if compression:
+            command("policy", "set", "--global", f"--compression={compression}")
     yield {"phase": "init", **metrics}
 
     snapshots = []
@@ -127,6 +129,7 @@ def main():
     parser.add_argument("result", type=Path)
     parser.add_argument("--systems", nargs="+", choices=SYSTEMS, default=SYSTEMS)
     parser.add_argument("--families", nargs="+", choices=(*FAMILIES, "combined"), default=["combined"])
+    parser.add_argument("--kopia-compression", choices=("zstd-fastest",))
     parser.add_argument("--repetitions", type=int, choices=(1, 2, 3), default=3)
     args = parser.parse_args()
     with args.result.open("x", buffering=1) as out:
@@ -134,9 +137,11 @@ def main():
             for system in (*args.systems[rep:], *args.systems[:rep]):
                 for family in args.families:
                     ids = {"system": system, "repetition": rep, "family": family}
+                    if system == "kopia" and args.kopia_compression:
+                        ids["profile"] = args.kopia_compression
                     run = args.work / "runs" / f"{args.result.stem}-{rep}-{system}-{family}"
                     try:
-                        for row in run_test(system, args.work, run, family):
+                        for row in run_test(system, args.work, run, family, args.kopia_compression):
                             print(json.dumps({**ids, **row}), file=out)
                     except Exception as error:
                         print(json.dumps({**ids, "phase": "error", "error": str(error)}), file=out)
