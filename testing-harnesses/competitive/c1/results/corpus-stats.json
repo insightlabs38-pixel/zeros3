@@ -1,0 +1,450 @@
+[
+  {
+    "family": "boilerplate",
+    "revision": 0,
+    "files": 128,
+    "logical_bytes": 624896,
+    "zlib_level_6_bytes": 9747,
+    "unique_file_hashes": 128
+  },
+  {
+    "family": "boilerplate",
+    "revision": 1,
+    "files": 128,
+    "logical_bytes": 624896,
+    "zlib_level_6_bytes": 9747,
+    "unique_file_hashes": 128,
+    "unchanged_or_reused_file_bytes": 585984,
+    "aligned_64k_block_jaccard": 0.8823529411764706
+  },
+  {
+    "family": "boilerplate",
+    "revision": 2,
+    "files": 128,
+    "logical_bytes": 624896,
+    "zlib_level_6_bytes": 9746,
+    "unique_file_hashes": 128,
+    "unchanged_or_reused_file_bytes": 585984,
+    "aligned_64k_block_jaccard": 0.8823529411764706
+  },
+  {
+    "family": "coreutils",
+    "revision": 0,
+    "files": 6,
+    "logical_bytes": 540273,
+    "zlib_level_6_bytes": 148964,
+    "unique_file_hashes": 6
+  },
+  {
+    "family": "coreutils",
+    "revision": 1,
+    "files": 6,
+    "logical_bytes": 540405,
+    "zlib_level_6_bytes": 148922,
+    "unique_file_hashes": 6,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "coreutils",
+    "revision": 2,
+    "files": 6,
+    "logical_bytes": 542252,
+    "zlib_level_6_bytes": 149834,
+    "unique_file_hashes": 6,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "entropy",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 4194304,
+    "zlib_level_6_bytes": 4195590,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "entropy",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 4194304,
+    "zlib_level_6_bytes": 4195590,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "entropy",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 4194304,
+    "zlib_level_6_bytes": 4195590,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "gzip-control",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 2097810,
+    "zlib_level_6_bytes": 2098456,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "gzip-control",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 2097810,
+    "zlib_level_6_bytes": 2098456,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "gzip-control",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 2097810,
+    "zlib_level_6_bytes": 2098456,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "json",
+    "revision": 0,
+    "files": 8,
+    "logical_bytes": 1357784,
+    "zlib_level_6_bytes": 165730,
+    "unique_file_hashes": 8
+  },
+  {
+    "family": "json",
+    "revision": 1,
+    "files": 8,
+    "logical_bytes": 1357784,
+    "zlib_level_6_bytes": 165616,
+    "unique_file_hashes": 8,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "json",
+    "revision": 2,
+    "files": 8,
+    "logical_bytes": 1357784,
+    "zlib_level_6_bytes": 165599,
+    "unique_file_hashes": 8,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "lodash",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 315311,
+    "zlib_level_6_bytes": 314757,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "lodash",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 316680,
+    "zlib_level_6_bytes": 316179,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "lodash",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 318961,
+    "zlib_level_6_bytes": 318450,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "native",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 79929,
+    "zlib_level_6_bytes": 67455,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "native",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 79929,
+    "zlib_level_6_bytes": 67456,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "native",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 79929,
+    "zlib_level_6_bytes": 67455,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "oci",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 1640468,
+    "zlib_level_6_bytes": 1640979,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "oci",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 1640471,
+    "zlib_level_6_bytes": 1640982,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.8571428571428571
+  },
+  {
+    "family": "oci",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 1640473,
+    "zlib_level_6_bytes": 1640984,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.8571428571428571
+  },
+  {
+    "family": "package",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 1640284,
+    "zlib_level_6_bytes": 1640256,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "package",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 1640284,
+    "zlib_level_6_bytes": 1640256,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.8571428571428571
+  },
+  {
+    "family": "package",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 1640284,
+    "zlib_level_6_bytes": 1640256,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.8571428571428571
+  },
+  {
+    "family": "parquet",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 1937122,
+    "zlib_level_6_bytes": 1163262,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "parquet",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 1937065,
+    "zlib_level_6_bytes": 1163364,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "parquet",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 1937002,
+    "zlib_level_6_bytes": 1163438,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "repeat",
+    "revision": 0,
+    "files": 2,
+    "logical_bytes": 8388608,
+    "zlib_level_6_bytes": 8391180,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "repeat",
+    "revision": 1,
+    "files": 2,
+    "logical_bytes": 8388608,
+    "zlib_level_6_bytes": 8391180,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 8388608,
+    "aligned_64k_block_jaccard": 1.0
+  },
+  {
+    "family": "repeat",
+    "revision": 2,
+    "files": 2,
+    "logical_bytes": 8388608,
+    "zlib_level_6_bytes": 8391180,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 8388608,
+    "aligned_64k_block_jaccard": 1.0
+  },
+  {
+    "family": "shift",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 4194304,
+    "zlib_level_6_bytes": 4195590,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "shift",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 4202496,
+    "zlib_level_6_bytes": 4203787,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.06611570247933884
+  },
+  {
+    "family": "shift",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 4210688,
+    "zlib_level_6_bytes": 4211979,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.06557377049180328
+  },
+  {
+    "family": "source",
+    "revision": 0,
+    "files": 128,
+    "logical_bytes": 153442,
+    "zlib_level_6_bytes": 9981,
+    "unique_file_hashes": 128
+  },
+  {
+    "family": "source",
+    "revision": 1,
+    "files": 128,
+    "logical_bytes": 153442,
+    "zlib_level_6_bytes": 9985,
+    "unique_file_hashes": 128,
+    "unchanged_or_reused_file_bytes": 134313,
+    "aligned_64k_block_jaccard": 0.7777777777777778
+  },
+  {
+    "family": "source",
+    "revision": 2,
+    "files": 128,
+    "logical_bytes": 153442,
+    "zlib_level_6_bytes": 9983,
+    "unique_file_hashes": 128,
+    "unchanged_or_reused_file_bytes": 134313,
+    "aligned_64k_block_jaccard": 0.7777777777777778
+  },
+  {
+    "family": "sqlite",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 2813952,
+    "zlib_level_6_bytes": 2129735,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "sqlite",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 2813952,
+    "zlib_level_6_bytes": 2112456,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.43333333333333335
+  },
+  {
+    "family": "sqlite",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 2813952,
+    "zlib_level_6_bytes": 2112472,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.43333333333333335
+  },
+  {
+    "family": "sst",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 3738874,
+    "zlib_level_6_bytes": 3413405,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "sst",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 3738797,
+    "zlib_level_6_bytes": 3413361,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "sst",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 3735006,
+    "zlib_level_6_bytes": 3409843,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.0
+  },
+  {
+    "family": "tensor",
+    "revision": 0,
+    "files": 1,
+    "logical_bytes": 4194392,
+    "zlib_level_6_bytes": 99691,
+    "unique_file_hashes": 1
+  },
+  {
+    "family": "tensor",
+    "revision": 1,
+    "files": 1,
+    "logical_bytes": 4194392,
+    "zlib_level_6_bytes": 105587,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.2857142857142857
+  },
+  {
+    "family": "tensor",
+    "revision": 2,
+    "files": 1,
+    "logical_bytes": 4194392,
+    "zlib_level_6_bytes": 105778,
+    "unique_file_hashes": 1,
+    "unchanged_or_reused_file_bytes": 0,
+    "aligned_64k_block_jaccard": 0.42857142857142855
+  }
+]
