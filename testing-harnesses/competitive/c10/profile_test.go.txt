@@ -1,0 +1,64 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"testing"
+)
+
+func BenchmarkC10Read(b *testing.B) {
+	store, err := OpenStore(os.Getenv("C10_STORE"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer store.Close()
+	_, manifest, err := store.HeadObject("frontier", os.Getenv("C10_KEY"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	if rec, err := store.authLoadFromManifestForC10(manifest); err == nil && rec != nil {
+		b.Logf("authority form %d with %d bases", rec.Form, len(rec.Bases))
+	}
+	size := manifest.TotalLength
+	span := byteRange{0, size - 1}
+	if n, err := strconv.ParseInt(os.Getenv("C10_RANGE"), 10, 64); err == nil && n > 0 && n < size {
+		span.start, span.end = size/2-n/2, size/2-n/2+n-1
+	}
+	b.SetBytes(span.end - span.start + 1)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reader := store.openObjectReader(manifest, span)
+		h := sha256.New()
+		var count int64
+		for {
+			p, err := reader.next()
+			h.Write(p)
+			count += int64(len(p))
+			if err != nil {
+				if err != io.EOF {
+					reader.close()
+					b.Fatal(err)
+				}
+				break
+			}
+		}
+		reader.close()
+		if count != span.end-span.start+1 ||
+			count == size && hex.EncodeToString(h.Sum(nil)) != manifest.ObjectSHA256 {
+			b.Fatal("profile reconstructed different bytes")
+		}
+	}
+}
+
+func (s *Store) authLoadFromManifestForC10(man manifestV1) (*authRecord, error) {
+	sha, err := decodeHexSHA256(man.ObjectSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("profile authority: %w", err)
+	}
+	return s.authLoad(sha)
+}
