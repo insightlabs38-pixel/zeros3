@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import time
 
+from codec_corpus import FAMILIES as CODEC_FAMILIES
 from corpus import FAMILIES
 from external_corpus import FAMILIES as EXTERNAL_FAMILIES
 from local_s3 import allocation
@@ -129,7 +130,7 @@ def main():
     parser.add_argument("work", type=Path)
     parser.add_argument("result", type=Path)
     parser.add_argument("--systems", nargs="+", choices=SYSTEMS, default=SYSTEMS)
-    parser.add_argument("--families", nargs="+", choices=(*FAMILIES, *EXTERNAL_FAMILIES, "combined"), default=["combined"])
+    parser.add_argument("--families", nargs="+", choices=(*FAMILIES, *EXTERNAL_FAMILIES, *CODEC_FAMILIES, "combined"), default=["combined"])
     parser.add_argument("--kopia-compression", choices=("zstd-fastest",))
     parser.add_argument("--repetitions", type=int, choices=(1, 2, 3), default=3)
     args = parser.parse_args()

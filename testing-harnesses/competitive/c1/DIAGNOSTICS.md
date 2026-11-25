@@ -16,3 +16,8 @@ original result files and are reported as diagnostics.
 - Add independent Coreutils source and lodash npm release histories. Pin
   downloaded artifact URLs and SHA-256 before comparison. Analyze separately
   from the unchanged 12-family synthetic composite.
+- Test a separately generated Snappy Parquet history and an LZ4 RocksDB
+  SST history using real encoders. Pin Python packages and verify the
+  SHA-256 captured in the run. RocksDB regenerates equal-length SSTs with
+  different byte checksums across invocations. SST reproducibility is
+  at the workload level, and its raw row results identify the staged files.

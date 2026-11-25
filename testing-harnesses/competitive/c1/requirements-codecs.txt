@@ -1,0 +1,2 @@
+pyarrow==18.1.0
+rocksdict==0.3.29
