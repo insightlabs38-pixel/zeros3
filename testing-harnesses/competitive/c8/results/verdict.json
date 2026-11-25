@@ -1,0 +1,16 @@
+{
+  "batch": "C8",
+  "status": "C8_STREAM_EFFECTIVE",
+  "candidate_commit": "b039280fa5ab9c612bf9d82310da5a100e96a634",
+  "baseline_commit": "4ea96a9fc99fb4819274782e50685392f24b44e5",
+  "main": "2ac9caba60cc050a595cefef7b791aa718803c0e",
+  "typescript_pairs": 3,
+  "typescript_wall_seconds": [4.160205096999562, 1.0625448129976576],
+  "typescript_receiver_cpu_seconds": [4.98, 1.84],
+  "client_output_blocks": [320, 0],
+  "paired_http_bytes_each": 350034,
+  "planner_scratch_probe": "research only",
+  "new_durable_format": false,
+  "focused_tests_and_race": "passed",
+  "next": "C9"
+}
