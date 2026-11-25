@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -1261,4 +1262,75 @@ func BenchmarkAuthoritySimilarityLookup(b *testing.B) {
 		i++
 	}
 	b.ReportMetric(float64(matched)/float64(b.N), "candidates/op")
+}
+
+func TestAuthoritySimilarityOneTargetUsesPriorGeneration(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	mustOK(t, err)
+	defer s.Close()
+	mustOK(t, s.CreateBucket("related"))
+	mustOK(t, s.CreateBucket("other"))
+	versions := authHistory(313, 3, 500_000)
+	mustPutObject(t, s, "related", "earlier", versions[0], "", nil)
+	mustPutObject(t, s, "other", "other-bucket", versions[1], "", nil)
+	stage, err := s.buildAuthSimilarityStage()
+	mustOK(t, err)
+	mustOK(t, s.publishAuthSimilarityStage(filepath.Base(stage.Directory)))
+	mustPutObject(t, s, "related", "next", versions[2], "", nil)
+	if query, err := s.openCurrentAuthSimilarityQuery(); !errors.Is(err, errAuthSimilarityStale) {
+		if query != nil {
+			query.close()
+		}
+		t.Fatalf("strict query must require the current fence: %v", err)
+	}
+
+	q, err := s.openAuthSimilarityHint()
+	mustOK(t, err)
+	defer q.close()
+	policy := OptimizePolicy{AuthPolicy: AuthPolicy{Order: "oldest", AllowDelta: true, Candidates: 4,
+		MaxDepth: 2, MinSaving: .02},
+		Profile: "archive", Discovery: "sketch", MaxTargets: 1}
+	plain, err := s.AuthorityOptimize(context.Background(), policy)
+	mustOK(t, err)
+	policy.similarity = q
+	indexed, err := s.AuthorityOptimize(context.Background(), policy)
+	mustOK(t, err)
+	if indexed.Discovery == nil || indexed.Discovery.IndexedCandidates != 1 || indexed.Planned.Bytes >= plain.Planned.Bytes {
+		t.Fatalf("expected one useful same-bucket suggestion: plain=%d indexed=%+v", plain.Planned.Bytes, indexed)
+	}
+	policy.Apply = true
+	applied, err := s.AuthorityOptimize(context.Background(), policy)
+	mustOK(t, err)
+	if applied.Applied == 0 || applied.Failed != 0 {
+		t.Fatalf("indexed candidate was not applied: %+v", applied)
+	}
+	_, body, err := s.GetObject("related", "next")
+	mustOK(t, err)
+	if !bytes.Equal(body, versions[2]) {
+		t.Fatal("indexed suggestion changed the target bytes")
+	}
+	verify, err := s.Verify(true)
+	mustOK(t, err)
+	if !verify.OK() {
+		t.Fatalf("indexed optimizer failed deep verification: %+v", verify.Issues)
+	}
+	name := filepath.Join(stage.Directory, "catalog.zsc")
+	f, err := os.OpenFile(name, os.O_RDWR, 0)
+	mustOK(t, err)
+	var first [1]byte
+	_, err = f.ReadAt(first[:], 0)
+	mustOK(t, err)
+	first[0] ^= 0x80
+	_, err = f.WriteAt(first[:], 0)
+	mustOK(t, err)
+	mustOK(t, f.Close())
+	if query, err := s.openAuthSimilarityHint(); err == nil {
+		query.close()
+		t.Fatal("corrupt catalog was accepted")
+	}
+	_, body, err = s.GetObject("related", "next")
+	mustOK(t, err)
+	if !bytes.Equal(body, versions[2]) {
+		t.Fatal("damaged index changed ordinary reads")
+	}
 }

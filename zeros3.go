@@ -124,17 +124,17 @@ import (
 //    33832    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    34467    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    53152    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61301    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    64960    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65516    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66423    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67578    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68522    Verified decoded-window cache (B9)
-//    68803    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70093    Windowed and estimated similarity deltas (extracted dcore)
-//    71930    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    79786    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86058    CLI dispatch, HTTP server/startup, and main
+//    61343    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65067    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65626    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66533    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67688    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68632    Verified decoded-window cache (B9)
+//    68913    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70203    Windowed and estimated similarity deltas (extracted dcore)
+//    72040    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    79896    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86168    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -60841,6 +60841,32 @@ func (s *Store) openCurrentAuthSimilarityQuery() (*authSimilarityQuery, error) {
 	return openAuthSimilarityQuery(report)
 }
 
+// Historical generations can supply optimization hints after the journal grows.
+// Candidates from the catalog must still resolve in the optimizer's live graph.
+func (s *Store) openAuthSimilarityHint() (*authSimilarityQuery, error) {
+	name, err := s.authSimilarityCurrentName()
+	if err != nil {
+		return nil, err
+	}
+	report, err := s.readAuthSimilarityManifest(name)
+	if err != nil {
+		return nil, err
+	}
+	if report.StoreID != s.formatSnapshot().StoreID || report.JournalEnd < 0 ||
+		report.JournalEnd > s.journal.writeOffset || report.JournalSeq >= s.journal.nextSeq {
+		return nil, errAuthSimilarityStale
+	}
+	hash := sha256.New()
+	n, err := io.Copy(hash, io.NewSectionReader(s.journal.f, 0, report.JournalEnd))
+	if err != nil {
+		return nil, err
+	}
+	if n != report.JournalEnd || hex.EncodeToString(hash.Sum(nil)) != report.JournalSHA {
+		return nil, errAuthSimilarityStale
+	}
+	return openAuthSimilarityQuery(report)
+}
+
 func openAuthSimilarityQuery(report authSimilarityStageReport) (*authSimilarityQuery, error) {
 	catalog, err := os.Open(filepath.Join(report.Directory, "catalog.zsc"))
 	if err != nil {
@@ -60985,7 +61011,7 @@ func runAuthority(args []string) {
 	all := fs.Bool("all", false, "revert: every content, then lower the store format to its pre-authority level")
 	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
 	indexGeneration := fs.String("generation", "", "index-publish: activate a verified staged generation by directory name")
-	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate: also consider verified same-bucket bases proposed by the persistent index")
+	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate or optimize: also consider verified same-bucket bases proposed by the persistent index")
 	windowKiB := fs.Int64("window-kib", 0, "migrate: ZW1 frame size in KiB (64–1024, 0 uses the default)")
 	segmentKiB := fs.Int64("segment-kib", 0, "migrate: restartable program segment in KiB (16–1024, 0 uses the default 128, -1 writes unsegmented ZW1)")
 	priceCurrent := fs.Bool("price-current-storage", false, "migrate: price existing pack sizes and raw new components instead of assuming recompression")
@@ -61183,6 +61209,18 @@ func runAuthority(args []string) {
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
 			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice, MaxTargets: *maxTargets}
+		var hintSeconds float64
+		if *indexedDiscovery && pol.AllowDelta {
+			start := time.Now()
+			pol.similarity, err = store.openAuthSimilarityHint()
+			hintSeconds = time.Since(start).Seconds()
+			if err != nil {
+				log.Printf("zeros3: optimize similarity discovery using local candidates: %v", err)
+			} else {
+				defer pol.similarity.close()
+				pol.IndexedGeneration = filepath.Base(pol.similarity.report.Directory)
+			}
+		}
 		pol.Locality = []int{}
 		for _, f := range strings.Split(*locality, ",") {
 			if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 {
@@ -61207,6 +61245,10 @@ func runAuthority(args []string) {
 		rep, err := run(ctx, pol)
 		if err != nil {
 			log.Fatalf("zeros3: authority optimize: %v", err)
+		}
+		if rep.Discovery != nil && *indexedDiscovery && pol.AllowDelta {
+			rep.Discovery.IndexOpenSeconds = hintSeconds
+			rep.Discovery.IndexFallback = pol.similarity == nil || pol.similarity.failed
 		}
 		if *finalize {
 			if rep.Failed != 0 {
@@ -61330,6 +61372,7 @@ type OptimizePolicy struct {
 	Algorithm         string                              `json:"algorithm"`        // global | local | oracle | current (ablations: single, edmonds)
 	Pareto            []float64                           `json:"pareto,omitempty"` // read weights of a frontier sweep reported beside the plan
 	MaxTargets        int                                 `json:"max_targets,omitempty"`
+	IndexedGeneration string                              `json:"indexed_generation,omitempty"`
 	MaxEvals          int64                               `json:"max_evals"`         // move evaluations per partition
 	Blocked           *bool                               `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
 	Oracle            bool                                `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
@@ -62742,6 +62785,54 @@ func (g *rgGraph) rgCandidates(v int32, inv map[uint64][]int32, byKey map[string
 	return out
 }
 
+// rgIndexedCandidates maps bounded postings back to the current same-bucket
+// graph. A stale digest can only waste a lookup; it cannot supply base bytes.
+func (g *rgGraph) rgIndexedCandidates(v int32) ([]int32, error) {
+	q := g.pol.similarity
+	target := g.nodes[v]
+	score := make(map[int32]int)
+	resolved := make(map[uint32]int32)
+	for _, feature := range target.sk {
+		ids, err := q.postingWindow(feature, authSimilarityRunScanLimit)
+		if err != nil {
+			return nil, err
+		}
+		eligible := 0
+		for i := len(ids) - 1; i >= 0 && eligible < authSimilarityRunLimit; i-- {
+			id := ids[i]
+			pos, known := resolved[id]
+			if !known {
+				digest, length, err := q.content(id)
+				if err != nil {
+					return nil, err
+				}
+				pos = -1
+				if u, ok := g.idx[digest]; ok && u != v {
+					n := g.nodes[u]
+					if n.live && n.obj != nil && n.size == length && n.obj.bucket == target.obj.bucket {
+						pos = u
+					}
+				}
+				resolved[id] = pos
+			}
+			if pos >= 0 {
+				score[pos] += 2
+				eligible++
+			}
+		}
+	}
+	out := slices.Collect(maps.Keys(score))
+	for _, u := range out {
+		if g.nodes[u].obj.key == target.obj.key {
+			score[u]++
+		}
+	}
+	slices.SortFunc(out, func(a, b int32) int {
+		return cmp.Or(cmp.Compare(score[b], score[a]), bytes.Compare(g.nodes[a].sha[:], g.nodes[b].sha[:]))
+	})
+	return out[:min(len(out), g.pol.Candidates)], nil
+}
+
 // generate adds delta (and representation) options for every eligible live node.
 func (g *rgGraph) generate(ctx context.Context) error {
 	s, pol := g.s, g.pol
@@ -62885,6 +62976,22 @@ func (g *rgGraph) generate(ctx context.Context) error {
 				cs.singles = g.rgCandidates(v, inv, byKey)
 				g.disc.RankSeconds += time.Since(t0).Seconds()
 				g.disc.Singles += len(cs.singles)
+			}
+			if q := pol.similarity; q != nil && !q.failed && nd.live {
+				t0 := time.Now()
+				bases, err := g.rgIndexedCandidates(v)
+				g.disc.RankSeconds += time.Since(t0).Seconds()
+				if err != nil {
+					q.failed = true
+					g.disc.IndexFallback = true
+				} else {
+					for _, u := range bases {
+						if !slices.Contains(cs.singles, u) {
+							cs.singles = append(cs.singles, u)
+							g.disc.IndexedCandidates++
+						}
+					}
+				}
 			}
 			if len(cs.singles) == 0 && len(cs.multi) == 0 {
 				continue
@@ -65309,18 +65416,21 @@ func rsGreedy(cands []rsCand, first int, maxBases int, minGain int64) []int {
 
 // DiscoveryStats reports the cost and yield of candidate discovery in one planning pass.
 type DiscoveryStats struct {
-	Method         string  `json:"method"`
-	Contents       int     `json:"contents"`
-	Features       int64   `json:"features"`
-	IndexBytes     int64   `json:"index_bytes"`
-	ExtractSeconds float64 `json:"extract_seconds"`
-	RankSeconds    float64 `json:"rank_seconds"`
-	VerifySeconds  float64 `json:"verify_seconds"`
-	Verified       int     `json:"verified_matches"`
-	Singles        int     `json:"singles"`
-	Multi          int     `json:"multi_sets"`
-	MultiGain      int64   `json:"multi_estimated_gain"`  // estimated bytes multi-base programs save over the best single
-	WindowedCover  int64   `json:"windowed_second_cover"` // windowed targets: bytes a second base would add (not encodable)
+	Method            string  `json:"method"`
+	Contents          int     `json:"contents"`
+	Features          int64   `json:"features"`
+	IndexBytes        int64   `json:"index_bytes"`
+	ExtractSeconds    float64 `json:"extract_seconds"`
+	RankSeconds       float64 `json:"rank_seconds"`
+	VerifySeconds     float64 `json:"verify_seconds"`
+	Verified          int     `json:"verified_matches"`
+	Singles           int     `json:"singles"`
+	IndexOpenSeconds  float64 `json:"index_open_seconds,omitempty"`
+	IndexedCandidates int     `json:"indexed_candidates,omitempty"`
+	IndexFallback     bool    `json:"index_fallback,omitempty"`
+	Multi             int     `json:"multi_sets"`
+	MultiGain         int64   `json:"multi_estimated_gain"`  // estimated bytes multi-base programs save over the best single
+	WindowedCover     int64   `json:"windowed_second_cover"` // windowed targets: bytes a second base would add (not encodable)
 }
 
 // rsShare is, per fingerprint of v, how many eligible contents hold the CDC chunk containing it.

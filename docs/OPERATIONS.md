@@ -476,6 +476,22 @@ maintenance retire grouped records by tombs and rewrite groups below 75% live. `
 `optimize`) adds normalized ELF/PE x86-64 Go executables (feature `exenorm`). `ZEROS3_WINDOW_CACHE_MIB`
 enables the in-memory decoded-window cache for replayed representations (off by default).
 
+### Bounded indexed optimization (research)
+
+After building a similarity generation with `authority index-build -apply`,
+use `authority optimize -max-targets N -indexed-discovery` to supplement
+local candidates with earlier same-bucket versions. The optimizer verifies
+the catalog, posting runs and the stored journal prefix, then resolves each
+hint against the current graph. The delta encoder and publication proof
+verify exact content.
+
+A verified generation remains useful after new journal entries. Run
+`authority index-refresh -apply` to add later content and reconcile retired
+entries. Discovery continues locally if the generation is missing or fails
+verification. Archived and canonical versions can have different sketch
+recall, so compare a bounded policy with a full optimize on representative
+histories before using it for unattended archive maintenance.
+
 ### Restartable records and reconstruction layout (research, B5)
 
 Both are opt-in and change only physical placement; reads stay byte-exact and
