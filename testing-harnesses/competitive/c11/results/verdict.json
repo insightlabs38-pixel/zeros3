@@ -1,0 +1,17 @@
+{
+  "batch": 11,
+  "outcome": "C11_SPECIALIZED",
+  "baseline": "dd1af6b",
+  "admission_time_ablation": "d725316",
+  "dynamic_policy": "677a0d8",
+  "foreground_aware_yield": "SPECIALIZED",
+  "fixed_delay": "KILL",
+  "admission_time_worker_cap": "REDESIGN",
+  "mixed_four_client_p99_ms": {"incumbent": 97.2, "adaptive": 57.6},
+  "mixed_four_client_import_seconds": {"incumbent": 2.47, "adaptive": 2.78},
+  "http_bytes": 350034,
+  "net_bytes_reclaimed": 18359529,
+  "deep_verify": "pass",
+  "focused_race": "pass",
+  "prior_durable_crash_cuts": "pass"
+}
