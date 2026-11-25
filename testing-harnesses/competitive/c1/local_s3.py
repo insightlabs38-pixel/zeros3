@@ -178,10 +178,12 @@ def measure(pool, rows, operation):
         return time.perf_counter_ns() - began, size
 
     began = time.perf_counter()
+    before = time.process_time()
     observations = list(pool.map(single, rows))
+    client_cpu = time.process_time() - before
     seconds = time.perf_counter() - began
     latencies = sorted(ns / 1e6 for ns, _ in observations)
-    return {"seconds": seconds, "operations": len(rows),
+    return {"seconds": seconds, "client_cpu_seconds": client_cpu, "operations": len(rows),
             "logical_bytes": sum(size for _, size in observations),
             "p50_ms": latencies[math.ceil(len(rows) * .50) - 1],
             "p95_ms": latencies[math.ceil(len(rows) * .95) - 1],
