@@ -93,48 +93,48 @@ import (
 //     6581    Manifests (immutable, JSON)
 //     7379    Visibility journal (append-only, checksummed)
 //     7901    Store: format, namespace, and object CRUD
-//     8418    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12070    Version history/restore, history pruning, ListObjectsV2
-//    12676    SigV4 authentication (header and presigned-URL)
-//    13653    Request payload checksums and S3-shaped XML error/response types
-//    13870    HTTP routing and S3 operation handlers
-//    14302    Conditional operations (PUT/GET/HEAD preconditions)
-//    14997    CopyObject
-//    15302    Multipart upload
-//    16246    Stats and reachability scanning
-//    17834    Verify
-//    18050    Store locking and safe offline GC
-//    18360    Offline compaction (`zeros3 compact`)
-//    19543    Pack reclamation and repacking (`zeros3 repack`)
-//    20207    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20667    Online maintenance: epochs, pins, live GC and repack (B4)
-//    22012    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22525    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23590    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24441    Delta sync client, credentials, and parallel transfer
-//    26804    Bulk logical-chunk transport (v2)
-//    27715    Recursive directory sync
-//    28020    Remote replication (`zeros3 replicate`)
-//    29016    Peer-assisted corruption repair (`zeros3 repair`)
-//    29588    Namespace (prefix/bucket) replication
-//    29904    Copy-on-write namespace fork (`zeros3 fork`)
-//    30112    Snapshots and restore
-//    31274    Structural diff and inspect (introspection)
-//    32686    Portable snapshot bundles (`zeros3 bundle`)
-//    33883    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34518    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53206    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61414    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65138    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65697    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66604    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67759    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68703    Verified decoded-window cache (B9)
-//    68984    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70274    Windowed and estimated similarity deltas (extracted dcore)
-//    72111    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    79967    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86239    CLI dispatch, HTTP server/startup, and main
+//     8419    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12071    Version history/restore, history pruning, ListObjectsV2
+//    12677    SigV4 authentication (header and presigned-URL)
+//    13654    Request payload checksums and S3-shaped XML error/response types
+//    13871    HTTP routing and S3 operation handlers
+//    14304    Conditional operations (PUT/GET/HEAD preconditions)
+//    14999    CopyObject
+//    15304    Multipart upload
+//    16248    Stats and reachability scanning
+//    17836    Verify
+//    18052    Store locking and safe offline GC
+//    18362    Offline compaction (`zeros3 compact`)
+//    19545    Pack reclamation and repacking (`zeros3 repack`)
+//    20216    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20676    Online maintenance: epochs, pins, live GC and repack (B4)
+//    22040    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22553    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23618    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24469    Delta sync client, credentials, and parallel transfer
+//    26832    Bulk logical-chunk transport (v2)
+//    27743    Recursive directory sync
+//    28048    Remote replication (`zeros3 replicate`)
+//    29044    Peer-assisted corruption repair (`zeros3 repair`)
+//    29616    Namespace (prefix/bucket) replication
+//    29932    Copy-on-write namespace fork (`zeros3 fork`)
+//    30140    Snapshots and restore
+//    31302    Structural diff and inspect (introspection)
+//    32724    Portable snapshot bundles (`zeros3 bundle`)
+//    33921    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34556    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    53281    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61504    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65228    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65787    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66694    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67849    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68793    Verified decoded-window cache (B9)
+//    69074    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70364    Windowed and estimated similarity deltas (extracted dcore)
+//    72201    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    80057    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86329    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -8063,6 +8063,7 @@ type Store struct {
 	rep repState
 	win atomic.Pointer[winCache] // B9 decoded-window cache (nil: off)
 	fg  fgGate                   // requests in flight; deferred construction yields to them
+	backgroundYield string      // optional startup policy for online maintenance and import proofs
 
 	// mcache holds verified, immutable served manifests for the read path
 	// (section 5b). It is per Store, bounded, and never authoritative.
@@ -14082,16 +14083,17 @@ func writeRequestError(w http.ResponseWriter, err error, resource string) {
 }
 
 func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	srv.store.fg.enter()
-	defer srv.store.fg.exit()
+	rawPath, rawQuery := splitRawRequestURI(r.RequestURI)
+	if srv.store.backgroundYield == "" || !strings.HasPrefix(rawPath, "/_zeros3/") {
+		srv.store.fg.enter()
+		defer srv.store.fg.exit()
+	}
 	op := srv.store.ops.enter()
 	defer srv.store.ops.exit(op)
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		wop := srv.store.wops.enter()
 		defer srv.store.wops.exit(wop)
 	}
-	rawPath, rawQuery := splitRawRequestURI(r.RequestURI)
-
 	payload, err := srv.authenticate(r, rawPath, rawQuery)
 	if err != nil {
 		var ae *authError
@@ -19580,6 +19582,8 @@ type packEncoding struct {
 	BlockLog      uint8 // restartable records (codec 2) of 1<<BlockLog byte blocks; 0: none
 	// order, when set, reorders the records carried into tier t (default: their source physical order).
 	order func(t tier, cands []compactCandidate)
+	// checkpoint runs before staging a replacement batch, outside publication locks.
+	checkpoint func() error
 }
 
 type repackOptions struct {
@@ -19919,6 +19923,11 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 
 	for _, pl := range plans {
 		for _, batch := range pl.batches {
+			if enc.checkpoint != nil {
+				if err := enc.checkpoint(); err != nil {
+					return nil, err
+				}
+			}
 			if keep(pl.t, batch) {
 				continue
 			}
@@ -21277,6 +21286,7 @@ type MaintReport struct {
 	WriterWaitMS int64 `json:"writer_wait_ms"`
 	ReaderWaitMS int64 `json:"reader_wait_ms"`
 	ScanMS       int64 `json:"scan_ms"`
+	YieldMicros  int64 `json:"yield_us,omitempty"`
 
 	CandidatePacks int   `json:"candidate_packs"`
 	PacksDeferred  int   `json:"packs_deferred,omitempty"`
@@ -21344,6 +21354,18 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 			rep.Canceled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 		}
 	}()
+	var checkpoint func() error
+	if s.backgroundYield != "" {
+		checkpoint = func() error {
+			start := time.Now()
+			err := s.yieldBackground(ctx)
+			rep.YieldMicros += time.Since(start).Microseconds()
+			return err
+		}
+		if err := checkpoint(); err != nil {
+			return rep, err
+		}
+	}
 	t := time.Now()
 	ep, err := s.maintBegin()
 	if err != nil {
@@ -21372,6 +21394,11 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	}
 	rep.ReconciledSeq = jSeq
 	fireTestHook(hookMaintReconciled)
+	if checkpoint != nil {
+		if err := checkpoint(); err != nil {
+			return rep, err
+		}
+	}
 	t = time.Now()
 	rr, err := s.reachabilityScanOpts(reachOpts{mark: &maintMark{ep: ep, mans: mans, parts: parts, jEnd: jEnd}})
 	if err != nil {
@@ -21396,6 +21423,7 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	}
 	doomed := s.maintSelectPacks(ep, live, opt, &rep)
 	enc := opt.encoding()
+	enc.checkpoint = checkpoint
 	if opt.Layout == layoutRecon {
 		if doomed, err = s.maintRelayout(ep, live, opt, doomed, &enc, &rep); err != nil {
 			return rep, err
@@ -31986,7 +32014,14 @@ func runServe(args []string) {
 	maintWorkersN := fs.Int("maintenance-workers", max(1, runtime.GOMAXPROCS(0)/2), "online maintenance: parallel workers of a pass (ZEROS3_MAINT_WORKERS overrides)")
 	maintBlocks := fs.String("maintenance-record-blocks", "off", "online repack: restartable compressed records in rewritten packs, off or the block size in KiB (research)")
 	maintLayout := fs.String("maintenance-layout", "locality", "online repack: locality, or recon to also relayout authority families by reconstruction co-access (research)")
+	bgYield := fs.String("background-yield", "off", "online maintenance and import proofs: off, adaptive to S3 activity, or fixed delay (research control)")
 	fs.Parse(args)
+	switch *bgYield {
+	case "off", "adaptive", "fixed":
+	default:
+		fmt.Fprintf(os.Stderr, "zeros3: serve: invalid -background-yield %q\n", *bgYield)
+		os.Exit(2)
+	}
 	maintOpt := defaultMaintOptions()
 	var ferr error
 	if maintOpt.BlockLog, ferr = parseRecordBlocksFlag(*maintBlocks); ferr == nil {
@@ -32041,6 +32076,9 @@ func runServe(args []string) {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	if *bgYield != "off" {
+		store.backgroundYield = *bgYield
+	}
 	if *maintMode != "off" {
 		maintWorkerCap.Store(int32(min(max(*maintWorkersN, 1), 64)))
 		if err := store.startMaintenance(maintOpt, *maintEvery, *maintKeep); err != nil {
@@ -35150,6 +35188,8 @@ type repEnv struct {
 	// requests. Only the read path sets it: construction, proof and verification
 	// always re-read and re-hash, so a damaged object is found by them.
 	Cache *repReadCache
+
+	gzipReplay *repIRStreamDecodeOptions // optional scheduling policy during an import proof
 }
 
 // repCall is one decoder invocation.
@@ -41024,7 +41064,7 @@ func (g *fgGate) exit() {
 // waitIdle blocks until no foreground request is in flight, stop is raised, or
 // max has elapsed (a busy store must still make progress). It reports whether
 // it returned because the store was idle.
-func (g *fgGate) waitIdle(stop *atomic.Bool, max time.Duration) bool {
+func (g *fgGate) waitIdle(ctx context.Context, stop *atomic.Bool, max time.Duration) bool {
 	if g.n.Load() == 0 {
 		return true
 	}
@@ -41036,12 +41076,34 @@ func (g *fgGate) waitIdle(stop *atomic.Bool, max time.Duration) bool {
 	expired := false
 	t := time.AfterFunc(max, func() { g.mu.Lock(); expired = true; g.cond.Broadcast(); g.mu.Unlock() })
 	defer t.Stop()
+	cancel := context.AfterFunc(ctx, func() { g.mu.Lock(); g.cond.Broadcast(); g.mu.Unlock() })
+	defer cancel()
 	g.waiters++
 	defer func() { g.waiters-- }()
-	for g.n.Load() != 0 && !expired && !stop.Load() {
+	for g.n.Load() != 0 && !expired && ctx.Err() == nil && (stop == nil || !stop.Load()) {
 		g.cond.Wait()
 	}
 	return g.n.Load() == 0
+}
+
+// Background work gets another bounded slice after the wait even while S3
+// traffic is sustained. Callers yield before work, outside publication locks.
+const backgroundYieldMax = 4 * time.Millisecond
+
+func (s *Store) yieldBackground(ctx context.Context) error {
+	if s.backgroundYield == "adaptive" {
+		s.fg.waitIdle(ctx, nil, backgroundYieldMax)
+		return ctx.Err()
+	}
+	if s.backgroundYield == "fixed" && ctx.Err() == nil {
+		timer := time.NewTimer(backgroundYieldMax)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+	}
+	return ctx.Err()
 }
 
 type repJob struct {
@@ -41248,7 +41310,7 @@ func (q *repQueue) worker() {
 		q.running++
 		q.mu.Unlock()
 
-		if !q.s.fg.waitIdle(&q.s.rep.stopping, repDeferStarvation) {
+		if !q.s.fg.waitIdle(context.Background(), &q.s.rep.stopping, repDeferStarvation) {
 			q.yielded.Add(1)
 		}
 		fireTestHook(hookRepDeferredStarted)
@@ -45868,6 +45930,9 @@ type repIRStreamDecodeOptions struct {
 	// UnitBits, when set, is the bit offset at which each unit's first token is written (a seek index); a stream
 	// that disagrees with it is corrupt.
 	UnitBits []int64
+
+	// Checkpoint allows a live import to yield between units.
+	Checkpoint func() error
 }
 
 // Port source: zeros3-z3/ir/stream.go
@@ -45987,6 +46052,11 @@ func repIRReconstructStream(w io.Writer, skel []byte, unit func(i int) ([]byte, 
 			end := startPos[nextIssue] + int64(u.PlainLen)
 			if len(ahead) > 0 && end-pos > repIRdecodeAhead {
 				break
+			}
+			if opt.Checkpoint != nil {
+				if err := opt.Checkpoint(); err != nil {
+					return err
+				}
 			}
 			if err := rd.upto(end); err != nil {
 				return err
@@ -50330,12 +50400,17 @@ func (gzipDecoder) Decode(c *repCall) error {
 		done <- err
 	}()
 	cr := &crcReader{r: pr}
+	var opt repIRStreamDecodeOptions
+	if c.env.gzipReplay != nil {
+		opt = *c.env.gzipReplay
+	}
+	opt.UnitBits = repSeekSums(g.seek)
 	err = repIRReconstructStream(c.W, skel, func(i int) ([]byte, error) {
 		if i < 0 || i >= len(units) {
 			return nil, fmt.Errorf("%w: unit %d of %d", errRepCorrupt, i, len(units))
 		}
 		return units[i].bytes(c)
-	}, cr, repIRStreamDecodeOptions{UnitBits: repSeekSums(g.seek)})
+	}, cr, opt)
 	pr.CloseWithError(errAbort)
 	werr := <-done
 	if err = replayCause(err, werr); err != nil {
@@ -54227,6 +54302,7 @@ type authCtx struct {
 	budget int64
 	// overlay resolves a not-yet-published candidate record (proof, probes).
 	overlay map[[32]byte]*authRecord
+	gzipReplay *repIRStreamDecodeOptions
 	// fetched counts logical CAS bytes read, the unit of read amplification.
 	fetched int64
 	// pieces is a request-local FIFO of verified chunks shared by every body of
@@ -54750,7 +54826,7 @@ type authRepBody struct {
 
 // env is the representation environment of the record: body references resolve to its declared bases only.
 func (b *authRepBody) env(src *storeRepSource, cache *repReadCache) *repEnv {
-	e := &repEnv{Src: src, Limits: repProdLimits, Cache: cache}
+	e := &repEnv{Src: src, Limits: repProdLimits, Cache: cache, gzipReplay: b.c.gzipReplay}
 	if len(b.rec.Bases) > 0 {
 		var mu sync.Mutex // concurrent range workers resolve through one context and share one reader
 		opened := map[[32]byte]*authLockedAt{}
@@ -56572,6 +56648,14 @@ func (s *Store) authProveWithOutput(runCtx context.Context, rec *authRecord, pin
 	ctx := s.newAuthScanCtx()
 	defer ctx.close()
 	ctx.overlay = overlay
+	if output != nil && s.backgroundYield != "" {
+		ctx.gzipReplay = &repIRStreamDecodeOptions{Checkpoint: func() error {
+			return s.yieldBackground(runCtx)
+		}}
+		if s.backgroundYield == "adaptive" && s.fg.n.Load() > 0 {
+			ctx.gzipReplay.Workers = max(1, runtime.GOMAXPROCS(0)/2)
+		}
+	}
 	if rec.Size > authWindowMin {
 		// A windowed body re-reads nearby base windows and chunks while it is checked: keep them for this one
 		// proof. Every chunk is still read from physical storage and verified once, by this context.
@@ -56591,6 +56675,12 @@ func (s *Store) authProveWithOutput(runCtx context.Context, rec *authRecord, pin
 	for off := int64(0); off < body.Size(); {
 		if err := runCtx.Err(); err != nil {
 			return 0, 0, err
+		}
+		// Only a live native import writes its digest proof to a caller.
+		if output != nil && s.backgroundYield != "" {
+			if err := s.yieldBackground(runCtx); err != nil {
+				return 0, 0, err
+			}
 		}
 		k := int(min(int64(len(buf)), body.Size()-off))
 		if n, err := body.ReadAt(buf[:k], off); n != k || err != nil && err != io.EOF {

@@ -22,7 +22,7 @@ MAINT = ["-maintenance", "all", "-maintenance-interval", "0",
          "-maintenance-max-live-percent", "100"]
 FOREGROUND = random.Random(1101).randbytes(16 << 10)
 LANES = ("idle", "incumbent", "fixed", "adaptive")
-EVENTS = ("maintenance", "import", "restore", "mixed")
+EVENTS = ("maintenance", "gc", "import", "restore", "mixed")
 
 
 def counters():
@@ -130,7 +130,11 @@ def trial(args, env, source, original, target, lane, event, width, pair):
     requested = () if lane == "idle" or event == "none" else (event,)
     if requested == ("mixed",):
         requested = ("maintenance", "import", "restore")
+    if requested == ("gc",):
+        requested = ("maintenance",)
     flags = [*MAINT] if "maintenance" in requested else []
+    if flags and event == "gc":
+        flags[1] = "gc"
     binary = (args.candidate or args.baseline) if lane in ("fixed", "adaptive") else args.baseline
     if lane in ("fixed", "adaptive"):
         flags += ["-background-yield", lane]

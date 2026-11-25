@@ -1,0 +1,18 @@
+=== RUN   TestB4CancelledPass
+=== RUN   TestB4CancelledPass/maint-marked
+=== RUN   TestB4CancelledPass/maint-carried
+=== RUN   TestB4CancelledPass/maint-swapped
+--- PASS: TestB4CancelledPass (0.10s)
+    --- PASS: TestB4CancelledPass/maint-marked (0.03s)
+    --- PASS: TestB4CancelledPass/maint-carried (0.03s)
+    --- PASS: TestB4CancelledPass/maint-swapped (0.03s)
+=== RUN   TestC11BackgroundYield
+--- PASS: TestC11BackgroundYield (0.00s)
+=== RUN   TestC11GzipProofCheckpoint
+--- PASS: TestC11GzipProofCheckpoint (0.05s)
+=== RUN   TestP4DeferredShutdownAbandonsWorkWithoutLeaks
+--- PASS: TestP4DeferredShutdownAbandonsWorkWithoutLeaks (0.07s)
+=== RUN   TestP4DeferredYieldsToForegroundThenRuns
+--- PASS: TestP4DeferredYieldsToForegroundThenRuns (0.57s)
+PASS
+ok  	zeros3	0.796s
