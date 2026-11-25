@@ -2,7 +2,7 @@
 
 B10 was rebuilt from dcefbcb with Go 1.27.0. The replay uses the original
 C1 immutable revision keys and retained corpus bytes. This includes the
-original SST bytes, which the pinned producer cannot regenerate byte for byte.
+original SST bytes, which the pinned producer needs captured fixups to regenerate byte for byte.
 Inventory is the sum of allocated inode blocks. Optimizer bytes are a
 recompression model for reachable components and authority records.
 
