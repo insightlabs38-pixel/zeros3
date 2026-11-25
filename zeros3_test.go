@@ -99,14 +99,14 @@ import (
 //    32502    Adaptive pack compression (codec 1, DEFLATE)
 //    33556    Scalable packed-chunk locator (sorted immutable levels)
 //    34042    Z2-07: bulk logical-chunk transport (v2)
-//    35484    Hot/warm/cold physical pack tiers
-//    36270    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    37025    Z2-10: content-aware tier policy and rebalance
-//    38071    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38758    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40211    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41565    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42988    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//    35493    Hot/warm/cold physical pack tiers
+//    36279    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    37034    Z2-10: content-aware tier policy and rebalance
+//    38080    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38767    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40220    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41574    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    42997    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the
@@ -35161,6 +35161,11 @@ func TestBulkReplicate_NewToNewUsesBulkAndCollapsesRequests(t *testing.T) {
 		t.Fatalf("stats differ:\n v1 %+v\n v2 %+v", v1Stats, stats)
 	}
 	bulkTestDestHas(t, dst, body)
+	// A length-delimited reply can finish at the client before the server
+	// wrapper records its counters. Wait for all counted handlers to exit.
+	for _, node := range []*bulkTestNode{v1Src, v1Dst, src, dst} {
+		node.ts.Close()
+	}
 	if src.cnt.n("v1 GET chunk")+dst.cnt.n("v1 PUT chunk") != 0 || src.cnt.n(bulkFetchKey) != 1 || dst.cnt.n(bulkUploadKey) != 1 {
 		t.Fatalf("bulk requests: src %+v dst %+v", src.cnt.reqs, dst.cnt.reqs)
 	}
@@ -35193,6 +35198,8 @@ func TestBulkReplicate_ThroughStandardReverseProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	bulkTestDestHas(t, dst, body)
+	src.ts.Close()
+	dst.ts.Close()
 	if src.cnt.n(bulkFetchKey) == 0 || dst.cnt.n(bulkUploadKey) == 0 || src.cnt.n("v1 GET chunk")+dst.cnt.n("v1 PUT chunk") != 0 {
 		t.Fatalf("bulk not used through proxy: src %+v dst %+v", src.cnt.reqs, dst.cnt.reqs)
 	}
@@ -35250,6 +35257,8 @@ func TestBulkReplicate_PhysicalSourceRepresentationDoesNotChangeWireBytes(t *tes
 			if stats.UploadedBytes != uniqueBytes {
 				t.Fatalf("uploaded %d, want the logical %d", stats.UploadedBytes, uniqueBytes)
 			}
+			src.ts.Close() // wait for the response counter to finish
+
 			framing := int64(len(unique)*bulkDescLen + src.cnt.n(bulkFetchKey)*bulkHeaderLen)
 			if got := src.cnt.respBytes(bulkFetchKey); got != uniqueBytes+framing {
 				t.Fatalf("fetch wire bytes %d, want logical %d + framing %d", got, uniqueBytes, framing)
