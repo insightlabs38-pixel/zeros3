@@ -8,6 +8,7 @@ from pathlib import Path
 import resource
 import shutil
 import time
+from urllib.parse import urlparse
 
 from corpus import MIB
 from local_s3 import allocation
@@ -33,6 +34,7 @@ def run(args, token, out):
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     os.environ["HF_HUB_VERBOSITY"] = "error"
+    os.environ["HF_HOME"] = str(args.scratch / "hf-home")
     os.environ["HF_XET_CACHE"] = str(args.scratch / "xet")
     os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = str(64 * MIB)
     os.environ["HF_XET_SHARD_CACHE_SIZE_LIMIT"] = str(64 * MIB)
@@ -102,7 +104,8 @@ def run(args, token, out):
         return check(source, local)
 
     if "bucket" in args.resources and measure("create", "bucket", None, 0, bucket_create):
-        for case, family, rev, key in CASES:
+        bucket_cases = (CASES[0], ("same-key", "shift", 0, "shift.bin"), *CASES[1:])
+        for case, family, rev, key in bucket_cases:
             source = next((args.work / "corpus" / family / str(rev)).iterdir())
             path = f"{prefix}/{key}"
             size = source.stat().st_size
@@ -169,6 +172,11 @@ def main():
     parser.add_argument("--interface")
     parser.add_argument("--store", type=Path)
     args = parser.parse_args()
+    endpoint = urlparse(args.endpoint)
+    if args.endpoint != "https://huggingface.co" and (
+        endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1"
+    ):
+        parser.error("use the official Hub or an OpenXet server on loopback")
     args.scratch.mkdir(mode=0o700)
     token = os.environ.get("HF_TOKEN") or getpass.getpass("Hugging Face token: ")
     with args.result.open("x") as out:
