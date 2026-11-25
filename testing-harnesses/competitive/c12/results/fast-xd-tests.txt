@@ -1,0 +1,6 @@
+=== RUN   TestC12FastReencodeMatchesAndPublishes
+--- PASS: TestC12FastReencodeMatchesAndPublishes (0.11s)
+=== RUN   TestC12FastReencodeRejectsLargeGap
+--- PASS: TestC12FastReencodeRejectsLargeGap (0.00s)
+PASS
+ok  	zeros3	0.115s

@@ -1,0 +1,16 @@
+=== RUN   TestAuthorityNativeClosureTransferAndInterruption
+--- PASS: TestAuthorityNativeClosureTransferAndInterruption (0.29s)
+=== RUN   TestC12FastReencodeMatchesAndPublishes
+=== RUN   TestC12FastReencodeMatchesAndPublishes/fast
+=== RUN   TestC12FastReencodeMatchesAndPublishes/retained
+--- PASS: TestC12FastReencodeMatchesAndPublishes (0.19s)
+    --- PASS: TestC12FastReencodeMatchesAndPublishes/fast (0.08s)
+    --- PASS: TestC12FastReencodeMatchesAndPublishes/retained (0.09s)
+=== RUN   TestC12FastReencodeRejectsLargeGap
+--- PASS: TestC12FastReencodeRejectsLargeGap (0.00s)
+=== RUN   TestC12RetainedPlanBudget
+--- PASS: TestC12RetainedPlanBudget (0.00s)
+=== RUN   TestC2GenericIncumbentWithSharedComponents
+--- PASS: TestC2GenericIncumbentWithSharedComponents (0.29s)
+PASS
+ok  	zeros3	0.784s

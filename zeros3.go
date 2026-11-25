@@ -124,17 +124,17 @@ import (
 //    33921    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    34556    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    53286    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61509    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65233    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65792    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66699    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67854    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68798    Verified decoded-window cache (B9)
-//    69079    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70369    Windowed and estimated similarity deltas (extracted dcore)
-//    72206    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    80062    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86334    CLI dispatch, HTTP server/startup, and main
+//    61544    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65323    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65882    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66789    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67944    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68888    Verified decoded-window cache (B9)
+//    69169    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70459    Windowed and estimated similarity deltas (extracted dcore)
+//    72296    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    80152    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86424    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -53451,6 +53451,32 @@ func xdEncode(bases []xdSrc, target []byte, frameSpan int64) ([]byte, []xdBaseRe
 	return xdEncodeOps(bases, xdFromDw(x.Match(target)), target, frameSpan)
 }
 
+// xdSingleChange handles one small edit between long matching runs. The
+// caller compares the encoded result with the plan before it can publish.
+func xdSingleChange(base, target []byte) []xdOp {
+	if min(len(base), len(target)) < 256<<10 {
+		return nil
+	}
+	head := dwDcore_commonPrefix(base, target)
+	tail := dwDcore_commonSuffix(base[head:], target[head:])
+	end := len(target) - tail
+	if end-head > min(32<<10, len(target)/16) ||
+		head > 0 && head < xdMinCopy || tail > 0 && tail < xdMinCopy {
+		return nil
+	}
+	ops := make([]xdOp, 0, 3)
+	if head > 0 {
+		ops = append(ops, xdOp{n: int64(head), base: 0})
+	}
+	if head < end {
+		ops = append(ops, xdOp{tpos: int64(head), n: int64(end - head), base: -1, lit: target[head:end]})
+	}
+	if tail > 0 {
+		ops = append(ops, xdOp{tpos: int64(end), n: int64(tail), base: 0, off: int64(len(base) - tail)})
+	}
+	return ops
+}
+
 // xdEncodeOps serializes a COPY/ADD program already matched against bases.
 func xdEncodeOps(bases []xdSrc, ops []xdOp, target []byte, frameSpan int64) ([]byte, []xdBaseRef, error) {
 	return xdEncodeOpsSum(bases, ops, target, sha256.Sum256(target), frameSpan)
@@ -61178,6 +61204,8 @@ func runAuthority(args []string) {
 	indexFeature := fs.String("feature", "", "index-status: inspect one posting feature (decimal or 0x hexadecimal)")
 	indexGeneration := fs.String("generation", "", "index-publish: activate a verified staged generation by directory name")
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate or optimize: also consider verified same-bucket bases proposed by the persistent index")
+	fastReencode := fs.Bool("fast-reencode", false, "optimize apply: try an exact prefix/suffix XD program before rebuilding a single base index (research)")
+	retainDeltaPlans := fs.Bool("retain-delta-plans", false, "optimize apply: retain small native delta envelopes in a bounded plan cache (research)")
 	windowKiB := fs.Int64("window-kib", 0, "migrate: ZW1 frame size in KiB (64–1024, 0 uses the default)")
 	segmentKiB := fs.Int64("segment-kib", 0, "migrate: restartable program segment in KiB (16–1024, 0 uses the default 128, -1 writes unsegmented ZW1)")
 	priceCurrent := fs.Bool("price-current-storage", false, "migrate: price existing pack sizes and raw new components instead of assuming recompression")
@@ -61212,6 +61240,12 @@ func runAuthority(args []string) {
 	}
 	if *reuseAnalysis && (sub != "optimize" || !*apply || *finalize) {
 		log.Fatal("zeros3: authority -reuse-analysis requires optimize -apply without -finalize")
+	}
+	if *fastReencode && (sub != "optimize" || !*apply) {
+		log.Fatal("zeros3: authority -fast-reencode requires optimize -apply")
+	}
+	if *retainDeltaPlans && (sub != "optimize" || !*apply) {
+		log.Fatal("zeros3: authority -retain-delta-plans requires optimize -apply")
 	}
 	if *recGroups {
 		agWanted = true
@@ -61374,7 +61408,8 @@ func runAuthority(args []string) {
 		pol := OptimizePolicy{AuthPolicy: AuthPolicy{Order: *order, MaxDepth: *depth, MaxBases: *bases, MinSaving: *saving, Candidates: *cands, Bucket: *bucket, Prefix: *prefix,
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
-			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice, MaxTargets: *maxTargets}
+			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice, MaxTargets: *maxTargets,
+			FastReencode: *fastReencode, RetainDeltaPlans: *retainDeltaPlans}
 		var hintSeconds float64
 		if *indexedDiscovery && pol.AllowDelta {
 			start := time.Now()
@@ -61544,6 +61579,8 @@ type OptimizePolicy struct {
 	Oracle            bool                                `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
 	Discovery         string                              `json:"discovery"`         // candidate discovery: region (B7) | sketch (B6)
 	AnchorBytes       int                                 `json:"anchor_bytes"`      // windowed bases: bytes per COPY anchor (B7 default 8; 1024 = B6)
+	FastReencode      bool                                `json:"fast_reencode,omitempty"`
+	RetainDeltaPlans  bool                                `json:"retain_delta_plans,omitempty"`
 	Region            rsParams                            `json:"-"`
 	discover          func(g *rgGraph, v int32) rgCandSet // research hook: replaces discovery (oracles)
 	recordBlock       int64                               // research: price record files in this allocation unit
@@ -61734,6 +61771,8 @@ type rgGraph struct {
 	rs        *rsIndex      // B7 region fingerprints (discovery region)
 	disc      *DiscoveryStats
 	vops      map[int32]map[int32][]dwDcoreOp // plain programs discovery verified (target -> base), reused by the encoder
+	plans     map[[32]byte][]byte             // bounded native envelopes for this optimizer invocation
+	planBytes int
 	chunkRefs map[[32]byte]int32              // eligible contents holding each CDC chunk (B7 share discount)
 	canonSt   CanonStats                      // B8 canonical analysis
 	splSt     SpliceStats                     // B10 deep-stream analysis
@@ -62901,7 +62940,28 @@ func (g *rgGraph) deltaOpt(nd *rgNode, blob []byte, ends []int, bases []int32, l
 	if err := g.layoutDelta(o, blob, nd.size); err != nil {
 		return nil, err
 	}
+	if g.pol.Apply && g.pol.RetainDeltaPlans {
+		g.retainDeltaPlan(o.sum, blob)
+	}
 	return o, nil
+}
+
+// Limit the live payload and the number of index entries. Larger plans
+// continue to use the deterministic re-encoder without staged scratch.
+const rgDeltaPlanBudget = 4 << 20
+const rgDeltaPlanMax = 256 << 10
+const rgDeltaPlanEntries = 4096
+
+func (g *rgGraph) retainDeltaPlan(sum [32]byte, blob []byte) {
+	if len(blob) > rgDeltaPlanMax || len(blob) > rgDeltaPlanBudget-g.planBytes ||
+		len(g.plans) == rgDeltaPlanEntries || g.plans[sum] != nil {
+		return
+	}
+	if g.plans == nil {
+		g.plans = make(map[[32]byte][]byte)
+	}
+	g.plans[sum] = slices.Clone(blob)
+	g.planBytes += len(blob)
 }
 
 // ---- candidate generation -----------------------------------------------------
@@ -64193,6 +64253,11 @@ type OptimizeReport struct {
 	Failed           int              `json:"failed"`
 	Written          int64            `json:"written"`
 	ApplySeconds     float64          `json:"apply_seconds"`
+	FastXDAttempts   int              `json:"fast_xd_attempts,omitempty"`
+	FastXDHits       int              `json:"fast_xd_hits,omitempty"`
+	RetainedPlans    int              `json:"retained_delta_plans,omitempty"`
+	RetainedBytes    int              `json:"retained_delta_bytes,omitempty"`
+	RetainedHits     int              `json:"retained_delta_hits,omitempty"`
 	HeapMiB          int              `json:"heap_mib"`
 	Seconds          float64          `json:"seconds"`
 	Finalization     *archiveFinish   `json:"finalization,omitempty"`
@@ -64634,7 +64699,9 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	}
 	if pol.Apply {
 		t2 := time.Now()
+		rep.RetainedPlans, rep.RetainedBytes = len(g.plans), g.planBytes
 		err := g.apply(ctx, e, &rep)
+		g.plans = nil
 		rep.ApplySeconds = time.Since(t2).Seconds()
 		if err != nil {
 			return rep, err
@@ -64942,7 +65009,7 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 			}
 			rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormPin, Pieces: ps}
 		case rgDelta:
-			ps, err := g.encodeFor(ctx, nd, o)
+			ps, err := g.encodeFor(ctx, nd, o, rep)
 			if err != nil {
 				if cerr := ctx.Err(); cerr != nil {
 					return cerr
@@ -65125,8 +65192,21 @@ var rgBridgeFirst bool
 
 // encodeFor re-runs the option's encoder (deterministic) and stores its pieces; a different envelope
 // than the one priced is refused, so what is published is what was planned.
-func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt) ([]authPiece, error) {
+func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt, rep *OptimizeReport) ([]authPiece, error) {
 	s := g.s
+	if blob := g.plans[o.sum]; blob != nil && sha256.Sum256(blob) == o.sum {
+		// Preserve the selected plan's piece boundaries as well as its bytes.
+		ends := make([]int, 0, len(o.pieces))
+		var pos int
+		for _, id := range o.pieces {
+			pos += int(g.clen[id])
+			ends = append(ends, pos)
+		}
+		if pos == len(blob) {
+			rep.RetainedHits++
+			return g.writeBlob(ctx, blob, ends)
+		}
+	}
 	if o.win {
 		un := g.nodes[o.bases[0]]
 		tgt, tclose, err := g.source(ctx, nd.obj.man)
@@ -65174,6 +65254,16 @@ func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt) ([]authPi
 		}
 		srcs = append(srcs, xdSrc{g.nodes[b].sha, bb})
 		xs = append(xs, bb)
+	}
+	if g.pol.FastReencode && len(srcs) == 1 {
+		if ops := xdSingleChange(xs[0], target); ops != nil {
+			rep.FastXDAttempts++
+			blob, _, err := xdEncodeOpsSum(srcs, ops, target, nd.sha, g.pol.FrameSpan)
+			if err == nil && sha256.Sum256(blob) == o.sum {
+				rep.FastXDHits++
+				return g.writeBlob(ctx, blob, authPieceEnds(blob))
+			}
+		}
 	}
 	prm := dwDcoreDefaultParams()
 	var ops []dwDcoreOp
