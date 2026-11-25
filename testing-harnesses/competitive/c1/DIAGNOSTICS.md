@@ -32,3 +32,11 @@ original result files and are reported as diagnostics.
   an out-of-bounds range during reconstruction. The failing path remains
   excluded from download latency summaries. Repeated failures demonstrate
   incompatibility for the specific pinned local server and client pair.
+
+- Hosted writes and downloads were measured through the execution HTTPS
+  proxy. The first bucket upload may include a residual response from
+  the paused Go dependency download. Its interface RX was 3 MiB higher
+  than subsequent upload cases. Use later unrelated bucket uploads
+  as the negative control. The dataset lane follows the bucket with
+  the same content and shared Xet caches. Its upload counters describe
+  this warm sequence and cannot identify the cache or backend dedup layer.

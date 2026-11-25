@@ -68,3 +68,24 @@ separate source-build route after the archived binary returned HTTP 410.
 
 Use `summarize.py` to reproduce the generated tables from the committed
 results and `plot.py` with Matplotlib 3.10.8 for the tradeoff chart.
+
+Run the family and protocol diagnostics separately from the primary
+repeat trials. The deterministic Parquet file hashes matched a second
+generation. When reproducing SST, write a new SHA-256 manifest for the
+producer's run-specific bytes.
+
+```bash
+"$W/venv/bin/pip" install -r requirements-codecs.txt
+"$P" codec_corpus.py "$W/corpus" "$W/codec-corpus.json"
+"$P" corpus_stats.py "$W/corpus" "$W/corpus.json" "$W/external-corpus.json" "$W/codec-corpus.json"
+"$P" local_s3.py "$W" "$W/s3-history-families.jsonl" --lane histories --systems zeros3 \
+  --families package oci tensor shift entropy coreutils lodash --profiles plain archive archive-delta --repetitions 1
+"$P" local_s3.py "$W" "$W/s3-codecs.jsonl" --lane histories --systems zeros3 \
+  --families parquet sst --profiles plain archive archive-delta --repetitions 1
+"$P" backup.py "$W" "$W/backup-kopia-zstd.jsonl" --systems kopia --kopia-compression zstd-fastest
+"$P" local_xet.py "$W" "$W/openxet-no-chunk-cache" "$W/xet-local-no-chunk-cache.jsonl" --chunk-cache-mib 0
+"$P" xet_comparison.py "$W" "$W/zeros3-xet-trace.jsonl"
+"$P" socket_probe.py "$W" "$W/socket-probe-retry.jsonl"
+"$P" restart_check.py "$W" "$W/restart-check.jsonl"
+C1_WEED_VOLUMES=8 "$P" local_s3.py "$W" "$W/seaweed-8-volumes.jsonl" --lane requests --systems seaweed
+```
