@@ -1,0 +1,16 @@
+{
+  "batch": "C5",
+  "status": "C5_SPECIALIZED_VALUE",
+  "frozen_candidate": "ce98b101020c21697861302b681568662037d10d",
+  "zeros3_baseline": "4bc66f3af3d1d97f90c483c2b26676d3912fbb02",
+  "main": "2ac9caba60cc050a595cefef7b791aa718803c0e",
+  "families": 7,
+  "held_out": ["HTTPX", "Torchvision MobileNetV2"],
+  "request_smoke_failures": 0,
+  "matched_peers": ["MinIO", "RustFS"],
+  "restic_exact_revisions": 9,
+  "transfer_trials": 8,
+  "supported_niches": ["cold software archives", "some exact database snapshots", "scoped slow-link artifact transfer"],
+  "negative_lanes": ["opaque MobileNetV2", "independent entropy", "warm full reads of TypeScript archive"],
+  "next": "C6"
+}
