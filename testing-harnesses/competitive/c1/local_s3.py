@@ -32,7 +32,14 @@ SYSTEMS = ("zeros3", "rustfs", "seaweed", "garage", "minio")
 
 
 def allocation(path):
-    return sum(p.lstat().st_blocks * 512 for p in [path, *path.rglob("*")])
+    allocated = path.lstat().st_blocks * 512
+    for item in path.rglob("*"):
+        try:
+            allocated += item.lstat().st_blocks * 512
+        except FileNotFoundError:
+            # A live backend can replace housekeeping files during this sample.
+            continue
+    return allocated
 
 
 def sample(pid):

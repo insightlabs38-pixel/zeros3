@@ -91,7 +91,10 @@ def seed_case(args, case, work, env, emit, inputs):
         return
 
     state = "different-authority" if case == "typescript" else "same-key"
-    lanes = ("closure-cross", "replicate") if case == "typescript" else ("s3", "sync", "closure")
+    if case == "typescript":
+        lanes = ("closure-cross", "replicate", "s3", "sync") if args.ordinary else ("closure-cross", "replicate")
+    else:
+        lanes = ("s3", "sync", "closure")
     seed = work / "receiver"
     seed.mkdir()
     pre = SimpleNamespace(binary=args.baseline, receiver_binary=args.baseline)
@@ -104,7 +107,7 @@ def seed_case(args, case, work, env, emit, inputs):
                 for i in range(16):
                     api.put_object(Bucket=BUCKET, Key=f"foreground/{i}", Body=PAYLOAD)
         for repetition in range(args.repeats):
-            builds = [("c7", args.baseline), ("c8", args.candidate)]
+            builds = [("c8", args.candidate)] if args.final_only else [("c7", args.baseline), ("c8", args.candidate)]
             if repetition % 2:
                 builds.reverse()
             for lane in lanes:
@@ -130,6 +133,8 @@ def main():
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--rate", type=int, default=0)
     parser.add_argument("--contended", action="store_true")
+    parser.add_argument("--final-only", action="store_true", help="measure only the current receiver and client")
+    parser.add_argument("--ordinary", action="store_true", help="add direct S3 and native sync for TypeScript")
     parser.add_argument("--strace", type=Path, help="profile planning syscalls and skip transfer trials")
     args = parser.parse_args()
     if args.repeats < 1 or args.rate < 0:

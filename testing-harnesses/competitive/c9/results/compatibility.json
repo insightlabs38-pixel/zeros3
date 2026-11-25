@@ -1,0 +1,82 @@
+{
+ "command": "t1run -root /workspace/work/c1/repo -mode normal -jobs 1 -test-timeout 75s -run ^(TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched|TestAuthorityRevertAllLowersFloorAndOldBinaryReopens|TestAuthorityRecoverPeerClosure|TestPack_ParityRestoresExactPackAndRefusesMultipleLoss|TestPack_RepairReplacesCorruptPackedChunkFromPeer)$ -cache /workspace/work/c9/acceptance/root-partitions/cache -evidence /workspace/work/c9/acceptance/root-partitions/compatibility.json",
+ "mode": "normal",
+ "go_version": "go version go1.27.0 linux/amd64",
+ "cpus": 3,
+ "jobs": 1,
+ "git_head": "8f1eb34a626dc1e89bcf8232733421124bb22ee9",
+ "git_tree": "5be154d57eb08008d8bfc5c3bb7ff879adf5b4fd",
+ "git_dirty_files": 8,
+ "source_hash": "90f47079e9398e983f5f72d9cf1e2a928bac558fc18e5b3030cc1cfa0149c34c",
+ "fixture_hash": "3bca524a6447b51ee5100569",
+ "test_binary_sha256": "c13e822f4631a05989069890231ac38f379c2a535fa6b25231e00176458a972c",
+ "production_binary_sha256": "bc4e17a2d5841ed3c08aebe7ca37590aa651e3b4d15ba2aab95a374406ce472c",
+ "identity": "07d821ea63bced5bea57eb8d",
+ "selected": 5,
+ "fresh": 5,
+ "reused": 0,
+ "passed": 5,
+ "build_seconds": 0.000043996,
+ "wall_seconds": 8.505202484,
+ "test_cpu_seconds": 8.36,
+ "process_cpu_seconds": 12.864337,
+ "exit": 0,
+ "results": [
+  {
+   "test": "TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched",
+   "status": "pass",
+   "seconds": 0.3,
+   "max_rss_kib": 94408,
+   "cpu_seconds": 0.293154,
+   "start": 8.153768763,
+   "complete": true,
+   "identity": "07d821ea63bced5bea57eb8d",
+   "process": "exit status 0"
+  },
+  {
+   "test": "TestAuthorityRecoverPeerClosure",
+   "status": "pass",
+   "seconds": 0.63,
+   "max_rss_kib": 103880,
+   "cpu_seconds": 0.642437,
+   "start": 0.118770173,
+   "complete": true,
+   "identity": "07d821ea63bced5bea57eb8d",
+   "process": "exit status 0"
+  },
+  {
+   "test": "TestAuthorityRevertAllLowersFloorAndOldBinaryReopens",
+   "status": "pass",
+   "seconds": 7.02,
+   "max_rss_kib": 441816,
+   "cpu_seconds": 11.477966,
+   "start": 1.126167724,
+   "complete": true,
+   "identity": "07d821ea63bced5bea57eb8d",
+   "process": "exit status 0"
+  },
+  {
+   "test": "TestPack_ParityRestoresExactPackAndRefusesMultipleLoss",
+   "status": "pass",
+   "seconds": 0.36,
+   "max_rss_kib": 73268,
+   "cpu_seconds": 0.40192100000000003,
+   "start": 0.75293579,
+   "complete": true,
+   "identity": "07d821ea63bced5bea57eb8d",
+   "process": "exit status 0"
+  },
+  {
+   "test": "TestPack_RepairReplacesCorruptPackedChunkFromPeer",
+   "status": "pass",
+   "seconds": 0.05,
+   "max_rss_kib": 94408,
+   "cpu_seconds": 0.04885900000000001,
+   "start": 8.153768763,
+   "complete": true,
+   "identity": "07d821ea63bced5bea57eb8d",
+   "process": "exit status 0"
+  }
+ ],
+ "started": "2026-11-25T08:02:32Z"
+}
