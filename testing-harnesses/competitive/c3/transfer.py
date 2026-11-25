@@ -1,6 +1,6 @@
 """Measure C2/C3 transfer through counted loopback TCP streams."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -314,7 +314,7 @@ def stage(args, env, directory, source, state, seed, target):
                                "-from", f"http://127.0.0.1:{source[0]}",
                                "-access-key", KEY, "-secret-key", SECRET])
 
-def trial(args, env, directory, source, case, state, lane, seed, target):
+def trial(args, env, directory, source, case, state, lane, seed, target, foreground=None):
     store = directory / "destination"
     log = directory / "destination.log"
     metadata = {"scene": "c3"}
@@ -323,7 +323,8 @@ def trial(args, env, directory, source, case, state, lane, seed, target):
         temp.mkdir()
         source_port, _, source_pid = source
         with (relay(source_port, args.rate_bytes) as (src_tap, src_url),
-              relay(port, args.rate_bytes, args.model_gzip) as (dst_tap, dst_url)):
+              relay(port, args.rate_bytes, args.model_gzip) as (dst_tap, dst_url),
+              (foreground(sink) if foreground else nullcontext()) as load):
             before_dst, before_src = stats(pid), stats(source_pid)
             start = time.perf_counter()
             if lane == "s3":
@@ -355,6 +356,8 @@ def trial(args, env, directory, source, case, state, lane, seed, target):
                 "object_sha256": verified(sink, "target", target, {} if lane == "sync" else metadata),
                 "source_http_bytes": src_wire, "destination_http_bytes": dst_wire,
                 "allocated_before_finalization": allocated(store)}
+    if load is not None:
+        row["foreground"] = load
     if args.finalize:
         maintenance = {}
         for stage, flags in (

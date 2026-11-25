@@ -409,6 +409,10 @@ Import receives a four-byte big-endian header length, a JSON object descriptor
 and the closure frame. It checks the signed whole-request SHA-256 as well as
 the frame digest, proves each new authority record and verifies reconstructed
 content against both the descriptor's chunk hashes and whole-object SHA-256.
+For a new target, this proof streams the decoded windows once and checks the
+chunk digests and ETag before publishing the authority record. The relay
+buffers a definite small signed closure within 1 MiB and uses temporary
+staging for larger or unknown lengths.
 The destination publishes an ordinary S3 manifest through the existing
 journal commit and enforces the same destination preconditions. A retry for
 equivalent content and metadata returns the existing version.

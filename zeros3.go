@@ -112,29 +112,29 @@ import (
 //    22525    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
 //    23590    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
 //    24441    Delta sync client, credentials, and parallel transfer
-//    26776    Bulk logical-chunk transport (v2)
-//    27687    Recursive directory sync
-//    27992    Remote replication (`zeros3 replicate`)
-//    28965    Peer-assisted corruption repair (`zeros3 repair`)
-//    29537    Namespace (prefix/bucket) replication
-//    29853    Copy-on-write namespace fork (`zeros3 fork`)
-//    30061    Snapshots and restore
-//    31223    Structural diff and inspect (introspection)
-//    32635    Portable snapshot bundles (`zeros3 bundle`)
-//    33832    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34467    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53152    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61343    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65067    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65626    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66533    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67688    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68632    Verified decoded-window cache (B9)
-//    68913    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70203    Windowed and estimated similarity deltas (extracted dcore)
-//    72040    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    79896    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86168    CLI dispatch, HTTP server/startup, and main
+//    26804    Bulk logical-chunk transport (v2)
+//    27715    Recursive directory sync
+//    28020    Remote replication (`zeros3 replicate`)
+//    29016    Peer-assisted corruption repair (`zeros3 repair`)
+//    29588    Namespace (prefix/bucket) replication
+//    29904    Copy-on-write namespace fork (`zeros3 fork`)
+//    30112    Snapshots and restore
+//    31274    Structural diff and inspect (introspection)
+//    32686    Portable snapshot bundles (`zeros3 bundle`)
+//    33883    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34518    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    53203    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61411    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65135    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65694    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66601    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67756    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68700    Verified decoded-window cache (B9)
+//    68981    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70271    Windowed and estimated similarity deltas (extracted dcore)
+//    72108    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    79964    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86236    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -25189,10 +25189,25 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		payloadMD5.Sum(stamp[:0])
 		return check.verify(sum, stamp, payloadCRC.Sum32())
 	}
-	if err := srv.store.importAuthorityClosure(reader, &xdBaseRef{SHA: sha, Size: total}, verifyFrame, nil); err != nil {
+	proof := authoritySyncProof{refs: refs, chunk: sha256.New(), etag: md5.New()}
+	verifyRoot := func(rec *authRecord) error {
+		if rec.Size != total {
+			return errAuthSyncManifest
+		}
+		if _, _, err := srv.store.authProveWithOutput(r.Context(), rec, nil, 0, &proof); err != nil {
+			return err
+		}
+		if proof.index != len(refs) || proof.total != total {
+			return errAuthSyncManifest
+		}
+		return nil
+	}
+	if err := srv.store.importAuthorityClosure(reader, &xdBaseRef{SHA: sha, Size: total}, verifyFrame, nil, verifyRoot); err != nil {
 		var authErr *authError
 		if errors.As(err, &authErr) {
 			writeRequestError(w, err, zeros3AuthImportPath)
+		} else if errors.Is(err, errAuthSyncManifest) {
+			writeSyncError(w, http.StatusConflict, "ClosureMismatch", err.Error())
 		} else if errors.Is(err, errAuthMissing) || errors.Is(err, os.ErrNotExist) {
 			writeSyncError(w, http.StatusConflict, "MissingAuthorityDependency", err.Error())
 		} else {
@@ -25200,50 +25215,63 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		}
 		return
 	}
-	man, err := srv.store.authoritySyncManifest(r.Context(), req.syncCommitRequest, refs, sha, total)
-	if err != nil {
-		writeSyncError(w, http.StatusConflict, "ClosureMismatch", err.Error())
-		return
+	if proof.index == 0 {
+		// A replica may already hold the root, including after a crash
+		// between record publication and the namespace commit.
+		rec, err := srv.store.authLoad(sha)
+		if err == nil && rec == nil {
+			err = errAuthMissing
+		}
+		if err == nil {
+			err = verifyRoot(rec)
+		}
+		if err != nil {
+			writeSyncError(w, http.StatusConflict, "ClosureMismatch", err.Error())
+			return
+		}
 	}
+	contentType := cmp.Or(req.ContentType, "application/octet-stream")
+	man := buildManifestV1FromRefs(refs, total, sha, hex.EncodeToString(proof.etag.Sum(nil)), contentType, req.Metadata)
 	srv.publishSyncManifest(w, req.syncCommitRequest, man, true)
 }
 
-// Verify the source's CDC layout against reconstructed bytes without storing a
-// materialized copy. The visible manifest remains usable by ordinary S3 reads.
-func (s *Store) authoritySyncManifest(ctx context.Context, req syncCommitRequest, refs []chunkRef, sha [32]byte, total int64) (manifestV1, error) {
-	read := s.newAuthCtx()
-	defer read.close()
-	body, _, err := read.body(sha, total, 1)
-	if err != nil {
-		return manifestV1{}, err
-	}
-	whole, etag := sha256.New(), md5.New()
-	buffer := make([]byte, maxSyncChunkBytes)
-	var offset int64
-	for _, ref := range refs {
-		if err := ctx.Err(); err != nil {
-			return manifestV1{}, err
+var errAuthSyncManifest = errors.New("authority object differs from the manifest")
+
+// authoritySyncProof verifies the source CDC layout and computes the visible
+// ETag from the same bounded windows used for the full-content proof.
+type authoritySyncProof struct {
+	refs           []chunkRef
+	chunk, etag    hash.Hash
+	index          int
+	inChunk, total int64
+}
+
+func (p *authoritySyncProof) Write(data []byte) (int, error) {
+	written := 0
+	for len(data) > 0 {
+		if p.index >= len(p.refs) {
+			return written, errAuthSyncManifest
 		}
-		chunk := buffer[:ref.Length]
-		if n, err := body.ReadAt(chunk, offset); n != len(chunk) || err != nil && err != io.EOF {
-			return manifestV1{}, fmt.Errorf("authority object read at %d: %d of %d bytes: %v", offset, n, len(chunk), err)
+		ref := p.refs[p.index]
+		n := min(int64(len(data)), ref.Length-p.inChunk)
+		p.chunk.Write(data[:n])
+		p.etag.Write(data[:n])
+		p.inChunk += n
+		p.total += n
+		written += int(n)
+		data = data[n:]
+		if p.inChunk == ref.Length {
+			var got [sha256.Size]byte
+			p.chunk.Sum(got[:0])
+			if hex.EncodeToString(got[:]) != ref.SHA256 {
+				return written, fmt.Errorf("%w: chunk at %d", errAuthSyncManifest, p.total-p.inChunk)
+			}
+			p.chunk.Reset()
+			p.inChunk = 0
+			p.index++
 		}
-		digest := sha256.Sum256(chunk)
-		if hex.EncodeToString(digest[:]) != ref.SHA256 {
-			return manifestV1{}, fmt.Errorf("authority object chunk at %d differs from the manifest", offset)
-		}
-		whole.Write(chunk)
-		etag.Write(chunk)
-		offset += ref.Length
 	}
-	if !bytes.Equal(whole.Sum(nil), sha[:]) {
-		return manifestV1{}, errAuthMismatch
-	}
-	contentType := req.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	return buildManifestV1FromRefs(refs, total, sha, hex.EncodeToString(etag.Sum(nil)), contentType, req.Metadata), nil
+	return written, nil
 }
 
 func (srv *Server) handleAuthorityExport(w http.ResponseWriter, body []byte) {
@@ -28476,14 +28504,28 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 		}
 		return stats, false, fmt.Errorf("replicate: authority export status %d: %s", response.StatusCode, body)
 	}
-	file, err := os.CreateTemp("", "zeros3-replicate-authority-*.tmp")
-	if err != nil {
-		return stats, false, err
+	// Signing needs the whole request digest before the import starts.
+	// Keep a bounded, definite-size closure in memory and spool others.
+	const closureMemoryLimit = 1 << 20
+	var file *os.File
+	var buffer *bytes.Buffer
+	var staging io.Writer
+	limit := budget + 1
+	if n := response.ContentLength; n >= 0 && n <= closureMemoryLimit-int64(len(header))-5 {
+		buffer = bytes.NewBuffer(make([]byte, 0, int(n)+len(header)+5))
+		staging = buffer
+		limit = min(limit, n+1)
+	} else {
+		file, err = os.CreateTemp("", "zeros3-replicate-authority-*.tmp")
+		if err != nil {
+			return stats, false, err
+		}
+		defer os.Remove(file.Name())
+		defer file.Close()
+		staging = file
 	}
-	defer os.Remove(file.Name())
-	defer file.Close()
 	digest := sha256.New()
-	spool := io.MultiWriter(file, digest)
+	spool := io.MultiWriter(staging, digest)
 	var prefix [4]byte
 	binary.BigEndian.PutUint32(prefix[:], uint32(len(header)))
 	if _, err := spool.Write(prefix[:]); err != nil {
@@ -28492,7 +28534,7 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	if _, err := spool.Write(header); err != nil {
 		return stats, false, err
 	}
-	n, err := io.Copy(spool, io.LimitReader(response.Body, budget+1))
+	n, err := io.Copy(spool, io.LimitReader(response.Body, limit))
 	if err != nil {
 		return stats, false, err
 	}
@@ -28501,8 +28543,17 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 		return stats, false, nil
 	}
 	total := n + int64(len(header)) + 4
+	var body io.Reader
+	if buffer != nil {
+		if n != response.ContentLength {
+			return stats, false, errors.New("replicate: closure stream length differs from its header")
+		}
+		body = bytes.NewReader(buffer.Bytes())
+	} else {
+		body = io.NewSectionReader(file, 0, total)
+	}
 	dest := p.cfg.Dest
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(dest.Endpoint, "/")+zeros3AuthImportPath, io.NewSectionReader(file, 0, total))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(dest.Endpoint, "/")+zeros3AuthImportPath, body)
 	if err != nil {
 		return stats, false, err
 	}
@@ -56504,6 +56555,10 @@ func authCandidateOverlay(rec *authRecord, pins map[[32]byte]*authRecord) (map[[
 }
 
 func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, pins map[[32]byte]*authRecord, probes int) (fetched int64, probeFetched float64, err error) {
+	return s.authProveWithOutput(runCtx, rec, pins, probes, nil)
+}
+
+func (s *Store) authProveWithOutput(runCtx context.Context, rec *authRecord, pins map[[32]byte]*authRecord, probes int, output io.Writer) (fetched int64, probeFetched float64, err error) {
 	if err := runCtx.Err(); err != nil {
 		return 0, 0, err
 	}
@@ -56512,6 +56567,7 @@ func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, pins m
 		return 0, 0, err
 	}
 	ctx := s.newAuthScanCtx()
+	defer ctx.close()
 	ctx.overlay = overlay
 	if rec.Size > authWindowMin {
 		// A windowed body re-reads nearby base windows and chunks while it is checked: keep them for this one
@@ -56534,11 +56590,18 @@ func (s *Store) authProveContext(runCtx context.Context, rec *authRecord, pins m
 			return 0, 0, err
 		}
 		k := int(min(int64(len(buf)), body.Size()-off))
-		if n, err := body.ReadAt(buf[:k], off); n != k {
+		if n, err := body.ReadAt(buf[:k], off); n != k || err != nil && err != io.EOF {
 			if err == nil || err == io.EOF {
 				err = errAuthMismatch
 			}
 			return 0, 0, err
+		}
+		if output != nil {
+			if n, err := output.Write(buf[:k]); err != nil {
+				return 0, 0, err
+			} else if n != k {
+				return 0, 0, io.ErrShortWrite
+			}
 		}
 		h.Write(buf[:k])
 		off += int64(k)
@@ -58843,7 +58906,7 @@ const hookAuthImportRecord = "auth-import-record"
 // durable, then each record is proven by full reconstruction and published
 // bases-first. Records the destination already holds are kept.
 func (s *Store) ImportAuthorityClosure(r io.Reader) error {
-	return s.importAuthorityClosure(r, nil, nil, nil)
+	return s.importAuthorityClosure(r, nil, nil, nil, nil)
 }
 
 type authRecoveryLimit struct {
@@ -58851,7 +58914,7 @@ type authRecoveryLimit struct {
 	childDepth uint8
 }
 
-func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyFrame func() error, repair map[[32]byte]authRecoveryLimit) error {
+func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyFrame func() error, repair map[[32]byte]authRecoveryLimit, verifyRoot func(*authRecord) error) error {
 	br := bufio.NewReaderSize(r, 1<<20)
 	h := sha256.New()
 	tr := io.TeeReader(br, h)
@@ -59002,7 +59065,12 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 			continue
 		}
 		rec.Gen = 1
-		if _, _, err := s.authProve(rec, 0); err != nil {
+		if verifyRoot != nil && expected != nil && expected.SHA == rec.SHA {
+			err = verifyRoot(rec)
+		} else {
+			_, _, err = s.authProve(rec, 0)
+		}
+		if err != nil {
 			return fmt.Errorf("import closure: proof of %x failed: %w", rec.SHA[:6], err)
 		}
 		fireTestHook(hookAuthImportRecord)
@@ -59118,7 +59186,7 @@ func (s *Store) recoverAuthorityFromPeer(bucket, key, peerVersion string, cfg sy
 		}
 		return nil
 	}
-	if err := s.importAuthorityClosure(reader, &xdBaseRef{SHA: sum, Size: local.man.TotalLength}, checkSize, limits); err != nil {
+	if err := s.importAuthorityClosure(reader, &xdBaseRef{SHA: sum, Size: local.man.TotalLength}, checkSize, limits, nil); err != nil {
 		return err
 	}
 	root, err := s.authLoad(sum)

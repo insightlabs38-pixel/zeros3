@@ -1484,6 +1484,12 @@ func TestAuthorityClosureSyncImportRejectsBadPayload(t *testing.T) {
 	if status, body := send(control, full.Bytes(), true); status != http.StatusForbidden || !bytes.Contains(body, []byte("XAmzContentSHA256Mismatch")) {
 		t.Fatalf("bad signed digest: %d %s", status, body)
 	}
+	wrong = control
+	wrong.Chunks = slices.Clone(control.Chunks)
+	wrong.Chunks[0].SHA256 = strings.Repeat("2", 64)
+	if status, body := send(wrong, full.Bytes(), false); status != http.StatusConflict || !bytes.Contains(body, []byte("ClosureMismatch")) {
+		t.Fatalf("wrong CDC digest: %d %s", status, body)
+	}
 	if rec, err := dst.s.authLoad(sum); err != nil || rec != nil {
 		t.Fatalf("rejected transfer published a root record: %v", err)
 	}
