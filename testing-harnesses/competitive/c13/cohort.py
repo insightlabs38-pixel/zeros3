@@ -18,7 +18,7 @@ BLOCK_BYTES = 32768
 INDEX_MAGIC = b"C13INDEX1"
 INDEX_LIMIT = 8 << 20
 GROUP_BYTES = {"block": BLOCK_BYTES, "block8": 8192}
-LANES = ("deflate", "prefix", "zstd", "trained", *GROUP_BYTES)
+LANES = ("deflate", "prefix", "zstd", "trained", *GROUP_BYTES, "prefix-paid", "trained-paid")
 
 
 def sha(data):
@@ -200,6 +200,7 @@ def packed_groups(unique, mode):
 
 
 def compress(data, mode, raw):
+    mode = mode.removesuffix("-paid")
     if mode in ("zstd", "trained"):
         base = zstd.ZstdCompressor(level=6, write_content_size=False).compress(data)
         if mode == "trained" and raw:
@@ -217,11 +218,10 @@ def compress(data, mode, raw):
             trial = encoder.compress(data) + encoder.flush()
         else:
             trial = base
-    if len(trial) < min(len(data), len(base)):
-        return trial, mode, True
+    offered = (trial, mode) if len(trial) < min(len(data), len(base)) else None
     if len(base) < len(data):
-        return base, codec, False
-    return data, "raw", False
+        return (base, codec), offered
+    return (data, "raw"), offered
 
 
 def publish(root, scope, mode, new, previous=None, delete=(), rebuild=False, cut_before_index=False):
@@ -255,25 +255,41 @@ def publish(root, scope, mode, new, previous=None, delete=(), rebuild=False, cut
     if previous and not rebuild:
         dictionaries = {row[0]: previous.dictionaries[ident] for ident, row in index["dicts"].items()}
     else:
-        dictionaries = train(new, mode)
+        dictionaries = train(new, mode.removesuffix("-paid"))
     training_cpu = time.process_time() - start
+    prepared, savings = [], Counter()
+    for group in packed_groups(unique, mode):
+        cohort = group[0][0].split("/")[0]
+        data = b"".join(payload for _, payload in group)
+        raw = dictionaries.get(cohort, b"")
+        base, offered = compress(data, mode, raw)
+        if offered:
+            savings[cohort] += len(base[0]) - len(offered[0])
+        prepared.append((group, cohort, len(data), base, offered))
+    accepted = set(dictionaries)
+    if mode.endswith("-paid"):
+        # Charge new dictionary bytes and one KiB for index changes before
+        # activating the shared context. Existing live contexts can be reused.
+        live_contexts = {index["blocks"][row[0]][5] for row in objects.values()}
+        accepted = {cohort for cohort, raw in dictionaries.items()
+                    if dict_identity(scope, cohort, raw) in live_contexts
+                    or savings[cohort] > len(raw) + 1024}
     with tempfile.TemporaryDirectory(prefix=".staging-", dir=root) as temp:
         staging = Path(temp)
         path = staging / name
         with path.open("wb") as out:
-            for seq, group in enumerate(packed_groups(unique, mode)):
-                cohort = group[0][0].split("/")[0]
-                data = b"".join(payload for _, payload in group)
-                raw = dictionaries.get(cohort, b"")
-                packed, codec, uses_dict = compress(data, mode, raw)
+            for seq, (group, cohort, size, base, offered) in enumerate(prepared):
+                packed, codec = base
                 ident = ""
-                if uses_dict:
+                if offered and cohort in accepted:
+                    packed, codec = offered
+                    raw = dictionaries[cohort]
                     ident = dict_identity(scope, cohort, raw)
                     if ident not in index["dicts"]:
                         index["dicts"][ident] = [cohort, name, out.tell(), len(raw), sha(raw), 0]
                         out.write(raw)
                 frame = f"{epoch}:{seq}"
-                index["blocks"][frame] = [name, out.tell(), len(packed), len(data), codec, ident]
+                index["blocks"][frame] = [name, out.tell(), len(packed), size, codec, ident]
                 out.write(packed)
                 at = 0
                 for _, payload in group:

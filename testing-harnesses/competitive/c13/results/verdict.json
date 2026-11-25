@@ -1,0 +1,13 @@
+{
+  "batch": 13,
+  "outcome": "C13_RESEARCH_ONLY",
+  "production_baseline": "dcf5191",
+  "cohort_blocks": "RESEARCH_ONLY",
+  "paid_dictionary_activation": "RESEARCH_ONLY",
+  "ungated_dictionary_activation": "KILL",
+  "main_native_cdc_allocated": 1777664,
+  "main_lab_allocated": {"deflate": 1003520, "block_32_kib": 909312, "block_8_kib": 929792},
+  "heldout_lab_allocated": {"deflate": 65536, "block_32_kib": 53248, "block_8_kib": 61440},
+  "fault_checks": 9,
+  "promoted_format": false
+}
