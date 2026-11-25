@@ -186,24 +186,24 @@ def relay(port, rate_bytes, model_gzip=False):
             thread.join()
 
 
-def api(url):
+def api(url, attempts=1):
     return boto3.client("s3", endpoint_url=url, region_name="us-east-1",
                         aws_access_key_id=KEY, aws_secret_access_key=SECRET,
                         config=Config(s3={"addressing_style": "path"},
                                       request_checksum_calculation="when_required",
                                       response_checksum_validation="when_required",
-                                      retries={"total_max_attempts": 1}, read_timeout=30))
+                                      retries={"total_max_attempts": attempts}, read_timeout=30))
 
 
 @contextmanager
-def serve(binary, store, log, env):
+def serve(binary, store, log, env, *flags):
     with socket.socket() as addr:
         addr.bind(("127.0.0.1", 0))
         port = addr.getsockname()[1]
     url = f"http://127.0.0.1:{port}"
     with log.open("ab") as out:
         child = subprocess.Popen([str(binary), "serve", "-store", str(store),
-                                  "-addr", f"127.0.0.1:{port}"], env=env,
+                                  "-addr", f"127.0.0.1:{port}", *flags], env=env,
                                  stdout=out, stderr=out)
         try:
             for _ in range(150):

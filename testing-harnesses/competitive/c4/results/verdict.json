@@ -1,0 +1,27 @@
+{
+  "batch": "C4",
+  "status": "C4_OPERATIONAL_EFFECTIVE",
+  "engine_checkpoint": "d368fe4cd85a4031deb9d0f56ce35dc97705d0fe",
+  "main": "2ac9caba60cc050a595cefef7b791aa718803c0e",
+  "default_s3_operations": 49152,
+  "default_s3_regression": "not consistently reproduced",
+  "root_catalog_tests": 1517,
+  "fresh_root_partition_passes": 14,
+  "cached_root_partition_reuses": 14,
+  "focused_race_tests": 3,
+  "boto3_retry_status": 503,
+  "restic_exact_restores": 2,
+  "arm64": {
+    "platform": "Linux/arm64",
+    "cgo_enabled": false,
+    "go": "1.27.0",
+    "binary_sha256": "3fd11c0a63165f4e75a1747c24ed7cd5dcfdd208f5c7af21f29ff115e4281f80",
+    "emulator": "QEMU 10.0.13 Debian 1:10.0.13+ds-0+deb13u1",
+    "emulator_deb_sha256": "ca6ede739327a20ae5a3498230c8a3a9a072c586e131bc6bcc1201eb1725e336",
+    "emulator_deb_signature_provenance": "Debian trixie InRelease and Packages.xz signature/hash chain",
+    "host": "Linux amd64",
+    "operational_phases": 19,
+    "native_hardware": false
+  },
+  "next": "C5"
+}
