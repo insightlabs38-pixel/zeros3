@@ -1,0 +1,4 @@
+{"system": "zeros3", "phase": "restart", "logical_bytes": 131072, "status": "verified"}
+{"system": "rustfs", "phase": "restart", "logical_bytes": 131072, "status": "verified"}
+{"system": "seaweed", "phase": "restart", "logical_bytes": 131072, "status": "verified"}
+{"system": "garage", "phase": "restart", "logical_bytes": 131072, "status": "verified"}

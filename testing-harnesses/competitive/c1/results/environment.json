@@ -19,5 +19,7 @@
   "privileged_cache_drop": false,
   "network_shaping": false,
   "docker_server": "28.4.0",
-  "hosted_probe": "Hugging Face health HTTPS via environment proxy; TCP connect 0.74 ms to proxy, TLS 57.73 ms, TTFB 924.28 ms; backend RTT and location unknown"
+  "hosted_probe": "Hugging Face health HTTPS via environment proxy; TCP connect 0.74 ms to proxy, TLS 57.73 ms, TTFB 924.28 ms; backend RTT and location unknown",
+  "sampled_build_footprint": "MinIO source build observed 3.3 GiB in owned workspace and 857 MiB of temporary Go outputs in a separate memory-backed /tmp. The combined sample briefly exceeded the 4 GiB planning target while overlay free space remained around 57 GiB.",
+  "cgroup_memory_peak_bytes": 4389408768
 }
