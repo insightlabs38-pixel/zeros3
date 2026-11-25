@@ -1,0 +1,16 @@
+{
+  "batch": "C6",
+  "status": "C6_SPECIALIZED",
+  "candidate_commit": "dd810187fe150a1479c60949f9e5223f757e6be3",
+  "baseline_commit": "4bc66f3af3d1d97f90c483c2b26676d3912fbb02",
+  "main": "2ac9caba60cc050a595cefef7b791aa718803c0e",
+  "mobilenet_allocation_each_bytes": 28487680,
+  "mobilenet_staged_bytes": [28406850, 0],
+  "entropy_allocation_each_bytes": 12689408,
+  "entropy_staged_bytes": [12610799, 0],
+  "scope": "exact existing replacement packs with raw or ordinary DEFLATE records",
+  "production_format_added": false,
+  "churn_cycles_per_lane": 4,
+  "focused_tests": "pass",
+  "next": "C7"
+}
