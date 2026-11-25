@@ -9,10 +9,12 @@ import os
 from pathlib import Path
 import random
 import re
+import resource
 import shutil
 import socket
 import subprocess
 import time
+from threading import Event, Thread
 
 import boto3
 from botocore.config import Config
@@ -55,7 +57,7 @@ def client(concurrency):
 
 
 @contextmanager
-def server(system, work, run, representations=False, hot=False):
+def server(system, work, run, representations=False):
     store = run / "store"
     store.mkdir(parents=True, exist_ok=True)
     address = f"127.0.0.1:{PORT}"
@@ -68,8 +70,6 @@ def server(system, work, run, representations=False, hot=False):
                 "RAYON_NUM_THREADS": "2"})
     garage = None
     if system == "zeros3":
-        if hot:
-            env["ZEROS3_DIRECT_PACK_COMPRESS"] = "off"
         cmd = [str(work / "zeros3"), "serve", "-addr", address, "-store", str(store)]
         if representations:
             cmd += ["-representations", "prefer"]
@@ -264,7 +264,7 @@ def operations(api, pid, store, rep):
 
 def histories(args, family, system, run, profile):
     records = []
-    with server(system, args.work, run, profile == "structured", profile == "hot") as (api, pid, store):
+    with server(system, args.work, run, profile == "structured") as (api, pid, store):
         for rev in range(3):
             names = FAMILIES if family == "combined" else [family]
             rows = []
@@ -273,29 +273,60 @@ def histories(args, family, system, run, profile):
                 rows.extend((f"history/{rev}/{name}/{p.relative_to(path).as_posix()}",
                              p.read_bytes()) for p in sorted(path.rglob("*")) if p.is_file())
             records.append(rows)
+            before = sample(pid)
             with ThreadPoolExecutor(max_workers=1) as pool:
                 result = measure(pool, rows, lambda k, d: put(api, k, d))
+            after = sample(pid)
+            result["server_cpu_seconds"] = after["cpu_seconds"] - before["cpu_seconds"]
+            result["server_peak_rss_bytes"] = after["peak_rss_bytes"]
             yield {"phase": "ingest", "revision": rev, **result,
                    "allocated_bytes": allocation(store)}
-        if profile in ("plain", "hot") or system != "zeros3":
+        if profile in ("plain", "structured") or system != "zeros3":
             yield from restore(api, records, store)
             return
-    before = allocation(store)
-    command = [str(args.work / "zeros3"), "compact", "-store", str(store)]
-    if profile in ("archive", "structured"):
-        command += ["-compression", "auto"]
-    elif profile == "mixed":
-        command += ["-compression", "off"]
-    began = time.perf_counter()
-    with (run / "service.log").open("ab") as log:
-        subprocess.run(command, stdout=log, stderr=log, check=True, timeout=180)
-        if profile in ("archive", "structured"):
-            subprocess.run([str(args.work / "zeros3"), "repack", "-store", str(store),
-                            "-apply", "-recompress"], stdout=log, stderr=log, check=True, timeout=180)
-    yield {"phase": "maintenance", "seconds": time.perf_counter() - began,
-           "before_bytes": before, "allocated_bytes": allocation(store)}
-    with server(system, args.work, run, profile == "structured", False) as (api, _, store):
+    binary = str(args.work / "zeros3")
+    order = "oldest" if profile == "archive" else "newest"
+    optimize = [binary, "authority", "optimize", "-store", str(store), "-apply",
+                "-profile", profile, "-order", order, "-max-depth", "2", "-max-bases", "2",
+                "-min-saving", "0.10", "-canonical", "-codec-replay", "-hard-codecs",
+                "-splice", "-record-groups"]
+    reuse = [binary, "gc", "-store", str(store), "-apply"]
+    yield {"phase": "maintenance", **maintenance(run, store, [optimize, reuse])}
+    with server(system, args.work, run) as (api, _, store):
         yield from restore(api, records, store)
+    yield {"phase": "reclaim", **maintenance(run, store, [reuse])}
+
+
+def maintenance(run, store, commands):
+    before = allocation(store)
+    peak = before
+    stopped = Event()
+
+    def monitor():
+        nonlocal peak
+        while not stopped.wait(.05):
+            try:
+                peak = max(peak, allocation(store))
+            except FileNotFoundError:
+                pass
+
+    began = time.perf_counter()
+    usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    monitor_thread = Thread(target=monitor)
+    monitor_thread.start()
+    try:
+        with (run / "service.log").open("ab") as log:
+            for command in commands:
+                subprocess.run(command, stdout=log, stderr=log, check=True, timeout=300)
+    finally:
+        stopped.set()
+        monitor_thread.join()
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    actual = allocation(store)
+    return {"seconds": time.perf_counter() - began,
+            "cpu_seconds": after.ru_utime + after.ru_stime - usage_before.ru_utime - usage_before.ru_stime,
+            "before_bytes": before, "allocated_bytes": actual,
+            "sampled_peak_store_bytes": max(peak, actual)}
 
 
 def restore(api, records, store):
