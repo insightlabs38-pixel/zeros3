@@ -52,13 +52,30 @@ func TestC12FastReencodeRejectsLargeGap(t *testing.T) {
 func TestC12RetainedPlanBudget(t *testing.T) {
 	var g rgGraph
 	for i := byte(0); i < 20; i++ {
-		g.retainDeltaPlan([32]byte{i}, make([]byte, rgDeltaPlanMax))
+		g.retainDeltaPlan([32]byte{i}, [32]byte{i, 1}, make([]byte, rgDeltaPlanMax))
 	}
 	if g.planBytes != rgDeltaPlanBudget || len(g.plans) != rgDeltaPlanBudget/rgDeltaPlanMax {
 		t.Fatalf("budget held %d bytes and %d entries", g.planBytes, len(g.plans))
 	}
-	g.retainDeltaPlan([32]byte{111}, make([]byte, rgDeltaPlanMax+1))
+	g.retainDeltaPlan([32]byte{111}, [32]byte{111}, make([]byte, rgDeltaPlanMax+1))
 	if _, retained := g.plans[[32]byte{111}]; retained {
 		t.Fatal("oversized envelope was retained")
+	}
+}
+
+func TestC12RetainedPlanPrunesAlternates(t *testing.T) {
+	var g rgGraph
+	first, second := [32]byte{1}, [32]byte{2}
+	blob := make([]byte, rgDeltaPlanMax)
+	for i := byte(1); i <= 16; i++ {
+		g.retainDeltaPlan(first, [32]byte{i, 1}, blob)
+	}
+	g.retainDeltaPlan(second, [32]byte{1, 2}, blob)
+	if len(g.plans) != 2 || !g.planTight {
+		t.Fatalf("pressure retained %d plans", len(g.plans))
+	}
+	g.retainDeltaPlan(first, [32]byte{1, 3}, blob[:500])
+	if len(g.plans) != 2 || len(g.plans[g.bestPlan[first]]) != 500 || g.planBytes != rgDeltaPlanMax+500 {
+		t.Fatalf("replacement retained %d plans and %d bytes", len(g.plans), g.planBytes)
 	}
 }

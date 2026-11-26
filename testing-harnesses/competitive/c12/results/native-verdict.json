@@ -1,0 +1,13 @@
+{
+  "batch": 12,
+  "outcome": "C12_SPECIALIZED",
+  "prototype_archive_result": "C12_RESEARCH_ONLY",
+  "fast_reencode": "SPECIALIZED",
+  "retain_delta_plans": "SPECIALIZED",
+  "current_native_envelope_unchanged": true,
+  "retained_program_budget_bytes": 4194304,
+  "budget_pressure": {"selected_plans": 19, "first_come_hits": 5, "per_target_hits": 18,
+    "payload_bytes": 3934440, "apply_seconds": {"control": 1.526, "retained": 0.253}},
+  "windowed_edit_apply_seconds": {"control": 0.673, "retained": 0.097},
+  "exact_finalized_stores": "pass"
+}

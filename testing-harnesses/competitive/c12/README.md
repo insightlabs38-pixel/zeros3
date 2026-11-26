@@ -1,6 +1,6 @@
 # ZeroS3 C12 · Format-neutral delta programs
 
-**C12_RESEARCH_ONLY.** Existing generic authority deltas retained large
+**C12_SPECIALIZED after native follow-up.** Existing generic authority deltas retained large
 savings on several neutral histories. Aligned residuals and page anchors
 improved selected encode costs. The best prototype still traded slower
 range reads for small physical savings after counting its source base.
@@ -66,6 +66,14 @@ The byte-exact baseline disables external decompression and recompression.
 The isolated timings use an accessible raw base and an ambient page
 cache. Production CAS already verifies components. The lab's independent
 frame hashes give its decoder a different verification cost.
-No production format or optimizer change was promoted.
+The original framed residual and packed stream formats remain research
+results. The native follow-up integrates two opt-in apply policies without
+changing the priced native envelope, finalized bytes, or read format.
+
+Retaining priced envelopes at a 4 MiB payload ceiling reduced apply time
+from 1.53 s to 0.25 s on the 20-revision pressure test and from 0.67 s to
+0.10 s on the windowed edit. The cache reused 18 of 19 selected pressure
+plans, up from five with first-come admission. Exact small-edit matching
+also saved work independently. See [native feasibility](FOLLOWUP.md).
 
 [Reproduction](REPRODUCE.md) · [Fixtures](fixtures.json) · [Raw results](results/)

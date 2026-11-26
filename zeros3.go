@@ -125,16 +125,16 @@ import (
 //    34556    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    53286    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
 //    61544    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65323    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65882    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66789    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67944    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68888    Verified decoded-window cache (B9)
-//    69169    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70459    Windowed and estimated similarity deltas (extracted dcore)
-//    72296    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    80152    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86424    CLI dispatch, HTTP server/startup, and main
+//    65355    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    65914    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66821    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    67976    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    68920    Verified decoded-window cache (B9)
+//    69201    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70491    Windowed and estimated similarity deltas (extracted dcore)
+//    72328    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    80184    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86456    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -61773,6 +61773,8 @@ type rgGraph struct {
 	vops      map[int32]map[int32][]dwDcoreOp // plain programs discovery verified (target -> base), reused by the encoder
 	plans     map[[32]byte][]byte             // bounded native envelopes for this optimizer invocation
 	planBytes int
+	bestPlan  map[[32]byte][32]byte           // smallest retained envelope of each target
+	planTight bool
 	chunkRefs map[[32]byte]int32              // eligible contents holding each CDC chunk (B7 share discount)
 	canonSt   CanonStats                      // B8 canonical analysis
 	splSt     SpliceStats                     // B10 deep-stream analysis
@@ -62941,7 +62943,7 @@ func (g *rgGraph) deltaOpt(nd *rgNode, blob []byte, ends []int, bases []int32, l
 		return nil, err
 	}
 	if g.pol.Apply && g.pol.RetainDeltaPlans {
-		g.retainDeltaPlan(o.sum, blob)
+		g.retainDeltaPlan(nd.sha, o.sum, blob)
 	}
 	return o, nil
 }
@@ -62952,13 +62954,42 @@ const rgDeltaPlanBudget = 4 << 20
 const rgDeltaPlanMax = 256 << 10
 const rgDeltaPlanEntries = 4096
 
-func (g *rgGraph) retainDeltaPlan(sum [32]byte, blob []byte) {
-	if len(blob) > rgDeltaPlanMax || len(blob) > rgDeltaPlanBudget-g.planBytes ||
-		len(g.plans) == rgDeltaPlanEntries || g.plans[sum] != nil {
+func (g *rgGraph) retainDeltaPlan(target, sum [32]byte, blob []byte) {
+	if len(blob) > rgDeltaPlanMax || g.plans[sum] != nil {
 		return
 	}
 	if g.plans == nil {
 		g.plans = make(map[[32]byte][]byte)
+		g.bestPlan = make(map[[32]byte][32]byte)
+	}
+	if !g.planTight && (len(blob) > rgDeltaPlanBudget-g.planBytes || len(g.plans) == rgDeltaPlanEntries) {
+		// Once under pressure, free alternate plans before later targets
+		// lose coverage. The solver still sees every priced option.
+		keepers := make(map[[32]byte]bool, len(g.bestPlan))
+		for _, best := range g.bestPlan {
+			keepers[best] = true
+		}
+		for key, data := range g.plans {
+			if !keepers[key] {
+				delete(g.plans, key)
+				g.planBytes -= len(data)
+			}
+		}
+		g.planTight = true
+	}
+	best, seen := g.bestPlan[target]
+	if g.planTight && seen {
+		if len(blob) >= len(g.plans[best]) {
+			return
+		}
+		g.planBytes -= len(g.plans[best])
+		delete(g.plans, best)
+	}
+	if len(blob) > rgDeltaPlanBudget-g.planBytes || len(g.plans) == rgDeltaPlanEntries {
+		return
+	}
+	if !seen || g.planTight || len(blob) < len(g.plans[best]) {
+		g.bestPlan[target] = sum
 	}
 	g.plans[sum] = slices.Clone(blob)
 	g.planBytes += len(blob)
@@ -64258,6 +64289,7 @@ type OptimizeReport struct {
 	RetainedPlans    int              `json:"retained_delta_plans,omitempty"`
 	RetainedBytes    int              `json:"retained_delta_bytes,omitempty"`
 	RetainedHits     int              `json:"retained_delta_hits,omitempty"`
+	RetainedPruned   bool             `json:"retained_delta_pruned,omitempty"`
 	HeapMiB          int              `json:"heap_mib"`
 	Seconds          float64          `json:"seconds"`
 	Finalization     *archiveFinish   `json:"finalization,omitempty"`
@@ -64699,9 +64731,9 @@ func (s *Store) AuthorityOptimize(ctx context.Context, pol OptimizePolicy) (Opti
 	}
 	if pol.Apply {
 		t2 := time.Now()
-		rep.RetainedPlans, rep.RetainedBytes = len(g.plans), g.planBytes
+		rep.RetainedPlans, rep.RetainedBytes, rep.RetainedPruned = len(g.plans), g.planBytes, g.planTight
 		err := g.apply(ctx, e, &rep)
-		g.plans = nil
+		g.plans, g.bestPlan = nil, nil
 		rep.ApplySeconds = time.Since(t2).Seconds()
 		if err != nil {
 			return rep, err
