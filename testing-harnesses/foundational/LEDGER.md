@@ -25,7 +25,7 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | FB-05 | PARTIAL | [Budgeted maintenance](FB-05/README.md) with source/scratch limits, screened raw compression and scoped multipart expiry. X9 native 4 MiB replay and mixed-corpus compression pass. Foreground p99, native class placement, and full lifecycle configuration remain open. |
 | FB-06 | PARTIAL | [Exact generation and compact opt-in tags](FB-06/README.md) passed the local scale and ingest medians, forced collisions, retirement and process-cut gates. Budgeted background refresh and infrastructure qualification remain open. |
 | FB-07 | PARTIAL | [Physical scrub, scoped repair, and two-pass raw carry](FB-07/README.md) passed local exact recovery and fault gates. Compressed carry and additional physical codecs, scrub scheduling and cross-domain taxonomy remain open. |
-| FB-08 | IN PROGRESS | [Signed native protocol v3 batch control](FB-08/README.md) replicated 1,000 objects in nine requests. Resumable streaming and wire selection remain open. |
+| FB-08 | IN PROGRESS | [Signed native protocol v3 batches and streaming](FB-08/README.md) replicate 1,000 objects in nine requests and retain an authenticated connection-cut prefix. Link-aware wire selection remains open. |
 | FB-09 | pending | M-C1/C3 ZF2 metadata pages |
 | FB-10 | pending | remaining M-C2/C5 journal and publication |
 | FB-11 | pending | M-F5/G1 snapshots and optional range proofs |

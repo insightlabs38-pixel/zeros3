@@ -1,0 +1,32 @@
+=== RUN   TestFB02_BulkRequiresSignedPayload
+--- PASS: TestFB02_BulkRequiresSignedPayload (0.03s)
+=== RUN   TestFB08NativeNamespaceThousandObjects
+    zeros3_fb08_test.go:89: replicated 1000 objects in 9 signed requests with one data transfer; 1000 equivalent objects on rerun
+--- PASS: TestFB08NativeNamespaceThousandObjects (3.24s)
+=== RUN   TestFB08NativeControlSignedAndBounded
+--- PASS: TestFB08NativeControlSignedAndBounded (0.05s)
+=== RUN   TestFB08NativeNegotiationFallsBackToOldPeer
+--- PASS: TestFB08NativeNegotiationFallsBackToOldPeer (0.03s)
+=== RUN   TestFB08NativeStreamKeepsVerifiedPrefix
+    zeros3_fb08_test.go:258: cut after one authenticated record, retained one durable record, retransmitted zero verified records
+--- PASS: TestFB08NativeStreamKeepsVerifiedPrefix (0.01s)
+=== RUN   TestFB08NativeResumeWaitsForMatchingStream
+--- PASS: TestFB08NativeResumeWaitsForMatchingStream (0.00s)
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/reorder
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/duplicate
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/drop
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/kind
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/extend
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/end
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/tamper
+--- PASS: TestFB08NativeStreamRejectsMalformedFrames (0.05s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/reorder (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/duplicate (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/drop (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/kind (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/extend (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/end (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/tamper (0.01s)
+PASS
+ok  	zeros3	4.488s

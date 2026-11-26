@@ -17469,6 +17469,13 @@ const (
 
 var emptySHA256Hex = func() string { h := sha256.Sum256(nil); return hex.EncodeToString(h[:]) }()
 
+func awsBodyChunkSignature(key []byte, date, scope, predecessor string, data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(hmacSHA256(key, strings.Join([]string{
+		"AWS4-HMAC-SHA256-PAYLOAD", date, scope, predecessor, emptySHA256Hex, hex.EncodeToString(sum[:]),
+	}, "\n")))
+}
+
 func newAWSChunkedStream(r *http.Request, secret string, auth *sigv4Auth, amzDate string) (*awsChunkedStream, error) {
 	raw := r.Header.Get("X-Amz-Decoded-Content-Length")
 	if raw == "" {
@@ -17586,10 +17593,7 @@ func (c *awsChunkReader) nextChunk() error {
 	}
 
 	if !c.st.unsigned {
-		sum := sha256.Sum256(c.buf.Bytes())
-		want := hex.EncodeToString(hmacSHA256(c.st.signingKey, strings.Join([]string{
-			"AWS4-HMAC-SHA256-PAYLOAD", c.st.amzDate, c.st.scope, c.prevSig, emptySHA256Hex, hex.EncodeToString(sum[:]),
-		}, "\n")))
+		want := awsBodyChunkSignature(c.st.signingKey, c.st.amzDate, c.st.scope, c.prevSig, c.buf.Bytes())
 		if subtle.ConstantTimeCompare([]byte(want), []byte(strings.ToLower(sig))) != 1 {
 			c.buf.Reset()
 			return &authError{code: "SignatureDoesNotMatch", msg: "aws-chunked chunk signature mismatch"}
@@ -18401,6 +18405,8 @@ type Credentials struct {
 }
 
 type Server struct {
+	nativeStreams nativeStreamFlights
+
 	store  *Store
 	creds  Credentials
 	region string
@@ -30173,6 +30179,7 @@ type syncDiscoveryResponse struct {
 	CommitIfUnchanged  bool `json:"commit_if_unchanged,omitempty"`
 	NativeBatchVersion int  `json:"native_batch_version,omitempty"`
 	MaxBatchObjects    int  `json:"max_batch_objects,omitempty"`
+	NativeStream       bool `json:"native_stream,omitempty"`
 }
 
 // syncChunkDescriptor unambiguously identifies one expected chunk: its
@@ -30345,6 +30352,7 @@ const (
 	nativeBatchDescribe   = nativeBatchPrefix + "describe"
 	nativeBatchNegotiate  = nativeBatchPrefix + "negotiate"
 	nativeBatchCommit     = nativeBatchPrefix + "commit"
+	nativeBatchStream     = nativeBatchPrefix + "stream"
 )
 
 type nativeBatchEnvelope[T any] struct {
@@ -30414,6 +30422,10 @@ func (srv *Server) handleNativeBatch(w http.ResponseWriter, r *http.Request, raw
 		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown native batch operation")
 		return
 	}
+	if rawPath == nativeBatchStream {
+		srv.handleNativeStream(w, r, check)
+		return
+	}
 	if !check.signed || check.sha256 == "" {
 		writeSyncError(w, http.StatusForbidden, "SignedPayloadRequired", "native batch requests require a signed payload SHA-256")
 		return
@@ -30462,6 +30474,10 @@ func (srv *Server) handleNativeBatch(w http.ResponseWriter, r *http.Request, raw
 			}
 			sums[i] = sum
 		}
+		if err := srv.nativeStreams.await(r.Context(), sums); err != nil {
+			writeSyncError(w, http.StatusConflict, "StreamInFlight", err.Error())
+			return
+		}
 		for i, sum := range sums {
 			srv.store.mpin(sum)
 			if n, err := srv.store.casStatOrVirtual(sum); err != nil || n != items[i].Length {
@@ -30498,6 +30514,206 @@ func (srv *Server) handleNativeBatch(w http.ResponseWriter, r *http.Request, raw
 	default:
 		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown native batch operation")
 	}
+}
+
+const (
+	nativeStreamHeader     = 12
+	nativeStreamRecordSize = 44
+	nativeStreamEnd        = 36
+	maxNativeStreamRecords = 512
+	maxNativeStreamLogical = 8 << 20
+)
+
+type nativeStreamRecord struct {
+	sum           [32]byte
+	logical, wire uint32
+	codec         byte
+}
+
+type nativeStreamFlights struct {
+	mu     sync.Mutex
+	active map[chan struct{}][]nativeStreamRecord
+}
+
+func (f *nativeStreamFlights) start(records []nativeStreamRecord) (func(), bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.active) >= 32 {
+		return nil, false
+	}
+	if f.active == nil {
+		f.active = make(map[chan struct{}][]nativeStreamRecord)
+	}
+	done := make(chan struct{})
+	f.active[done] = records
+	return func() {
+		f.mu.Lock()
+		delete(f.active, done)
+		close(done)
+		f.mu.Unlock()
+	}, true
+}
+
+func (f *nativeStreamFlights) await(ctx context.Context, sums [][32]byte) error {
+	f.mu.Lock()
+	if len(f.active) == 0 {
+		f.mu.Unlock()
+		return nil
+	}
+	want := make(map[[32]byte]bool, len(sums))
+	for _, sum := range sums {
+		want[sum] = true
+	}
+	var waits []chan struct{}
+	for done, records := range f.active {
+		if slices.ContainsFunc(records, func(record nativeStreamRecord) bool { return want[record.sum] }) {
+			waits = append(waits, done)
+		}
+	}
+	f.mu.Unlock()
+	if len(waits) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	for _, done := range waits {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return errors.New("an authenticated stream may still be publishing these records")
+		}
+	}
+	return nil
+}
+
+func encodeNativeStreamPlan(records []nativeStreamRecord) (head, end []byte, decoded int64) {
+	head = make([]byte, nativeStreamHeader+len(records)*nativeStreamRecordSize)
+	copy(head, "ZSV3")
+	binary.LittleEndian.PutUint32(head[8:], uint32(len(records)))
+	decoded = int64(len(head) + nativeStreamEnd)
+	for i, record := range records {
+		row := head[nativeStreamHeader+i*nativeStreamRecordSize:]
+		copy(row[:32], record.sum[:])
+		binary.LittleEndian.PutUint32(row[32:], record.logical)
+		binary.LittleEndian.PutUint32(row[36:], record.wire)
+		row[40] = record.codec
+		decoded += int64(record.wire)
+	}
+	digest := sha256.Sum256(head)
+	end = append([]byte("ZEND"), digest[:]...)
+	return head, end, decoded
+}
+
+func readNativeStreamPlan(body io.Reader, length int64) ([]nativeStreamRecord, [nativeStreamEnd]byte, error) {
+	var end [nativeStreamEnd]byte
+	var hdr [nativeStreamHeader]byte
+	if _, err := io.ReadFull(body, hdr[:]); err != nil {
+		return nil, end, err
+	}
+	count := binary.LittleEndian.Uint32(hdr[8:])
+	if string(hdr[:4]) != "ZSV3" || !allZero(hdr[4:8]) || count == 0 || count > maxNativeStreamRecords {
+		return nil, end, errors.New("invalid native stream header or count")
+	}
+	table := make([]byte, int(count)*nativeStreamRecordSize)
+	if _, err := io.ReadFull(body, table); err != nil {
+		return nil, end, err
+	}
+	records := make([]nativeStreamRecord, int(count))
+	seen := make(map[[32]byte]bool, len(records))
+	wire := int64(nativeStreamHeader + nativeStreamEnd + len(table))
+	var logical int64
+	for i := range records {
+		row := table[i*nativeStreamRecordSize:]
+		record := &records[i]
+		copy(record.sum[:], row[:32])
+		record.logical = binary.LittleEndian.Uint32(row[32:])
+		record.wire = binary.LittleEndian.Uint32(row[36:])
+		record.codec = row[40]
+		if !allZero(row[41:44]) || record.logical == 0 || record.logical > maxSyncChunkBytes ||
+			record.codec != packCodecRaw && record.codec != packCodecDeflate ||
+			checkPackLengths(record.codec, record.wire, record.logical) != nil || seen[record.sum] {
+			return nil, end, errors.New("invalid or duplicate native stream descriptor")
+		}
+		seen[record.sum] = true
+		wire += int64(record.wire)
+		logical += int64(record.logical)
+	}
+	if logical > maxNativeStreamLogical || wire != length {
+		return nil, end, errors.New("native stream lengths disagree with the signed plan or exceed its budget")
+	}
+	digest := sha256.New()
+	digest.Write(hdr[:])
+	digest.Write(table)
+	copy(end[:4], "ZEND")
+	digest.Sum(end[:4])
+	return records, end, nil
+}
+
+func (srv *Server) handleNativeStream(w http.ResponseWriter, r *http.Request, check payloadCheck) {
+	if !check.signed || r.Header.Get("X-Amz-Content-Sha256") != sigv4SentinelStreamingHMAC {
+		writeSyncError(w, http.StatusForbidden, "SignedStreamRequired", "native streaming requires authenticated SigV4 chunks")
+		return
+	}
+	if check.md5 != nil || check.algo != checksumNone {
+		writeSyncError(w, http.StatusBadRequest, "InvalidStream", "the native stream uses signed frames and descriptor digests")
+		return
+	}
+	records, end, err := readNativeStreamPlan(r.Body, r.ContentLength)
+	if err != nil {
+		writeSyncError(w, http.StatusBadRequest, "InvalidStream", err.Error())
+		return
+	}
+	finish, ok := srv.nativeStreams.start(records)
+	if !ok {
+		writeSyncError(w, http.StatusServiceUnavailable, "StreamCapacity", "too many active native streams")
+		return
+	}
+	defer finish()
+	batch := srv.store.newCASBatch()
+	defer batch.Abort()
+	fail := func(err error) {
+		// Every staged record has already passed its signed transport
+		// chunk and expected content digest. Keep precisely that prefix.
+		if flushErr := batch.Flush(); flushErr != nil {
+			writeSyncError(w, http.StatusInternalServerError, "PrefixFlushFailed", flushErr.Error())
+			return
+		}
+		writeSyncError(w, http.StatusBadRequest, "InvalidStream", err.Error())
+	}
+	scratch := make([]byte, maxSyncChunkBytes)
+	var logical int64
+	for _, record := range records {
+		payload := scratch[:record.wire]
+		if _, err := io.ReadFull(r.Body, payload); err != nil {
+			fail(err)
+			return
+		}
+		data, err := decodePackPayloadD(record.codec, payload, record.logical, record.sum, nil, nil, false)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if _, err := batch.add(record.sum, data); err != nil {
+			writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		logical += int64(record.logical)
+	}
+	var actual [nativeStreamEnd]byte
+	if _, err := io.ReadFull(r.Body, actual[:]); err != nil || actual != end {
+		fail(errors.New("native stream is missing its authenticated plan end marker"))
+		return
+	}
+	var extra [1]byte
+	if _, err := io.ReadFull(r.Body, extra[:]); err != io.EOF {
+		fail(errors.New("native stream terminator is invalid or has trailing bytes"))
+		return
+	}
+	if err := batch.Flush(); err != nil {
+		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	writeSyncJSON(w, http.StatusOK, syncBulkUploadResponse{Chunks: len(records), Bytes: logical})
 }
 
 // validateSyncProtocolFields rejects any request that does not declare
@@ -30928,6 +31144,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 	}
 	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
 	d.NativeBatchVersion, d.MaxBatchObjects = nativeBatchVersion, maxNativeBatchObjects
+	d.NativeStream = true
 	writeSyncJSON(w, http.StatusOK, d)
 }
 
@@ -36387,6 +36604,153 @@ func nativeBatchItems[T any](cfg syncClientConfig, path string, items []T) ([]na
 	return reply.Items, nil
 }
 
+func wireAWSChunkSize(data int64) int64 {
+	return data + int64(len(strconv.FormatInt(data, 16))+len(awsChunkSigMarker)+2*sha256.Size+4)
+}
+
+func postNativeStream(ctx context.Context, cfg syncClientConfig, records []nativeStreamRecord,
+	produce func(context.Context, func(int, []byte) error) error) error {
+	head, end, decoded := encodeNativeStreamPlan(records)
+	wired := wireAWSChunkSize(int64(len(head))) + wireAWSChunkSize(int64(len(end))) + wireAWSChunkSize(0)
+	var logical int64
+	for _, rec := range records {
+		wired += wireAWSChunkSize(int64(rec.wire))
+		logical += int64(rec.logical)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	in, out := io.Pipe()
+	defer in.Close()
+	defer out.Close()
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.Endpoint, "/")+nativeBatchStream, in)
+	if err != nil {
+		return err
+	}
+	r.ContentLength = wired
+	r.Header.Set("Content-Encoding", "aws-chunked")
+	r.Header.Set("X-Amz-Decoded-Content-Length", strconv.FormatInt(decoded, 10))
+	if err := signSigV4Request(r, cfg.Creds, cfg.Region, sigv4SentinelStreamingHMAC, time.Now()); err != nil {
+		return err
+	}
+	date := r.Header.Get("X-Amz-Date")
+	scope := fmt.Sprintf("%s/%s/%s/aws4_request", date[:8], cfg.Region, sigv4ServiceName)
+	key := sigv4SigningKey(cfg.Creds.SecretAccessKey, date[:8], cfg.Region, sigv4ServiceName)
+	_, seed, ok := strings.Cut(r.Header.Get("Authorization"), ",Signature=")
+	if !ok {
+		return errors.New("failed to initialize the native stream signature")
+	}
+	produced := make(chan error, 1)
+	go func() {
+		var previous = seed
+		buf := make([]byte, 0, maxSyncChunkBytes+128)
+		write := func(data []byte) error {
+			sig := awsBodyChunkSignature(key, date, scope, previous, data)
+			buf = strconv.AppendInt(buf[:0], int64(len(data)), 16)
+			buf = append(buf, awsChunkSigMarker...)
+			buf = append(buf, sig...)
+			buf = append(buf, '\r', '\n')
+			buf = append(buf, data...)
+			buf = append(buf, '\r', '\n')
+			_, err := out.Write(buf)
+			previous = sig
+			return err
+		}
+		err := write(head)
+		if err == nil {
+			next := 0
+			err = produce(ctx, func(i int, data []byte) error {
+				if i != next || i >= len(records) || len(data) != int(records[i].wire) {
+					return errors.New("source relay disagrees with its stream descriptor")
+				}
+				next++
+				return write(data)
+			})
+			if err == nil && next != len(records) {
+				err = errors.New("source relay ended before all records were available")
+			}
+		}
+		if err == nil {
+			err = write(end)
+		}
+		if err == nil {
+			err = write(nil)
+		}
+		out.CloseWithError(err)
+		produced <- err
+	}()
+	resp, err := cfg.client().Do(r)
+	if err != nil {
+		cancel()
+		in.CloseWithError(err)
+		<-produced
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		in.Close()
+		cancel()
+		<-produced
+		return bulkStatusError("native stream", resp)
+	}
+	body, err := readPeerBody(resp, 4096)
+	if err != nil {
+		cancel()
+		in.CloseWithError(err)
+		<-produced
+		return err
+	}
+	if err := <-produced; err != nil {
+		return err
+	}
+	var ack syncBulkUploadResponse
+	if err := json.Unmarshal(body, &ack); err != nil {
+		return err
+	}
+	if ack.Chunks != len(records) || ack.Bytes != logical {
+		return errors.New("native stream acknowledgment disagrees with its descriptors")
+	}
+	return nil
+}
+
+func relayNativeStreams(workers int, source, dest syncClientConfig, discovery syncDiscoveryResponse, want []syncChunkDescriptor) error {
+	caps, bulk := bulkCapsOf(discovery)
+	policy := bulkPolicy{maxRecords: maxNativeStreamRecords, targetBytes: maxNativeStreamLogical}
+	if bulk {
+		policy.maxRecords = min(policy.maxRecords, caps.maxRecords)
+		policy.targetBytes = min(policy.targetBytes, caps.maxBytes)
+	}
+	batches := planBulkBatches(want, policy)
+	work := make([]transferWork, 0, len(batches))
+	for _, chunks := range batches {
+		records := make([]nativeStreamRecord, len(chunks))
+		for i, d := range chunks {
+			sum, _, err := normalizedSyncDigest(d.SHA256, d.Length)
+			if err != nil {
+				return err
+			}
+			records[i] = nativeStreamRecord{sum: sum, logical: uint32(d.Length), wire: uint32(d.Length), codec: packCodecRaw}
+		}
+		work = append(work, transferWork{SHA256: chunks[0].SHA256, Length: bulkDescriptorBytes(chunks), Do: func(ctx context.Context) error {
+			return postNativeStream(ctx, dest, records, func(ctx context.Context, emit func(int, []byte) error) error {
+				if bulk {
+					return fetchBulkChunks(ctx, source, chunks, emit, nil)
+				}
+				for i, d := range chunks {
+					data, err := fetchSourceChunk(ctx, source, d.SHA256)
+					if err != nil {
+						return err
+					}
+					if err := emit(i, data); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		}})
+	}
+	return firstTransferError(runTransferWorkers(context.Background(), bulkWorkers(workers), work, true))
+}
+
 func nativeObjectDescription(item nativeBatchItem, requested nativeBatchObject) (syncObjectDescriptor, error) {
 	var desc syncObjectDescriptor
 	if item.Status != http.StatusOK {
@@ -36529,8 +36893,14 @@ func replicateNativeWindow(cfg namespaceReplicateConfig, src, dst syncDiscoveryR
 		}
 		unique = unique[n:]
 	}
-	if err := relayMissingChunks(workers, cfg.Source, cfg.Dest, src, dst, want, "native replication"); err != nil {
-		return err
+	var transferErr error
+	if dst.NativeStream {
+		transferErr = relayNativeStreams(workers, cfg.Source, cfg.Dest, src, want)
+	} else {
+		transferErr = relayMissingChunks(workers, cfg.Source, cfg.Dest, src, dst, want, "native replication")
+	}
+	if transferErr != nil {
+		return transferErr
 	}
 	if len(commits) != 0 {
 		replies, err := nativeBatchItems(cfg.Dest, nativeBatchCommit, commits)

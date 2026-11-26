@@ -12,3 +12,14 @@ The namespace fixture calls the real recursive replication entry
 point, counts every HTTP request, checks all destination manifests
 and reruns with explicit equivalence handling. The compatibility
 fixture advertises legacy discovery and refuses any v3 request.
+
+The stream test uses the actual SigV4 transport and deliberately
+ends a source read after the first authenticated payload. The
+next signed bitmap and upload prove that only missing bytes are
+sent. The independent frame fixture signs malformed logical bodies
+and changes a signed transport chunk to test both validation layers.
+
+```sh
+GOMAXPROCS=2 go test -run '^$' -fuzz '^FuzzFB08NativeStreamPlan$' \
+  -fuzztime=5s -parallel=2 .
+```
