@@ -142,10 +142,38 @@ func TestNamespaceCheckpointCompactHistoryAndLegacyFallback(t *testing.T) {
 	if _, _, err := direct.loadNamespaceCheckpointLayout(direct.journal.f, true); err == nil {
 		t.Fatal("tampered V3 checkpoint was accepted")
 	}
+	// FB-01 (E2): a present but unusable checkpoint is refused, never skipped
+	// for an older layout; the retained V2 binds only once the V3 is gone.
+	var cp *checkpointProblem
+	if _, _, err := direct.loadNamespaceCheckpoint(direct.journal.f); !errors.As(err, &cp) || cp.File != namespaceCompactCheckpointName || cp.Kind != checkpointDamaged {
+		t.Fatalf("a tampered V3 checkpoint was not refused by name: %v", err)
+	}
+	assertCheckpointRefused(t, dir, checkpointDamaged)
+	mustOK(t, os.Remove(compactPath))
 	if _, _, err := direct.loadNamespaceCheckpoint(direct.journal.f); err != nil {
-		t.Fatalf("did not fall back to the retained V2 checkpoint: %v", err)
+		t.Fatalf("the retained V2 checkpoint did not load: %v", err)
 	}
 	assertCheckpointState(t, dir)
+}
+
+// assertCheckpointRefused: an open that uses the checkpoint refuses, names its
+// problem and changes nothing; a full replay that ignores it still opens.
+func assertCheckpointRefused(t *testing.T, dir, kind string) {
+	t.Helper()
+	jp := filepath.Join(dir, "journal", "visibility.log")
+	before := fb01SHA(jp)
+	s, err := openStore(dir, false, true)
+	if s != nil {
+		s.Close()
+	}
+	var cp *checkpointProblem
+	if !errors.Is(err, errJournalRefused) || !errors.As(err, &cp) || cp.Kind != kind {
+		t.Fatalf("want a %s checkpoint refusal, got %v", kind, err)
+	}
+	if fb01SHA(jp) != before {
+		t.Fatal("a refused open changed the journal")
+	}
+	checkpointTestOpen(t, dir, false)
 }
 
 func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
@@ -167,13 +195,13 @@ func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	for _, length := range []int{0, 4, len(good) / 2, len(good) - 1} {
 		mustOK(t, os.WriteFile(ck, good[:length], 0o600))
 		reject()
-		assertCheckpointState(t, dir)
+		assertCheckpointRefused(t, dir, checkpointDamaged)
 	}
 	broken := bytes.Clone(good)
 	broken[len(broken)/2] ^= 1
 	mustOK(t, os.WriteFile(ck, broken, 0o600))
 	reject()
-	assertCheckpointState(t, dir)
+	assertCheckpointRefused(t, dir, checkpointDamaged)
 
 	foreign, _ := checkpointTestSeed(t)
 	mustOK(t, os.WriteFile(ck, good, 0o600))
@@ -183,12 +211,26 @@ func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	if _, _, err := other.loadNamespaceCheckpoint(other.journal.f); err == nil {
 		t.Fatal("foreign store checkpoint was accepted")
 	}
-	assertCheckpointState(t, foreign)
+	assertCheckpointRefused(t, foreign, checkpointForeign)
 
-	// A torn suffix can leave the journal behind the checkpoint.
+	// A torn suffix can leave the journal behind the checkpoint. The checkpoint
+	// witnesses that acknowledged bytes are missing, so the full replay refuses
+	// as well as the accelerated open (FB-01).
 	mustOK(t, os.WriteFile(journal, log[:len(log)-1], 0o600))
-	reject()
-	assertCheckpointState(t, dir)
+	before := fb01SHA(journal)
+	for _, useCk := range []bool{true, false} {
+		s, err := openStore(dir, false, useCk)
+		if s != nil {
+			s.Close()
+		}
+		var cp *checkpointProblem
+		if !errors.As(err, &cp) || cp.Kind != checkpointContradicts {
+			t.Fatalf("checkpoint=%v: want a contradicts-journal refusal, got %v", useCk, err)
+		}
+	}
+	if fb01SHA(journal) != before {
+		t.Fatal("a refused open changed the journal")
+	}
 
 	// Corruption in the first payload leaves the last frame CRC intact.
 	// Full replay must diagnose it even with the opt-in read path.

@@ -440,6 +440,28 @@ func writeFileDurable(tmpDir, finalPath string, data []byte) error {
 
 var testHook func(point string)
 
+// testJournalFault, when a test sets it, fails a journal or checkpoint file
+// operation at one of the fault* points before it runs; for a journal write it
+// also says how many leading bytes still reach the file (a short write).
+// Release builds leave it nil.
+var testJournalFault func(point string, size int) (keep int, err error)
+
+const (
+	faultJournalWrite    = "journal-write"
+	faultJournalSync     = "journal-sync"
+	faultJournalRollback = "journal-rollback"
+	faultJournalOpen     = "journal-open"
+	faultCheckpointWrite = "checkpoint-write"
+)
+
+func injectJournalFault(point string) error {
+	if testJournalFault == nil {
+		return nil
+	}
+	_, err := testJournalFault(point, 0)
+	return err
+}
+
 // layoutObserver is a test-only seam, separate from testHook (which tests
 // replace to inject crashes): it is told which physical representation each
 // publication produced and under which store root, so the test suite can
@@ -7723,6 +7745,10 @@ type Journal struct {
 	// and reopening the store), which re-derives writeOffset/nextSeq from
 	// whatever is actually, durably on disk.
 	poisoned error
+
+	// tail is set for a shared opener whose journal ends in an incomplete
+	// frame it could not account for: it serves the valid prefix only.
+	tail *journalDamage
 }
 
 // appendFrame durably appends one journal frame and returns its sequence
@@ -7790,15 +7816,15 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 		frames = binary.BigEndian.AppendUint32(frames, crc)
 	}
 
-	if _, err := j.f.WriteAt(frames, j.writeOffset); err != nil {
+	if n, err := j.writeFrames(frames); err != nil {
 		wrapped := fmt.Errorf("journal: write failed: %w", err)
-		j.poisoned = wrapped
+		j.poisoned = j.rollback(wrapped, n)
 		return 0, wrapped
 	}
 	fireTestHook(hookAfterJournalWriteBeforeSync)
-	if err := j.f.Sync(); err != nil {
+	if err := j.syncFile(); err != nil {
 		wrapped := fmt.Errorf("journal: sync failed: %w", err)
-		j.poisoned = wrapped
+		j.poisoned = j.rollback(wrapped, len(frames))
 		return 0, wrapped
 	}
 	// The frames are durable: advance the cursor before anything else can run
@@ -7808,6 +7834,42 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 	j.nextSeq = first + uint64(len(recs))
 	fireTestHook(hookAfterJournalSync)
 	return first, nil
+}
+
+func (j *Journal) writeFrames(b []byte) (int, error) {
+	if testJournalFault != nil {
+		if keep, err := testJournalFault(faultJournalWrite, len(b)); err != nil {
+			n, _ := j.f.WriteAt(b[:min(max(keep, 0), len(b))], j.writeOffset)
+			return n, err
+		}
+	}
+	return j.f.WriteAt(b, j.writeOffset)
+}
+
+func (j *Journal) syncFile() error {
+	if err := injectJournalFault(faultJournalSync); err != nil {
+		return err
+	}
+	return j.f.Sync()
+}
+
+// rollback cuts whatever a failed append left past writeOffset, so the journal
+// on disk ends at the last acknowledged frame and the next open finds it
+// clean: none of the failed group was acknowledged. The journal stays poisoned
+// either way; if the cut fails too, the next open refuses the incomplete tail
+// until an operator salvages it.
+func (j *Journal) rollback(cause error, written int) error {
+	err := injectJournalFault(faultJournalRollback)
+	if err == nil {
+		err = j.f.Truncate(j.writeOffset)
+	}
+	if err == nil {
+		err = j.f.Sync()
+	}
+	if err != nil {
+		return fmt.Errorf("%w (rolling back %d bytes past offset %d also failed: %v)", cause, written, j.writeOffset, err)
+	}
+	return cause
 }
 
 // poison makes every further append fail until the store is reopened. It is
@@ -7873,38 +7935,140 @@ func replayJournalTail(f *os.File, offset int64, lastSeq uint64, keep bool, appl
 	return replayJournalRange(f, offset, st.Size(), lastSeq, keep, apply)
 }
 
+// replayJournalRange validates the frames in [start, end) and applies them.
+// It keeps its historical contract for diagnostic and range readers: frames
+// that end cleanly, or a final frame that is merely incomplete with no
+// evidence that acknowledged frames follow it, give a nil error and the valid
+// prefix. Every other anomaly is an error. Opening a store does not use this
+// contract: it goes through scanJournalRange and refuses any damage.
 func replayJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep bool, apply func(journalRecord) error) (validEnd int64, lastSeq uint64, n int, applyErr, err error) {
+	sc, applyErr, err := scanJournalRange(f, start, end, previous, keep, apply)
+	if err != nil {
+		return 0, 0, 0, nil, err
+	}
+	if d := sc.Damage; d != nil && !d.ambiguousTail() {
+		return 0, 0, 0, nil, d
+	}
+	return sc.ValidEnd, sc.LastSeq, sc.Frames, applyErr, nil
+}
+
+// journalScan is the result of validating a journal from some offset.
+type journalScan struct {
+	ValidEnd int64          // just past the last valid frame
+	LastSeq  uint64         // sequence of that frame
+	Frames   int            // valid frames in this scan
+	Size     int64          // end of the scanned range
+	Damage   *journalDamage // nil when the range ends exactly at ValidEnd
+}
+
+// journalDamage describes the earliest frame that does not validate and the
+// evidence about whether acknowledged frames lie past it. The v1 frame format
+// carries no commit boundary, so an incomplete final frame with no evidence is
+// ambiguous: a crash before the frame's fsync returned, or a cut or damaged
+// acknowledged frame, leave the same bytes.
+type journalDamage struct {
+	Offset     int64  `json:"offset"`    // earliest invalid offset
+	Seq        uint64 `json:"frame_seq"` // sequence the frame there should carry
+	Cause      string `json:"cause"`
+	Detail     string `json:"detail"`
+	Size       int64  `json:"journal_bytes"`
+	Incomplete bool   `json:"incomplete"`         // the bytes end before a frame at Offset could
+	LaterValid int64  `json:"later_valid_offset"` // a later valid frame with a plausible sequence, or -1
+	LaterSeq   uint64 `json:"later_valid_seq,omitempty"`
+	CorrectLen int64  `json:"corrected_length"` // a payload length at which the frame at Offset checks out, or -1
+	Probe      string `json:"probe"`            // "complete" or "budget-exhausted"
+}
+
+const (
+	journalCauseTornHeader = "incomplete-header"
+	journalCauseShortFrame = "incomplete-frame"
+	journalCauseBadMagic   = "bad-magic"
+	journalCauseBadVersion = "unsupported-version"
+	journalCauseBadType    = "unknown-record-type"
+	journalCauseTooLong    = "length-over-max"
+	journalCauseCRC        = "crc-mismatch"
+	journalCauseSequence   = "sequence-gap"
+)
+
+func (d *journalDamage) Error() string { return d.Detail }
+
+// ambiguousTail reports damage that is only an incomplete final frame with no
+// evidence either way: what an unsynced crash leaves, and also what a cut or
+// damaged acknowledged tail leaves.
+func (d *journalDamage) ambiguousTail() bool {
+	return d.Incomplete && d.LaterValid < 0 && d.CorrectLen < 0 && d.Probe == "complete"
+}
+
+// Class and Confidence summarise the evidence for an operator.
+func (d *journalDamage) Class() (class, confidence string) {
+	switch {
+	case d.LaterValid >= 0:
+		return "damage: valid frames follow the invalid one", "high"
+	case d.CorrectLen >= 0:
+		return "damage: a complete frame with a damaged length field", "high"
+	case d.Probe != "complete":
+		return "undetermined: the evidence probe ran out of budget", "unknown"
+	case d.Incomplete:
+		return "incomplete final frame: an unsynced crash or a cut acknowledged tail (v1 cannot tell)", "ambiguous"
+	default:
+		return "invalid final frame: crash debris or damaged acknowledged data (v1 cannot tell)", "ambiguous"
+	}
+}
+
+// journalProbeBudget bounds the bytes the evidence probe reads past damage.
+var journalProbeBudget int64 = 256 << 20
+
+// scanJournalRange validates the frames in [start, end) like the historical
+// replay, applying each valid one, and stops at the first that does not
+// validate, describing it in Damage. err is only for I/O failures. Reads never
+// allocate more than the range holds.
+func scanJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep bool, apply func(journalRecord) error) (sc journalScan, applyErr, err error) {
 	r := bufio.NewReaderSize(io.NewSectionReader(f, start, end-start), journalReadBuffer)
 	offset, lastSeq := start, previous
+	sc.Size = end
 	var hdr [journalHeaderSize]byte
 	var scratch []byte
+	n := 0
+	stop := func(cause string, incomplete bool, detail string) (journalScan, error, error) {
+		sc.ValidEnd, sc.LastSeq, sc.Frames = offset, lastSeq, n
+		d := &journalDamage{Offset: offset, Seq: lastSeq + 1, Cause: cause, Detail: detail, Size: end, Incomplete: incomplete, LaterValid: -1, CorrectLen: -1}
+		if perr := d.probe(f, &hdr, lastSeq); perr != nil {
+			return sc, nil, perr
+		}
+		sc.Damage = d
+		return sc, applyErr, nil
+	}
 	for {
-		if _, rerr := io.ReadFull(r, hdr[:]); rerr != nil {
-			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
-				return offset, lastSeq, n, applyErr, nil // clean end at a frame boundary, or a torn header
+		if offset == end {
+			sc.ValidEnd, sc.LastSeq, sc.Frames = offset, lastSeq, n
+			return sc, applyErr, nil
+		}
+		if end-offset < journalHeaderSize {
+			if _, rerr := io.ReadFull(r, hdr[:end-offset]); rerr != nil {
+				return sc, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset, rerr)
 			}
-			return 0, 0, 0, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset, rerr)
+			return stop(journalCauseTornHeader, true, fmt.Sprintf("journal: incomplete frame header at offset %d (%d of %d bytes)", offset, end-offset, journalHeaderSize))
+		}
+		if _, rerr := io.ReadFull(r, hdr[:]); rerr != nil {
+			return sc, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset, rerr)
 		}
 		if string(hdr[0:4]) != journalMagic {
-			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: bad magic", offset)
+			return stop(journalCauseBadMagic, false, fmt.Sprintf("journal: corrupt at offset %d: bad magic", offset))
 		}
 		if ver := binary.BigEndian.Uint16(hdr[4:6]); ver != journalFrameVersion {
-			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unsupported frame version %d", offset, ver)
+			return stop(journalCauseBadVersion, false, fmt.Sprintf("journal: corrupt at offset %d: unsupported frame version %d", offset, ver))
 		}
 		recType := hdr[6]
-		switch recType {
-		case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket,
-			recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload, recordTypeCompleteMultipartUpload,
-			recordTypePutObjectRootV2, recordTypeCompleteMultipartUploadV2, recordTypeDeleteObjectRootV2,
-			recordTypePruneHistory:
-			// known record type
-		default:
-			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: unknown record type %d", offset, recType)
+		if !journalKnownType(recType) {
+			return stop(journalCauseBadType, false, fmt.Sprintf("journal: corrupt at offset %d: unknown record type %d", offset, recType))
 		}
 		seq := binary.BigEndian.Uint64(hdr[8:16])
 		plen := binary.BigEndian.Uint32(hdr[16:20])
 		if plen > maxJournalPayload {
-			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: payload length %d exceeds max", offset, plen)
+			return stop(journalCauseTooLong, false, fmt.Sprintf("journal: corrupt at offset %d: payload length %d exceeds max", offset, plen))
+		}
+		if frameEnd := offset + journalHeaderSize + int64(plen) + 4; frameEnd > end {
+			return stop(journalCauseShortFrame, true, fmt.Sprintf("journal: incomplete frame at offset %d: declared length %d needs %d bytes, %d present", offset, plen, frameEnd-offset, end-offset))
 		}
 		var rest []byte
 		if keep {
@@ -7916,18 +8080,15 @@ func replayJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep b
 			rest = scratch[:int(plen)+4]
 		}
 		if _, rerr := io.ReadFull(r, rest); rerr != nil {
-			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
-				return offset, lastSeq, n, applyErr, nil // torn tail: header present, payload/crc incomplete
-			}
-			return 0, 0, 0, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset+journalHeaderSize, rerr)
+			return sc, nil, fmt.Errorf("journal: read failed at offset %d: %w", offset+journalHeaderSize, rerr)
 		}
 		payload := rest[:plen]
 		crc := crc32.Update(crc32.Checksum(hdr[:], castagnoliTable), castagnoliTable, payload)
 		if crc != binary.BigEndian.Uint32(rest[plen:]) {
-			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt at offset %d: crc mismatch (seq=%d)", offset, seq)
+			return stop(journalCauseCRC, false, fmt.Sprintf("journal: corrupt at offset %d: crc mismatch (seq=%d)", offset, seq))
 		}
 		if seq != lastSeq+1 {
-			return 0, 0, 0, nil, fmt.Errorf("journal: corrupt: expected sequence %d, got %d", lastSeq+1, seq)
+			return stop(journalCauseSequence, false, fmt.Sprintf("journal: corrupt at offset %d: expected sequence %d, got %d", offset, lastSeq+1, seq))
 		}
 		if apply != nil && applyErr == nil {
 			applyErr = apply(journalRecord{seq: seq, recType: recType, payload: payload})
@@ -7936,6 +8097,129 @@ func replayJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep b
 		lastSeq = seq
 		offset += int64(journalHeaderSize) + int64(plen) + 4
 	}
+}
+
+func journalKnownType(t byte) bool {
+	switch t {
+	case recordTypeCreateBucket, recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteBucket,
+		recordTypeCreateMultipartUpload, recordTypeUploadPart, recordTypeAbortMultipartUpload, recordTypeCompleteMultipartUpload,
+		recordTypePutObjectRootV2, recordTypeCompleteMultipartUploadV2, recordTypeDeleteObjectRootV2,
+		recordTypePruneHistory:
+		return true
+	}
+	return false
+}
+
+// journalFrameAt checks for a complete valid frame at off whose payload has
+// length plen (the header's own length field is replaced by plen), and returns
+// its sequence. *buf is reused for the frame bytes.
+func journalFrameAt(f io.ReaderAt, off, end int64, plen int64, buf *[]byte) (seq uint64, ok bool, cost int64, err error) {
+	total := journalHeaderSize + plen + 4
+	if plen < 0 || plen > maxJournalPayload || off < 0 || off+total > end {
+		return 0, false, 0, nil
+	}
+	if int64(cap(*buf)) < total {
+		*buf = make([]byte, total)
+	}
+	b := (*buf)[:total]
+	if _, err := f.ReadAt(b, off); err != nil {
+		return 0, false, total, err
+	}
+	if string(b[0:4]) != journalMagic || binary.BigEndian.Uint16(b[4:6]) != journalFrameVersion || !journalKnownType(b[6]) {
+		return 0, false, total, nil
+	}
+	binary.BigEndian.PutUint32(b[16:20], uint32(plen))
+	if crc32.Checksum(b[:journalHeaderSize+plen], castagnoliTable) != binary.BigEndian.Uint32(b[journalHeaderSize+plen:]) {
+		return 0, false, total, nil
+	}
+	return binary.BigEndian.Uint64(b[8:16]), true, total, nil
+}
+
+// probe gathers the evidence for d within journalProbeBudget: a later valid
+// frame whose sequence is plausible for this journal (the resync guard), and
+// a payload length at which the frame at d.Offset checks out (a damaged
+// length field rather than a torn write). hdr holds the bytes of the header at
+// d.Offset that the scan read, if any.
+func (d *journalDamage) probe(f io.ReaderAt, hdr *[journalHeaderSize]byte, lastSeq uint64) error {
+	d.Probe = "complete"
+	budget := journalProbeBudget
+	var buf []byte
+	// Resync guard: scan forward for the magic of a valid later frame.
+	window := make([]byte, max(min(1<<20, d.Size-d.Offset), journalHeaderSize))
+	for pos := d.Offset + 1; pos+journalHeaderSize <= d.Size && d.LaterValid < 0; {
+		if budget <= 0 {
+			d.Probe = "budget-exhausted"
+			break
+		}
+		n := min(int64(len(window)), d.Size-pos)
+		if _, err := f.ReadAt(window[:n], pos); err != nil && err != io.EOF {
+			return fmt.Errorf("journal: read failed at offset %d: %w", pos, err)
+		}
+		budget -= n
+		w := window[:n]
+		for i := 0; ; {
+			j := bytes.Index(w[i:], []byte(journalMagic))
+			if j < 0 {
+				break
+			}
+			at := pos + int64(i+j)
+			var h [journalHeaderSize]byte
+			if _, err := f.ReadAt(h[:], at); err == nil {
+				plen := int64(binary.BigEndian.Uint32(h[16:20]))
+				seq, ok, cost, err := journalFrameAt(f, at, d.Size, plen, &buf)
+				if err != nil && err != io.EOF {
+					return err
+				}
+				budget -= cost
+				if ok && seq > lastSeq && seq <= lastSeq+uint64((at-d.Offset)/journalHeaderSize)+1 {
+					d.LaterValid, d.LaterSeq = at, seq
+					break
+				}
+			}
+			i += j + 1
+			if budget <= 0 {
+				break
+			}
+		}
+		// Overlap by a header so a frame straddling windows is still seen.
+		pos += max(n-journalHeaderSize, 1)
+	}
+	// Corrected length: only for a header that is otherwise well formed.
+	if d.Cause != journalCauseShortFrame && d.Cause != journalCauseCRC && d.Cause != journalCauseTooLong {
+		return nil
+	}
+	if string(hdr[0:4]) != journalMagic || binary.BigEndian.Uint16(hdr[4:6]) != journalFrameVersion || !journalKnownType(hdr[6]) ||
+		binary.BigEndian.Uint64(hdr[8:16]) != d.Seq {
+		return nil
+	}
+	declared := int64(binary.BigEndian.Uint32(hdr[16:20]))
+	candidates := make([]int64, 0, 34)
+	for b := range 32 {
+		candidates = append(candidates, declared^(1<<b))
+	}
+	candidates = append(candidates, d.Size-d.Offset-journalHeaderSize-4)
+	if d.LaterValid >= 0 {
+		candidates = append(candidates, d.LaterValid-d.Offset-journalHeaderSize-4)
+	}
+	for _, plen := range candidates {
+		if plen == declared {
+			continue
+		}
+		if budget <= 0 {
+			d.Probe = "budget-exhausted"
+			return nil
+		}
+		seq, ok, cost, err := journalFrameAt(f, d.Offset, d.Size, plen, &buf)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		budget -= cost
+		if ok && seq == d.Seq {
+			d.CorrectLen = plen
+			return nil
+		}
+	}
+	return nil
 }
 
 // errJournalReadOnly poisons the journal of a shared (read-only) opener: only
@@ -7956,40 +8240,211 @@ func openJournal(path string, readOnly bool, apply func(journalRecord) error) (*
 }
 
 func openJournalWithCheckpoint(path string, readOnly bool, apply func(journalRecord) error, checkpoint func(*os.File) (int64, uint64, error)) (j *Journal, applyErr, err error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return nil, nil, err
+	return openJournalOpts(path, journalOpenOpts{readOnly: readOnly, apply: apply, checkpoint: checkpoint})
+}
+
+// journalOpenOpts configures openJournalOpts. checkpoint adopts a verified
+// checkpoint and returns the journal offset and sequence it covers; witness,
+// used when no checkpoint is adopted, checks that a published one does not
+// cover more journal than the replay found.
+type journalOpenOpts struct {
+	readOnly   bool
+	apply      func(journalRecord) error
+	checkpoint func(*os.File) (int64, uint64, error)
+	witness    func(f *os.File, validEnd int64) error
+}
+
+// journalPolicy is how an open treats a journal that does not end cleanly.
+// Release builds use the strict policy; testJournalPolicy selects the
+// historical ones for the FB-01 comparison matrix.
+type journalPolicy struct {
+	name             string
+	tolerateTail     bool // cut an incomplete final frame (P0, P0R)
+	resyncGuard      bool // ...unless a valid frame follows it (P0R)
+	ignoreCheckpoint bool // replay from 0 past a damaged or contradicted checkpoint (P0, P0R)
+}
+
+var (
+	journalPolicyStrict = journalPolicy{name: "strict"}
+	journalPolicyP0     = journalPolicy{name: "P0", tolerateTail: true, ignoreCheckpoint: true}
+	journalPolicyP0R    = journalPolicy{name: "P0R", tolerateTail: true, resyncGuard: true, ignoreCheckpoint: true}
+)
+
+// testJournalPolicy, when a test sets it, replaces the strict open policy.
+var testJournalPolicy *journalPolicy
+
+func currentJournalPolicy() journalPolicy {
+	if testJournalPolicy != nil {
+		return *testJournalPolicy
 	}
-	var offset int64
-	var sequence uint64
-	if checkpoint != nil {
-		var checkpointErr error
-		offset, sequence, checkpointErr = checkpoint(f)
-		if checkpointErr != nil {
-			offset, sequence = 0, 0
-			if !errors.Is(checkpointErr, os.ErrNotExist) {
-				log.Printf("zeros3: namespace checkpoint ignored: %v", checkpointErr)
-			}
+	return journalPolicyStrict
+}
+
+func (p journalPolicy) tolerates(d *journalDamage) bool {
+	return p.tolerateTail && d.Incomplete && !(p.resyncGuard && d.LaterValid >= 0)
+}
+
+// errJournalRefused marks an open that found journal damage, or a checkpoint
+// that is damaged or contradicts the journal, and changed nothing.
+var errJournalRefused = errors.New("journal recovery refused")
+
+type journalRefusal struct {
+	Damage     *journalDamage
+	Checkpoint *checkpointProblem
+}
+
+func (e *journalRefusal) Unwrap() []error {
+	errs := []error{errJournalRefused}
+	if e.Damage != nil {
+		errs = append(errs, e.Damage)
+	}
+	if e.Checkpoint != nil {
+		errs = append(errs, e.Checkpoint)
+	}
+	return errs
+}
+
+func (e *journalRefusal) Error() string {
+	var b strings.Builder
+	if d := e.Damage; d != nil {
+		class, conf := d.Class()
+		fmt.Fprintf(&b, "%s; refused at offset %d, frame seq %d, cause %s (%s; confidence %s)", d.Detail, d.Offset, d.Seq, d.Cause, class, conf)
+		if d.LaterValid >= 0 {
+			fmt.Fprintf(&b, "; valid frame seq %d follows at offset %d", d.LaterSeq, d.LaterValid)
+		}
+		if d.CorrectLen >= 0 {
+			fmt.Fprintf(&b, "; the frame checks out with payload length %d", d.CorrectLen)
 		}
 	}
-	validEnd, lastSeq, _, applyErr, err := replayJournalTail(f, offset, sequence, false, apply)
+	if c := e.Checkpoint; c != nil {
+		if b.Len() > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(c.Error())
+	}
+	b.WriteString("; nothing was changed: run `zeros3 journal inspect -store DIR`; only `zeros3 journal salvage` repairs, and it keeps the original")
+	return b.String()
+}
+
+// journalTailRetries bounds how long a shared opener waits for an incomplete
+// final frame that a live writer may still be copying into the file.
+var journalTailRetries, journalTailRetryWait = 10, 20 * time.Millisecond
+
+func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err error) {
+	flags := os.O_RDWR | os.O_CREATE
+	if o.readOnly {
+		flags = os.O_RDONLY // a shared opener never writes the journal
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
+	if o.readOnly && errors.Is(err, os.ErrNotExist) {
+		f, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644) // a store with no journal yet
+	}
 	if err != nil {
+		return nil, nil, err
+	}
+	fail := func(err error) (*Journal, error, error) {
 		f.Close()
 		return nil, nil, err
+	}
+	if err := injectJournalFault(faultJournalOpen); err != nil {
+		return fail(err)
+	}
+	policy := currentJournalPolicy()
+	var offset int64
+	var sequence uint64
+	adopted := false
+	if o.checkpoint != nil {
+		var checkpointErr error
+		offset, sequence, checkpointErr = o.checkpoint(f)
+		switch {
+		case checkpointErr == nil:
+			adopted = true
+		case errors.Is(checkpointErr, os.ErrNotExist):
+			offset, sequence = 0, 0
+		case policy.ignoreCheckpoint:
+			offset, sequence = 0, 0
+			log.Printf("zeros3: namespace checkpoint ignored: %v", checkpointErr)
+		default:
+			var cp *checkpointProblem
+			if !errors.As(checkpointErr, &cp) {
+				cp = &checkpointProblem{File: "namespace checkpoint", Kind: "damaged", Offset: -1, Err: checkpointErr}
+			}
+			// Name any damage in the journal itself too: a checkpoint that no
+			// longer matches is often the first sign of it.
+			r := &journalRefusal{Checkpoint: cp}
+			if st, serr := f.Stat(); serr == nil {
+				if sc, _, serr := scanJournalRange(f, 0, st.Size(), 0, false, nil); serr == nil {
+					r.Damage = sc.Damage
+				}
+			}
+			return fail(r)
+		}
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return fail(fmt.Errorf("journal: stat failed: %w", err))
+	}
+	if offset < 0 || offset > st.Size() {
+		return fail(errors.New("journal was truncated after checkpoint validation"))
+	}
+	sc, applyErr, err := scanJournalRange(f, offset, st.Size(), sequence, false, o.apply)
+	for try := 0; err == nil && o.readOnly && sc.Damage != nil && sc.Damage.ambiguousTail() && try < journalTailRetries; try++ {
+		// A live writer may be copying this frame into the file: look again.
+		time.Sleep(journalTailRetryWait)
+		st2, serr := f.Stat()
+		if serr != nil {
+			return fail(fmt.Errorf("journal: stat failed: %w", serr))
+		}
+		if st2.Size() == sc.Size {
+			continue
+		}
+		var more journalScan
+		var moreApply error
+		more, moreApply, err = scanJournalRange(f, sc.ValidEnd, st2.Size(), sc.LastSeq, false, o.apply)
+		more.Frames += sc.Frames
+		sc, applyErr = more, cmp.Or(applyErr, moreApply)
+	}
+	if err != nil {
+		return fail(err)
 	}
 	if applyErr != nil {
 		f.Close()
 		return nil, applyErr, nil
 	}
+	if !adopted && o.witness != nil && !policy.ignoreCheckpoint {
+		if err := o.witness(f, sc.ValidEnd); err != nil {
+			var cp *checkpointProblem
+			if !errors.As(err, &cp) {
+				return fail(err)
+			}
+			return fail(&journalRefusal{Checkpoint: cp, Damage: sc.Damage})
+		}
+	}
+	var tail *journalDamage
+	if d := sc.Damage; d != nil {
+		switch {
+		case policy.tolerates(d):
+			// Historical policies cut the tail below.
+		case o.readOnly && d.ambiguousTail():
+			// A shared opener changes nothing: it serves the valid prefix and
+			// reports the tail it could not account for.
+			tail = d
+			log.Printf("zeros3: journal: a read-only open serves the valid prefix to offset %d; %s (a write still in flight, or a damaged tail the owner will refuse)", d.Offset, d.Detail)
+		default:
+			return fail(&journalRefusal{Damage: d})
+		}
+	}
 	fireTestHook(hookJournalReplayed)
-	j = &Journal{f: f, writeOffset: validEnd, nextSeq: lastSeq + 1}
-	if readOnly {
+	j = &Journal{f: f, writeOffset: sc.ValidEnd, nextSeq: sc.LastSeq + 1, tail: tail}
+	if o.readOnly {
 		j.poisoned = errJournalReadOnly
 		return j, nil, nil
 	}
-	if err := f.Truncate(validEnd); err != nil {
-		f.Close()
-		return nil, nil, err
+	if sc.ValidEnd != sc.Size {
+		// Only a historical test policy reaches here: strict refused above.
+		if err := f.Truncate(sc.ValidEnd); err != nil {
+			return fail(err)
+		}
 	}
 	return j, nil, nil
 }
@@ -8292,11 +8747,11 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 	defer debug.SetGCPercent(debug.SetGCPercent(openGCPercent))
 	// The namespace is folded in while the journal is read: no record list is kept.
 	s.replayIn = &strIntern{m: map[string]string{}}
-	var checkpoint func(*os.File) (int64, uint64, error)
+	opts := journalOpenOpts{readOnly: !ownSegments, apply: s.applyRecord, witness: s.checkpointWitness}
 	if useCheckpoint {
-		checkpoint = s.loadNamespaceCheckpoint
+		opts.checkpoint = s.loadNamespaceCheckpoint
 	}
-	j, applyErr, err := openJournalWithCheckpoint(journalPath, !ownSegments, s.applyRecord, checkpoint)
+	j, applyErr, err := openJournalOpts(journalPath, opts)
 	s.replayIn = nil
 	s.ns.endBulk()
 	if err != nil {
@@ -8329,6 +8784,16 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 		return nil, fmt.Errorf("store: recovering segments: %w", err)
 	}
 	return s.finishOpen()
+}
+
+// JournalTail reports the incomplete final journal frame a shared open could
+// not account for and left out of its view, or nil. An owner open never has
+// one: it refuses such a journal.
+func (s *Store) JournalTail() *journalDamage {
+	if s.journal == nil {
+		return nil
+	}
+	return s.journal.tail
 }
 
 func (s *Store) finishOpen() (*Store, error) {
@@ -10121,7 +10586,7 @@ func nsKey(bucket, key string) string { return bucket + "\x00" + key }
 // than answering from a partial view.
 func (ns *nsState) fail(err error) error {
 	if errors.Is(err, errNSCorrupt) && ns.damaged == nil {
-		log.Printf("zeros3: namespace generation damaged, restart to rebuild from the journal: %v", err)
+		log.Printf("zeros3: namespace generation damaged; stop the server, run `zeros3 journal inspect` and, to rebuild from the journal, `zeros3 journal salvage` (it keeps the original): %v", err)
 		ns.damaged = err
 	}
 	return err
@@ -10478,6 +10943,11 @@ func (s *Store) nsBuild(snap *nsSnapshot) (*nsGen, error) {
 	}
 	dir := filepath.Join(s.root, "journal")
 	fireTestHook(hookNamespaceCheckpointSynced)
+	if err := injectJournalFault(faultCheckpointWrite); err != nil {
+		gen.f.Close()
+		os.Remove(tmp)
+		return nil, err
+	}
 	if err := os.Rename(tmp, filepath.Join(dir, nsGenName)); err != nil {
 		gen.f.Close()
 		os.Remove(tmp)
@@ -10567,6 +11037,52 @@ func journalCheckpointDigest(f *os.File, end int64) (sum [32]byte, crc uint32, e
 	return sum, crc, err
 }
 
+// checkpointProblem is a namespace checkpoint file that is present but cannot
+// be used: damaged, written for another store, or binding a journal prefix the
+// journal no longer has. An open refuses it rather than replay past it.
+type checkpointProblem struct {
+	File   string `json:"file"`
+	Kind   string `json:"kind"`   // damaged, foreign, contradicts-journal
+	Offset int64  `json:"offset"` // the journal offset it covers, -1 if unreadable
+	Seq    uint64 `json:"frame_seq"`
+	Err    error  `json:"-"`
+}
+
+const (
+	checkpointDamaged     = "damaged"
+	checkpointForeign     = "foreign"
+	checkpointContradicts = "contradicts-journal"
+)
+
+var (
+	errCheckpointPrefix  = errors.New("checkpoint: journal prefix changed")
+	errCheckpointForeign = errors.New("checkpoint: written for another store")
+)
+
+func (c *checkpointProblem) Error() string {
+	at := "refused with the covered offset and frame seq unreadable"
+	if c.Offset >= 0 {
+		at = fmt.Sprintf("refused at offset %d, frame seq %d", c.Offset, c.Seq)
+	}
+	return fmt.Sprintf("namespace checkpoint journal/%s %s: %s, cause checkpoint-%s: %v", c.File, c.Kind, at, c.Kind, c.Err)
+}
+
+func (c *checkpointProblem) Unwrap() error { return c.Err }
+
+func newCheckpointProblem(file string, offset int64, seq uint64, err error) error {
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	kind := checkpointDamaged
+	switch {
+	case errors.Is(err, errCheckpointPrefix):
+		kind = checkpointContradicts
+	case errors.Is(err, errCheckpointForeign):
+		kind = checkpointForeign
+	}
+	return &checkpointProblem{File: file, Kind: kind, Offset: offset, Seq: seq, Err: err}
+}
+
 // loadNamespaceGeneration installs the published generation if it still matches
 // the journal prefix. Nothing is changed unless every check passes.
 func (s *Store) loadNamespaceGeneration(journal *os.File) (int64, uint64, error) {
@@ -10575,19 +11091,23 @@ func (s *Store) loadNamespaceGeneration(journal *os.File) (int64, uint64, error)
 		return 0, 0, err
 	}
 	g, verify, err := openNSGen(f, s.ns.cache)
-	if err == nil {
-		err = s.nsAdopt(g, journal, verify)
-	}
 	if err != nil {
 		f.Close()
-		return 0, 0, err
+		return 0, 0, newCheckpointProblem(nsGenName, -1, 0, err)
+	}
+	if err := s.nsAdopt(g, journal, verify); err != nil {
+		f.Close()
+		return 0, 0, newCheckpointProblem(nsGenName, g.meta.Offset, g.meta.Sequence, err)
 	}
 	return g.meta.Offset, g.meta.Sequence, nil
 }
 
 func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 	m := &g.meta
-	if !m.Published || m.StoreID != s.format.StoreID || m.Offset < 0 || (m.Sequence == 0) != (m.Offset == 0) {
+	if m.StoreID != s.format.StoreID {
+		return errCheckpointForeign
+	}
+	if !m.Published || m.Offset < 0 || (m.Sequence == 0) != (m.Offset == 0) {
 		return errors.New("checkpoint: invalid header")
 	}
 	// The file digest and the journal prefix are independent reads: check both at once.
@@ -10605,7 +11125,7 @@ func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 		return fileErr
 	}
 	if err != nil || crcErr != nil || crc != m.LastCRC || !slices.Equal(blocks, m.Blocks) {
-		return errors.New("checkpoint: journal prefix changed")
+		return errCheckpointPrefix
 	}
 	rows := 0
 	buckets := make(map[string]*bucketEntry, len(m.Buckets))
@@ -10642,31 +11162,119 @@ func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 
 // ---- legacy V2/V3 checkpoints: read into the overlay ----
 
+// loadNamespaceCheckpoint adopts the newest checkpoint layout present: the V4
+// generation, else the legacy V3, else V2. A file that is present but cannot be
+// used is returned as a *checkpointProblem and an older layout is not tried in
+// its place: a damaged checkpoint can no longer witness the journal, so only an
+// operator decides to rebuild without it (FB-01, ADR-JNL-01).
 func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error) {
 	offset, seq, err := s.loadNamespaceGeneration(journal)
-	if err == nil {
-		return offset, seq, nil
+	if !errors.Is(err, os.ErrNotExist) {
+		return offset, seq, err
 	}
-	errs := []error{err}
 	for _, compact := range []bool{true, false} {
 		offset, seq, err := s.loadNamespaceCheckpointLayout(journal, compact)
-		if err == nil {
-			return offset, seq, nil
-		}
-		errs = append(errs, err)
-	}
-	var real []error
-	for _, err := range errs {
 		if !errors.Is(err, os.ErrNotExist) {
-			real = append(real, err)
+			return offset, seq, err
 		}
 	}
-	if len(real) == 0 {
-		return 0, 0, os.ErrNotExist
+	return 0, 0, os.ErrNotExist
+}
+
+// checkpointWitness checks, without adopting anything, that no published
+// checkpoint covers more journal than the replay found, or a different
+// prefix: with ZEROS3_NAMESPACE_CHECKPOINT=off a checkpoint still witnesses a
+// cut. Only the checkpoint's self-checked binding (offset and the CRC of the
+// frame ending there) is compared; a checkpoint that cannot be read, or that
+// belongs to another store, witnesses nothing here.
+func (s *Store) checkpointWitness(journal *os.File, validEnd int64) error {
+	check := func(file string, offset int64, seq uint64, lastCRC uint32) error {
+		if offset > validEnd {
+			return &checkpointProblem{File: file, Kind: checkpointContradicts, Offset: offset, Seq: seq,
+				Err: fmt.Errorf("%w: it covers %d bytes, the journal validates to %d", errCheckpointPrefix, offset, validEnd)}
+		}
+		if crc, err := journalLastCRC(journal, offset); err != nil || crc != lastCRC {
+			return &checkpointProblem{File: file, Kind: checkpointContradicts, Offset: offset, Seq: seq,
+				Err: fmt.Errorf("%w: the frame ending at offset %d differs", errCheckpointPrefix, offset)}
+		}
+		return nil
 	}
-	return 0, 0, errors.Join(real...)
+	if f, err := os.Open(filepath.Join(s.root, "journal", nsGenName)); err == nil {
+		g, _, gerr := openNSGen(f, nil)
+		if gerr != nil {
+			f.Close()
+		} else {
+			m := g.meta
+			g.release()
+			if m.Published && m.StoreID == s.format.StoreID {
+				if err := check(nsGenName, m.Offset, m.Sequence, m.LastCRC); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, compact := range []bool{true, false} {
+		name := namespaceCheckpointName
+		if compact {
+			name = namespaceCompactCheckpointName
+		}
+		if hdr, err := s.legacyCheckpointHeader(compact); err == nil && hdr.StoreID == s.format.StoreID {
+			if err := check(name, hdr.Offset, hdr.Sequence, hdr.LastCRC); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// legacyCheckpointHeader reads the header of a V2 or V3 checkpoint after
+// verifying the file's own checksum.
+func (s *Store) legacyCheckpointHeader(compactHistory bool) (namespaceCheckpointHeader, error) {
+	var hdr namespaceCheckpointHeader
+	name, wantMagic := namespaceCheckpointName, namespaceCheckpointMagic
+	if compactHistory {
+		name, wantMagic = namespaceCompactCheckpointName, namespaceCompactCheckpointMagic
+	}
+	f, err := os.Open(filepath.Join(s.root, "journal", name))
+	if err != nil {
+		return hdr, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return hdr, err
+	}
+	end := info.Size() - sha256.Size
+	if end <= int64(len(namespaceCheckpointMagic)) {
+		return hdr, io.ErrUnexpectedEOF
+	}
+	hash := sha256.New()
+	if n, err := io.Copy(hash, io.NewSectionReader(f, 0, end)); err != nil || n != end {
+		return hdr, errors.New("checkpoint: unable to read complete body")
+	}
+	var want [sha256.Size]byte
+	if _, err := f.ReadAt(want[:], end); err != nil || !bytes.Equal(want[:], hash.Sum(nil)) {
+		return hdr, errors.New("checkpoint: checksum mismatch")
+	}
+	input := bufio.NewReader(io.NewSectionReader(f, 0, end))
+	var magic [len(namespaceCheckpointMagic)]byte
+	if _, err := io.ReadFull(input, magic[:]); err != nil || string(magic[:]) != wantMagic {
+		return hdr, errors.New("checkpoint: unrecognized format")
+	}
+	err = gob.NewDecoder(input).Decode(&hdr)
+	return hdr, err
 }
 func (s *Store) loadNamespaceCheckpointLayout(journal *os.File, compactHistory bool) (int64, uint64, error) {
+	name := namespaceCheckpointName
+	if compactHistory {
+		name = namespaceCompactCheckpointName
+	}
+	offset, seq := int64(-1), uint64(0)
+	o, sq, err := s.loadNamespaceCheckpointLayoutAt(journal, compactHistory, &offset, &seq)
+	return o, sq, newCheckpointProblem(name, offset, seq, err)
+}
+
+func (s *Store) loadNamespaceCheckpointLayoutAt(journal *os.File, compactHistory bool, covered *int64, coveredSeq *uint64) (int64, uint64, error) {
 	name, wantMagic := namespaceCheckpointName, namespaceCheckpointMagic
 	if compactHistory {
 		name, wantMagic = namespaceCompactCheckpointName, namespaceCompactCheckpointMagic
@@ -10702,13 +11310,17 @@ func (s *Store) loadNamespaceCheckpointLayout(journal *os.File, compactHistory b
 	if err := dec.Decode(&hdr); err != nil {
 		return 0, 0, err
 	}
-	if hdr.StoreID != s.format.StoreID || hdr.Buckets < 0 || hdr.Histories < 0 || hdr.Uploads < 0 ||
+	if hdr.StoreID != s.format.StoreID {
+		return 0, 0, errCheckpointForeign
+	}
+	if hdr.Buckets < 0 || hdr.Histories < 0 || hdr.Uploads < 0 ||
 		(hdr.Sequence == 0) != (hdr.Offset == 0) {
 		return 0, 0, errors.New("checkpoint: invalid header")
 	}
+	*covered, *coveredSeq = hdr.Offset, hdr.Sequence
 	prefix, crc, err := journalCheckpointDigest(journal, hdr.Offset)
 	if err != nil || prefix != hdr.PrefixSHA || crc != hdr.LastCRC {
-		return 0, 0, errors.New("checkpoint: journal prefix changed")
+		return 0, 0, errCheckpointPrefix
 	}
 	staged := &Store{buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{}, replayIn: s.replayIn}
 	staged.ns.init()
@@ -32335,6 +32947,356 @@ func newHardenedHTTPServer(addr string, handler http.Handler) *http.Server {
 		// being a real, finite bound instead of "none at all".
 		MaxHeaderBytes: serveMaxHeaderBytes,
 	}
+}
+
+// ---- journal inspect / salvage (FB-01) ----
+
+// journalReport is what `zeros3 journal inspect` finds. It is read-only: it
+// opens nothing for writing and takes no lock, so it is safe beside a server.
+type journalReport struct {
+	Store       string                    `json:"store"`
+	Journal     string                    `json:"journal"`
+	Bytes       int64                     `json:"journal_bytes"`
+	SHA256      string                    `json:"journal_sha256"`
+	ValidFrames int                       `json:"valid_frames"`
+	ValidEnd    int64                     `json:"valid_end"`
+	LastSeq     uint64                    `json:"last_seq"`
+	Damage      *journalDamage            `json:"damage"`
+	Class       string                    `json:"class"`
+	Confidence  string                    `json:"confidence"`
+	Checkpoints []journalCheckpointStatus `json:"checkpoints"`
+	Verdict     string                    `json:"verdict"`
+	Salvage     string                    `json:"salvage,omitempty"`
+}
+
+type journalCheckpointStatus struct {
+	File    string `json:"file"`
+	Status  string `json:"status"` // ok, damaged, foreign, contradicts-journal
+	Offset  int64  `json:"offset"`
+	Seq     uint64 `json:"frame_seq"`
+	Problem string `json:"problem,omitempty"`
+}
+
+func readStoreFormat(root string) (storeFormat, error) {
+	var format storeFormat
+	data, err := os.ReadFile(filepath.Join(root, "FORMAT.json"))
+	if err != nil {
+		return format, err
+	}
+	if err := json.Unmarshal(data, &format); err != nil {
+		return format, fmt.Errorf("FORMAT.json is corrupt: %w", err)
+	}
+	return format, nil
+}
+
+// inspectJournal scans the store's journal and checks every checkpoint file's
+// binding to it, changing nothing.
+func inspectJournal(root string) (*journalReport, error) {
+	format, err := readStoreFormat(root)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(root, "journal", "visibility.log")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	rep := &journalReport{Store: root, Journal: path, Bytes: st.Size()}
+	h := sha256.New()
+	if _, err := io.Copy(h, io.NewSectionReader(f, 0, st.Size())); err != nil {
+		return nil, err
+	}
+	rep.SHA256 = hex.EncodeToString(h.Sum(nil))
+	sc, _, err := scanJournalRange(f, 0, st.Size(), 0, false, nil)
+	if err != nil {
+		return nil, err
+	}
+	rep.ValidFrames, rep.ValidEnd, rep.LastSeq, rep.Damage = sc.Frames, sc.ValidEnd, sc.LastSeq, sc.Damage
+	if d := sc.Damage; d != nil {
+		rep.Class, rep.Confidence = d.Class()
+	}
+	s := &Store{root: root, format: format, replayIn: &strIntern{m: map[string]string{}}}
+	s.ns.init()
+	add := func(file string, offset int64, seq uint64, err error) {
+		cs := journalCheckpointStatus{File: file, Status: "ok", Offset: offset, Seq: seq}
+		var cp *checkpointProblem
+		if errors.As(err, &cp) {
+			cs.Status, cs.Offset, cs.Seq, cs.Problem = cp.Kind, cp.Offset, cp.Seq, cp.Err.Error()
+		} else if err != nil {
+			cs.Status, cs.Problem = checkpointDamaged, err.Error()
+		}
+		rep.Checkpoints = append(rep.Checkpoints, cs)
+	}
+	if _, err := os.Stat(filepath.Join(root, "journal", nsGenName)); err == nil {
+		offset, seq, err := s.loadNamespaceGeneration(f)
+		if err == nil {
+			s.ns.gen.release()
+		}
+		add(nsGenName, offset, seq, err)
+	}
+	for _, compact := range []bool{true, false} {
+		name := namespaceCheckpointName
+		if compact {
+			name = namespaceCompactCheckpointName
+		}
+		if _, err := os.Stat(filepath.Join(root, "journal", name)); err == nil {
+			staged := &Store{root: root, format: format, buckets: map[string]*bucketEntry{}, uploads: map[string]*multipartUpload{}, replayIn: s.replayIn}
+			staged.ns.init()
+			offset, seq, err := staged.loadNamespaceCheckpointLayout(f, compact)
+			add(name, offset, seq, err)
+		}
+	}
+	bad := 0
+	for _, c := range rep.Checkpoints {
+		if c.Status != "ok" {
+			bad++
+		}
+	}
+	switch {
+	case rep.Damage == nil && bad == 0:
+		rep.Verdict = "clean: an owner open accepts this journal unchanged"
+	case rep.Damage != nil:
+		rep.Verdict = fmt.Sprintf("refused: invalid frame at offset %d (frame seq %d, cause %s)", rep.Damage.Offset, rep.Damage.Seq, rep.Damage.Cause)
+		rep.Salvage = fmt.Sprintf("zeros3 journal salvage -store %s -cut %d -i-understand-data-loss (drops %d bytes from frame seq %d on; keeps a copy of the original)",
+			root, rep.Damage.Offset, rep.Bytes-rep.Damage.Offset, rep.Damage.Seq)
+	default:
+		rep.Verdict = fmt.Sprintf("refused: %d checkpoint file(s) unusable", bad)
+	}
+	if rep.Damage == nil && bad > 0 {
+		rep.Salvage = fmt.Sprintf("zeros3 journal salvage -store %s -cut %d -i-understand-data-loss (drops no journal bytes; moves the unusable checkpoints aside so the next open rebuilds from the journal)", root, rep.Bytes)
+	}
+	return rep, nil
+}
+
+func runJournal(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "zeros3: journal: want `inspect` or `salvage`")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "inspect":
+		fs := flag.NewFlagSet("journal inspect", flag.ExitOnError)
+		root := fs.String("store", "./zeros3-data", "path to the store")
+		asJSON := fs.Bool("json", false, "print the report as JSON")
+		fs.Parse(args[1:])
+		rep, err := inspectJournal(*root)
+		if err != nil {
+			log.Fatalf("zeros3: journal inspect: %v", err)
+		}
+		if *asJSON {
+			b, _ := json.MarshalIndent(rep, "", "  ")
+			fmt.Println(string(b))
+		} else {
+			printJournalReport(os.Stdout, rep)
+		}
+		if rep.Damage != nil || rep.Salvage != "" {
+			os.Exit(1)
+		}
+	case "salvage":
+		fs := flag.NewFlagSet("journal salvage", flag.ExitOnError)
+		root := fs.String("store", "./zeros3-data", "path to an offline store")
+		cut := fs.Int64("cut", -1, "journal offset to keep up to: a frame boundary within the valid prefix (see `journal inspect`)")
+		ack := fs.Bool("i-understand-data-loss", false, "required: frames past -cut are removed from the live journal, acknowledged or not")
+		fs.Parse(args[1:])
+		rec, err := salvageJournal(*root, *cut, *ack)
+		if err != nil {
+			log.Fatalf("zeros3: journal salvage: %v", err)
+		}
+		fmt.Printf("salvaged %s: kept %d bytes (%d frames, last seq %d), dropped %d bytes; original and record kept in %s\n",
+			*root, rec.KeptBytes, rec.KeptFrames, rec.KeptLastSeq, rec.DroppedBytes, rec.Quarantine)
+	default:
+		fmt.Fprintf(os.Stderr, "zeros3: journal: unknown subcommand %q (want inspect or salvage)\n", args[0])
+		os.Exit(2)
+	}
+}
+
+func printJournalReport(w io.Writer, rep *journalReport) {
+	fmt.Fprintf(w, "journal %s: %d bytes, sha256 %s\n", rep.Journal, rep.Bytes, rep.SHA256)
+	fmt.Fprintf(w, "valid prefix: %d frames, %d bytes, last seq %d\n", rep.ValidFrames, rep.ValidEnd, rep.LastSeq)
+	if d := rep.Damage; d != nil {
+		fmt.Fprintf(w, "earliest invalid offset: %d (frame seq %d), cause %s: %s\n", d.Offset, d.Seq, d.Cause, d.Detail)
+		later := "none found"
+		if d.LaterValid >= 0 {
+			later = fmt.Sprintf("yes: frame seq %d at offset %d", d.LaterSeq, d.LaterValid)
+		}
+		fmt.Fprintf(w, "later valid frames: %s (probe %s)\n", later, d.Probe)
+		if d.CorrectLen >= 0 {
+			fmt.Fprintf(w, "the frame checks out with payload length %d: its length field is damaged\n", d.CorrectLen)
+		}
+		fmt.Fprintf(w, "classification: %s (confidence %s)\n", rep.Class, rep.Confidence)
+	}
+	for _, c := range rep.Checkpoints {
+		fmt.Fprintf(w, "checkpoint %s: %s (covers offset %d, seq %d)", c.File, c.Status, c.Offset, c.Seq)
+		if c.Problem != "" {
+			fmt.Fprintf(w, ": %s", c.Problem)
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintf(w, "verdict: %s\n", rep.Verdict)
+	if rep.Salvage != "" {
+		fmt.Fprintf(w, "explicit salvage, if you accept the loss: %s\n", rep.Salvage)
+	}
+}
+
+// salvageRecord is written next to the preserved original.
+type salvageRecord struct {
+	Created         time.Time                 `json:"created"`
+	StoreID         string                    `json:"store_id"`
+	Cut             int64                     `json:"cut"`
+	OriginalBytes   int64                     `json:"original_bytes"`
+	OriginalSHA256  string                    `json:"original_sha256"`
+	KeptBytes       int64                     `json:"kept_bytes"`
+	KeptSHA256      string                    `json:"kept_sha256"`
+	KeptFrames      int                       `json:"kept_frames"`
+	KeptLastSeq     uint64                    `json:"kept_last_seq"`
+	DroppedBytes    int64                     `json:"dropped_bytes"`
+	Damage          *journalDamage            `json:"damage"`
+	Checkpoints     []journalCheckpointStatus `json:"checkpoints"`
+	MovedAside      []string                  `json:"moved_aside"`
+	Acknowledgement string                    `json:"acknowledgement"`
+	Quarantine      string                    `json:"quarantine"`
+}
+
+// salvageJournal is the only repair: on an offline store it copies the
+// journal and the checkpoints it moves aside into journal/quarantine/, records
+// both hashes, then replaces the journal with its prefix up to cut. cut must be
+// a frame boundary within the valid prefix; a checkpoint that is unusable or
+// covers more than cut is moved aside so the next open rebuilds from the
+// journal.
+func salvageJournal(root string, cut int64, ack bool) (*salvageRecord, error) {
+	if !ack {
+		return nil, errors.New("refusing without -i-understand-data-loss: frames past -cut leave the live journal, acknowledged or not")
+	}
+	if cut < 0 {
+		return nil, errors.New("-cut is required (see `zeros3 journal inspect`)")
+	}
+	lock, err := acquireStoreLock(root, true)
+	if err != nil {
+		return nil, fmt.Errorf("needs the store offline (no server): %w", err)
+	}
+	defer lock.release()
+	writer, err := flockStore(root, writerLockDir, syscall.LOCK_EX, false)
+	if err != nil {
+		return nil, fmt.Errorf("needs the store offline (another process owns it): %w", err)
+	}
+	defer writer.release()
+	rep, err := inspectJournal(root)
+	if err != nil {
+		return nil, err
+	}
+	if cut > rep.ValidEnd {
+		return nil, fmt.Errorf("-cut %d is past the valid prefix, which ends at %d", cut, rep.ValidEnd)
+	}
+	jdir := filepath.Join(root, "journal")
+	path := filepath.Join(jdir, "visibility.log")
+	src, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer src.Close()
+	kept, _, err := scanJournalRange(src, 0, cut, 0, false, nil)
+	if err != nil {
+		return nil, err
+	}
+	if kept.Damage != nil {
+		return nil, fmt.Errorf("-cut %d is not a frame boundary: %s", cut, kept.Damage.Detail)
+	}
+	rec := &salvageRecord{Created: time.Now().UTC(), Cut: cut, OriginalBytes: rep.Bytes, OriginalSHA256: rep.SHA256,
+		KeptBytes: cut, KeptFrames: kept.Frames, KeptLastSeq: kept.LastSeq, DroppedBytes: rep.Bytes - cut,
+		Damage: rep.Damage, Checkpoints: rep.Checkpoints, Acknowledgement: "i-understand-data-loss"}
+	if format, err := readStoreFormat(root); err == nil {
+		rec.StoreID = format.StoreID
+	}
+	q := filepath.Join(jdir, "quarantine", "salvage-"+rec.Created.Format("20060102T150405.000000000Z"))
+	if err := os.MkdirAll(q, 0o755); err != nil {
+		return nil, err
+	}
+	rec.Quarantine = q
+	// 1. The original, byte for byte, verified by hash.
+	if err := copyFileDurable(path, filepath.Join(q, "visibility.log"), rep.Bytes); err != nil {
+		return nil, err
+	}
+	if got := fileSHA256Hex(filepath.Join(q, "visibility.log")); got != rep.SHA256 {
+		return nil, fmt.Errorf("the preserved copy does not match the original (%s, want %s); nothing was changed", got, rep.SHA256)
+	}
+	// 2. The kept prefix, staged beside the journal.
+	tmp := path + ".salvage-tmp"
+	if err := copyFileDurable(path, tmp, cut); err != nil {
+		os.Remove(tmp)
+		return nil, err
+	}
+	rec.KeptSHA256 = fileSHA256Hex(tmp)
+	for _, c := range rep.Checkpoints {
+		if c.Status != "ok" || c.Offset > cut {
+			rec.MovedAside = append(rec.MovedAside, c.File)
+		}
+	}
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileDurable(q, filepath.Join(q, "record.json"), b); err != nil {
+		os.Remove(tmp)
+		return nil, err
+	}
+	if err := syncDir(q); err != nil {
+		return nil, err
+	}
+	// 3. Checkpoints that no longer bind, then the journal itself.
+	for _, name := range rec.MovedAside {
+		if err := os.Rename(filepath.Join(jdir, name), filepath.Join(q, name)); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, err
+	}
+	if err := syncDir(q); err != nil {
+		return nil, err
+	}
+	if err := syncDir(jdir); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+func copyFileDurable(from, to string, n int64) error {
+	in, err := os.Open(from)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.CopyN(out, in, n); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+func fileSHA256Hex(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func runNamespaceCheckpoint(args []string) {
@@ -87230,6 +88192,8 @@ func main() {
 		runServe(args)
 	case "namespace-checkpoint":
 		runNamespaceCheckpoint(args)
+	case "journal":
+		runJournal(args)
 	case "stats":
 		runStats(args)
 	case "verify":
@@ -87273,7 +88237,7 @@ func main() {
 	case "authority":
 		runAuthority(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, presign, versions, restore, gc, compact, repack, pack-parity, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, journal, presign, versions, restore, gc, compact, repack, pack-parity, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
 		os.Exit(2)
 	}
 }

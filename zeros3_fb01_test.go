@@ -14,6 +14,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -135,6 +136,11 @@ func fb01Copy(t testing.TB, src string) string {
 	return dst
 }
 
+func fb01SHABytes(d []byte) string {
+	sum := sha256.Sum256(d)
+	return hex.EncodeToString(sum[:])
+}
+
 func fb01SHA(path string) string {
 	d, err := os.ReadFile(path)
 	if err != nil {
@@ -211,11 +217,16 @@ func fb01Open(t testing.TB, dir string, tr *fb01Truth, test, name, mode string, 
 		r.Outcome, r.Err = "REFUSE", err.Error()
 	} else {
 		r.Lost, r.Readable = tr.lost(s)
-		s.Close()
 		r.Outcome = "OK"
 		if r.Lost > 0 {
 			r.Outcome = "LOSS"
+			if d := fb01Tail(s); d != "" {
+				// A read-only view of the valid prefix that names the tail it
+				// left out: nothing was changed and nothing is silent.
+				r.Outcome, r.Err = "PREFIX", d
+			}
 		}
+		s.Close()
 	}
 	if st1, _ := os.Stat(jp); st1 != nil {
 		r.JournalAfter = st1.Size()
@@ -233,6 +244,14 @@ func fb01Open(t testing.TB, dir string, tr *fb01Truth, test, name, mode string, 
 	return r
 }
 
+// fb01Tail is the tail a shared open reported, if the build reports one.
+func fb01Tail(s *Store) string {
+	if d := s.JournalTail(); d != nil {
+		return "tail reported: " + d.Detail
+	}
+	return ""
+}
+
 // fb01Must checks the M-A1 invariant on a result: an open either refuses, or
 // shows every acknowledged mutation. Set FB01_EXPECT_DEFECT=1 to run the
 // harness against an unfixed build without failing.
@@ -244,6 +263,9 @@ func fb01Must(t testing.TB, r fb01Result) {
 	}
 	if r.Outcome == "LOSS" {
 		t.Errorf("%s | %s | %s: silent loss of %d acknowledged mutations", r.Test, r.Case, r.Mode, r.Lost)
+	}
+	if r.Outcome == "PREFIX" && (!strings.HasPrefix(r.Mode, "shared") || !r.Preserved) {
+		t.Errorf("%s | %s | %s: only a shared open may serve a reported prefix, and unchanged", r.Test, r.Case, r.Mode)
 	}
 	if r.Outcome == "REFUSE" && !r.Preserved {
 		t.Errorf("%s | %s | %s: a refused open changed the journal", r.Test, r.Case, r.Mode)
@@ -291,5 +313,37 @@ func TestFB01ReproF6JNL01(t *testing.T) {
 			}
 			fb01Must(t, fb01Open(t, dir, tr, "F6-JNL-01", c.name, mode, open))
 		}
+	}
+}
+
+// fb01RebuildAfterRefusal is the one path E2 leaves for an unusable namespace
+// checkpoint: an owner open with the checkpoint refuses, names it and changes
+// nothing; then an explicit salvage that keeps the whole journal moves the
+// checkpoint into quarantine, so the next open rebuilds from the journal.
+func fb01RebuildAfterRefusal(t testing.TB, dir string) {
+	t.Helper()
+	jp := fb01Journal(dir)
+	before := fb01SHA(jp)
+	s, err := openStore(dir, true, true)
+	if err == nil {
+		s.Close()
+	}
+	var cp *checkpointProblem
+	if !errors.Is(err, errJournalRefused) || !errors.As(err, &cp) {
+		t.Fatalf("want a refusal that names the checkpoint, got %v", err)
+	}
+	if fb01SHA(jp) != before {
+		t.Fatal("a refused open changed the journal")
+	}
+	st, err := os.Stat(jp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := salvageJournal(dir, st.Size(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.DroppedBytes != 0 || len(rec.MovedAside) == 0 {
+		t.Fatalf("salvage of a whole journal dropped %d bytes and moved %v aside", rec.DroppedBytes, rec.MovedAside)
 	}
 }

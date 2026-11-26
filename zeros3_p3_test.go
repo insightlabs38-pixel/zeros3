@@ -182,6 +182,17 @@ func TestP3_JournalReplayMatchesReference(t *testing.T) {
 		defer f.Close()
 		e1, l1, r1, err1 := journalReference(f)
 		e2, l2, r2, err2 := replayJournal(f)
+		// FB-01: where the oracle cut an incomplete frame as a torn tail, the
+		// scanner refuses instead when it has evidence that acknowledged frames
+		// follow (a later valid frame, or a length that checks out once
+		// corrected). It must name the same offset and frame.
+		var dm *journalDamage
+		if err1 == nil && errors.As(err2, &dm) {
+			if !dm.Incomplete || (dm.LaterValid < 0 && dm.CorrectLen < 0) || dm.Offset != e1 || dm.Seq != l1+1 {
+				t.Fatalf("%s: refused a torn tail without evidence: %+v (oracle stopped at %d after seq %d)", name, dm, e1, l1)
+			}
+			return
+		}
 		if (err1 == nil) != (err2 == nil) || (err1 != nil && err1.Error() != err2.Error()) {
 			t.Fatalf("%s: errors differ: %v vs %v", name, err1, err2)
 		}

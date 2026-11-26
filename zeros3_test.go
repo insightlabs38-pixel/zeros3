@@ -1174,6 +1174,10 @@ func mustOK(t *testing.T, err error) {
 	}
 }
 
+// An incomplete final frame with no evidence either way is ambiguous in v1: a
+// crash before its fsync returned and a cut acknowledged frame leave the same
+// bytes. FB-01 (ADR-JNL-01 refined): the owner refuses and changes nothing;
+// only the test-only P0 policy still cuts it as a torn tail.
 func TestJournal_IncompleteFinalFrameIsTornTail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "j.log")
@@ -1194,21 +1198,37 @@ func TestJournal_IncompleteFinalFrameIsTornTail(t *testing.T) {
 	if err := os.Truncate(path, fullSize-3); err != nil {
 		t.Fatal(err)
 	}
+	firstEnd := int64(journalHeaderSize + len(firstPayload) + 4)
 
+	_, _, err = openJournalCollect(path)
+	var dm *journalDamage
+	if !errors.Is(err, errJournalRefused) || !errors.As(err, &dm) {
+		t.Fatalf("expected the ambiguous tail to be refused, got: %v", err)
+	}
+	if dm.Offset != firstEnd || dm.Seq != 2 || dm.Cause != "incomplete-frame" || !dm.ambiguousTail() {
+		t.Fatalf("refusal does not name the frame: %+v", dm)
+	}
+	for _, want := range []string{fmt.Sprintf("offset %d", firstEnd), "frame seq 2", "cause incomplete-frame"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not say %q", err, want)
+		}
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Size() != fullSize-3 {
+		t.Fatalf("a refused open changed the journal: %v %v", fi, err)
+	}
+
+	testJournalPolicy = &journalPolicyP0
+	defer func() { testJournalPolicy = nil }()
 	j2, records, err := openJournalCollect(path)
 	if err != nil {
-		t.Fatalf("expected an incomplete final frame to be tolerated as a torn tail, got: %v", err)
+		t.Fatalf("P0 should tolerate the torn tail, got: %v", err)
 	}
 	defer j2.f.Close()
 	if len(records) != 1 {
 		t.Fatalf("expected only the first complete frame to survive, got %d records", len(records))
 	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Size() != int64(journalHeaderSize+len(firstPayload)+4) {
-		t.Fatalf("expected the journal to be truncated to the last valid frame, got size %d", fi.Size())
+	if fi, err := os.Stat(path); err != nil || fi.Size() != firstEnd {
+		t.Fatalf("expected P0 to truncate to the last valid frame, got %v %v", fi, err)
 	}
 }
 
@@ -2561,9 +2581,24 @@ func TestCrash_DuringPartialJournalFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// FB-01: with no evidence either way the torn frame is ambiguous, so the
+	// owner refuses and leaves the journal as it is; the operator inspects it
+	// and salvages explicitly at the last valid frame.
+	if _, err := OpenStore(dir); !errors.Is(err, errJournalRefused) || !strings.Contains(err.Error(), fmt.Sprintf("offset %d", fullOffsetBefore)) {
+		t.Fatalf("expected the ambiguous torn tail to be refused at offset %d, got: %v", fullOffsetBefore, err)
+	}
+	if fi, err := os.Stat(journalPath); err != nil || fi.Size() != tornSize {
+		t.Fatalf("a refused open changed the journal: %v %v", fi, err)
+	}
+	if rep, err := inspectJournal(dir); err != nil || rep.Damage == nil || rep.Confidence != "ambiguous" || rep.ValidEnd != fullOffsetBefore {
+		t.Fatalf("inspect: %+v %v", rep, err)
+	}
+	if _, err := salvageJournal(dir, fullOffsetBefore, true); err != nil {
+		t.Fatal(err)
+	}
 	store2, err := OpenStore(dir)
 	if err != nil {
-		t.Fatalf("expected a torn tail to be tolerated on reopen, got: %v", err)
+		t.Fatalf("expected the salvaged journal to open, got: %v", err)
 	}
 	defer store2.Close()
 	if _, _, err := store2.GetObject("b", "k1"); err != nil {
@@ -10131,6 +10166,14 @@ func TestPrune_CrashBoundaries(t *testing.T) {
 			if c.tear {
 				path := filepath.Join(dir, "journal", "visibility.log")
 				if err := os.Truncate(path, start+(int64(len(journalBytes(t, dir)))-start)/2); err != nil {
+					t.Fatal(err)
+				}
+				// FB-01: the torn frame is ambiguous, so the owner refuses
+				// until the operator salvages at the last acknowledged frame.
+				if _, err := OpenStore(dir); !errors.Is(err, errJournalRefused) {
+					t.Fatalf("restart over a torn frame: want a refusal, got %v", err)
+				}
+				if _, err := salvageJournal(dir, start, true); err != nil {
 					t.Fatal(err)
 				}
 			}
