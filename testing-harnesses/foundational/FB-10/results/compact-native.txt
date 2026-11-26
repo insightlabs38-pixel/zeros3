@@ -1,0 +1,79 @@
+=== RUN   TestFB04ConcurrentRootLinearizability
+=== RUN   TestFB04ConcurrentRootLinearizability/v1
+=== RUN   TestFB04ConcurrentRootLinearizability/grouped
+--- PASS: TestFB04ConcurrentRootLinearizability (0.12s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/v1 (0.06s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/grouped (0.06s)
+=== RUN   TestFB09LegacyCopy
+=== RUN   TestFB09LegacyCopy/legacy
+=== RUN   TestFB09LegacyCopy/j2
+--- PASS: TestFB09LegacyCopy (0.22s)
+    --- PASS: TestFB09LegacyCopy/legacy (0.11s)
+    --- PASS: TestFB09LegacyCopy/j2 (0.11s)
+=== RUN   TestFB09LegacyCopyRefusesHistory
+--- PASS: TestFB09LegacyCopyRefusesHistory (0.01s)
+=== RUN   TestFB10JournalBinGolden
+    zeros3_fb10_test.go:77: overwrite JSON=661 binary=205 reduction=69.0%
+    zeros3_fb10_test.go:77: put JSON=315 binary=99 reduction=68.6%
+--- PASS: TestFB10JournalBinGolden (0.00s)
+=== RUN   TestFB10JournalBinUpgradeReplay
+    zeros3_fb10_test.go:168: reopened 1 legacy and 3 compact PUTs, exact archive, validated checkpoint and suffix
+--- PASS: TestFB10JournalBinUpgradeReplay (0.02s)
+=== RUN   TestFB10JournalBinProcessCuts
+=== RUN   TestFB10JournalBinProcessCuts/journalbin-activated
+    zeros3_fb10_test.go:213: reopened after journalbin-activated with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-manifest-published
+    zeros3_fb10_test.go:213: reopened after after-manifest-published with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-write-before-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-write-before-sync with "new" and 1 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-sync with "new" and 1 archived versions
+--- PASS: TestFB10JournalBinProcessCuts (0.05s)
+    --- PASS: TestFB10JournalBinProcessCuts/journalbin-activated (0.01s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-manifest-published (0.01s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-write-before-sync (0.01s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-sync (0.01s)
+=== RUN   TestFB10JournalBinCutWorker
+    zeros3_fb10_test.go:221: standalone process-cut worker
+--- SKIP: TestFB10JournalBinCutWorker (0.00s)
+=== RUN   TestFBJ2GroupedReplay
+=== RUN   TestFBJ2GroupedReplay/complete
+=== RUN   TestFBJ2GroupedReplay/footer-cut
+=== RUN   TestFBJ2GroupedReplay/reordered
+--- PASS: TestFBJ2GroupedReplay (0.04s)
+    --- PASS: TestFBJ2GroupedReplay/complete (0.01s)
+    --- PASS: TestFBJ2GroupedReplay/footer-cut (0.01s)
+    --- PASS: TestFBJ2GroupedReplay/reordered (0.01s)
+=== RUN   TestFBJ2GroupedDamageRefuses
+--- PASS: TestFBJ2GroupedDamageRefuses (0.01s)
+=== RUN   TestFBJ2GroupedSyncFailure
+--- PASS: TestFBJ2GroupedSyncFailure (0.01s)
+=== RUN   TestFBJ2GroupedFeatureGate
+--- PASS: TestFBJ2GroupedFeatureGate (0.01s)
+=== RUN   TestFBJ2GroupedGolden
+--- PASS: TestFBJ2GroupedGolden (0.00s)
+=== RUN   TestFBJ2GroupedCheckpointAheadRefuses
+--- PASS: TestFBJ2GroupedCheckpointAheadRefuses (0.01s)
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkFB10JournalBin
+BenchmarkFB10JournalBin/overwrite/json/encode
+BenchmarkFB10JournalBin/overwrite/json/encode-2         	  113547	      1567 ns/op	    1088 B/op	       5 allocs/op
+BenchmarkFB10JournalBin/overwrite/json/decode
+BenchmarkFB10JournalBin/overwrite/json/decode-2         	   70286	      2538 ns/op	     448 B/op	       7 allocs/op
+BenchmarkFB10JournalBin/overwrite/binary/encode
+BenchmarkFB10JournalBin/overwrite/binary/encode-2       	  282836	       581.5 ns/op	     544 B/op	       8 allocs/op
+BenchmarkFB10JournalBin/overwrite/binary/decode
+BenchmarkFB10JournalBin/overwrite/binary/decode-2       	  259136	       676.7 ns/op	     776 B/op	      16 allocs/op
+BenchmarkFB10JournalBin/put/json/encode
+BenchmarkFB10JournalBin/put/json/encode-2               	  180967	       885.8 ns/op	     704 B/op	       5 allocs/op
+BenchmarkFB10JournalBin/put/json/decode
+BenchmarkFB10JournalBin/put/json/decode-2               	  143322	      1288 ns/op	     176 B/op	       3 allocs/op
+BenchmarkFB10JournalBin/put/binary/encode
+BenchmarkFB10JournalBin/put/binary/encode-2             	  531949	       291.8 ns/op	     256 B/op	       6 allocs/op
+BenchmarkFB10JournalBin/put/binary/decode
+BenchmarkFB10JournalBin/put/binary/decode-2             	  582579	       491.1 ns/op	     288 B/op	       7 allocs/op
+PASS
+ok  	zeros3	2.108s

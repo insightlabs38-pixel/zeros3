@@ -1,0 +1,50 @@
+=== RUN   TestFB04ConcurrentRootLinearizability
+=== RUN   TestFB04ConcurrentRootLinearizability/v1
+=== RUN   TestFB04ConcurrentRootLinearizability/grouped
+--- PASS: TestFB04ConcurrentRootLinearizability (0.16s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/v1 (0.09s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/grouped (0.08s)
+=== RUN   TestFB10JournalBinGolden
+    zeros3_fb10_test.go:77: overwrite JSON=661 binary=205 reduction=69.0%
+    zeros3_fb10_test.go:77: put JSON=315 binary=99 reduction=68.6%
+--- PASS: TestFB10JournalBinGolden (0.00s)
+=== RUN   TestFB10JournalBinUpgradeReplay
+    zeros3_fb10_test.go:168: reopened 1 legacy and 3 compact PUTs, exact archive, validated checkpoint and suffix
+--- PASS: TestFB10JournalBinUpgradeReplay (0.02s)
+=== RUN   TestFB10JournalBinProcessCuts
+=== RUN   TestFB10JournalBinProcessCuts/journalbin-activated
+    zeros3_fb10_test.go:213: reopened after journalbin-activated with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-manifest-published
+    zeros3_fb10_test.go:213: reopened after after-manifest-published with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-write-before-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-write-before-sync with "new" and 1 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-sync with "new" and 1 archived versions
+--- PASS: TestFB10JournalBinProcessCuts (0.11s)
+    --- PASS: TestFB10JournalBinProcessCuts/journalbin-activated (0.02s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-manifest-published (0.03s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-write-before-sync (0.03s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-sync (0.03s)
+=== RUN   TestFB10JournalBinCutWorker
+    zeros3_fb10_test.go:221: standalone process-cut worker
+--- SKIP: TestFB10JournalBinCutWorker (0.00s)
+=== RUN   TestFBJ2GroupedReplay
+=== RUN   TestFBJ2GroupedReplay/complete
+=== RUN   TestFBJ2GroupedReplay/footer-cut
+=== RUN   TestFBJ2GroupedReplay/reordered
+--- PASS: TestFBJ2GroupedReplay (0.08s)
+    --- PASS: TestFBJ2GroupedReplay/complete (0.02s)
+    --- PASS: TestFBJ2GroupedReplay/footer-cut (0.02s)
+    --- PASS: TestFBJ2GroupedReplay/reordered (0.02s)
+=== RUN   TestFBJ2GroupedDamageRefuses
+--- PASS: TestFBJ2GroupedDamageRefuses (0.01s)
+=== RUN   TestFBJ2GroupedSyncFailure
+--- PASS: TestFBJ2GroupedSyncFailure (0.01s)
+=== RUN   TestFBJ2GroupedFeatureGate
+--- PASS: TestFBJ2GroupedFeatureGate (0.01s)
+=== RUN   TestFBJ2GroupedGolden
+--- PASS: TestFBJ2GroupedGolden (0.00s)
+=== RUN   TestFBJ2GroupedCheckpointAheadRefuses
+--- PASS: TestFBJ2GroupedCheckpointAheadRefuses (0.01s)
+PASS
+ok  	zeros3	1.476s

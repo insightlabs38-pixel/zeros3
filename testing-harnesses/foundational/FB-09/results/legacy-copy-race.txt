@@ -1,0 +1,12 @@
+=== RUN   TestFB09LegacyCopy
+=== RUN   TestFB09LegacyCopy/legacy
+    zeros3_fb09_test.go:68: actual pre-FB09 binary refused the typed source and deep-verified the separate legacy copy
+=== RUN   TestFB09LegacyCopy/j2
+    zeros3_fb09_test.go:68: actual pre-FB09 binary refused the typed source and deep-verified the separate legacy copy
+--- PASS: TestFB09LegacyCopy (0.52s)
+    --- PASS: TestFB09LegacyCopy/legacy (0.27s)
+    --- PASS: TestFB09LegacyCopy/j2 (0.25s)
+=== RUN   TestFB09LegacyCopyRefusesHistory
+--- PASS: TestFB09LegacyCopyRefusesHistory (0.01s)
+PASS
+ok  	zeros3	1.557s

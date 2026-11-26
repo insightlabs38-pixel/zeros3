@@ -504,6 +504,7 @@ const (
 	hookSnapshotDecoded             = "snapshot-decoded" // FB-02 M-A6: each full snapshot read and validation
 	hookAfterJournalWriteBeforeSync = "after-journal-write-before-sync"
 	hookAfterJournalSync            = "after-journal-sync"
+	hookJournalBinActivated         = "journalbin-activated"
 	hookAfterApplyBeforeResponse    = "after-apply-before-response"
 	hookAfterAck                    = "after-ack"
 	// hookBeforeGCDelete fires immediately before destructive GC
@@ -9042,17 +9043,21 @@ func (r *binaryManifestReader) take(n int) []byte {
 }
 
 func (r *binaryManifestReader) count(limit int) int {
+	return int(r.uvarint(uint64(limit)))
+}
+
+func (r *binaryManifestReader) uvarint(limit uint64) uint64 {
 	if r.err != nil {
 		return 0
 	}
 	v, n := binary.Uvarint(r.rest)
 	var canonical [binary.MaxVarintLen64]byte
-	if n <= 0 || v > uint64(limit) || n != binary.PutUvarint(canonical[:], v) {
+	if n <= 0 || v > limit || n != binary.PutUvarint(canonical[:], v) {
 		r.err = errors.New("manifest binary: noncanonical or excessive integer")
 		return 0
 	}
 	r.rest = r.rest[n:]
-	return int(v)
+	return v
 }
 
 func (r *binaryManifestReader) text() string {
@@ -10118,6 +10123,155 @@ type journalPutPayloadV2 struct {
 	ContentType    string                         `json:"content_type"`
 	VersionID      string                         `json:"version_id"`
 	Previous       *journalArchivedVersionPayload `json:"previous,omitempty"`
+}
+
+const (
+	journalBinFeature = "journalbin"
+	journalBinPut     = "ZJP1"
+	journalBinMD5     = 1
+	journalBinVersion = 2
+)
+
+// Compact root identities use raw canonical UUIDs, digests and, when
+// possible, the unchanged MD5 ETag. Unusual legacy shapes stay in JSON.
+func appendJournalBinRoot(b []byte, id, version, etag, contentType string, size int64, digest [32]byte) []byte {
+	u, uOK := nsParseUUID(id)
+	if !uOK || size < 0 || !utf8.ValidString(etag) || !utf8.ValidString(contentType) {
+		return nil
+	}
+	var v [16]byte
+	flags := byte(0)
+	tag, tagOK := nsParseETag(etag)
+	if tagOK {
+		flags |= journalBinMD5
+	}
+	if id != version {
+		var ok bool
+		if v, ok = nsParseUUID(version); !ok {
+			return nil
+		}
+		flags |= journalBinVersion
+	}
+	b = append(b, flags)
+	b = append(b, u[:]...)
+	b = append(b, digest[:]...)
+	b = binary.AppendUvarint(b, uint64(size))
+	if flags&journalBinVersion != 0 {
+		b = append(b, v[:]...)
+	}
+	if tagOK {
+		b = append(b, tag[:]...)
+	} else {
+		b = appendManifestString(b, etag)
+	}
+	return appendManifestString(b, contentType)
+}
+
+func readJournalBinRoot(r *binaryManifestReader, id, version, etag, contentType *string, size *int64) (digest [32]byte) {
+	header := r.take(1 + 16 + sha256.Size)
+	if r.err != nil {
+		return digest
+	}
+	flags := header[0]
+	if flags & ^byte(journalBinMD5|journalBinVersion) != 0 {
+		r.err = errors.New("journalbin: invalid identity flags")
+		return digest
+	}
+	*id = string(nsAppendUUID(nil, header[1:17]))
+	copy(digest[:], header[17:])
+	*size = int64(r.count(math.MaxInt))
+	*version = *id
+	if flags&journalBinVersion != 0 {
+		if raw := r.take(16); raw != nil {
+			*version = string(nsAppendUUID(nil, raw))
+		}
+		if *version == *id && r.err == nil {
+			r.err = errors.New("journalbin: redundant version UUID")
+		}
+	}
+	if flags&journalBinMD5 != 0 {
+		*etag = hex.EncodeToString(r.take(16))
+	} else {
+		*etag = r.text()
+		if _, ok := nsParseETag(*etag); ok {
+			r.err = errors.New("journalbin: noncanonical ETag")
+		}
+	}
+	*contentType = r.text()
+	return digest
+}
+
+func encodeJournalBinPut(p journalPutPayloadV2, digest [32]byte) []byte {
+	if p.Bucket == "" || p.Key == "" || !utf8.ValidString(p.Bucket) || !utf8.ValidString(p.Key) {
+		return nil
+	}
+	b := appendManifestString([]byte(journalBinPut), p.Bucket)
+	b = appendManifestString(b, p.Key)
+	b = appendJournalBinRoot(b, p.ManifestUUID, p.VersionID, p.ETag, p.ContentType, p.Size, digest)
+	if b == nil {
+		return nil
+	}
+	if p.Previous == nil {
+		return append(b, 0)
+	}
+	prev := p.Previous
+	if prev.Reason != historyReasonOverwritten || prev.ArchivedAt.Location() != time.UTC ||
+		prev.ArchivedAt.Year() < 0 || prev.ArchivedAt.Year() > 9999 {
+		return nil
+	}
+	oldDigest, err := decodeHexSHA256(prev.ManifestSHA256)
+	if err != nil {
+		return nil
+	}
+	b = appendJournalBinRoot(append(b, 1), prev.ManifestUUID, prev.VersionID, prev.ETag, prev.ContentType, prev.Size, oldDigest)
+	if b == nil {
+		return nil
+	}
+	b = binary.AppendVarint(b, prev.ArchivedAt.Unix())
+	return binary.AppendUvarint(b, uint64(prev.ArchivedAt.Nanosecond()))
+}
+
+func decodeJournalBinPut(b []byte, p *journalPutPayloadV2) ([32]byte, error) {
+	if len(b) > maxJournalPayload || !bytes.HasPrefix(b, []byte(journalBinPut)) {
+		return [32]byte{}, errors.New("journalbin: invalid PUT payload")
+	}
+	r := binaryManifestReader{rest: b[len(journalBinPut):]}
+	p.Bucket, p.Key = r.text(), r.text()
+	digest := readJournalBinRoot(&r, &p.ManifestUUID, &p.VersionID, &p.ETag, &p.ContentType, &p.Size)
+	switch r.count(1) {
+	case 1:
+		prev := &journalArchivedVersionPayload{Reason: historyReasonOverwritten}
+		sum := readJournalBinRoot(&r, &prev.ManifestUUID, &prev.VersionID, &prev.ETag, &prev.ContentType, &prev.Size)
+		prev.ManifestSHA256 = hex.EncodeToString(sum[:])
+		encoded := r.uvarint(math.MaxUint64)
+		seconds := int64(encoded >> 1)
+		if encoded&1 != 0 {
+			seconds = ^seconds
+		}
+		nano := r.count(999999999)
+		if seconds < -62167219200 || seconds > 253402300799 {
+			return digest, errors.New("journalbin: invalid archive timestamp")
+		}
+		prev.ArchivedAt = time.Unix(seconds, int64(nano)).UTC()
+		p.Previous = prev
+	}
+	if r.err != nil {
+		return digest, r.err
+	}
+	if p.Bucket == "" || p.Key == "" || len(r.rest) != 0 {
+		return digest, errors.New("journalbin: invalid PUT keys or trailing payload")
+	}
+	return digest, nil
+}
+
+func (s *Store) marshalJournalPut(p journalPutPayloadV2, digest [32]byte) ([]byte, error) {
+	if s.writeBinaryJournal {
+		if b := encodeJournalBinPut(p, digest); b != nil && len(b) <= maxJournalPayload {
+			return b, nil
+		}
+	}
+	p.ManifestSHA256 = hex.EncodeToString(digest[:])
+	return json.Marshal(p)
 }
 
 // journalCompleteMultipartPayloadV2 is the record-type-10 payload:
@@ -11967,6 +12121,7 @@ type Store struct {
 	locatorFromGeneration atomic.Bool // a destructive pass first reloads authoritative pack indexes
 	writeBinaryManifests  bool
 	writeMetadataPages    bool
+	writeBinaryJournal    bool
 
 	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
 	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
@@ -12173,6 +12328,10 @@ func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Sto
 }
 
 func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool) (*Store, error) {
+	return openStoreWithFeatures(root, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags, false)
+}
+
+func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags, binaryJournal bool) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("store: failed to create the store directory: %w", err)
 	}
@@ -12180,12 +12339,12 @@ func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, loc
 	var err error
 	if ownSegments {
 		mode := syscall.LOCK_SH
-		if maintain {
+		if maintain || binaryJournal {
 			mode = syscall.LOCK_EX
 		}
 		if lock, err = flockStore(root, writerLockDir, mode, false); errors.Is(err, syscall.EWOULDBLOCK) {
-			if maintain {
-				return nil, fmt.Errorf("store: online maintenance needs the only writing process: %w", errGCStoreInUse)
+			if maintain || binaryJournal {
+				return nil, fmt.Errorf("store: online maintenance and journal format activation require the only writing process: %w", errGCStoreInUse)
 			}
 			return nil, fmt.Errorf("store: %w", errMaintOwned)
 		}
@@ -12208,6 +12367,18 @@ func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, loc
 		s.writerLock, s.maintOwner, s.openedAt = lock, maintain, time.Now()
 	} else {
 		s.readerLock = lock
+	}
+	if binaryJournal {
+		if s.journal.group == nil || !ownSegments {
+			s.Close()
+			return nil, errors.New("store: binary journal records require the opt-in J2 writer")
+		}
+		if err := s.ensureFeature(journalBinFeature); err != nil {
+			s.Close()
+			return nil, err
+		}
+		fireTestHook(hookJournalBinActivated)
+		s.writeBinaryJournal = true
 	}
 	return s, nil
 }
@@ -16097,19 +16268,29 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		delete(s.uploads, p.UploadID)
 	case recordTypePutObjectRootV2:
 		var p journalPutPayloadV2
-		if !decodePutV2Fast(rec.payload, &p, s.replayIn) {
-			p = journalPutPayloadV2{}
-			if err := json.Unmarshal(rec.payload, &p); err != nil {
-				return fmt.Errorf("seq %d: %w", rec.seq, err)
+		var sum [32]byte
+		var err error
+		if bytes.HasPrefix(rec.payload, []byte(journalBinPut)) {
+			format := s.formatSnapshot()
+			if !slices.Contains(format.Features, journalBinFeature) || !slices.Contains(format.Features, journalGroupFeature) {
+				return fmt.Errorf("seq %d: compact PUT lacks its required format markers", rec.seq)
 			}
+			sum, err = decodeJournalBinPut(rec.payload, &p)
+		} else {
+			if !decodePutV2Fast(rec.payload, &p, s.replayIn) {
+				p = journalPutPayloadV2{}
+				if err := json.Unmarshal(rec.payload, &p); err != nil {
+					return fmt.Errorf("seq %d: %w", rec.seq, err)
+				}
+			}
+			sum, err = decodeHexSHA256(p.ManifestSHA256)
+		}
+		if err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 		_, ok := s.buckets[p.Bucket]
 		if !ok {
 			return fmt.Errorf("seq %d: put-object-root-v2 for unknown bucket %q", rec.seq, p.Bucket)
-		}
-		sum, err := decodeHexSHA256(p.ManifestSHA256)
-		if err != nil {
-			return fmt.Errorf("seq %d: %w", rec.seq, err)
 		}
 		if p.Previous != nil {
 			if err := s.archiveVersionLocked(p.Bucket, p.Key, rec.seq, *p.Previous); err != nil {
@@ -16765,17 +16946,16 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 				recs = append(recs, journalFrameIn{recType: recordTypeDeleteObjectRootV2, payload: payload})
 				continue
 			}
-			payload, err := json.Marshal(journalPutPayloadV2{
-				Bucket:         r.bucket,
-				Key:            r.key,
-				ManifestUUID:   r.manUUID,
-				ManifestSHA256: hex.EncodeToString(r.manSHA[:]),
-				Size:           r.man.TotalLength,
-				ETag:           r.man.ETag,
-				ContentType:    r.man.ContentType,
-				VersionID:      r.man.VersionID,
-				Previous:       prev,
-			})
+			payload, err := s.marshalJournalPut(journalPutPayloadV2{
+				Bucket:       r.bucket,
+				Key:          r.key,
+				ManifestUUID: r.manUUID,
+				Size:         r.man.TotalLength,
+				ETag:         r.man.ETag,
+				ContentType:  r.man.ContentType,
+				VersionID:    r.man.VersionID,
+				Previous:     prev,
+			}, r.manSHA)
 			if err != nil {
 				r.err = err
 				continue
@@ -16876,17 +17056,16 @@ func (s *Store) commitObjectRootSerialLocked(bucket, key, manUUID string, manSHA
 	if err != nil {
 		return nil, fmt.Errorf("commit: reading history: %w", err)
 	}
-	payload, err := json.Marshal(journalPutPayloadV2{
-		Bucket:         bucket,
-		Key:            key,
-		ManifestUUID:   manUUID,
-		ManifestSHA256: hex.EncodeToString(manSHA[:]),
-		Size:           man.TotalLength,
-		ETag:           man.ETag,
-		ContentType:    man.ContentType,
-		VersionID:      man.VersionID,
-		Previous:       prevPayload,
-	})
+	payload, err := s.marshalJournalPut(journalPutPayloadV2{
+		Bucket:       bucket,
+		Key:          key,
+		ManifestUUID: manUUID,
+		Size:         man.TotalLength,
+		ETag:         man.ETag,
+		ContentType:  man.ContentType,
+		VersionID:    man.VersionID,
+		Previous:     prevPayload,
+	}, manSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -40744,6 +40923,7 @@ func runServe(args []string) {
 	locatorTags := fs.Bool("locator-tags", false, "use a compact tag index with full-digest verification of every hit against a matching generation")
 	binaryManifests := fs.Bool("binary-manifests", false, "write binary manifest records with an explicit store feature marker (research)")
 	metadataPages := fs.Bool("metadata-pages", false, "build canonical visible metadata pages when publishing a namespace checkpoint (research)")
+	binaryJournal := fs.Bool("binary-journal", false, "write compact root records inside opt-in J2 groups (research)")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -40828,7 +41008,7 @@ func runServe(args []string) {
 	}
 	defer lock.release()
 
-	store, err := openStoreWithLocator(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache, *locatorTags)
+	store, err := openStoreWithFeatures(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache, *locatorTags, *binaryJournal)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -89298,7 +89478,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature {
 			return x
 		}
 	}

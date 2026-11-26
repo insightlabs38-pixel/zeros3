@@ -1,0 +1,7 @@
+fuzz: elapsed: 0s, gathering baseline coverage: 0/2 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 2/2 completed, now fuzzing with 2 workers
+fuzz: elapsed: 3s, execs: 14161 (4712/sec), new interesting: 7 (total: 9)
+fuzz: elapsed: 6s, execs: 49090 (11660/sec), new interesting: 15 (total: 17)
+fuzz: elapsed: 7s, execs: 53205 (3940/sec), new interesting: 20 (total: 22)
+PASS
+ok  	zeros3	7.053s
