@@ -1,0 +1,9 @@
+--- PASS: TestFB01RWatermarkEncoding (0.00s)
+--- PASS: TestFB01RInterruptedGroupMatrix (0.32s)
+--- PASS: TestFB01RWatermarkLifecycle (0.01s)
+--- PASS: TestFB01RWatermarkWriteFailure (0.01s)
+--- PASS: TestFB01RTailDiscardInterrupted (0.01s)
+--- PASS: TestFB01RDegradedViews (4.16s)
+--- PASS: TestFBJ2IncompleteWatermarkEvidence (0.02s)
+PASS
+ok  	zeros3	5.554s

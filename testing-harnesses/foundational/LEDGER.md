@@ -15,3 +15,22 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | M-A2 CAS presence and stat order (FB-03) | f9ca12e | `zeros3.go` (`casStat`, `casStatLocked`, `segSink.Put`, `segMgr.runBatch`, `packSink.Put`), `zeros3_fb03_cas_test.go`, `zeros3_fb03_bench_test.go` | `FB-03/README.md`, `FB-03/results/ma2_*` | COMPLETE: presence only from published packs or a claimed loose file, locator first; re-upload growth 1.005x to 0.004x; packed hit 37 ns (was 1,004); per-key linearizability checker clean; ingest wall -0.5% to +3.2%. Repack verification was already in place (F3-CARRY-07) |
 | M-A7 maintenance isolation and dirty gate (FB-03) | 81faf04 | `zeros3.go` (section 13d3, `carryLivePacks` isolation, `deletionSafe`, `maintIdleKey`, `maintainOnline`), `zeros3_fb03_maint_test.go` | `FB-03/README.md`, `FB-03/results/ma7_*` | COMPLETE (narrowed): leaf damage holds only the packs with a copy of the damaged digest; reference damage, and any chunk damage with authority bodies, refuses deletion; unreadable carry records quarantine their holders in memory; idle stores skip the mark (24 h recheck); crash at 11 points safe. Open: quarantine is not persisted |
 | M-A8 locator levels, filters, lean open, descriptor cache (FB-03) | cf10d43, ba5d109, 6618aa6, b5d490f, 1c7bfbb, ebfc5a1 | `zeros3.go` (`locPlan`, `locSettle`, `mergeLevels`, `locFilter`, `locMergeOnce`, `loadPackState`, `scanPackLayout`, `buildLocIndexF`, `bestMany`, `packFDCache`), `zeros3_fb03_loc_test.go`, `zeros3_fb03_fd_test.go`, `zeros3_fb03_scale_test.go`, `FB-03/ma8_scale.sh` | `FB-03/results/ma8_*.jsonl`, `ma8_tests*.txt`, `ma8_ingest.txt`, `full_suite.txt` | COMPLETE: at most 4 levels to 25M records; absent lookups 0.33-0.39x one unfiltered level (1.8-2.3x one filtered level); open 1.00-1.08x steady (1.65x at 16-record packs); retired records dropped at the next merge (records/live 1.10); 0 wrong answers; ingest wall -4.3% to +0.9%; GET p50 36 against 60 us. Open: persistent generation and accelerator (M-B2) |
+
+## FB-J2 and revised foundation sequence
+
+| Sequence | Status | Milestone group |
+| --- | --- | --- |
+| J2 | IN PROGRESS | [Durability preflight and one-flush experiment](FB-J2/README.md) |
+| FB-04 | pending | M-B1 unified commit queue |
+| FB-05 | pending | M-B3, M-B4, M-E3 maintenance |
+| FB-06 | pending | M-B2 exact locator generation |
+| FB-07 | pending | M-C4 integrity and targeted repair |
+| FB-08 | pending | M-F1/F2/F3 native protocol v3 |
+| FB-09 | pending | M-C1/C3 ZF2 metadata pages |
+| FB-10 | pending | remaining M-C2/C5 journal and publication |
+| FB-11 | pending | M-F5/G1 snapshots and optional range proofs |
+| FB-12 | pending | M-D1/D2 compression and delta |
+| FB-13 | pending | M-D3/E1 CDC and lifecycle economics |
+| FB-14 | pending | M-D4/G3 conditional ingest delta |
+| FB-15 | pending | M-E2/G4 incremental maintenance |
+| FB-16 | pending | M-F4/G2 reconciliation and final qualification |

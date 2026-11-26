@@ -9289,6 +9289,10 @@ type journalWatermark struct {
 	LastCRC  uint32   `json:"last_crc"`
 	PID      uint32   `json:"pid"`
 	Unix     int64    `json:"unix_nanos"`
+
+	// unpaired is observed on read, never stored. One surviving slot is
+	// a lower bound on acknowledged history, not a safe truncation bound.
+	unpaired bool
 }
 
 func (w *journalWatermark) synced() bool { return w.Flags&wmFlagSynced != 0 }
@@ -9350,15 +9354,23 @@ func readJournalWatermark(path string) (*journalWatermark, error) {
 	if err != nil {
 		return nil, err
 	}
-	var best *journalWatermark
-	for off := 0; off+journalWatermarkSlot <= len(b) && off <= journalWatermarkPage; off += journalWatermarkPage {
-		if w, ok := decodeJournalWatermark(b[off : off+journalWatermarkSlot]); ok && (best == nil || w.Gen > best.Gen) {
-			best = w
+	var slots [2]*journalWatermark
+	for i := range slots {
+		off := i * journalWatermarkPage
+		if off+journalWatermarkSlot <= len(b) {
+			slots[i], _ = decodeJournalWatermark(b[off : off+journalWatermarkSlot])
 		}
+	}
+	best, other := slots[0], slots[1]
+	if best == nil || (other != nil && other.Gen > best.Gen) {
+		best, other = other, best
 	}
 	if best == nil {
 		return nil, errWatermarkUnreadable
 	}
+	best.unpaired = other == nil || best.Gen-other.Gen != 1 || best.Store != other.Store ||
+		best.Offset < other.Offset || best.Seq < other.Seq ||
+		slots[best.Gen%2] != best
 	return best, nil
 }
 
@@ -9604,6 +9616,8 @@ func judgeTail(f *os.File, w *journalWatermark, sc journalScan, start int64, sta
 	switch {
 	case d == nil:
 		v.Proof = "the journal ends cleanly"
+	case w.unpaired:
+		v.Proof = "the ack watermark has no coherent companion slot; the surviving slot cannot prove the tail was unacknowledged"
 	case v.SameBoot && d.ambiguousTail():
 		v.Discard = true
 		v.Proof = fmt.Sprintf("an incomplete final frame past the last completed fsync (offset %d), in the boot that wrote the watermark: an interrupted write, never acknowledged", w.Offset)
