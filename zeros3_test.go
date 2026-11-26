@@ -41437,7 +41437,7 @@ func TestPackRun_NoncontiguousAndSingleChunk(t *testing.T) {
 	// Direct primitive: a non-contiguous set is refused wholesale, never guessed at.
 	sums := manifestSums(t, f.s, "b", "rand")
 	locs := []packLoc{mustLoc(t, f.s, sums[0]), mustLoc(t, f.s, sums[1])}
-	r := newPackRunReader(f.s.packSnap(), nil)
+	r := newPackRunReader(f.s.packSnap(), nil, nil)
 	defer r.close()
 	if locs[0].pack == locs[1].pack && int64(locs[1].off)-packRecordHeaderSize == int64(locs[0].off)+int64(locs[0].stored) {
 		t.Skip("accidentally adjacent")

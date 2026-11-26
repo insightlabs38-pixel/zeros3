@@ -3326,7 +3326,11 @@ func (s *Store) repairPackDictionaries() ([]packDictionaryRepair, error) {
 		if !pack.presetDict {
 			continue
 		}
-		restored, rewritten, err := repairPackDictionary(pack.path, tierTmpDir(s.root, pack.tier))
+		var restored, rewritten int64
+		err := s.fds.unlinked(func() (err error) {
+			restored, rewritten, err = repairPackDictionary(pack.path, tierTmpDir(s.root, pack.tier))
+			return err
+		}, pack.path)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("%s: %w", pack.label(), err))
 		} else if restored > 0 {
@@ -5947,20 +5951,194 @@ func putRunBuf(pool *sync.Pool, b []byte) {
 	}
 }
 
+// ---- the pack descriptor cache (section 4c, F3-FS-01) ---------------------
+//
+// packFDCache keeps the pack and segment files the serving path reads open
+// between requests, so a small GET costs one pread instead of open, pread and
+// close. It is bounded (least recently used first, ZEROS3_PACK_FDS, default
+// 256, 0 disables) and reference counted: a reader holds its entry while it
+// reads a run. Only packRunReader uses it; verification and maintenance open
+// files themselves, so a pack that vanished is still found missing there.
+// Every unlink or rename of a pack or segment file evicts that path before and
+// after (packFDCache.unlinked): an idle descriptor closes at once, a busy one
+// when its reader lets go, so a retired pack's space is reclaimed and a
+// replaced file is not read through its old inode once the new one is there.
+// Bytes read through a cached descriptor are verified like any others.
+type packFDCache struct {
+	mu     sync.Mutex
+	max    int // -1 until first use
+	m      map[string]*packFD
+	lru    packFD // sentinel: lru.next is the most recently used
+	closed bool
+	opens  atomic.Int64 // files opened (cached or not), for tests and stats
+}
+
+type packFD struct {
+	path       string
+	f          *os.File
+	refs       int
+	dead       bool // out of the cache: the last reader closes it
+	prev, next *packFD
+}
+
+func packFDLimit() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_PACK_FDS")); err == nil && v >= 0 {
+		return min(v, 1<<16)
+	}
+	return 256
+}
+
+func (c *packFDCache) initLocked() {
+	if c.m == nil {
+		c.m, c.max = map[string]*packFD{}, packFDLimit()
+		c.lru.next, c.lru.prev = &c.lru, &c.lru
+	}
+}
+
+func (c *packFDCache) unlink(d *packFD) {
+	d.prev.next, d.next.prev = d.next, d.prev
+	d.prev, d.next = nil, nil
+}
+
+func (c *packFDCache) front(d *packFD) {
+	d.next, d.prev = c.lru.next, &c.lru
+	c.lru.next.prev = d
+	c.lru.next = d
+}
+
+// get returns an open descriptor for path, held until put.
+func (c *packFDCache) get(path string) (*packFD, error) {
+	c.mu.Lock()
+	c.initLocked()
+	if d := c.m[path]; d != nil {
+		d.refs++
+		c.unlink(d)
+		c.front(d)
+		c.mu.Unlock()
+		return d, nil
+	}
+	bypass := c.closed || c.max == 0
+	c.mu.Unlock()
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	c.opens.Add(1)
+	d := &packFD{path: path, f: f, refs: 1}
+	if bypass {
+		d.dead = true
+		return d, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		d.dead = true
+		return d, nil
+	}
+	if o := c.m[path]; o != nil { // opened concurrently: keep one
+		f.Close()
+		o.refs++
+		c.unlink(o)
+		c.front(o)
+		return o, nil
+	}
+	c.m[path] = d
+	c.front(d)
+	for e := c.lru.prev; len(c.m) > c.max && e != &c.lru; {
+		prev := e.prev
+		if e.refs == 0 {
+			c.dropLocked(e)
+		}
+		e = prev
+	}
+	return d, nil
+}
+
+// put releases a descriptor get returned.
+func (c *packFDCache) put(d *packFD) {
+	c.mu.Lock()
+	d.refs--
+	closeIt := d.dead && d.refs == 0
+	c.mu.Unlock()
+	if closeIt {
+		d.f.Close()
+	}
+}
+
+// dropLocked takes d out of the cache, closing it unless a reader holds it.
+func (c *packFDCache) dropLocked(d *packFD) {
+	delete(c.m, d.path)
+	c.unlink(d)
+	d.dead = true
+	if d.refs == 0 {
+		d.f.Close()
+	}
+}
+
+// evict drops path's descriptor, if cached.
+func (c *packFDCache) evict(path string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if d := c.m[path]; d != nil {
+		c.dropLocked(d)
+	}
+}
+
+// purge drops every descriptor; close also stops caching new ones.
+func (c *packFDCache) purge() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, d := range c.m {
+		c.dropLocked(d)
+	}
+}
+
+func (c *packFDCache) close() {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	c.purge()
+}
+
+func (c *packFDCache) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.m)
+}
+
+// unlinked runs op, which removes or replaces paths, between two evictions
+// of them: the first closes what is cached, the second what a reader of an
+// older snapshot cached while op ran.
+func (c *packFDCache) unlinked(op func() error, paths ...string) error {
+	for _, p := range paths {
+		c.evict(p)
+	}
+	err := op()
+	for _, p := range paths {
+		c.evict(p)
+	}
+	return err
+}
+
 // packRunReader reads contiguous records of one request's packs. It is not
 // safe for concurrent use. Returned chunk bytes alias its buffers and stay
 // valid only until the next read.
 type packRunReader struct {
 	st    *packState // one locator snapshot for the whole request
 	trace *packTrace
+	fds   *packFDCache // nil: open and close each pack
 	f     *os.File
+	fd    *packFD
 	fPack int32
 	buf   []byte
 	arena []byte
 }
 
-func newPackRunReader(st *packState, trace *packTrace) *packRunReader {
-	return &packRunReader{st: st, trace: trace, fPack: -1}
+func newPackRunReader(st *packState, trace *packTrace, fds *packFDCache) *packRunReader {
+	return &packRunReader{st: st, trace: trace, fds: fds, fPack: -1}
 }
 
 // file returns the open file for pack, closing the previous pack's file.
@@ -5972,12 +6150,26 @@ func (r *packRunReader) file(pack int32) (*os.File, error) {
 	if pack < 0 || int(pack) >= len(r.st.packs) {
 		return nil, fmt.Errorf("pack: locator is from a replaced pack set")
 	}
-	f, err := os.Open(r.st.packs[pack].path)
-	if err != nil {
-		return nil, fmt.Errorf("pack: %w", err)
-	}
-	if r.trace != nil {
-		r.trace.Opens.Add(1)
+	path := r.st.packs[pack].path
+	var f *os.File
+	if r.fds != nil {
+		opens := r.fds.opens.Load()
+		d, err := r.fds.get(path)
+		if err != nil {
+			return nil, fmt.Errorf("pack: %w", err)
+		}
+		if r.trace != nil && r.fds.opens.Load() != opens {
+			r.trace.Opens.Add(1)
+		}
+		r.fd, f = d, d.f
+	} else {
+		var err error
+		if f, err = os.Open(path); err != nil {
+			return nil, fmt.Errorf("pack: %w", err)
+		}
+		if r.trace != nil {
+			r.trace.Opens.Add(1)
+		}
 	}
 	r.f, r.fPack = f, pack
 	return f, nil
@@ -5986,7 +6178,10 @@ func (r *packRunReader) file(pack int32) (*os.File, error) {
 // close releases the open pack file and returns the buffers; chunk bytes
 // handed out earlier must no longer be in use.
 func (r *packRunReader) close() {
-	if r.f != nil {
+	if r.fd != nil {
+		r.fds.put(r.fd)
+		r.fd, r.f, r.fPack = nil, nil, -1
+	} else if r.f != nil {
 		r.f.Close()
 		r.f, r.fPack = nil, -1
 	}
@@ -6991,7 +7186,7 @@ func (m *segMgr) seal(seg *segment) error {
 	dir := filepath.Join(s.root, segDirName)
 	if len(seg.entries) == 0 {
 		seg.f.Close()
-		if err := os.Remove(seg.path); err != nil && !os.IsNotExist(err) {
+		if err := s.fds.unlinked(func() error { return os.Remove(seg.path) }, seg.path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return syncDir(dir)
@@ -7034,7 +7229,7 @@ func (m *segMgr) seal(seg *segment) error {
 		if !os.IsExist(err) {
 			// no hard links on this filesystem: rename instead. A reader holding the previous
 			// snapshot then retries once the locator is swapped (refreshAfterSeal).
-			if rerr := os.Rename(seg.path, final); rerr != nil {
+			if rerr := s.fds.unlinked(func() error { return os.Rename(seg.path, final) }, seg.path, final); rerr != nil {
 				return err
 			}
 			renamed = true
@@ -7048,7 +7243,7 @@ func (m *segMgr) seal(seg *segment) error {
 		return err
 	}
 	if !renamed {
-		if err := os.Remove(seg.path); err != nil {
+		if err := s.fds.unlinked(func() error { return os.Remove(seg.path) }, seg.path); err != nil {
 			return err
 		}
 	}
@@ -8313,6 +8508,7 @@ func (c *manifestCache) get(sha [32]byte, id string, load func() (*servedManifes
 func (s *Store) purgeReadCaches() {
 	s.mcache.purge()
 	s.ccache.purge()
+	s.fds.purge()
 }
 
 // peek returns a cached entry without loading, inserting or marking it used.
@@ -10144,7 +10340,8 @@ type Store struct {
 	// process holding exclusive ownership while compacting.
 	packMu sync.Mutex
 	packSt atomic.Pointer[packState]
-	loc    locMerger // background locator merges (section 4c)
+	loc    locMerger   // background locator merges (section 4c)
+	fds    packFDCache // pack files the serving path keeps open (section 4c)
 
 	// reconSeen is the (authority generation, pack set) key of the last online
 	// relayout plan that found nothing to move (section 13d1).
@@ -13855,6 +14052,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 func (s *Store) Close() error {
 	s.stopMaintenance()
 	s.locMergeStop()
+	defer s.fds.close()
 	// Under mu, so no consolidation can start after the wait below begins; a
 	// running one stops at its next check and restores its overlay.
 	s.mu.Lock()
@@ -22286,7 +22484,7 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 	final := filepath.Join(packDir, info.id+packFileSuffix)
 	s.retire.cancel(t, info.id) // an identical file is a live pack again
 	fireTestHook(hookPackBeforePublish)
-	if err := os.Rename(staged, final); err != nil {
+	if err := s.fds.unlinked(func() error { return os.Rename(staged, final) }, final); err != nil {
 		os.Remove(staged)
 		return info, fmt.Errorf("publishing pack: %w", err)
 	}
@@ -22663,7 +22861,7 @@ func (s *Store) replacePacksToLive(doomed []packUsage, live *liveSet, dest func(
 	removedFrom := map[string]bool{}
 	for _, u := range doomed {
 		fireTestHook(hookBeforePackDelete)
-		if err := os.Remove(paths[u.idx]); err != nil && !os.IsNotExist(err) {
+		if err := s.fds.unlinked(func() error { return os.Remove(paths[u.idx]) }, paths[u.idx]); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("removing pack %s: %w", u.label(), err)
 		}
 		removedFrom[filepath.Dir(paths[u.idx])] = true
@@ -24172,7 +24370,7 @@ func (r *retireSet) dropUnswapped() {
 // unlinkSwapped removes every retired pack file that left the locator. The
 // caller holds the reader lease and has drained the operations that could
 // still name them.
-func (r *retireSet) unlinkSwapped(rep *MaintReport) error {
+func (r *retireSet) unlinkSwapped(rep *MaintReport, fds *packFDCache) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	dirs := map[string]bool{}
@@ -24182,7 +24380,7 @@ func (r *retireSet) unlinkSwapped(rep *MaintReport) error {
 			continue
 		}
 		fireTestHook(hookMaintBeforePackUnlink)
-		if err := os.Remove(e.path); err != nil && !os.IsNotExist(err) {
+		if err := fds.unlinked(func() error { return os.Remove(e.path) }, e.path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("removing pack %s: %w", k[1], err)
 		}
 		delete(r.m, k)
@@ -24810,7 +25008,7 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		rep.BytesReclaimed += ag.BytesReclaimed
 		rep.BytesWritten += ag.BytesCopied
 	}
-	if err := s.retire.unlinkSwapped(&rep); err != nil {
+	if err := s.retire.unlinkSwapped(&rep, &s.fds); err != nil {
 		return rep, err
 	}
 	if opt.GC {
@@ -25574,7 +25772,7 @@ func (s *Store) movePack(id string, from, to tier) error {
 		return err
 	}
 	fireTestHook(hookMoveBeforeDelete)
-	if err := os.Remove(src.path); err != nil && !os.IsNotExist(err) {
+	if err := s.fds.unlinked(func() error { return os.Remove(src.path) }, src.path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing source pack: %w", err)
 	}
 	fireTestHook(hookMoveAfterDelete)
@@ -27361,7 +27559,7 @@ func (s *Store) newPipeReader(sm *servedManifest, rng byteRange) *pipeReader {
 	pl := s.newServedReader(sm, rng)
 	pl.cc = nil // large streams neither read nor fill the chunk cache
 	pl.maxStored = pipeRunMaxStored
-	pl.pr = newPackRunReader(s.packSnap(), s.packTrace)
+	pl.pr = newPackRunReader(s.packSnap(), s.packTrace, &s.fds)
 	return &pipeReader{s: s, m: sm, rng: rng, plan: pl, sem: make(chan struct{}, pipeWorkers), cancel: make(chan struct{}), counted: true}
 }
 
@@ -27417,7 +27615,7 @@ func (p *pipeReader) run(t *pipeTask) {
 		t.data, t.errs = [][]byte{data}, []error{err}
 		return
 	}
-	pr := newPackRunReader(p.plan.pr.st, p.s.packTrace)
+	pr := newPackRunReader(p.plan.pr.st, p.s.packTrace, &p.s.fds)
 	t.pr = pr
 	t.data, t.errs = pr.read(t.sums, t.locs)
 	if tr := p.s.packTrace; tr != nil {
@@ -27682,7 +27880,7 @@ func (m *manifestReader) span(i int, sum [32]byte, lo, hi int64) ([]byte, bool) 
 	}
 	if m.pr == nil {
 		if st := m.s.packSnap(); len(st.packs) > 0 {
-			m.pr = newPackRunReader(st, m.s.packTrace)
+			m.pr = newPackRunReader(st, m.s.packTrace, &m.s.fds)
 		} else {
 			return nil, false
 		}
@@ -27717,7 +27915,7 @@ func (m *manifestReader) planRun(i int, sum [32]byte, chunkStart int64) bool {
 		if len(st.packs) == 0 {
 			return false
 		}
-		m.pr = newPackRunReader(st, m.s.packTrace)
+		m.pr = newPackRunReader(st, m.s.packTrace, &m.s.fds)
 	}
 	first, ok := m.primary(sum, m.m.length(i))
 	if !ok {
@@ -41462,7 +41660,7 @@ func (src *storeRepSource) readerFor(pack int32) *packRunReader {
 	if src.prs == nil {
 		src.prs = map[int32]*packRunReader{}
 	}
-	r := newPackRunReader(src.snapshot(), src.s.packTrace)
+	r := newPackRunReader(src.snapshot(), src.s.packTrace, &src.s.fds)
 	src.prs[pack] = r
 	src.prOrd = append(src.prOrd, pack)
 	return r
