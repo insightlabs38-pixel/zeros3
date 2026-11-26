@@ -14651,6 +14651,10 @@ func (s *Store) Close() error {
 // an already-existing bucket succeeds without appending a duplicate
 // journal record.
 func (s *Store) CreateBucket(name string) error {
+	return s.submitSerialMutation(func() error { return s.createBucket(name) })
+}
+
+func (s *Store) createBucket(name string) error {
 	if name == "" {
 		return fmt.Errorf("invalid bucket name")
 	}
@@ -14666,7 +14670,7 @@ func (s *Store) CreateBucket(name string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.journal.appendFrame(recordTypeCreateBucket, payload); err != nil {
+	if _, err := s.appendMutationFrameLocked(recordTypeCreateBucket, payload); err != nil {
 		return err
 	}
 	s.buckets[name] = &bucketEntry{name: name, createdAt: createdAt}
@@ -14704,6 +14708,10 @@ func (s *Store) HeadBucket(name string) error {
 // file, since those may still (or may again, after a future PutObject)
 // be referenced by other roots.
 func (s *Store) DeleteBucket(name string) error {
+	return s.submitSerialMutation(func() error { return s.deleteBucket(name) })
+}
+
+func (s *Store) deleteBucket(name string) error {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -14731,7 +14739,7 @@ func (s *Store) DeleteBucket(name string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.journal.appendFrame(recordTypeDeleteBucket, payload); err != nil {
+	if _, err := s.appendMutationFrameLocked(recordTypeDeleteBucket, payload); err != nil {
 		return err
 	}
 	delete(s.buckets, name)
@@ -14853,6 +14861,7 @@ type rootCommitReq struct {
 	man                  manifestV1
 	check                func(cur *objectEntry, exists bool) error
 	deleteRoot           bool
+	serial               func() error
 	entry                *objectEntry
 	err                  error
 	done                 chan struct{}
@@ -14936,7 +14945,35 @@ func (s *Store) submitRootCommits(reqs []*rootCommitReq) {
 			panic(p)
 		}
 	}()
-	s.runRootCommits(batch)
+	for start := 0; start < len(batch); {
+		if run := batch[start].serial; run != nil {
+			batch[start].err = run()
+			start++
+			continue
+		}
+		end := start + 1
+		for end < len(batch) && batch[end].serial == nil {
+			end++
+		}
+		s.runRootCommits(batch[start:end])
+		start = end
+	}
+}
+
+// Namespace transactions that need to update a different mutable data
+// structure share the queue order but run at a batch boundary.
+func (s *Store) submitSerialMutation(fn func() error) error {
+	r := &rootCommitReq{serial: fn}
+	s.submitRootCommit(r)
+	return r.err
+}
+
+// The caller holds commitMu across prepare, journal and apply. Drop only
+// the reader lock for the durability operation, even on a fault panic.
+func (s *Store) appendMutationFrameLocked(kind byte, payload []byte) (uint64, error) {
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	return s.journal.appendFrame(kind, payload)
 }
 
 // runRootCommits commits batch with one journal write and one fsync. It holds
@@ -15071,10 +15108,14 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 	}
 }
 
-// commitObjectRootSerial is the pre-P1B commit: one journal fsync per request
-// under mu (ZEROS3_PUB_ABLATE=serialcommit, for A/B measurement).
+// commitObjectRootSerial disables combining for the serialcommit ablation.
 func (s *Store) commitObjectRootSerial(bucket, key, manUUID string, manSHA [32]byte, man manifestV1, check func(cur *objectEntry, exists bool) error) (*objectEntry, error) {
-	entry, err := s.commitObjectRootSerialLocked(bucket, key, manUUID, manSHA, man, check)
+	var entry *objectEntry
+	err := s.submitSerialMutation(func() error {
+		var err error
+		entry, err = s.commitObjectRootSerialLocked(bucket, key, manUUID, manSHA, man, check)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -15132,7 +15173,7 @@ func (s *Store) commitObjectRootSerialLocked(bucket, key, manUUID string, manSHA
 	if err != nil {
 		return nil, err
 	}
-	seq, err := s.journal.appendFrame(recordTypePutObjectRootV2, payload)
+	seq, err := s.appendMutationFrameLocked(recordTypePutObjectRootV2, payload)
 	if err != nil {
 		return nil, fmt.Errorf("journal append failed: %w", err)
 	}
@@ -15665,6 +15706,10 @@ func (s *Store) applyHistoryPrune(res *HistoryPruneResult, frameTarget int) erro
 
 // applyPruneFrame resolves a frame's rows, journals it and applies it.
 func (s *Store) applyPruneFrame(res *HistoryPruneResult, p journalPruneHistoryPayload, payload []byte) error {
+	return s.submitSerialMutation(func() error { return s.commitPruneFrame(res, p, payload) })
+}
+
+func (s *Store) commitPruneFrame(res *HistoryPruneResult, p journalPruneHistoryPayload, payload []byte) error {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -15673,7 +15718,7 @@ func (s *Store) applyPruneFrame(res *HistoryPruneResult, p journalPruneHistoryPa
 	if err != nil {
 		return err
 	}
-	if _, err := s.journal.appendFrame(recordTypePruneHistory, payload); err != nil {
+	if _, err := s.appendMutationFrameLocked(recordTypePruneHistory, payload); err != nil {
 		return err
 	}
 	apply()
@@ -18866,10 +18911,19 @@ type completedPart struct {
 }
 
 // CreateMultipartUpload starts a new persistent upload session for
-// (bucket, key). Like CreateBucket/DeleteBucket, this is cheap enough that
-// the journal append happens while still holding s.mu -- there is no heavy
-// CAS/chunking work to keep off the lock here.
+// (bucket, key). It shares the mutation order and publishes the upload only
+// after its journal record is durable.
 func (s *Store) CreateMultipartUpload(bucket, key, contentType string, metadata map[string]string) (string, error) {
+	var id string
+	err := s.submitSerialMutation(func() error {
+		var err error
+		id, err = s.createMultipartUpload(bucket, key, contentType, metadata)
+		return err
+	})
+	return id, err
+}
+
+func (s *Store) createMultipartUpload(bucket, key, contentType string, metadata map[string]string) (string, error) {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -18887,7 +18941,7 @@ func (s *Store) CreateMultipartUpload(bucket, key, contentType string, metadata 
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.journal.appendFrame(recordTypeCreateMultipartUpload, payload); err != nil {
+	if _, err := s.appendMutationFrameLocked(recordTypeCreateMultipartUpload, payload); err != nil {
 		return "", err
 	}
 	flatMetadata := map[string]string{}
@@ -18968,22 +19022,32 @@ func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ing
 		return "", err
 	}
 
+	err = s.submitSerialMutation(func() error {
+		return s.commitPartRecord(bucket, key, uploadID, partNumber, ing, uploadedAt, etag, payload)
+	})
+	if err != nil {
+		return "", err
+	}
+	fireTestHook(hookAfterApplyBeforeResponse)
+	return etag, nil
+}
+
+func (s *Store) commitPartRecord(bucket, key, uploadID string, partNumber int, ing ingestResult, uploadedAt time.Time, etag string, payload []byte) error {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	up, err := s.lookupUploadLocked(bucket, key, uploadID)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if _, err := s.journal.appendFrame(recordTypeUploadPart, payload); err != nil {
-		return "", err
+	if _, err := s.appendMutationFrameLocked(recordTypeUploadPart, payload); err != nil {
+		return err
 	}
 	up.parts[partNumber] = &multipartPart{
 		partNumber: partNumber, size: ing.size, etag: etag, chunks: ing.chunks, uploadedAt: uploadedAt,
 	}
-	fireTestHook(hookAfterApplyBeforeResponse)
-	return etag, nil
+	return nil
 }
 
 // ListParts returns every currently-uploaded part of uploadID, ordered by
@@ -19064,6 +19128,10 @@ func (s *Store) ListPartsPage(bucket, key, uploadID string, partNumberMarker, ma
 // upload ID reports errNoSuchUpload, matching real S3 rather than treating
 // repeat-abort as an idempotent no-op.
 func (s *Store) AbortMultipartUpload(bucket, key, uploadID string) error {
+	return s.submitSerialMutation(func() error { return s.abortMultipartUpload(bucket, key, uploadID) })
+}
+
+func (s *Store) abortMultipartUpload(bucket, key, uploadID string) error {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -19075,7 +19143,7 @@ func (s *Store) AbortMultipartUpload(bucket, key, uploadID string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.journal.appendFrame(recordTypeAbortMultipartUpload, payload); err != nil {
+	if _, err := s.appendMutationFrameLocked(recordTypeAbortMultipartUpload, payload); err != nil {
 		return err
 	}
 	delete(s.uploads, uploadID)
@@ -19405,6 +19473,21 @@ func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested 
 	fireTestHook(hookAfterManifestPublished)
 	s.maybeBuildRep(man)
 
+	var entry *objectEntry
+	err = s.submitSerialMutation(func() error {
+		var err error
+		entry, err = s.commitMultipartRoot(bucket, key, uploadID, manUUID, manSHA, man)
+		return err
+	})
+	if err != nil {
+		return nil, manifestV1{}, err
+	}
+	fireTestHook(hookAfterApplyBeforeResponse)
+	s.repAfterCommit(bucket, key, man)
+	return entry, man, nil
+}
+
+func (s *Store) commitMultipartRoot(bucket, key, uploadID, manUUID string, manSHA [32]byte, man manifestV1) (*objectEntry, error) {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -19414,10 +19497,10 @@ func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested 
 	// second, racing Complete may have already retired this upload while
 	// the (unlocked) re-chunking work above was running.
 	if _, err := s.lookupUploadLocked(bucket, key, uploadID); err != nil {
-		return nil, manifestV1{}, err
+		return nil, err
 	}
 	if _, ok := s.buckets[bucket]; !ok {
-		return nil, manifestV1{}, errNoSuchBucket
+		return nil, errNoSuchBucket
 	}
 	// A completed multipart upload overwrites an existing current object
 	// exactly like an ordinary PUT overwrite does: the prior root (if any)
@@ -19426,14 +19509,14 @@ func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested 
 	var prevPayload *journalArchivedVersionPayload
 	prev, err := s.objFind(bucket, key)
 	if err != nil {
-		return nil, manifestV1{}, err
+		return nil, err
 	}
 	if prev != nil {
 		prevPayload = archivedVersionPayload(prev, historyReasonOverwritten)
 	}
 	hist, err := s.histPrepare(bucket, key, prevPayload, nil, false)
 	if err != nil {
-		return nil, manifestV1{}, fmt.Errorf("multipart: reading history: %w", err)
+		return nil, fmt.Errorf("multipart: reading history: %w", err)
 	}
 	payload, err := json.Marshal(journalCompleteMultipartPayloadV2{
 		UploadID: uploadID, Bucket: bucket, Key: key,
@@ -19442,11 +19525,11 @@ func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested 
 		Previous: prevPayload,
 	})
 	if err != nil {
-		return nil, manifestV1{}, err
+		return nil, err
 	}
-	seq, err := s.journal.appendFrame(recordTypeCompleteMultipartUploadV2, payload)
+	seq, err := s.appendMutationFrameLocked(recordTypeCompleteMultipartUploadV2, payload)
 	if err != nil {
-		return nil, manifestV1{}, fmt.Errorf("journal append failed: %w", err)
+		return nil, fmt.Errorf("journal append failed: %w", err)
 	}
 	entry := &objectEntry{
 		manifestUUID: manUUID, manifestSHA256: manSHA,
@@ -19455,9 +19538,7 @@ func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested 
 	s.objSet(bucket, key, entry, prev != nil)
 	delete(s.uploads, uploadID)
 	hist.apply(s, seq)
-	fireTestHook(hookAfterApplyBeforeResponse)
-	s.repAfterCommit(bucket, key, man)
-	return entry, man, nil
+	return entry, nil
 }
 
 // --- HTTP: multipart XML request/response types ---

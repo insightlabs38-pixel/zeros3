@@ -1,0 +1,8 @@
+--- PASS: TestFB02_ConcurrentIfUnchangedCommits (0.06s)
+--- PASS: TestFB04DeleteGroupPublication (1.01s)
+--- PASS: TestFB04DeleteGroupSyncError (0.01s)
+--- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked (0.02s)
+--- PASS: TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy (0.78s)
+--- PASS: TestMultipart_LifecycleAfterAbortOrComplete (0.07s)
+PASS
+ok  	zeros3	3.000s

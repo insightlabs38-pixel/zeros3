@@ -1,0 +1,4 @@
+--- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked (0.02s)
+--- PASS: TestFB04ConcurrentRootLinearizability (0.09s)
+PASS
+ok  	zeros3	0.122s

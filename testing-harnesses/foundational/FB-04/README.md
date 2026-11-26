@@ -17,6 +17,18 @@ one sync in both v1 and J2. An exact foreground read completed while
 the sync was held, and every deletion survived reopen. The grouped
 ENOSPC test preserved the old roots and exact log.
 
-Remaining scope covers the bucket, multipart, and prune paths in the
-same queue, bounded performance work, and the cross-operation
-linearizability and crash gates.
+Bucket creation/deletion, upload creation/part/abort/completion,
+and history-prune frames share the queue in order. They use separate
+batch boundaries because their provisional state differs from the
+object-root overlay. Multipart ingest and checksum work stays outside
+the queue. All journal writes in these mutation paths release the
+namespace lock while the commit lock excludes writers. Focused probes
+checked each path with both formats, including exact multipart bytes.
+
+Three interleaved overlay trials of the signed 1,000-key delete
+measured 228.9 ms before and 10.3 ms after, excluding fixture setup.
+The queue passed an independent interval-order model for concurrent
+PUT, conditional create, DELETE and read at 32 histories per format.
+The real process-kill rerun and broader focused race logs are in
+[results](results/). Paired foreground latency measurements remain
+in progress.

@@ -1,0 +1,6 @@
+{"pair": 1, "lane": "before", "keys": 1000, "delete_ms": 250.190331, "format": "v1"}
+{"pair": 1, "lane": "after", "keys": 1000, "delete_ms": 8.901598, "format": "v1"}
+{"pair": 2, "lane": "before", "keys": 1000, "delete_ms": 226.379645, "format": "v1"}
+{"pair": 2, "lane": "after", "keys": 1000, "delete_ms": 10.262909, "format": "v1"}
+{"pair": 3, "lane": "before", "keys": 1000, "delete_ms": 228.921695, "format": "v1"}
+{"pair": 3, "lane": "after", "keys": 1000, "delete_ms": 10.641424, "format": "v1"}

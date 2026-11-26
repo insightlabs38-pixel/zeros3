@@ -1,0 +1,5 @@
+--- PASS: TestFB04DeleteGroupPublication (0.52s)
+--- PASS: TestFB04DeleteGroupSyncError (0.00s)
+--- PASS: TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion (0.03s)
+PASS
+ok  	zeros3	1.578s

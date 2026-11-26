@@ -1,0 +1,5 @@
+{"kind":"kill-summary","build":"","point":"random","rounds":1,"acked_operations":1845,"lost_operations":0,"automatic_recoveries":0,"discarded_bytes":0,"refusals":0,"shared_opens_ok":1,"owner_open_max_us":7901}
+{"kind":"kill-summary","build":"","point":"after-journal-write-before-sync","rounds":3,"acked_operations":74,"lost_operations":0,"automatic_recoveries":0,"discarded_bytes":0,"refusals":0,"shared_opens_ok":3,"owner_open_max_us":7445}
+{"kind":"kill-summary","build":"","point":"after-journal-sync","rounds":3,"acked_operations":80,"lost_operations":0,"automatic_recoveries":0,"discarded_bytes":0,"refusals":0,"shared_opens_ok":3,"owner_open_max_us":7731}
+{"kind":"kill-summary","build":"","point":"after-apply-before-response","rounds":3,"acked_operations":47,"lost_operations":0,"automatic_recoveries":0,"discarded_bytes":0,"refusals":0,"shared_opens_ok":3,"owner_open_max_us":29368}
+{"kind":"kill-summary","build":"","point":"torn-write","rounds":3,"acked_operations":90,"lost_operations":0,"automatic_recoveries":3,"discarded_bytes":2527,"refusals":0,"shared_opens_ok":3,"owner_open_max_us":10581}
