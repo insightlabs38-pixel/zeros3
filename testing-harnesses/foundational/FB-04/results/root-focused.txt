@@ -1,0 +1,7 @@
+--- PASS: TestFB04DeleteGroupPublication (0.07s)
+--- PASS: TestFB04DeleteGroupSyncError (0.00s)
+--- PASS: TestDeleteObjects_Table (0.07s)
+--- PASS: TestDeleteObjects_BucketVersionAndBounds (0.05s)
+--- PASS: TestDeleteObjects_HistoryPruneGC (0.01s)
+PASS
+ok  	zeros3	0.196s

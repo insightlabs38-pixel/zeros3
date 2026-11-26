@@ -14746,36 +14746,9 @@ func (s *Store) DeleteBucket(name string) error {
 // chunks the deleted root pointed at are left on disk, immutable, for a
 // later GC pass and for any other root that still references them.
 func (s *Store) DeleteObject(bucket, key string) error {
-	s.commitMu.Lock()
-	defer s.commitMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.buckets[bucket]; !ok {
-		return errNoSuchBucket
-	}
-	cur, err := s.objFind(bucket, key)
-	if err != nil {
-		return err
-	}
-	if cur == nil {
-		return nil
-	}
-	archived := archivedVersionPayload(cur, historyReasonDeleted) // non-nil: cur is non-nil here
-	hist, err := s.histPrepare(bucket, key, archived, nil, false)
-	if err != nil {
-		return fmt.Errorf("delete: reading history: %w", err)
-	}
-	payload, err := json.Marshal(journalDeleteObjectPayloadV2{Bucket: bucket, Key: key, Archived: *archived})
-	if err != nil {
-		return err
-	}
-	seq, err := s.journal.appendFrame(recordTypeDeleteObjectRootV2, payload)
-	if err != nil {
-		return err
-	}
-	s.objSet(bucket, key, nil, true)
-	hist.apply(s, seq)
-	return nil
+	req := &rootCommitReq{bucket: bucket, key: key, deleteRoot: true}
+	s.submitRootCommit(req)
+	return req.err
 }
 
 // commitIngested publishes the manifest for an already-ingested object
@@ -14879,6 +14852,7 @@ type rootCommitReq struct {
 	manSHA               [32]byte
 	man                  manifestV1
 	check                func(cur *objectEntry, exists bool) error
+	deleteRoot           bool
 	entry                *objectEntry
 	err                  error
 	done                 chan struct{}
@@ -14904,11 +14878,24 @@ type commitQueue struct {
 }
 
 func (s *Store) submitRootCommit(r *rootCommitReq) {
+	s.submitRootCommits([]*rootCommitReq{r})
+}
+
+// A request with several root mutations enqueues them together. Waiting on the
+// first result is sufficient because the leader sets every result before
+// releasing any member of the batch.
+func (s *Store) submitRootCommits(reqs []*rootCommitReq) {
+	if len(reqs) == 0 {
+		return
+	}
 	q := &s.commits
-	r.done = make(chan struct{})
+	r := reqs[0]
+	for _, req := range reqs {
+		req.done = make(chan struct{})
+	}
 	r.lead = make(chan struct{}, 1)
 	q.mu.Lock()
-	q.q = append(q.q, r)
+	q.q = append(q.q, reqs...)
 	if q.leading {
 		q.mu.Unlock()
 		select {
@@ -14926,18 +14913,17 @@ func (s *Store) submitRootCommit(r *rootCommitReq) {
 	q.mu.Unlock()
 	defer func() {
 		p := recover()
-		if p != nil { // a crash hook: fail the batch instead of stranding it
-			// Whether the batch's frames are durable is now unknown to the
-			// in-memory namespace: fail-stop, like a failed journal write.
-			s.journal.poison(fmt.Errorf("commit interrupted by panic: %v", p))
-			for _, m := range batch {
-				select {
-				case <-m.done:
-				default:
-					m.err = fmt.Errorf("commit interrupted: %v", p)
-					close(m.done)
-				}
+		if p != nil {
+			// A durable group may exist even if apply panicked. Poison the
+			// writer and fail every waiter before releasing any of them.
+			err := fmt.Errorf("commit interrupted by panic: %v", p)
+			s.journal.poison(err)
+			for _, req := range batch {
+				req.err = err
 			}
+		}
+		for _, req := range batch {
+			close(req.done)
 		}
 		q.mu.Lock()
 		if len(q.q) > 0 {
@@ -14979,14 +14965,19 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 				r.err = errNoSuchBucket
 				continue
 			}
-			cur, err := s.objFind(r.bucket, r.key)
-			if err != nil {
-				r.err = err
-				continue
+			key := viewKey{r.bucket, r.key}
+			cur, planned := view[key]
+			if !planned {
+				var err error
+				cur, err = s.objFind(r.bucket, r.key)
+				if err != nil {
+					r.err = err
+					continue
+				}
 			}
 			exists := cur != nil
-			if v, ok := view[viewKey{r.bucket, r.key}]; ok {
-				cur, exists = v, true
+			if r.deleteRoot && !exists {
+				continue
 			}
 			if r.check != nil {
 				if err := r.check(cur, exists); err != nil {
@@ -14996,13 +14987,28 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 			}
 			var prev *journalArchivedVersionPayload
 			if exists {
-				prev = archivedVersionPayload(cur, historyReasonOverwritten)
+				reason := historyReasonOverwritten
+				if r.deleteRoot {
+					reason = historyReasonDeleted
+				}
+				prev = archivedVersionPayload(cur, reason)
 			}
 			ck := nsKey(r.bucket, r.key)
 			prior, seen := histView[ck]
 			hist, err := s.histPrepare(r.bucket, r.key, prev, prior, seen)
 			if err != nil {
 				r.err = fmt.Errorf("commit: reading history: %w", err)
+				continue
+			}
+			if r.deleteRoot {
+				payload, err := json.Marshal(journalDeleteObjectPayloadV2{Bucket: r.bucket, Key: r.key, Archived: *prev})
+				if err != nil {
+					r.err = err
+					continue
+				}
+				view[key], histView[ck] = nil, hist.list
+				items = append(items, item{r, hist, exists})
+				recs = append(recs, journalFrameIn{recType: recordTypeDeleteObjectRootV2, payload: payload})
 				continue
 			}
 			payload, err := json.Marshal(journalPutPayloadV2{
@@ -15027,7 +15033,7 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 				etag:           r.man.ETag,
 				contentType:    r.man.ContentType,
 			}
-			view[viewKey{r.bucket, r.key}] = r.entry
+			view[key] = r.entry
 			if hist != nil {
 				histView[ck] = hist.list
 			}
@@ -15035,23 +15041,19 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 			recs = append(recs, journalFrameIn{recType: recordTypePutObjectRootV2, payload: payload})
 		}
 	}()
-	defer func() {
-		for _, r := range batch {
-			select {
-			case <-r.done:
-			default:
-				close(r.done)
-			}
-		}
-	}()
 	if len(recs) == 0 {
 		return
 	}
 	first, err := s.journal.appendFrames(recs) // mu is NOT held: readers proceed during the fsync
 	if err != nil {
-		for _, it := range items {
-			it.r.entry = nil
-			it.r.err = fmt.Errorf("journal append failed: %w", err)
+		for _, req := range batch {
+			// A condition or duplicate delete may have observed a
+			// speculative predecessor, so do not resolve it as if
+			// the failed group had been applied.
+			req.entry = nil
+			if !errors.Is(req.err, errNoSuchBucket) {
+				req.err = fmt.Errorf("journal append failed: %w", err)
+			}
 		}
 		return
 	}
@@ -15060,9 +15062,12 @@ func (s *Store) runRootCommits(batch []*rootCommitReq) {
 	// Past the durability boundary nothing may fail: every lookup was resolved above.
 	for i, it := range items {
 		r := it.r
-		r.entry.seq = first + uint64(i)
+		seq := first + uint64(i)
+		if r.entry != nil {
+			r.entry.seq = seq
+		}
 		s.objSet(r.bucket, r.key, r.entry, it.existed)
-		it.hist.apply(s, r.entry.seq)
+		it.hist.apply(s, seq)
 	}
 }
 
@@ -18288,10 +18293,8 @@ type deleteResultXML struct {
 	Errors  []deleteErrorXML `xml:"Error"`
 }
 
-// handleDeleteObjects deletes each listed key through Store.DeleteObject --
-// the same durable, history-archiving primitive as a single DELETE -- in
-// request order. It is deliberately not atomic: a per-key failure is
-// reported in the result and does not undo or stop the other keys.
+// handleDeleteObjects validates each member, then queues the eligible roots
+// together. Per-key errors and the quiet response are unchanged.
 func (srv *Server) handleDeleteObjects(w http.ResponseWriter, bucket string, body []byte) {
 	res := "/" + bucket
 	var req deleteObjectsRequestXML
@@ -18313,14 +18316,24 @@ func (srv *Server) handleDeleteObjects(w http.ResponseWriter, bucket string, bod
 		writeS3Error(w, "NoSuchBucket", "the specified bucket does not exist", res)
 		return
 	}
+	mutations := make([]*rootCommitReq, 0, len(req.Objects))
+	for _, o := range req.Objects {
+		if o.VersionID == "" || o.VersionID == "null" {
+			mutations = append(mutations, &rootCommitReq{bucket: bucket, key: *o.Key, deleteRoot: true})
+		}
+	}
+	srv.store.submitRootCommits(mutations)
 	out := deleteResultXML{}
+	accepted := 0
 	for _, o := range req.Objects {
 		key := *o.Key
 		if o.VersionID != "" && o.VersionID != "null" {
 			out.Errors = append(out.Errors, deleteErrorXML{Key: key, Code: "InvalidArgument", Message: "ZeroS3 does not support deleting specific object versions"})
 			continue
 		}
-		if err := srv.store.DeleteObject(bucket, key); err != nil {
+		err := mutations[accepted].err
+		accepted++
+		if err != nil {
 			code := "InternalError"
 			if errors.Is(err, errNoSuchBucket) {
 				code = "NoSuchBucket"
