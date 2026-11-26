@@ -455,10 +455,7 @@ func fb03CheckFilters(t *testing.T, st *packState) {
 	t.Helper()
 	for k, ix := range st.levels {
 		if ix.filter == nil {
-			if k > 0 {
-				t.Fatalf("level %d of %d has no filter", k, len(st.levels))
-			}
-			continue
+			t.Fatalf("level %d of %d has no filter", k, len(st.levels))
 		}
 		for _, run := range [][]locRec{ix.recs, ix.dups} {
 			for i := range run {
@@ -476,6 +473,14 @@ func fb03CheckFilters(t *testing.T, st *packState) {
 // before) holding any.
 func fb03CheckSettled(t *testing.T, st *packState, before []*locIndex) {
 	t.Helper()
+	fb03CheckSettledK(t, st, before, false)
+}
+
+// fb03CheckSettledK is fb03CheckSettled; with keepNewest (a Store's
+// background, which leaves the newest level to the publishes) the newest
+// pair may break the ratio.
+func fb03CheckSettledK(t *testing.T, st *packState, before []*locIndex, keepNewest bool) {
+	t.Helper()
 	if len(st.levels) > locMaxLevels {
 		t.Fatalf("%d levels after settling", len(st.levels))
 	}
@@ -485,6 +490,9 @@ func fb03CheckSettled(t *testing.T, st *packState, before []*locIndex) {
 	}
 	r := locRatio(total, locMaxLevels)
 	for k := 1; k < len(st.levels); k++ {
+		if keepNewest && k == len(st.levels)-1 {
+			break
+		}
 		if r*st.levels[k].size() >= st.levels[k-1].size() {
 			t.Fatalf("levels %d and %d break ratio %d: %d and %d records", k-1, k, r, st.levels[k-1].size(), st.levels[k].size())
 		}
@@ -701,21 +709,37 @@ func TestFB03_LocMergeSegments(t *testing.T) {
 func TestFB03_LocMergeLinear(t *testing.T) {
 	rng := rand.New(rand.NewSource(3))
 	universe := fb03Universe(rng, 4000)
+	reused := 0
 	for trial := 0; trial < 60; trial++ {
 		var levels []*locIndex
 		var all []locRec
 		pack := uint32(0)
-		for l := 0; l < 1+rng.Intn(6); l++ {
+		// Every third trial is a large level and a few small ones: the
+		// publish-time shape, where the merged filter reuses the large
+		// level's blocks. Inputs are filtered at random.
+		tail := trial%3 == 2
+		nl := 1 + rng.Intn(6)
+		if tail {
+			nl = 2 + rng.Intn(3)
+		}
+		for l := 0; l < nl; l++ {
 			var recs []locRec
 			for p := 0; p < 1+rng.Intn(4); p++ {
 				tt := tier(rng.Intn(int(numTiers)))
-				for _, s := range fb03Sums(rng, universe, rng.Intn(400)) {
+				n := rng.Intn(400)
+				if tail {
+					n = 1 + rng.Intn(3)
+					if l == 0 {
+						n = 3000
+					}
+				}
+				for _, s := range fb03Sums(rng, universe, n) {
 					e := packEntry{sha: s, stored: 1, logical: 1 + uint32(rng.Intn(2)), off: uint64(rng.Intn(1 << 30))}
 					recs = append(recs, mkLocRec(&e, pack, tt))
 				}
 				pack++
 			}
-			ix := buildLocIndex(recs, func(prim, rep *locRec) {})
+			ix := buildLocIndexF(recs, func(prim, rep *locRec) {}, tail || rng.Intn(2) == 0)
 			levels = append(levels, ix)
 			all = append(append(all, ix.recs...), ix.dups...)
 		}
@@ -742,6 +766,12 @@ func TestFB03_LocMergeLinear(t *testing.T) {
 		if !slices.Equal(gotClash, wantClash) {
 			t.Fatalf("trial %d: clashes differ: %d vs %d", trial, len(gotClash), len(wantClash))
 		}
+		if gone == nil && got.filter != nil && levels[0].filter != nil && len(levels[0].filter.blocks) == len(got.filter.blocks) {
+			reused++
+		}
+	}
+	if reused == 0 {
+		t.Fatal("no trial merged into an input's filter geometry")
 	}
 }
 
@@ -826,6 +856,51 @@ func TestFB03_LocForcedCollision(t *testing.T) {
 	m.check(t, st, absent, true)
 	st = st.settled()
 	m.check(t, st, absent, true)
+}
+
+// TestFB03_LocPlanQuietPurge: the background may rewrite the newest level
+// alone only while there is room for the publishes' level beside it, so a
+// quiet store sheds a mostly retired newest level without ever exceeding the
+// bound.
+func TestFB03_LocPlanQuietPurge(t *testing.T) {
+	if locMaxLevels != 4 {
+		t.Skip("sizes below assume the default bound of 4")
+	}
+	lv := func(sizes ...int) []*locIndex {
+		out := make([]*locIndex, len(sizes))
+		for k, n := range sizes {
+			out[k] = &locIndex{recs: make([]locRec, n)}
+		}
+		return out
+	}
+	half := func(newest *locIndex) func(*locIndex) int {
+		return func(ix *locIndex) int {
+			if ix == newest {
+				return ix.size() / 2
+			}
+			return 0
+		}
+	}
+	for _, c := range []struct {
+		sizes []int
+		ok    bool
+	}{
+		{[]int{8192}, true},
+		{[]int{1 << 20, 8192}, true},
+		{[]int{1 << 20, 1 << 16, 8192}, true},
+		{[]int{1 << 20, 1 << 16, 1 << 12, 8192}, false}, // at the bound: the next publish merges it
+		{[]int{1 << 20, 1<<12 - 1}, false},              // too small to rewrite alone
+	} {
+		levels := lv(c.sizes...)
+		newest := levels[len(levels)-1]
+		i, j, ok := locPlan(levels, nil, half(newest), true)
+		if ok != c.ok || ok && (i != len(levels)-1 || j != i) {
+			t.Fatalf("sizes %v: plan [%d, %d] %v, want the newest level alone %v", c.sizes, i, j, ok, c.ok)
+		}
+		if _, _, ok := locPlan(levels, map[*locIndex]bool{newest: true}, half(newest), true); ok {
+			t.Fatalf("sizes %v: a frozen newest level was planned", c.sizes)
+		}
+	}
 }
 
 // ---- the background merger ------------------------------------------------
@@ -913,10 +988,11 @@ func TestFB03_LocBackgroundMerge(t *testing.T) {
 	if wrong.Load() != 0 {
 		t.Fatalf("%d lookups gave the wrong answer during merges", wrong.Load())
 	}
-	if stats.Merges.Load() == 0 || maxLevels > locMaxLevels+2 || st.needsMerge(nil) {
-		t.Fatalf("merges %d, max levels %d, work left %v", stats.Merges.Load(), maxLevels, st.needsMerge(nil))
+	_, _, left := locPlan(st.levels, nil, st.goneIn, true)
+	if stats.Merges.Load() == 0 || maxLevels > locMaxLevels || stats.MaxLevels.Load() > int64(locMaxLevels) || left {
+		t.Fatalf("merges %d, max levels %d (%d published), work left %v", stats.Merges.Load(), maxLevels, stats.MaxLevels.Load(), left)
 	}
-	fb03CheckSettled(t, st, nil)
+	fb03CheckSettledK(t, st, nil, true)
 	if st.distinct() != packs*per {
 		t.Fatalf("distinct %d want %d", st.distinct(), packs*per)
 	}

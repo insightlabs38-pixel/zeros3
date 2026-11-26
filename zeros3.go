@@ -3931,8 +3931,10 @@ type locIndex struct {
 	tbl   []uint32
 	shift uint
 	// filter, when set, answers "certainly absent" for most digests the level
-	// does not hold, so a negative lookup skips the level's search. Levels
-	// other than the oldest carry one (section 4c).
+	// does not hold, so a negative lookup skips the level's search. Every
+	// level of a locator carries one (section 4c): most lookups during ingest
+	// are for new chunks, and the oldest level's filter turns their binary
+	// search over most of the records into one probe.
 	filter *locFilter
 }
 
@@ -4084,7 +4086,7 @@ var locMaxLevels = func() int {
 
 const (
 	locSyncMerge   = 1 << 16 // records: a merge this small runs inside the publish
-	locUnit        = 1 << 12 // the size the smallest level may reach before the ratio applies
+	locUnit        = 1 << 10 // the size the smallest level may reach before the ratio applies
 	locFilterBits  = 10      // filter bits per record: about 1% false positives
 	locPurgeMinRec = 1 << 12 // a level smaller than this is not rewritten just to drop retired records
 )
@@ -4114,7 +4116,58 @@ type locFilter struct {
 var locFilterSalt = [8]uint32{0x47b6137b, 0x44974d91, 0x8824ad5b, 0xa2b7289d, 0x705495c7, 0x2df1424b, 0x9efc4947, 0x5c6bfb31}
 
 func newLocFilter(n int) *locFilter {
-	return &locFilter{blocks: make([][8]uint32, max(1, (n*locFilterBits+255)/256))}
+	return &locFilter{blocks: make([][8]uint32, locFilterBlocks(n))}
+}
+
+// locFilterBlocks is the block count of a filter for n digests: about
+// locFilterBits bits per digest, rounded up to one of eight sizes per
+// doubling (at most 1/8 more), so that a level grown by a few records keeps
+// its predecessor's geometry and a merge can reuse its blocks.
+func locFilterBlocks(n int) int {
+	need := max(1, (n*locFilterBits+255)/256)
+	step := 1 << max(0, bits.Len(uint(need))-4)
+	return (need + step - 1) / step * step
+}
+
+// locFilterFrom is the filter of recs, the records of a level merged from
+// inputs with nothing dropped: its digests are exactly the inputs' digests,
+// and a filter's bits depend only on the digest and the block count, so the
+// blocks of inputs with the same geometry are copied and OR-ed, and only the
+// other inputs' digests are added one by one. The result is the filter a
+// fresh build would make.
+func locFilterFrom(recs []locRec, inputs []*locIndex) *locFilter {
+	nb := locFilterBlocks(len(recs))
+	same := func(ix *locIndex) bool { return ix.filter != nil && len(ix.filter.blocks) == nb }
+	base := -1
+	for k, ix := range inputs {
+		if same(ix) && (base < 0 || len(ix.recs) > len(inputs[base].recs)) {
+			base = k
+		}
+	}
+	if base < 0 {
+		f := newLocFilter(len(recs))
+		for i := range recs {
+			f.add(&recs[i].sum)
+		}
+		return f
+	}
+	f := &locFilter{blocks: slices.Clone(inputs[base].filter.blocks)}
+	for k, ix := range inputs {
+		switch {
+		case k == base:
+		case same(ix):
+			for b := range f.blocks {
+				for w := range f.blocks[b] {
+					f.blocks[b][w] |= ix.filter.blocks[b][w]
+				}
+			}
+		default:
+			for i := range ix.recs {
+				f.add(&ix.recs[i].sum)
+			}
+		}
+	}
+	return f
 }
 
 func (f *locFilter) slot(sum *[32]byte) (*[8]uint32, uint32) {
@@ -4129,14 +4182,20 @@ func (f *locFilter) add(sum *[32]byte) {
 	}
 }
 
+// has tests all eight bits without branching on them: a filter mostly
+// answers no, at a word that varies from digest to digest, so an early exit
+// would be a mispredicted branch on nearly every probe.
 func (f *locFilter) has(sum *[32]byte) bool {
 	b, k := f.slot(sum)
-	for i := range b {
-		if b[i]&(1<<((k*locFilterSalt[i])>>27)) == 0 {
-			return false
-		}
-	}
-	return true
+	m := b[0] >> ((k * locFilterSalt[0]) >> 27)
+	m &= b[1] >> ((k * locFilterSalt[1]) >> 27)
+	m &= b[2] >> ((k * locFilterSalt[2]) >> 27)
+	m &= b[3] >> ((k * locFilterSalt[3]) >> 27)
+	m &= b[4] >> ((k * locFilterSalt[4]) >> 27)
+	m &= b[5] >> ((k * locFilterSalt[5]) >> 27)
+	m &= b[6] >> ((k * locFilterSalt[6]) >> 27)
+	m &= b[7] >> ((k * locFilterSalt[7]) >> 27)
+	return m&1 != 0
 }
 
 func (f *locFilter) bytes() int {
@@ -4149,6 +4208,12 @@ func (f *locFilter) bytes() int {
 // finishLocIndex builds the lookup table (and the filter when asked) of a
 // level whose recs hold one record per digest in cmpLocRec order.
 func finishLocIndex(ix *locIndex, filter bool) *locIndex {
+	return finishLocIndexFrom(ix, filter, nil)
+}
+
+// finishLocIndexFrom is finishLocIndex for a level merged from inputs that
+// lost no record (nil otherwise): its filter is assembled from theirs.
+func finishLocIndexFrom(ix *locIndex, filter bool, inputs []*locIndex) *locIndex {
 	w := len(ix.recs)
 	nb := min(bits.Len(uint(w/4)), 24)
 	ix.shift = uint(32 - nb)
@@ -4163,11 +4228,7 @@ func finishLocIndex(ix *locIndex, filter bool) *locIndex {
 	ix.tbl[1<<nb] = uint32(w)
 	ix.filter = nil
 	if filter && w > 0 {
-		f := newLocFilter(w)
-		for i := range ix.recs {
-			f.add(&ix.recs[i].sum)
-		}
-		ix.filter = f
+		ix.filter = locFilterFrom(ix.recs, inputs)
 	}
 	return ix
 }
@@ -4177,19 +4238,26 @@ func finishLocIndex(ix *locIndex, filter bool) *locIndex {
 // record of a digest becomes its primary, a later one of the same length a
 // fallback, and one whose length contradicts the primary goes to onClash.
 func mergeLevels(levels []*locIndex, gone func(r *locRec) bool, filter bool, onClash func(prim, rep *locRec)) *locIndex {
-	runs := make([][]locRec, 0, 2*len(levels))
+	type run struct {
+		recs []locRec
+		uniq bool // a level's primaries: digests strictly increasing
+	}
+	runs := make([]run, 0, 2*len(levels))
 	total := 0
 	for _, ix := range levels {
-		for _, r := range [][]locRec{ix.recs, ix.dups} {
-			if len(r) > 0 {
-				runs = append(runs, r)
-				total += len(r)
-			}
+		if len(ix.recs) > 0 {
+			runs = append(runs, run{ix.recs, true})
 		}
+		if len(ix.dups) > 0 {
+			runs = append(runs, run{ix.dups, false})
+		}
+		total += ix.size()
 	}
 	out := &locIndex{recs: make([]locRec, 0, total)}
+	dropped := 0
 	emit := func(r *locRec) {
 		if gone != nil && gone(r) {
+			dropped++
 			return
 		}
 		if n := len(out.recs); n > 0 && out.recs[n-1].sum == r.sum {
@@ -4202,66 +4270,120 @@ func mergeLevels(levels []*locIndex, gone func(r *locRec) bool, filter bool, onC
 		}
 		out.recs = append(out.recs, *r)
 	}
+	// emitUniq appends records of a primaries run that follow one already
+	// emitted: their digests are above every digest in out, so they are
+	// copied in bulk, less the retired ones.
+	emitUniq := func(r []locRec) {
+		if gone == nil {
+			out.recs = append(out.recs, r...)
+			return
+		}
+		start := 0
+		for i := range r {
+			if gone(&r[i]) {
+				out.recs = append(out.recs, r[start:i]...)
+				start = i + 1
+				dropped++
+			}
+		}
+		out.recs = append(out.recs, r[start:]...)
+	}
 	for len(runs) > 0 {
 		k := 0
 		for j := 1; j < len(runs); j++ {
-			if cmpLocRec(&runs[j][0], &runs[k][0]) < 0 {
+			if cmpLocRec(&runs[j].recs[0], &runs[k].recs[0]) < 0 {
 				k = j
 			}
 		}
-		// Copy run k while it stays below every other run's head.
-		r, n := runs[k], 1
-		if len(runs) == 1 {
-			n = len(r)
-		}
-		for ; n < len(r); n++ {
-			below := true
+		// Copy run k while it stays at or below every other run's head.
+		r, n := runs[k].recs, len(runs[k].recs)
+		if len(runs) > 1 {
+			var next *locRec
 			for j := range runs {
-				if j != k && cmpLocRec(&runs[j][0], &r[n]) < 0 {
-					below = false
-					break
+				if j != k && (next == nil || cmpLocRec(&runs[j].recs[0], next) < 0) {
+					next = &runs[j].recs[0]
 				}
 			}
-			if !below {
-				break
-			}
+			n = locRunBelow(r, next)
 		}
-		for i := range n {
-			emit(&r[i])
+		emit(&r[0]) // the one record that can share a digest with out's last
+		if runs[k].uniq {
+			emitUniq(r[1:n])
+		} else {
+			for i := 1; i < n; i++ {
+				emit(&r[i])
+			}
 		}
 		if n == len(r) {
 			runs = slices.Delete(runs, k, k+1)
 		} else {
-			runs[k] = r[n:]
+			runs[k].recs = r[n:]
 		}
 	}
 	if cap(out.recs)-len(out.recs) > len(out.recs)/16+64 {
 		out.recs = slices.Clip(append(make([]locRec, 0, len(out.recs)), out.recs...))
 	}
-	return finishLocIndex(out, filter)
+	if dropped > 0 {
+		return finishLocIndex(out, filter)
+	}
+	return finishLocIndexFrom(out, filter, levels)
+}
+
+// locRunBelow is how many leading records of r (at least one: r[0] is the
+// smallest head) sort at or below next. The search gallops, so a long
+// stretch costs a logarithmic number of comparisons and a short one about
+// as many as it holds: merging a small level into a large one is a few bulk
+// copies.
+func locRunBelow(r []locRec, next *locRec) int {
+	lo, hi := 1, len(r) // the answer is in [lo, hi]
+	for step := 1; ; step *= 2 {
+		p := lo + step - 1
+		if p >= len(r) {
+			break
+		}
+		if cmpLocRec(&r[p], next) > 0 {
+			hi = p
+			break
+		}
+		lo = p + 1
+	}
+	return lo + sort.Search(hi-lo, func(i int) bool { return cmpLocRec(&r[lo+i], next) > 0 })
 }
 
 // locSettle applies the publish-time merges to levels (oldest first) and
-// returns them: while the newest two levels are both small and unfrozen,
-// merge them if they break the size ratio or the level bound. Larger merges
-// are the background's (locPlan).
+// returns them. While the newest two levels are both small and unfrozen,
+// they are merged if they break the size ratio or the level bound. If the
+// bound is still exceeded (the background is busy with a long merge, or the
+// newest level outgrew the small size), the publish keeps it by merging the
+// newest pair itself, or, when the older of the two is already large, that
+// level into its own older neighbour, which leaves the newest level small so
+// the next publishes are cheap again. The background never merges the newest
+// level (locPlan with keepNewest), so the newest pair is always free here.
+// Other larger merges are the background's.
 func locSettle(levels []*locIndex, frozen map[*locIndex]bool, gone func(r *locRec) bool, onClash func(prim, rep *locRec)) []*locIndex {
 	total := 0
 	for _, ix := range levels {
 		total += ix.size()
 	}
 	r := locRatio(total, locMaxLevels)
+	merge := func(i int) {
+		m := mergeLevels(levels[i:i+2], gone, true, onClash)
+		levels = slices.Concat(levels[:i], locNonEmpty(m), levels[i+2:])
+	}
 	for n := len(levels); n >= 2; n = len(levels) {
 		a, b := levels[n-2], levels[n-1]
-		if frozen[a] || frozen[b] || a.size() > locSyncMerge || b.size() > locSyncMerge {
-			break
-		}
-		if r*b.size() < a.size() && n <= locMaxLevels {
-			break
-		}
-		levels = levels[:n-2]
-		if m := mergeLevels([]*locIndex{a, b}, gone, n-2 > 0, onClash); m.size() > 0 {
-			levels = append(levels, m)
+		free := !frozen[a] && !frozen[b]
+		switch {
+		case free && a.size() <= locSyncMerge && b.size() <= locSyncMerge && (r*b.size() >= a.size() || n > locMaxLevels):
+			merge(n - 2)
+		case n > locMaxLevels && free:
+			i := n - 2
+			if n >= 3 && a.size() > locSyncMerge && !frozen[levels[n-3]] && (b.size() <= locSyncMerge || levels[n-3].size() < b.size()) {
+				i = n - 3
+			}
+			merge(i)
+		default:
+			return levels
 		}
 	}
 	return levels
@@ -4272,12 +4394,20 @@ func locSettle(levels []*locIndex, frozen map[*locIndex]bool, gone func(r *locRe
 // records of which a quarter belong to retired packs is rewritten alone;
 // the newest pair that breaks the size ratio is merged; while there are more
 // than locMaxLevels levels the adjacent pair with the fewest records is
-// merged. Frozen levels are never planned.
-func locPlan(levels []*locIndex, frozen map[*locIndex]bool, goneIn func(ix *locIndex) int) (i, j int, ok bool) {
-	free := func(k int) bool { return !frozen[levels[k]] }
+// merged. Frozen levels are never planned, nor, with keepNewest (the
+// background), the newest level: it belongs to the publishes, which merge
+// into it and so keep the level bound without waiting for the background.
+// A quiet store may therefore keep a newest level that breaks the ratio
+// with its neighbour; it never exceeds the bound. The one exception is a
+// rewrite of the newest level alone while fewer than locMaxLevels levels
+// exist: the publishes made during it add one level beside it and then merge
+// among themselves, so a quiet store still sheds its retired records.
+func locPlan(levels []*locIndex, frozen map[*locIndex]bool, goneIn func(ix *locIndex) int, keepNewest bool) (i, j int, ok bool) {
+	free := func(k int) bool { return !frozen[levels[k]] && !(keepNewest && k == len(levels)-1) }
 	if goneIn != nil {
 		for k, ix := range levels {
-			if free(k) && ix.size() >= locPurgeMinRec && 4*goneIn(ix) >= ix.size() {
+			alone := !frozen[ix] && (free(k) || len(levels) < locMaxLevels)
+			if alone && ix.size() >= locPurgeMinRec && 4*goneIn(ix) >= ix.size() {
 				return k, k, true
 			}
 		}
@@ -4593,7 +4723,7 @@ func (st *packState) addRecords(next *packState, idx uint32, t tier, entries []p
 	if len(recs) == 0 {
 		return next, nil
 	}
-	ix := buildLocIndexF(recs, onClash, len(next.levels) > 0)
+	ix := buildLocIndexF(recs, onClash, true)
 	next.levels = locSettle(append(next.levels, ix), frozen, next.goneRec(), onClash)
 	return next, nil
 }
@@ -4622,9 +4752,9 @@ func (st *packState) goneIn(ix *locIndex) int {
 	return n
 }
 
-// needsMerge reports whether the background has work on these levels.
+// needsMerge reports whether settled would change these levels.
 func (st *packState) needsMerge(frozen map[*locIndex]bool) bool {
-	_, _, ok := locPlan(st.levels, frozen, st.goneIn)
+	_, _, ok := locPlan(st.levels, frozen, st.goneIn, false)
 	return ok
 }
 
@@ -4633,14 +4763,14 @@ func (st *packState) needsMerge(frozen map[*locIndex]bool) bool {
 func (st *packState) settled() *packState {
 	next := &packState{packs: slices.Clip(st.packs), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash), gone: st.gone}
 	for {
-		i, j, ok := locPlan(next.levels, nil, next.goneIn)
+		i, j, ok := locPlan(next.levels, nil, next.goneIn, false)
 		if !ok {
 			return next
 		}
 		onClash := func(prim, rep *locRec) {
 			next.clash = append(next.clash, clashMessage(prim.sum, prim, rep, next.packs))
 		}
-		merged := mergeLevels(next.levels[i:j+1], next.goneRec(), i > 0, onClash)
+		merged := mergeLevels(next.levels[i:j+1], next.goneRec(), true, onClash)
 		next.levels = slices.Concat(next.levels[:i], locNonEmpty(merged), next.levels[j+1:])
 	}
 }
@@ -4688,7 +4818,7 @@ func atomicMax(a *atomic.Int64, v int64) {
 func (s *Store) locPublished(next *packState) {
 	s.packSt.Store(next)
 	atomicMax(&s.loc.stats.MaxLevels, int64(len(next.levels)))
-	if _, _, ok := locPlan(next.levels, s.loc.frozen, nil); ok {
+	if _, _, ok := locPlan(next.levels, s.loc.frozen, nil, true); ok {
 		s.locMergeKick()
 	}
 }
@@ -4773,7 +4903,7 @@ func (s *Store) locMergeOnce() bool {
 	}
 	s.packMu.Lock()
 	st := s.packSnap()
-	i, j, ok := locPlan(st.levels, m.frozen, goneIn)
+	i, j, ok := locPlan(st.levels, m.frozen, goneIn, true)
 	if !ok {
 		s.packMu.Unlock()
 		return false
@@ -4799,7 +4929,7 @@ func (s *Store) locMergeOnce() bool {
 
 	t0 := time.Now()
 	var clashes [][2]locRec
-	merged := mergeLevels(rng, st.goneRec(), i > 0, func(prim, rep *locRec) { clashes = append(clashes, [2]locRec{*prim, *rep}) })
+	merged := mergeLevels(rng, st.goneRec(), true, func(prim, rep *locRec) { clashes = append(clashes, [2]locRec{*prim, *rep}) })
 	ns := time.Since(t0).Nanoseconds()
 	m.stats.MergeNS.Add(ns)
 	atomicMax(&m.stats.MaxMergeNS, ns)
@@ -5045,7 +5175,7 @@ func (w *packIndexWorker) load(path string, dst []locRec, idx uint32, t tier) (p
 // messages are ordered by the pack and offset they were read at.
 func (st *packState) index(recs []locRec) {
 	var clashes [][2]locRec
-	ix := buildLocIndex(recs, func(prim, rep *locRec) { clashes = append(clashes, [2]locRec{*prim, *rep}) })
+	ix := buildLocIndexF(recs, func(prim, rep *locRec) { clashes = append(clashes, [2]locRec{*prim, *rep}) }, true)
 	sort.Slice(clashes, func(i, j int) bool { return locRecOrder(&clashes[i][1], &clashes[j][1]) })
 	for _, c := range clashes {
 		st.clash = append(st.clash, clashMessage(c[0].sum, &c[0], &c[1], st.packs))
@@ -7139,7 +7269,13 @@ func (s *Store) segPublish(seg *segment, entries []packEntry) error {
 	s.packMu.Lock()
 	defer s.packMu.Unlock()
 	st := s.packSnap()
-	idx := slices.IndexFunc(st.packs, func(p packInfo) bool { return p.tier == tierHot && p.id == seg.id })
+	idx := -1
+	for i := len(st.packs) - 1; i >= 0; i-- { // the segment is nearly always the newest pack
+		if p := &st.packs[i]; p.tier == tierHot && p.id == seg.id {
+			idx = i
+			break
+		}
+	}
 	if idx < 0 {
 		// First durable records of this segment: it joins the locator now, so a
 		// segment that never held a record never appears in it.
