@@ -69,44 +69,44 @@ import (
 //   -----    ----
 //      144    Test helpers, fixtures, and TestMain
 //      278    Storage engine core: format, CDC, CAS, UUIDs, manifests, journal
-//     1289    SigV4 authentication (header and payload-mode)
-//     1685    Checksums: CRC32 and Content-MD5
-//     2188    End-to-end HTTP and crash/recovery tests
-//     2863    M2: bucket/object/listing/journal protocol compatibility
-//     4087    M3: CDC/dedup evidence, stats, verify
-//     5217    M3: CopyObject
-//     5765    M3: single-range GET
-//     5966    M5-B: multipart upload
-//     7244    Presigned URLs and virtual-hosted-style addressing
-//     8273    M5-C: version history, restore, GC, storage-efficiency proof
-//     9734    Z2-08: history retention (prune)
-//    10838    M5-D/P2: ListParts and ListMultipartUploads pagination
-//    12557    M6: delta sync (`zeros3 sync`)
-//    14299    M6C: recursive directory sync
-//    15359    M8A: remote-to-remote delta replication (`zeros3 replicate`)
-//    16725    M8B: peer-assisted corruption repair (`zeros3 repair`)
-//    18084    M8C: namespace (prefix/bucket) replication
-//    19125    M8D: copy-on-write namespace fork (`zeros3 fork`)
-//    20220    M8E: durable namespace snapshots and restore
-//    22299    M8F: conditional operations (Put/Get/Copy preconditions)
-//    23705    M8G: introspection (dry-run planning, diff, inspect)
-//    25657    M8H: bounded parallel chunk transfer
-//    27068    P1: environment credentials, HTTP hardening/shutdown, TLS
-//    28384    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
-//    29321    Streaming reads and aws-chunked SigV4
-//    30178    Packed CAS: pack format, mixed reads, compaction, crash points
-//    31300    Pack-aware gc and immutable repacking (`zeros3 repack`)
-//    32502    Adaptive pack compression (codec 1, DEFLATE)
-//    33556    Scalable packed-chunk locator (sorted immutable levels)
-//    34042    Z2-07: bulk logical-chunk transport (v2)
-//    35493    Hot/warm/cold physical pack tiers
-//    36279    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
-//    37034    Z2-10: content-aware tier policy and rebalance
-//    38080    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
-//    38767    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
-//    40220    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
-//    41574    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
-//    42997    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
+//     1309    SigV4 authentication (header and payload-mode)
+//     1705    Checksums: CRC32 and Content-MD5
+//     2218    End-to-end HTTP and crash/recovery tests
+//     2908    M2: bucket/object/listing/journal protocol compatibility
+//     4132    M3: CDC/dedup evidence, stats, verify
+//     5262    M3: CopyObject
+//     5810    M3: single-range GET
+//     6011    M5-B: multipart upload
+//     7289    Presigned URLs and virtual-hosted-style addressing
+//     8318    M5-C: version history, restore, GC, storage-efficiency proof
+//     9779    Z2-08: history retention (prune)
+//    10910    M5-D/P2: ListParts and ListMultipartUploads pagination
+//    12629    M6: delta sync (`zeros3 sync`)
+//    14371    M6C: recursive directory sync
+//    15431    M8A: remote-to-remote delta replication (`zeros3 replicate`)
+//    16797    M8B: peer-assisted corruption repair (`zeros3 repair`)
+//    18156    M8C: namespace (prefix/bucket) replication
+//    19197    M8D: copy-on-write namespace fork (`zeros3 fork`)
+//    20292    M8E: durable namespace snapshots and restore
+//    22371    M8F: conditional operations (Put/Get/Copy preconditions)
+//    23777    M8G: introspection (dry-run planning, diff, inspect)
+//    25729    M8H: bounded parallel chunk transfer
+//    27140    P1: environment credentials, HTTP hardening/shutdown, TLS
+//    28456    Streaming ingest: PutObject/UploadPart, CDC golden, large objects
+//    29396    Streaming reads and aws-chunked SigV4
+//    30255    Packed CAS: pack format, mixed reads, compaction, crash points
+//    31377    Pack-aware gc and immutable repacking (`zeros3 repack`)
+//    32579    Adaptive pack compression (codec 1, DEFLATE)
+//    33633    Scalable packed-chunk locator (sorted immutable levels)
+//    34119    Z2-07: bulk logical-chunk transport (v2)
+//    35570    Hot/warm/cold physical pack tiers
+//    36356    Z2-09: consumer contract (GetBucketLocation, DeleteObjects, tier init, probe, golden vectors)
+//    37111    Z2-10: content-aware tier policy and rebalance
+//    38157    Z2-11: grouped loose-CAS publication (casBatch, publication barrier)
+//    38844    Z2-12: portable snapshot bundles (format, export/import, crash, lifecycle, scale)
+//    40297    Z2-13: pack locality (layout planner, maintenance order) and coalesced packed reads
+//    41651    Z2-14: delta (thin) snapshot bundles (format, planner, identity, chains, crash, lifecycle, scale)
+//    43074    Z2-15: stream-native direct pack ingest (pack writer, sink selection, tail, dedup, crash, multipart, tiers)
 // =============================================================================
 
 // TestMain makes the whole suite hermetic against the

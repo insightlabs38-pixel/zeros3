@@ -1,0 +1,28 @@
+=== RUN   TestC16NamedBaseReplication
+=== RUN   TestC16NamedBaseReplication/related
+=== RUN   TestC16NamedBaseReplication/replica
+--- PASS: TestC16NamedBaseReplication (2.23s)
+    --- PASS: TestC16NamedBaseReplication/related (0.16s)
+    --- PASS: TestC16NamedBaseReplication/replica (0.17s)
+=== RUN   TestC16DerivedBaseImportCuts
+=== RUN   TestC16DerivedBaseImportCuts/pack-before-publish
+=== RUN   TestC16DerivedBaseImportCuts/auth-import-chunks
+=== RUN   TestC16DerivedBaseImportCuts/after-manifest-published
+=== RUN   TestC16DerivedBaseImportCuts/after-journal-sync
+--- PASS: TestC16DerivedBaseImportCuts (2.65s)
+    --- PASS: TestC16DerivedBaseImportCuts/pack-before-publish (0.21s)
+    --- PASS: TestC16DerivedBaseImportCuts/auth-import-chunks (0.18s)
+    --- PASS: TestC16DerivedBaseImportCuts/after-manifest-published (0.18s)
+    --- PASS: TestC16DerivedBaseImportCuts/after-journal-sync (0.20s)
+=== RUN   TestC17RetainedCanonicalPlan
+--- PASS: TestC17RetainedCanonicalPlan (23.74s)
+=== RUN   TestC17CanonicalBudgetAndDigest
+--- PASS: TestC17CanonicalBudgetAndDigest (0.00s)
+=== RUN   TestC17FusedIngestKeepsFailedPacksPrivate
+=== RUN   TestC17FusedIngestKeepsFailedPacksPrivate/1
+=== RUN   TestC17FusedIngestKeepsFailedPacksPrivate/2
+--- PASS: TestC17FusedIngestKeepsFailedPacksPrivate (0.30s)
+    --- PASS: TestC17FusedIngestKeepsFailedPacksPrivate/1 (0.13s)
+    --- PASS: TestC17FusedIngestKeepsFailedPacksPrivate/2 (0.14s)
+PASS
+ok  	zeros3	29.958s

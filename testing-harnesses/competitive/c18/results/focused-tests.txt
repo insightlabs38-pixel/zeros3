@@ -1,0 +1,81 @@
+=== RUN   TestAuthorityRecoverPeerClosure
+--- PASS: TestAuthorityRecoverPeerClosure (0.46s)
+=== RUN   TestC13PresetPackAdmissionAndReopen
+--- PASS: TestC13PresetPackAdmissionAndReopen (0.00s)
+=== RUN   TestC13PresetPackPublication
+=== RUN   TestC13PresetPackPublication/pack-before-publish
+=== RUN   TestC13PresetPackPublication/pack-after-rename
+--- PASS: TestC13PresetPackPublication (0.14s)
+    --- PASS: TestC13PresetPackPublication/pack-before-publish (0.07s)
+    --- PASS: TestC13PresetPackPublication/pack-after-rename (0.07s)
+=== RUN   TestC13PresetPackRejectsUnpaidContext
+--- PASS: TestC13PresetPackRejectsUnpaidContext (0.00s)
+=== RUN   TestC16DerivedBaseImportCuts
+=== RUN   TestC16DerivedBaseImportCuts/pack-before-publish
+=== RUN   TestC16DerivedBaseImportCuts/auth-import-chunks
+=== RUN   TestC16DerivedBaseImportCuts/after-manifest-published
+=== RUN   TestC16DerivedBaseImportCuts/after-journal-sync
+--- PASS: TestC16DerivedBaseImportCuts (0.39s)
+    --- PASS: TestC16DerivedBaseImportCuts/pack-before-publish (0.05s)
+    --- PASS: TestC16DerivedBaseImportCuts/auth-import-chunks (0.05s)
+    --- PASS: TestC16DerivedBaseImportCuts/after-manifest-published (0.05s)
+    --- PASS: TestC16DerivedBaseImportCuts/after-journal-sync (0.06s)
+=== RUN   TestC18PackDictionaryRepair
+=== RUN   TestC18PackDictionaryRepair/primary
+=== RUN   TestC18PackDictionaryRepair/backup
+=== RUN   TestC18PackDictionaryRepair/both
+=== RUN   TestC18PackDictionaryRepair/unrelated-member
+--- PASS: TestC18PackDictionaryRepair (0.05s)
+    --- PASS: TestC18PackDictionaryRepair/primary (0.01s)
+    --- PASS: TestC18PackDictionaryRepair/backup (0.01s)
+    --- PASS: TestC18PackDictionaryRepair/both (0.01s)
+    --- PASS: TestC18PackDictionaryRepair/unrelated-member (0.01s)
+=== RUN   TestC18PackDictionaryRepairCuts
+=== RUN   TestC18PackDictionaryRepairCuts/pack-dictionary-before-rename
+=== RUN   TestC18PackDictionaryRepairCuts/pack-dictionary-after-rename
+--- PASS: TestC18PackDictionaryRepairCuts (0.04s)
+    --- PASS: TestC18PackDictionaryRepairCuts/pack-dictionary-before-rename (0.02s)
+    --- PASS: TestC18PackDictionaryRepairCuts/pack-dictionary-after-rename (0.02s)
+=== RUN   TestFB01RKillHelper
+--- PASS: TestFB01RKillHelper (0.00s)
+=== RUN   TestFB01RKill
+2026/11/26 05:25:54 zeros3: journal: a read-only open serves the valid prefix to offset 14356281; the rest is an incomplete final frame past the last completed fsync (offset 14356281), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:25:54 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 14356281), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 326 bytes past offset 14356281 (incomplete-frame) to /tmp/TestFB01RKill2721324982/001/journal/quarantine/tail-20261126T102554.873035365Z
+2026/11/26 05:25:55 zeros3: journal: a read-only open serves the valid prefix to offset 14358598; the rest is an incomplete final frame past the last completed fsync (offset 14358598), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:25:56 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 14358598), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 681 bytes past offset 14358598 (incomplete-frame) to /tmp/TestFB01RKill2721324982/001/journal/quarantine/tail-20261126T102556.322533635Z
+2026/11/26 05:25:57 zeros3: journal: a read-only open serves the valid prefix to offset 14385819; the rest is an incomplete final frame past the last completed fsync (offset 14385819), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:25:57 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 14385819), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 681 bytes past offset 14385819 (incomplete-frame) to /tmp/TestFB01RKill2721324982/001/journal/quarantine/tail-20261126T102557.539542551Z
+    zeros3_fb01r_kill_test.go:296: verify after 18 kills: {Deep:false JournalFramesChecked:35316 JournalOK:true ManifestsChecked:31803 ChunksChecked:31803 PacksChecked:2 CurrentRootCount:21281 HistoricalRootCount:10522 MultipartRootCount:0 SnapshotRootCount:0 issueTracker:{Missing:0 Corrupt:0 Invalid:0 Issues:[]} RepresentationRoots:0 RepresentationsVerified:0 RepresentationOrphanRoots:0 AuthorityBodies:0 AuthoritiesVerified:0 AuthorityOrphans:0 AuthorityUnavailable:0 UnreachableManifests:0 UnreachableChunks:0 ReclaimableBytes:0}
+    zeros3_fb01r_kill_test.go:299: random                             rounds  6 acked  35006 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 88978us
+    zeros3_fb01r_kill_test.go:299: after-journal-write-before-sync    rounds  3 acked     81 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 81290us
+    zeros3_fb01r_kill_test.go:299: after-journal-sync                 rounds  3 acked     50 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 79602us
+    zeros3_fb01r_kill_test.go:299: after-apply-before-response        rounds  3 acked     50 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 92231us
+    zeros3_fb01r_kill_test.go:299: torn-write                         rounds  3 acked     71 lost 0 recoveries 3 discarded 1688B refusals 0 owner open max 99740us
+--- PASS: TestFB01RKill (17.74s)
+=== RUN   TestFB01RKillWithoutWatermark
+--- PASS: TestFB01RKillWithoutWatermark (0.01s)
+=== RUN   TestFB01RWatermarkWriteFailure
+=== RUN   TestFB01RWatermarkWriteFailure/advance_fails
+2026/11/26 05:25:58 zeros3: journal: updating the ack watermark failed, so no further commits until the store is reopened: input/output error; the watermark was removed, so the next open recovers as without one
+=== RUN   TestFB01RWatermarkWriteFailure/advance_and_removal_fail
+--- PASS: TestFB01RWatermarkWriteFailure (0.00s)
+    --- PASS: TestFB01RWatermarkWriteFailure/advance_fails (0.00s)
+    --- PASS: TestFB01RWatermarkWriteFailure/advance_and_removal_fail (0.00s)
+=== RUN   TestAuthoritySimilarityPublicationRecovery
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-sync
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-rename
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-rename
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-sync
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-before-current-publish
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-current-publish
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-current-sync
+--- PASS: TestAuthoritySimilarityPublicationRecovery (0.08s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-sync (0.01s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-rename (0.01s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-rename (0.02s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-sync (0.02s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-before-current-publish (0.01s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-current-publish (0.01s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-current-sync (0.01s)
+PASS
+ok  	zeros3	18.917s

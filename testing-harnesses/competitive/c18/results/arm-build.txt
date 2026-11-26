@@ -1,0 +1,2 @@
+/workspace/work/c18/arm64/zeros3-arm64: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=Z3JH6IGKBcx9H5bMuQDr/l1hJW2CSb0VvnjuJA12h/do20RtYKCphp_5kweAZC/IkIiwRwVdU1efcPW2na6, BuildID[sha1]=4b8d7801c6ed8d8d356d2e8562abe99630bfdd0e, with debug_info, not stripped
+0d5b43de16f54715b4e3d825e953b2a4663f42d0262512b2d1193125af4ded5e  /workspace/work/c18/arm64/zeros3-arm64

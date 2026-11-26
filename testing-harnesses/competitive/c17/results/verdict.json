@@ -1,0 +1,14 @@
+{
+  "verdict": "C17_STREAM_EFFECTIVE",
+  "initial_reference": "2337f48",
+  "integrated_baseline": "20f13bc",
+  "retained_recipes_policy": "-retain-canonical-plans",
+  "retained_bytes_limit": 4194304,
+  "retained_entries_limit": 4096,
+  "typeScript_tight_wall_seconds": [14.61, 8.62],
+  "typeScript_tight_apply_seconds": [9.20, 3.26],
+  "tight_receiver_rss_bytes": [72153088, 56983552],
+  "both_leg_wire_bytes": 382491,
+  "plans_and_content_identities_match": true,
+  "on_disk_layout_used_existing_pack_and_authority_formats": true
+}

@@ -87,55 +87,55 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      550    Content-defined chunking (CDC)
-//      737    Content-addressed chunk storage (CAS)
-//     2532    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5428    Small-object segments (inline manifests, store level 11)
-//     6678    Manifests (immutable, JSON)
-//     7476    Visibility journal (append-only, checksummed)
-//     7998    Store: format, namespace, and object CRUD
-//     8516    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12168    Version history/restore, history pruning, ListObjectsV2
-//    12774    SigV4 authentication (header and presigned-URL)
-//    13751    Request payload checksums and S3-shaped XML error/response types
-//    13968    HTTP routing and S3 operation handlers
-//    14411    Conditional operations (PUT/GET/HEAD preconditions)
-//    15106    CopyObject
-//    15411    Multipart upload
-//    16355    Stats and reachability scanning
-//    17943    Verify
-//    18159    Store locking and safe offline GC
-//    18469    Offline compaction (`zeros3 compact`)
-//    19706    Pack reclamation and repacking (`zeros3 repack`)
-//    20400    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20860    Online maintenance: epochs, pins, live GC and repack (B4)
-//    22224    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22737    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23802    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24653    Delta sync client, credentials, and parallel transfer
-//    27155    Bulk logical-chunk transport (v2)
-//    28066    Recursive directory sync
-//    28371    Remote replication (`zeros3 replicate`)
-//    29418    Peer-assisted corruption repair (`zeros3 repair`)
-//    29990    Namespace (prefix/bucket) replication
-//    30306    Copy-on-write namespace fork (`zeros3 fork`)
-//    30514    Snapshots and restore
-//    31676    Structural diff and inspect (introspection)
-//    33098    Portable snapshot bundles (`zeros3 bundle`)
-//    34295    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34930    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53660    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    62172    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    66074    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    66634    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    67541    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    68696    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    69640    Verified decoded-window cache (B9)
-//    69921    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    71211    Windowed and estimated similarity deltas (extracted dcore)
-//    73048    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    80904    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    87176    CLI dispatch, HTTP server/startup, and main
+//      575    Content-defined chunking (CDC)
+//      762    Content-addressed chunk storage (CAS)
+//     2577    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5600    Small-object segments (inline manifests, store level 11)
+//     6850    Manifests (immutable, JSON)
+//     7648    Visibility journal (append-only, checksummed)
+//     9243    Store: format, namespace, and object CRUD
+//     9846    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    13702    Version history/restore, history pruning, ListObjectsV2
+//    14308    SigV4 authentication (header and presigned-URL)
+//    15375    Request payload checksums and S3-shaped XML error/response types
+//    15834    HTTP routing and S3 operation handlers
+//    16272    Conditional operations (PUT/GET/HEAD preconditions)
+//    16967    CopyObject
+//    17272    Multipart upload
+//    18275    Stats and reachability scanning
+//    19863    Verify
+//    20079    Store locking and safe offline GC
+//    20389    Offline compaction (`zeros3 compact`)
+//    21626    Pack reclamation and repacking (`zeros3 repack`)
+//    22320    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    22780    Online maintenance: epochs, pins, live GC and repack (B4)
+//    24144    Physical tiers: status and pack movement (`zeros3 tier`)
+//    24657    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    25723    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    26574    Delta sync client, credentials, and parallel transfer
+//    29126    Bulk logical-chunk transport (v2)
+//    30038    Recursive directory sync
+//    30343    Remote replication (`zeros3 replicate`)
+//    31390    Peer-assisted corruption repair (`zeros3 repair`)
+//    31962    Namespace (prefix/bucket) replication
+//    32278    Copy-on-write namespace fork (`zeros3 fork`)
+//    32486    Snapshots and restore
+//    33650    Structural diff and inspect (introspection)
+//    35518    Portable snapshot bundles (`zeros3 bundle`)
+//    36715    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    37350    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    56080    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    64595    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    68515    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    69075    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    70040    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    71195    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    72139    Verified decoded-window cache (B9)
+//    72420    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    73710    Windowed and estimated similarity deltas (extracted dcore)
+//    75547    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    83403    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    89675    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -1801,6 +1801,8 @@ func (ing *ingestResult) finishIngest() error {
 // ingestOptions are the only hints the ingest path takes from its caller.
 type ingestOptions struct {
 	size int64 // known logical size of the stream; <= 0 when unknown
+	// expected keeps packs staged until the whole decoded stream is verified.
+	expected *xdBaseRef
 	// overlapFlush lets ingestStream return before the final loose-chunk
 	// publication is durable (see ingestResult.finish), so a caller can
 	// publish the manifest while the chunks' fsyncs run. Only the loose
@@ -1937,6 +1939,7 @@ type packSink struct {
 	pending map[[32]byte]struct{} // digests in cur
 	jobs    []*packJob            // full packs being finished and published, oldest first
 	sync    bool                  // finish packs inline instead of in the background
+	hold    bool                  // defer publication until the stream is verified
 	// flushMin is the least new content for which Flush publishes the last
 	// partial pack; below it the chunks go loose.
 	flushMin int64
@@ -1990,7 +1993,7 @@ func (p *packSink) Put(sum [32]byte, chunk []byte) error {
 	}
 	p.cur.Add(sum, chunk)
 	p.pending[sum] = struct{}{}
-	if p.cur.LogicalBytes() >= directPackTarget {
+	if !p.hold && p.cur.LogicalBytes() >= directPackTarget {
 		return p.publish()
 	}
 	return nil
@@ -2146,7 +2149,9 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 	case s.segFor(opt):
 		sink = s.newSegSink()
 	case s.packFor(opt):
-		sink = s.newPackSink(opt.size)
+		pack := s.newPackSink(opt.size)
+		pack.hold = opt.expected != nil
+		sink = pack
 	default:
 		sink = looseSink{s.newCASBatch()}
 	}
@@ -2177,6 +2182,9 @@ func (s *Store) ingestStream(r io.Reader, withMD5 bool, opt ingestOptions) (inge
 		}
 	}
 	objSum.Sum(res.objSHA256[:0])
+	if opt.expected != nil && (res.size != opt.expected.Size || res.objSHA256 != opt.expected.SHA) {
+		return ingestResult{}, errAuthMismatch
+	}
 	if etagSum != nil {
 		etagSum.Sum(res.etagMD5[:0])
 	}
@@ -2451,7 +2459,9 @@ func (p *ingestPipe) close() {
 func (s *Store) ingestPipelined(r io.Reader, withMD5 bool, opt ingestOptions) (ingestResult, error) {
 	var sink chunkSink
 	if s.packFor(opt) {
-		sink = s.newPackSink(opt.size)
+		pack := s.newPackSink(opt.size)
+		pack.hold = opt.expected != nil
+		sink = pack
 	} else {
 		sink = looseSink{s.newCASBatch()}
 	}
@@ -2536,6 +2546,16 @@ func (s *Store) ingestPipelinedTo(r io.Reader, withMD5 bool, opt ingestOptions, 
 	for len(queue) > 0 {
 		if err := writeOne(); err != nil {
 			return ingestResult{}, err
+		}
+	}
+	if opt.expected != nil {
+		p.finish()
+		if r := p.failed.Load(); r != nil {
+			panic(*r)
+		}
+		objSum.Sum(res.objSHA256[:0])
+		if res.size != opt.expected.Size || res.objSHA256 != opt.expected.SHA {
+			return ingestResult{}, errAuthMismatch
 		}
 	}
 	if err := sink.Flush(); err != nil {
@@ -3121,6 +3141,126 @@ func verifyPackFile(path string) (packInfo, []packEntry, error) {
 	return verifyPackFileWhile(path, nil)
 }
 
+type packDictionaryRepair struct {
+	Pack           string `json:"pack"`
+	Tier           string `json:"tier"`
+	RestoredBytes  int64  `json:"restored_bytes"`
+	RewrittenBytes int64  `json:"rewritten_bytes"`
+}
+
+const hookPackDictionaryBeforeRename = "pack-dictionary-before-rename"
+const hookPackDictionaryAfterRename = "pack-dictionary-after-rename"
+
+// repairPackDictionary reconstructs one damaged preset copy and verifies
+// that the staged file has its original physical identity before rename.
+func repairPackDictionary(path, tmp string) (restored, rewritten int64, err error) {
+	info, entries, err := loadPackFile(path)
+	if err != nil || !info.presetDict {
+		return 0, 0, err
+	}
+	src, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer src.Close()
+	primary, backup := entries[0], entries[len(entries)-1]
+	dictionary, err := fileDictFunc(src, entries)(primary.sha)
+	if err != nil {
+		return 0, 0, err
+	}
+	backupPayload := append([]byte(packDictCopyMagic), dictionary...)
+	if len(dictionary) != int(primary.logical) || len(backupPayload) != int(backup.logical) || sha256.Sum256(backupPayload) != backup.sha {
+		return 0, 0, errors.New("pack: preset copies disagree with the index")
+	}
+	var replacement []byte
+	var offset int64
+	for _, record := range []struct {
+		entry packEntry
+		data  []byte
+	}{{primary, dictionary}, {backup, backupPayload}} {
+		pos := int64(record.entry.off) - packRecordHeaderSize
+		wanted := make([]byte, packRecordHeaderSize, packRecordHeaderSize+len(record.data))
+		putPackRecordHeader(wanted, record.entry)
+		wanted = append(wanted, record.data...)
+		stored := make([]byte, len(wanted))
+		if _, err := src.ReadAt(stored, pos); err != nil {
+			return 0, 0, err
+		}
+		if bytes.Equal(wanted, stored) {
+			continue
+		}
+		if replacement != nil {
+			return 0, 0, errors.New("pack: both preset records require repair")
+		}
+		replacement, offset = wanted, pos
+	}
+	if replacement == nil {
+		return 0, 0, nil
+	}
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return 0, 0, err
+	}
+	staged, err := os.CreateTemp(tmp, "pack-*.tmp")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { staged.Close(); os.Remove(staged.Name()) }()
+	file, err := src.Stat()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := staged.Chmod(file.Mode().Perm()); err != nil {
+		return 0, 0, err
+	}
+	if _, err := io.CopyN(staged, src, offset); err != nil {
+		return 0, 0, err
+	}
+	if n, err := staged.Write(replacement); err != nil || n != len(replacement) {
+		return 0, 0, cmp.Or(err, io.ErrShortWrite)
+	}
+	end := offset + int64(len(replacement))
+	if _, err := io.CopyN(staged, io.NewSectionReader(src, end, info.size-end), info.size-end); err != nil {
+		return 0, 0, err
+	}
+	if err := staged.Sync(); err != nil {
+		return 0, 0, err
+	}
+	if err := staged.Close(); err != nil {
+		return 0, 0, err
+	}
+	verified, _, err := verifyPackFile(staged.Name())
+	if err != nil || verified.id != info.id || verified.size != info.size {
+		return 0, 0, fmt.Errorf("pack: repaired file does not verify against the original: %v", err)
+	}
+	fireTestHook(hookPackDictionaryBeforeRename)
+	if err := os.Rename(staged.Name(), path); err != nil {
+		return 0, 0, err
+	}
+	fireTestHook(hookPackDictionaryAfterRename)
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return 0, 0, err
+	}
+	return int64(len(replacement)), info.size, nil
+}
+
+// repairPackDictionaries requires an exclusive store lock.
+func (s *Store) repairPackDictionaries() ([]packDictionaryRepair, error) {
+	var result []packDictionaryRepair
+	var failures error
+	for _, pack := range s.packSnap().packs {
+		if !pack.presetDict {
+			continue
+		}
+		restored, rewritten, err := repairPackDictionary(pack.path, tierTmpDir(s.root, pack.tier))
+		if err != nil {
+			failures = errors.Join(failures, fmt.Errorf("%s: %w", pack.label(), err))
+		} else if restored > 0 {
+			result = append(result, packDictionaryRepair{pack.id, pack.tier.String(), restored, rewritten})
+		}
+	}
+	return result, failures
+}
+
 var errPackNeedsRewrite = errors.New("pack: replacement encoding differs")
 
 // verifyPackFileWhile can stop a read-only physical proof when the caller
@@ -3303,9 +3443,8 @@ func verifyPackExact(path string, entries []packEntry, bodySHA [32]byte) (packIn
 }
 
 // checkPackRecords confirms every record header in a published pack still
-// repeats its index entry, reading headers only. Payload integrity is
-// proven per chunk by casRead, so a damaged record nobody references
-// cannot fail verify -- the same rule loose chunks follow.
+// repeats its index entry. casRead proves referenced chunk payloads;
+// the two preset copies are checked here because neither is indexed by CAS.
 func checkPackRecords(path string) error {
 	_, entries, err := loadPackFile(path)
 	if err != nil {
@@ -3336,6 +3475,14 @@ func checkPackRecords(path string) error {
 	}
 	for k, oi := range order {
 		e := entries[oi]
+		if e.codec == packCodecPresetDict {
+			data := make([]byte, e.stored)
+			if _, err := f.ReadAt(data, int64(e.off)); err != nil {
+				fail(oi, fmt.Errorf("pack: reading preset context %d: %w", oi, err))
+			} else if sha256.Sum256(data) != e.sha {
+				fail(oi, fmt.Errorf("pack: preset context %d digest differs", oi))
+			}
+		}
 		putPackRecordHeader(want[:], e)
 		hdr := int64(e.off) - packRecordHeaderSize
 		if hdr < wlo || hdr+packRecordHeaderSize > whi {
@@ -27225,20 +27372,22 @@ func (s *Store) deriveNamedAuthBase(ctx context.Context, identity authBaseIdenti
 		return ref, err
 	}
 	defer reader.Close()
-	hash := sha256.New()
-	var out io.Writer = hash
-	var body bytes.Buffer
-	limit := int64(maxAuthBaseOutput)
+	wantSize := int64(maxAuthBaseOutput)
 	if install {
-		limit = min(limit, identity.BaseSize)
-		body.Grow(int(limit) + 1)
-		out = io.MultiWriter(&body, hash)
+		wantSize = identity.BaseSize
+		sum, err := decodeHexSHA256(identity.BaseSHA)
+		if err != nil {
+			return ref, err
+		}
+		ref = xdBaseRef{SHA: sum, Size: wantSize}
+		return ref, s.installDerivedAuthPin(ctx, ref, io.LimitReader(&derivedBaseReader{ctx, reader}, wantSize+1))
 	}
-	size, err := io.Copy(out, io.LimitReader(reader, limit+1))
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(&derivedBaseReader{ctx, reader}, wantSize+1))
 	if err != nil {
 		return ref, err
 	}
-	if size <= 0 || size > limit {
+	if size <= 0 || size > wantSize {
 		return ref, errors.New("base plaintext exceeds its byte budget")
 	}
 	if err := ctx.Err(); err != nil {
@@ -27246,27 +27395,44 @@ func (s *Store) deriveNamedAuthBase(ctx context.Context, identity authBaseIdenti
 	}
 	hash.Sum(ref.SHA[:0])
 	ref.Size = size
-	if install {
-		if hex.EncodeToString(ref.SHA[:]) != identity.BaseSHA || ref.Size != identity.BaseSize {
-			return ref, errAuthMismatch
-		}
-		if err := s.installDerivedAuthPin(ref, &body); err != nil {
-			return ref, err
-		}
-	}
 	return ref, nil
 }
 
-func (s *Store) installDerivedAuthPin(ref xdBaseRef, data io.Reader) error {
-	if cur, err := s.authLoad(ref.SHA); err != nil || cur != nil {
-		return err
+type derivedBaseReader struct {
+	ctx     context.Context
+	decoder io.Reader
+}
+
+func (r *derivedBaseReader) Read(b []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
 	}
-	ing, err := s.ingestStream(data, false, ingestOptions{size: ref.Size})
+	return r.decoder.Read(b)
+}
+
+func (s *Store) installDerivedAuthPin(ctx context.Context, ref xdBaseRef, data io.Reader) error {
+	cur, err := s.authLoad(ref.SHA)
 	if err != nil {
 		return err
 	}
-	if ing.size != ref.Size || ing.objSHA256 != ref.SHA {
-		return errAuthMismatch
+	if cur != nil {
+		// Revalidate the named object's identity even when its pin exists.
+		hash := sha256.New()
+		size, err := io.Copy(hash, data)
+		if err != nil {
+			return err
+		}
+		if size != ref.Size || [32]byte(hash.Sum(nil)) != ref.SHA {
+			return errAuthMismatch
+		}
+		return nil
+	}
+	ing, err := s.ingestStream(data, false, ingestOptions{size: ref.Size, expected: &ref})
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	pieces, err := chunkPieces(manifestV1{Chunks: ing.chunks})
 	if err != nil {
@@ -35475,19 +35641,20 @@ func runDoctor(args []string) {
 	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	retire := fs.Bool("retire-bad-representations", false, "remove the optional representation roots of live objects that cannot be trusted (needs exclusive store access; the objects, manifests and CDC chunks are untouched)")
+	repairDict := fs.Bool("repair-pack-dictionaries", false, "repair a damaged preset copy from its verified twin (requires exclusive access)")
 	fs.Parse(args)
 
-	if *retire {
+	if *retire || *repairDict {
 		lock, err := acquireStoreLock(*storeDir, true)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "zeros3: doctor: -retire-bad-representations needs exclusive access to the store: %v\n", err)
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: repair or retirement needs exclusive access to the store: %v\n", err)
 			os.Exit(1)
 		}
 		defer lock.release()
 	}
 	// Retiring acts on what the view references: only a complete view may.
 	open := OpenStoreSharedPrefix
-	if *retire {
+	if *retire || *repairDict {
 		open = OpenStoreShared
 	}
 	store, err := open(*storeDir)
@@ -35496,6 +35663,18 @@ func runDoctor(args []string) {
 	}
 	defer store.Close()
 	warnDegraded("doctor", store)
+	var repairs []packDictionaryRepair
+	if *repairDict {
+		var err error
+		repairs, err = store.repairPackDictionaries()
+		for _, repair := range repairs {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: repaired %d dictionary record bytes in %s pack %s\n", repair.RestoredBytes, repair.Tier, repair.Pack)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	if *retire {
 		store.sealSegments() // maintenance sees sealed packs only (section 4d)
@@ -35523,7 +35702,10 @@ func runDoctor(args []string) {
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(res); err != nil {
+		if err := enc.Encode(struct {
+			VerifyResult
+			PackDictionaryRepairs []packDictionaryRepair `json:"pack_dictionary_repairs,omitempty"`
+		}{res, repairs}); err != nil {
 			log.Fatalf("zeros3: %v", err)
 		}
 	} else {
@@ -60121,7 +60303,8 @@ type authRepCand struct {
 	chunks   []chunkRef
 	marginal int64
 	accepted bool
-	lazy     bool // built in memory for planning: construct (stage and prove) again before publishing
+	lazy     bool                // built in memory for planning: construct (stage and prove) again before publishing
+	retained map[[32]byte][]byte // verified canonical recipe components from this invocation
 }
 
 func repKindName(k repKind) string {
@@ -64269,6 +64452,7 @@ func runAuthority(args []string) {
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate or optimize: also consider verified same-bucket bases proposed by the persistent index")
 	fastReencode := fs.Bool("fast-reencode", false, "optimize apply: try an exact prefix/suffix XD program before rebuilding a single base index (research)")
 	retainDeltaPlans := fs.Bool("retain-delta-plans", false, "optimize apply: retain small native delta envelopes in a bounded plan cache (research)")
+	retainCanonicalPlans := fs.Bool("retain-canonical-plans", false, "optimize apply: reuse bounded verified canonical recipe components")
 	sparseFiles := fs.Bool("sparse-files", false, "optimize: also price sparse 1–32 MiB file deltas using same-bucket nonzero pages")
 	windowKiB := fs.Int64("window-kib", 0, "migrate: ZW1 frame size in KiB (64–1024, 0 uses the default)")
 	segmentKiB := fs.Int64("segment-kib", 0, "migrate: restartable program segment in KiB (16–1024, 0 uses the default 128, -1 writes unsegmented ZW1)")
@@ -64477,7 +64661,8 @@ func runAuthority(args []string) {
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
 			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice, MaxTargets: *maxTargets,
-			FastReencode: *fastReencode, RetainDeltaPlans: *retainDeltaPlans, SparseFiles: *sparseFiles}
+			FastReencode: *fastReencode, RetainDeltaPlans: *retainDeltaPlans, SparseFiles: *sparseFiles,
+			RetainCanonicalPlans: *retainCanonicalPlans}
 		var hintSeconds float64
 		if *indexedDiscovery && pol.AllowDelta {
 			start := time.Now()
@@ -64630,42 +64815,43 @@ func runAuthority(args []string) {
 // objective of the global optimizer.
 type OptimizePolicy struct {
 	AuthPolicy
-	Profile           string                              `json:"profile"`          // archive | mixed | hot: default weights below
-	ReadWeight        float64                             `json:"read_weight"`      // retained bytes one modeled µs of a content's sparse cold read is worth
-	ReadBudget        float64                             `json:"read_budget"`      // modeled sparse read at most this multiple of the content's CDC read (0 = none)
-	WholeWeight       float64                             `json:"whole_weight"`     // retained bytes one modeled µs of a content's whole-object read is worth
-	WholeBudget       float64                             `json:"whole_budget"`     // modeled whole read at most this multiple of the content's CDC whole read (0 = none)
-	MigrationWeight   float64                             `json:"migration_weight"` // retained-byte equivalent of one byte a transition writes
-	MinGain           float64                             `json:"min_gain"`         // a partition changes only for this fraction of its stored bytes
-	Locality          []int                               `json:"locality"`         // COPY locality slacks programs are generated with (0 = the plain matcher)
-	Algorithm         string                              `json:"algorithm"`        // global | local | oracle | current (ablations: single, edmonds)
-	Pareto            []float64                           `json:"pareto,omitempty"` // read weights of a frontier sweep reported beside the plan
-	MaxTargets        int                                 `json:"max_targets,omitempty"`
-	IndexedGeneration string                              `json:"indexed_generation,omitempty"`
-	MaxEvals          int64                               `json:"max_evals"`         // move evaluations per partition
-	Blocked           *bool                               `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
-	Oracle            bool                                `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
-	Discovery         string                              `json:"discovery"`         // candidate discovery: region (B7) | sketch (B6)
-	AnchorBytes       int                                 `json:"anchor_bytes"`      // windowed bases: bytes per COPY anchor (B7 default 8; 1024 = B6)
-	FastReencode      bool                                `json:"fast_reencode,omitempty"`
-	RetainDeltaPlans  bool                                `json:"retain_delta_plans,omitempty"`
-	SparseFiles       bool                                `json:"sparse_files,omitempty"`
-	Region            rsParams                            `json:"-"`
-	discover          func(g *rgGraph, v int32) rgCandSet // research hook: replaces discovery (oracles)
-	recordBlock       int64                               // research: price record files in this allocation unit
-	noRestrictedStart bool                                // ablation: the B6 search without the single-base start
-	StageReps         bool                                `json:"stage_reps,omitempty"`  // B6 behaviour: stage every representation candidate while planning
-	Canonical         bool                                `json:"canonical,omitempty"`   // B8: canonical streams of codec containers
-	Executables       bool                                `json:"executables,omitempty"` // B9: normalized ELF/PE executables (with Canonical)
-	Splice            bool                                `json:"splice,omitempty"`      // B10: deep streams of tar, Parquet and SST contents
-	B7Search          bool                                `json:"b7_search,omitempty"`   // B8 ablation: the B7 search (no group starts, exact search or incumbent)
-	noZip             bool                                // ablation: no ZIP adapter
-	recordGroup       int64                               // research (B8-G): price record files as grouped entries (exact bytes + this overhead)
-	canonNoDelta      bool                                // ablation: canonical streams only as CDC
-	spliceNoRep       bool                                // B10 ablation: deep streams decode no nested container
-	spliceNoPage      bool                                // B10 ablation: deep streams decode no page or block
-	spliceNoDelta     bool                                // B10 ablation: deep streams only as CDC
-	spliceAll         bool                                // B10 ablation: decode nested containers other objects also hold
+	Profile              string                              `json:"profile"`          // archive | mixed | hot: default weights below
+	ReadWeight           float64                             `json:"read_weight"`      // retained bytes one modeled µs of a content's sparse cold read is worth
+	ReadBudget           float64                             `json:"read_budget"`      // modeled sparse read at most this multiple of the content's CDC read (0 = none)
+	WholeWeight          float64                             `json:"whole_weight"`     // retained bytes one modeled µs of a content's whole-object read is worth
+	WholeBudget          float64                             `json:"whole_budget"`     // modeled whole read at most this multiple of the content's CDC whole read (0 = none)
+	MigrationWeight      float64                             `json:"migration_weight"` // retained-byte equivalent of one byte a transition writes
+	MinGain              float64                             `json:"min_gain"`         // a partition changes only for this fraction of its stored bytes
+	Locality             []int                               `json:"locality"`         // COPY locality slacks programs are generated with (0 = the plain matcher)
+	Algorithm            string                              `json:"algorithm"`        // global | local | oracle | current (ablations: single, edmonds)
+	Pareto               []float64                           `json:"pareto,omitempty"` // read weights of a frontier sweep reported beside the plan
+	MaxTargets           int                                 `json:"max_targets,omitempty"`
+	IndexedGeneration    string                              `json:"indexed_generation,omitempty"`
+	MaxEvals             int64                               `json:"max_evals"`         // move evaluations per partition
+	Blocked              *bool                               `json:"blocked,omitempty"` // model restartable records (default: the store has packblk)
+	Oracle               bool                                `json:"oracle,omitempty"`  // also solve small partitions exhaustively and report the gap
+	Discovery            string                              `json:"discovery"`         // candidate discovery: region (B7) | sketch (B6)
+	AnchorBytes          int                                 `json:"anchor_bytes"`      // windowed bases: bytes per COPY anchor (B7 default 8; 1024 = B6)
+	FastReencode         bool                                `json:"fast_reencode,omitempty"`
+	RetainDeltaPlans     bool                                `json:"retain_delta_plans,omitempty"`
+	RetainCanonicalPlans bool                                `json:"retain_canonical_plans,omitempty"`
+	SparseFiles          bool                                `json:"sparse_files,omitempty"`
+	Region               rsParams                            `json:"-"`
+	discover             func(g *rgGraph, v int32) rgCandSet // research hook: replaces discovery (oracles)
+	recordBlock          int64                               // research: price record files in this allocation unit
+	noRestrictedStart    bool                                // ablation: the B6 search without the single-base start
+	StageReps            bool                                `json:"stage_reps,omitempty"`  // B6 behaviour: stage every representation candidate while planning
+	Canonical            bool                                `json:"canonical,omitempty"`   // B8: canonical streams of codec containers
+	Executables          bool                                `json:"executables,omitempty"` // B9: normalized ELF/PE executables (with Canonical)
+	Splice               bool                                `json:"splice,omitempty"`      // B10: deep streams of tar, Parquet and SST contents
+	B7Search             bool                                `json:"b7_search,omitempty"`   // B8 ablation: the B7 search (no group starts, exact search or incumbent)
+	noZip                bool                                // ablation: no ZIP adapter
+	recordGroup          int64                               // research (B8-G): price record files as grouped entries (exact bytes + this overhead)
+	canonNoDelta         bool                                // ablation: canonical streams only as CDC
+	spliceNoRep          bool                                // B10 ablation: deep streams decode no nested container
+	spliceNoPage         bool                                // B10 ablation: deep streams decode no page or block
+	spliceNoDelta        bool                                // B10 ablation: deep streams only as CDC
+	spliceAll            bool                                // B10 ablation: decode nested containers other objects also hold
 }
 
 // rgProfiles are operating points, not universal constants: see testing-harnesses/next/b6.
@@ -68225,11 +68411,23 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 				break
 			}
 			if o.canon {
-				r2, c2, err := s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, nil, g.pol.Executables)
-				if err == nil {
-					c2.close()
-					if r2.Rep != root.Rep || c2.SHA != g.nodes[o.bases[0]].sha {
-						err = errors.New("canonical re-construction differs from the plan")
+				var err error
+				if o.rep.retained != nil {
+					err = g.publishRetainedCanon(ctx, nd, o.rep)
+					if err == nil {
+						g.canonSt.RetainedHits++
+					}
+				} else {
+					var c2 *repCanon
+					var r2 *repRoot
+					r2, c2, err = s.repConstructCanon(nd.obj.man, nil, g.pol.ReserveFreeBytes, nil, g.pol.Executables)
+					if err == nil {
+						c2.close()
+						if r2.Rep != root.Rep || c2.SHA != g.nodes[o.bases[0]].sha {
+							err = errors.New("canonical re-construction differs from the plan")
+						} else {
+							root = r2
+						}
 					}
 				}
 				if err != nil {
@@ -68239,7 +68437,7 @@ func (g *rgGraph) apply(ctx context.Context, e *rgEval, rep *OptimizeReport) err
 					return fail(err)
 				}
 				b := g.nodes[o.bases[0]]
-				rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormRep, Depth: byte(finalDepth(v)), Sketch: nd.sk, Root: r2,
+				rec = &authRecord{SHA: nd.sha, Size: nd.size, Gen: gen(nd.sha), Form: authFormRep, Depth: byte(finalDepth(v)), Sketch: nd.sk, Root: root,
 					Bases: []xdBaseRef{{b.sha, b.size}}}
 				break
 			}
@@ -69211,15 +69409,70 @@ func (g *rgGraph) canonTouch(e *rgEval, v int32, o *rgOpt, a, b int64, t rgTouch
 
 // CanonStats reports canonical analysis (B8).
 type CanonStats struct {
-	Containers   int     `json:"containers"`   // codec containers analyzed
-	Rejected     int     `json:"rejected"`     // not replayable exactly within limits
-	Streams      int     `json:"streams"`      // distinct canonical streams
-	Shared       int     `json:"shared"`       // containers whose stream another container or object already had
-	PlainBytes   int64   `json:"plain_bytes"`  // decoded bytes of the distinct streams
-	RecipeBytes  int64   `json:"recipe_bytes"` // priced bytes of the containers' own components
-	Seconds      float64 `json:"seconds"`      // analysis and proof
-	TempPeak     int64   `json:"temp_peak"`    // planning stream bytes held in temp files
-	Materialized int     `json:"materialized"` // streams whose chunks apply wrote
+	Containers      int     `json:"containers"`   // codec containers analyzed
+	Rejected        int     `json:"rejected"`     // not replayable exactly within limits
+	Streams         int     `json:"streams"`      // distinct canonical streams
+	Shared          int     `json:"shared"`       // containers whose stream another container or object already had
+	PlainBytes      int64   `json:"plain_bytes"`  // decoded bytes of the distinct streams
+	RecipeBytes     int64   `json:"recipe_bytes"` // priced bytes of the containers' own components
+	Seconds         float64 `json:"seconds"`      // analysis and proof
+	TempPeak        int64   `json:"temp_peak"`    // planning stream bytes held in temp files
+	Materialized    int     `json:"materialized"` // streams whose chunks apply wrote
+	RetainedPlans   int     `json:"retained_plans,omitempty"`
+	RetainedBytes   int64   `json:"retained_bytes,omitempty"`
+	RetainedEntries int     `json:"retained_entries,omitempty"`
+	RetainedHits    int     `json:"retained_hits,omitempty"`
+}
+
+const canonPlanBytes = 4 << 20
+const canonPlanEntries = 4096
+
+func (g *rgGraph) retainCanonPlan(rep *authRepCand, mem map[[32]byte][]byte) {
+	var size int64
+	keep := make(map[[32]byte][]byte)
+	for _, c := range rep.chunks {
+		sum, _ := decodeHexSHA256(c.SHA256) // closure construction checked the digest
+		data := mem[sum]
+		if data == nil {
+			continue
+		}
+		if _, found := keep[sum]; found {
+			continue
+		}
+		size += int64(len(data))
+		if size+g.canonSt.RetainedBytes > canonPlanBytes || len(keep)+g.canonSt.RetainedEntries >= canonPlanEntries {
+			return
+		}
+		keep[sum] = data
+	}
+	rep.retained = keep
+	g.canonSt.RetainedPlans++
+	g.canonSt.RetainedBytes += size
+	g.canonSt.RetainedEntries += len(keep)
+}
+
+func (g *rgGraph) publishRetainedCanon(ctx context.Context, nd *rgNode, rep *authRepCand) error {
+	b := g.s.newRepBuilder(nd.size, nil, nil)
+	defer b.close()
+	b.reserve = g.pol.ReserveFreeBytes
+	for _, ref := range rep.chunks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		sum, err := decodeHexSHA256(ref.SHA256)
+		if err != nil {
+			return err
+		}
+		if data := rep.retained[sum]; data != nil {
+			if int64(len(data)) != ref.Length || sha256.Sum256(data) != sum {
+				return errAuthMismatch
+			}
+			if err := b.putChunk(sum, data); err != nil {
+				return err
+			}
+		}
+	}
+	return b.sink.Flush()
 }
 
 // canonKind sniffs a container kind the canonical builder handles.
@@ -69322,6 +69575,9 @@ func (g *rgGraph) canonOpts(ctx context.Context, m *authMigrator, eligible []int
 			}
 		}
 		g.codecLayout(o, root, mem, nd.size)
+		if g.pol.RetainCanonicalPlans && g.pol.Apply {
+			g.retainCanonPlan(o.rep, mem)
+		}
 		nd.opts = append(nd.opts, o)
 	}
 	return added, nil

@@ -275,10 +275,10 @@ def allocated(path):
     return sum(p.lstat().st_blocks * 512 for p in (path, *path.rglob("*")))
 
 
-def run(binary, env, flags, timeout=90):
+def run(binary, env, flags, timeout=90, separate_stderr=False):
     start = time.monotonic()
-    with tempfile.TemporaryFile() as out:
-        child = subprocess.Popen([str(binary), *flags], env=env, stdout=out, stderr=out)
+    with tempfile.TemporaryFile() as out, (tempfile.TemporaryFile() if separate_stderr else nullcontext(out)) as err:
+        child = subprocess.Popen([str(binary), *flags], env=env, stdout=out, stderr=err)
         deadline = start + timeout
         while True:
             pid, status, usage = os.wait4(child.pid, os.WNOHANG)
@@ -292,11 +292,15 @@ def run(binary, env, flags, timeout=90):
             time.sleep(.003)
         out.seek(0)
         result = out.read().decode()
+        extra = {}
+        if separate_stderr:
+            err.seek(0)
+            extra["stderr"] = err.read().decode()
         if child.returncode:
-            raise RuntimeError(f"{flags[0]}: {result[-4000:]}")
+            raise RuntimeError(f"{flags[0]}: {(result+extra.get('stderr', ''))[-4000:]}")
     return {"seconds": time.monotonic() - start,
             "cpu_seconds": usage.ru_utime + usage.ru_stime, "peak_rss_bytes": usage.ru_maxrss * 1024,
-            "input_blocks": usage.ru_inblock, "output_blocks": usage.ru_oublock, "stdout": result}
+            "input_blocks": usage.ru_inblock, "output_blocks": usage.ru_oublock, "stdout": result, **extra}
 
 
 def stage(args, env, directory, source, state, seed, target):
@@ -324,7 +328,7 @@ def trial(args, env, directory, source, case, state, lane, seed, target, foregro
     store = directory / "destination"
     log = directory / "destination.log"
     metadata = {"scene": "c3"}
-    with serve(args.receiver_binary, store, log, env) as (port, sink, pid):
+    with serve(args.receiver_binary, store, log, getattr(args, "receiver_env", env)) as (port, sink, pid):
         temp = directory / "client-tmp"
         temp.mkdir()
         source_port, _, source_pid = source

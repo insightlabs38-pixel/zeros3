@@ -1,0 +1,15 @@
+{
+  "verdict": "C18_RECOVERY_EFFECTIVE",
+  "baseline": "220a336",
+  "pack_size": 6317789,
+  "repaired_record_bytes": [8236, 8240],
+  "targeted_median_wall_seconds": 0.289,
+  "forced_repack_median_wall_seconds": 1.294,
+  "targeted_median_cpu_seconds": 0.394,
+  "forced_repack_median_cpu_seconds": 2.244,
+  "restored_original_pack_identity": true,
+  "ordinary_repack_skipped_damage": true,
+  "native_amd64_consumer_phases": 22,
+  "emulated_arm64_consumer_phases": 19,
+  "emulated_arm64_exact_dictionary_repairs": 2
+}
