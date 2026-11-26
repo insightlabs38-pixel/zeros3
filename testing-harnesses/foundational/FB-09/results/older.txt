@@ -1,0 +1,1 @@
+pre-feature reader refuses manifestbin before serving; current reader deep-verifies the same typed store

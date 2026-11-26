@@ -1,0 +1,10 @@
+=== RUN   TestFB09BinaryManifestGolden
+    zeros3_fb09_test.go:67: binary manifest golden is 273 bytes with two 36-byte refs and an independent chunk-list ID
+--- PASS: TestFB09BinaryManifestGolden (0.00s)
+=== RUN   TestFB09MixedManifestsAndBundle
+    zeros3_fb09_test.go:141: mixed JSON and binary manifests survived current reads, a range, exact mark, and verified bundle import
+--- PASS: TestFB09MixedManifestsAndBundle (0.08s)
+=== RUN   TestVerify_DetectsUnparsableManifestJSON
+--- PASS: TestVerify_DetectsUnparsableManifestJSON (0.00s)
+PASS
+ok  	zeros3	0.091s

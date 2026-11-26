@@ -8939,6 +8939,214 @@ type manifestV1 struct {
 	VersionID             string       `json:"version_id"`
 }
 
+const (
+	manifestBinFeature = "manifestbin"
+	manifestBinMagic   = "ZMF2"
+	manifestBinHeader  = 16
+	manifestBinChunk   = 36
+	maxManifestBin     = 256 << 20
+)
+
+func appendManifestString(out []byte, text string) []byte {
+	out = binary.AppendUvarint(out, uint64(len(text)))
+	return append(out, text...)
+}
+
+func manifestChunkListID(rows []byte) (clid [32]byte) {
+	h := sha256.New()
+	io.WriteString(h, "zeros3/chunk-list/v1\x00")
+	h.Write(rows)
+	h.Sum(clid[:0])
+	return
+}
+
+func encodeBinaryManifest(m manifestV1) ([]byte, error) {
+	if m.ManifestFormatVersion != manifestFormatVersion || m.CDCFormatVersion != cdcFormatVersion ||
+		m.HashAlgorithm != "sha256" || m.TotalLength < 0 || m.ManifestUUID == "" ||
+		len(m.Metadata) > 1<<20 || len(m.Chunks) > maxManifestBin/manifestBinChunk {
+		return nil, errors.New("manifest binary: unsupported manifest schema or size")
+	}
+	at, err := m.CreatedAt.MarshalText()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, manifestBinHeader, manifestBinHeader+len(m.Chunks)*manifestBinChunk+256)
+	copy(out, manifestBinMagic)
+	if m.Chunks == nil {
+		out[4] |= 1
+	}
+	if m.Metadata == nil {
+		out[4] |= 2
+	}
+	if m.ObjectSHA256 != "" {
+		out[4] |= 4
+	}
+	binary.LittleEndian.PutUint64(out[8:], uint64(m.TotalLength))
+	for _, text := range []string{m.ManifestUUID, m.VersionID, m.ContentType, m.ETag, string(at)} {
+		if !utf8.ValidString(text) {
+			return nil, errors.New("manifest binary: invalid UTF-8")
+		}
+		out = appendManifestString(out, text)
+	}
+	if m.ObjectSHA256 != "" {
+		sum, err := decodeHexSHA256(m.ObjectSHA256)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sum[:]...)
+	}
+	out = binary.AppendUvarint(out, uint64(len(m.Metadata)))
+	for i, item := range m.Metadata {
+		if !utf8.ValidString(item.Key) || !utf8.ValidString(item.Value) || i > 0 && m.Metadata[i-1].Key >= item.Key {
+			return nil, errors.New("manifest binary: metadata keys must be valid UTF-8 in canonical order")
+		}
+		out = appendManifestString(out, item.Key)
+		out = appendManifestString(out, item.Value)
+	}
+	out = binary.AppendUvarint(out, uint64(len(m.Chunks)))
+	start := len(out)
+	var total int64
+	for _, chunk := range m.Chunks {
+		sum, err := decodeHexSHA256(chunk.SHA256)
+		if err != nil || chunk.Length < 1 || chunk.Length > cdcMaxChunkSize {
+			return nil, errors.New("manifest binary: invalid chunk reference")
+		}
+		out = append(out, sum[:]...)
+		out = binary.LittleEndian.AppendUint32(out, uint32(chunk.Length))
+		total += chunk.Length
+	}
+	if total != m.TotalLength || len(out) > maxManifestBin-sha256.Size {
+		return nil, errors.New("manifest binary: inconsistent or excessive manifest length")
+	}
+	clid := manifestChunkListID(out[start:])
+	return append(out, clid[:]...), nil
+}
+
+type binaryManifestReader struct {
+	rest []byte
+	err  error
+}
+
+func (r *binaryManifestReader) take(n int) []byte {
+	if r.err != nil {
+		return nil
+	}
+	if n < 0 || n > len(r.rest) {
+		r.err = io.ErrUnexpectedEOF
+		return nil
+	}
+	data := r.rest[:n]
+	r.rest = r.rest[n:]
+	return data
+}
+
+func (r *binaryManifestReader) count(limit int) int {
+	if r.err != nil {
+		return 0
+	}
+	v, n := binary.Uvarint(r.rest)
+	var canonical [binary.MaxVarintLen64]byte
+	if n <= 0 || v > uint64(limit) || n != binary.PutUvarint(canonical[:], v) {
+		r.err = errors.New("manifest binary: noncanonical or excessive integer")
+		return 0
+	}
+	r.rest = r.rest[n:]
+	return int(v)
+}
+
+func (r *binaryManifestReader) text() string {
+	n := r.count(len(r.rest))
+	data := r.take(n)
+	if !utf8.Valid(data) {
+		r.err = errors.New("manifest binary: invalid UTF-8")
+	}
+	return string(data)
+}
+
+func decodeBinaryManifest(data []byte) (manifestV1, error) {
+	m := manifestV1{ManifestFormatVersion: manifestFormatVersion, CDCFormatVersion: cdcFormatVersion, HashAlgorithm: "sha256"}
+	if len(data) < manifestBinHeader || len(data) > maxManifestBin || string(data[:4]) != manifestBinMagic ||
+		data[4]&^7 != 0 || !allZero(data[5:8]) || binary.LittleEndian.Uint64(data[8:]) > math.MaxInt64 {
+		return m, errors.New("manifest binary: invalid header")
+	}
+	flags := data[4]
+	m.TotalLength = int64(binary.LittleEndian.Uint64(data[8:]))
+	r := binaryManifestReader{rest: data[manifestBinHeader:]}
+	m.ManifestUUID, m.VersionID, m.ContentType, m.ETag = r.text(), r.text(), r.text(), r.text()
+	stamp := r.text()
+	if err := m.CreatedAt.UnmarshalText([]byte(stamp)); err != nil || m.ManifestUUID == "" {
+		return m, errors.New("manifest binary: invalid identity or creation time")
+	}
+	if canonical, _ := m.CreatedAt.MarshalText(); string(canonical) != stamp {
+		return m, errors.New("manifest binary: noncanonical creation time")
+	}
+	if flags&4 != 0 {
+		m.ObjectSHA256 = hex.EncodeToString(r.take(sha256.Size))
+	}
+	nm := r.count(min(len(r.rest)/2, 1<<20))
+	if flags&2 == 0 || nm != 0 {
+		m.Metadata = make([]metadataKV, nm)
+	}
+	for i := range m.Metadata {
+		m.Metadata[i] = metadataKV{Key: r.text(), Value: r.text()}
+		if i > 0 && m.Metadata[i-1].Key >= m.Metadata[i].Key {
+			return m, errors.New("manifest binary: unordered metadata")
+		}
+	}
+	n := r.count(len(r.rest) / manifestBinChunk)
+	rows := r.take(n * manifestBinChunk)
+	claimed := r.take(sha256.Size)
+	if r.err != nil {
+		return m, r.err
+	}
+	clid := manifestChunkListID(rows)
+	if len(r.rest) != 0 || !bytes.Equal(clid[:], claimed) || flags&1 != 0 && n != 0 || flags&2 != 0 && nm != 0 {
+		return m, errors.New("manifest binary: chunk-list identity, flags, or length mismatch")
+	}
+	if flags&1 == 0 {
+		m.Chunks = make([]chunkRef, n)
+	}
+	var total int64
+	for i := range m.Chunks {
+		row := rows[i*manifestBinChunk:]
+		length := int64(binary.LittleEndian.Uint32(row[32:]))
+		if length == 0 || length > cdcMaxChunkSize {
+			return m, errors.New("manifest binary: invalid chunk length")
+		}
+		m.Chunks[i] = chunkRef{SHA256: hex.EncodeToString(row[:32]), Length: length}
+		total += length
+	}
+	if total != m.TotalLength {
+		return m, errors.New("manifest binary: chunk lengths disagree with total")
+	}
+	return m, nil
+}
+
+func unmarshalManifest(data []byte, dest *manifestV1) error {
+	if !bytes.HasPrefix(data, []byte(manifestBinMagic)) {
+		return json.Unmarshal(data, dest)
+	}
+	man, err := decodeBinaryManifest(data)
+	if err == nil {
+		*dest = man
+	}
+	return err
+}
+
+func (s *Store) marshalManifest(man manifestV1) ([]byte, error) {
+	if !s.writeBinaryManifests {
+		return json.Marshal(man)
+	}
+	data, err := encodeBinaryManifest(man)
+	if err != nil {
+		return json.Marshal(man)
+	}
+	if err := s.ensureFeature(manifestBinFeature); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 // sortedMetadataKV converts a metadata map into the manifest's
 // deterministic sorted-by-key representation, so two builds of the same
 // logical metadata always serialize identically. Shared by
@@ -8962,7 +9170,7 @@ func sortedMetadataKV(metadata map[string]string) []metadataKV {
 // detected on replay/read independent of the UUID filename.
 func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err error) {
 	defer s.maintTouch()
-	data, err := json.Marshal(m)
+	data, err := s.marshalManifest(m)
 	if err != nil {
 		return "", sum, err
 	}
@@ -8992,8 +9200,9 @@ func (s *Store) publishManifestJoined(man manifestV1, ing *ingestResult) (id str
 	if ss := ing.seg; ss != nil {
 		// Small request: chunks and manifest go to the segment in one group commit.
 		ing.seg, ing.finish = nil, nil
-		data, merr := json.Marshal(man)
+		data, merr := s.marshalManifest(man)
 		if merr != nil {
+			ss.Abort()
 			return "", sum, merr
 		}
 		sum = sha256.Sum256(data)
@@ -9070,7 +9279,7 @@ func (s *Store) readManifestSHA(id string, sha [32]byte) (manifestV1, []byte, er
 		return manifestV1{}, nil, err
 	}
 	var m manifestV1
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := unmarshalManifest(data, &m); err != nil {
 		return manifestV1{}, nil, fmt.Errorf("manifest %s is corrupt: %w", id, err)
 	}
 	return m, data, nil
@@ -9086,7 +9295,7 @@ func (s *Store) readManifest(id string) (manifestV1, []byte, error) {
 		return manifestV1{}, nil, err
 	}
 	var m manifestV1
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := unmarshalManifest(data, &m); err != nil {
 		return manifestV1{}, nil, fmt.Errorf("manifest %s is corrupt: %w", id, err)
 	}
 	return m, data, nil
@@ -9258,6 +9467,9 @@ var servedHexVal = func() (t [256]byte) {
 // other fields, uppercase hex, leading zeros, huge numbers): the caller then
 // decodes the whole document with encoding/json, which defines the meaning.
 func scanCanonicalChunks(data []byte) (pre, post, sums []byte, ends []int64, ok bool) {
+	if bytes.HasPrefix(data, []byte(manifestBinMagic)) {
+		return
+	}
 	k := bytes.Index(data, servedChunksKey)
 	if k < 0 {
 		return
@@ -9349,7 +9561,7 @@ func parseServedManifest(data []byte, id string, sha [32]byte) (*servedManifest,
 		}
 	}
 	var man manifestV1
-	if err := json.Unmarshal(data, &man); err != nil {
+	if err := unmarshalManifest(data, &man); err != nil {
 		return nil, fmt.Errorf("manifest %s is corrupt: %w", id, err)
 	}
 	return newServedManifest(man, sha)
@@ -11752,6 +11964,7 @@ type multipartUpload struct {
 
 type Store struct {
 	locatorFromGeneration atomic.Bool // a destructive pass first reloads authoritative pack indexes
+	writeBinaryManifests  bool
 
 	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
 	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
@@ -21400,8 +21613,12 @@ func (s *Store) analyzeManifest(uuid string, sha [32]byte, h *packHandles) *reac
 		}
 	}
 	if !fast {
-		if uerr := json.Unmarshal(data, &man); uerr != nil {
-			bad("manifest json does not parse: " + uerr.Error())
+		if uerr := unmarshalManifest(data, &man); uerr != nil {
+			format := "json"
+			if bytes.HasPrefix(data, []byte(manifestBinMagic)) {
+				format = "binary"
+			}
+			bad("manifest " + format + " does not parse: " + uerr.Error())
 			return m
 		}
 	}
@@ -39762,6 +39979,7 @@ func runServe(args []string) {
 	bgYield := fs.String("background-yield", "off", "online maintenance and import proofs: off, adaptive to S3 activity, or fixed delay (research control)")
 	locatorCache := fs.Bool("locator-generation", false, "use a matching sealed-pack locator generation at startup; fall back to pack indexes")
 	locatorTags := fs.Bool("locator-tags", false, "use a compact tag index with full-digest verification of every hit against a matching generation")
+	binaryManifests := fs.Bool("binary-manifests", false, "write binary manifest records with an explicit store feature marker (research)")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -39851,6 +40069,7 @@ func runServe(args []string) {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	store.writeBinaryManifests = *binaryManifests
 	if *bgYield != "off" {
 		store.backgroundYield = *bgYield
 	}
@@ -40636,7 +40855,7 @@ func parseBundleManifest(uuid string, data []byte, want [32]byte) (manifestV1, e
 	if sha256.Sum256(data) != want {
 		return m, bundleErr("manifest %s does not match its recorded sha256", uuid)
 	}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := unmarshalManifest(data, &m); err != nil {
 		return m, bundleErr("manifest %s is malformed: %v", uuid, err)
 	}
 	if m.ManifestFormatVersion != manifestFormatVersion || m.CDCFormatVersion != cdcFormatVersion || m.HashAlgorithm != "sha256" {
@@ -41317,14 +41536,15 @@ type stagedManifest struct{ uuid, tmp string }
 // manifests, groups chunks through casBatch and, in publish, makes the target
 // durable with the snapshot descriptor strictly last.
 type bundleImporter struct {
-	s         *Store
-	res       BundleImportResult
-	frame     []byte
-	haveSnap  bool
-	staged    []stagedManifest
-	batch     *casBatch
-	committed bool
-	manifests []string // optional backfill; includes reused manifests
+	binaryManifests bool
+	s               *Store
+	res             BundleImportResult
+	frame           []byte
+	haveSnap        bool
+	staged          []stagedManifest
+	batch           *casBatch
+	committed       bool
+	manifests       []string // optional backfill; includes reused manifests
 }
 
 func (s *Store) newBundleImporter() *bundleImporter {
@@ -41368,6 +41588,7 @@ func (im *bundleImporter) descriptor(d snapshotDescriptorV1, f []byte) error {
 }
 
 func (im *bundleImporter) manifest(uuid string, data []byte) error {
+	im.binaryManifests = im.binaryManifests || bytes.HasPrefix(data, []byte(manifestBinMagic))
 	path := filepath.Join(im.s.root, "manifests", uuid+".json")
 	existing, rerr := os.ReadFile(path)
 	switch {
@@ -41420,6 +41641,11 @@ func (im *bundleImporter) chunk(sum [32]byte, data []byte) error {
 // -- last and atomically -- the snapshot descriptor.
 func (im *bundleImporter) publish() (BundleImportResult, error) {
 	s, res := im.s, &im.res
+	if im.binaryManifests {
+		if err := s.ensureFeature(manifestBinFeature); err != nil {
+			return *res, err
+		}
+	}
 	if err := im.batch.Flush(); err != nil {
 		return *res, err
 	}
@@ -88307,7 +88533,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature {
 			return x
 		}
 	}
