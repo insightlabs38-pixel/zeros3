@@ -129,11 +129,13 @@ func fb01Rich(t testing.TB, dir string) (*fb01Truth, int64, int64) {
 	return tr, gs, ge
 }
 
+// fb01Opener's shared open serves a degraded prefix, as FB-01 measured it;
+// OpenStoreShared refuses one since FB-01R.
 func fb01Opener(owner bool) func(string) (*Store, error) {
 	if owner {
 		return OpenStore
 	}
-	return OpenStoreShared
+	return OpenStoreSharedPrefix
 }
 
 func fb01ModeName(owner bool) string {
@@ -455,8 +457,10 @@ func TestFB01SalvageNeedsOfflineStore(t *testing.T) {
 
 // TestFB01WriterRollback: a failed append (short write, failed fsync) leaves
 // no torn tail behind, so a clean close reopens without a refusal and with
-// every acknowledged mutation; if the rollback itself fails, the next open
-// refuses until salvage.
+// every acknowledged mutation. If the rollback itself fails, the torn bytes
+// lie past the ack watermark: an open in the same boot moves exactly them to
+// quarantine and opens (FB-01R); after a host restart without sync mode, or
+// without the watermark, the open refuses until salvage.
 func TestFB01WriterRollback(t *testing.T) {
 	fb01NoTailWait(t)
 	for _, c := range []struct {
@@ -517,19 +521,11 @@ func TestFB01WriterRollback(t *testing.T) {
 				t.Fatalf("a later put's error %q does not carry the rollback outcome %q", err, c.report)
 			}
 			s.Close()
-			s2, err := OpenStore(dir)
 			if c.reopenRefuse {
-				if err == nil || !errors.Is(err, errJournalRefused) {
-					t.Fatalf("want a refusal of the torn tail, got %v", err)
-				}
-				rep, _ := inspectJournal(dir)
-				if _, err := salvageJournal(dir, rep.ValidEnd, true); err != nil {
-					t.Fatal(err)
-				}
-				if s2, err = OpenStore(dir); err != nil {
-					t.Fatal(err)
-				}
-			} else if err != nil {
+				fb01rTornTailRecovers(t, dir, tr)
+			}
+			s2, err := OpenStore(dir)
+			if err != nil {
 				t.Fatalf("reopen after a rolled-back append: %v", err)
 			}
 			defer s2.Close()

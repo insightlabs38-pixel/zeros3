@@ -308,10 +308,18 @@ func TestNamespaceCheckpointJournalFaultModel(t *testing.T) {
 	_, err = writer.PutObject("pilot", "retained", first, "text/plain", nil)
 	mustOK(t, err)
 	seam := writer.journal.writeOffset
+	// The ack watermark as it stood while the second frame was in flight:
+	// the model's images below pair with it, not with the final one, which
+	// records the second frame as acknowledged.
+	ackPath := filepath.Join(dir, "journal", journalWatermarkName)
+	ackAtSeam, err := os.ReadFile(ackPath)
+	mustOK(t, err)
 	_, err = writer.PutObject("pilot", "retained", second, "text/plain", nil)
 	mustOK(t, err)
 	mustOK(t, writer.Close())
 	intact, err := os.ReadFile(path)
+	mustOK(t, err)
+	ackFinal, err := os.ReadFile(ackPath)
 	mustOK(t, err)
 
 	model := []struct {
@@ -330,25 +338,50 @@ func TestNamespaceCheckpointJournalFaultModel(t *testing.T) {
 	for _, trial := range model {
 		t.Run(trial.name, func(t *testing.T) {
 			mustOK(t, os.WriteFile(path, trial.image, 0o600))
-			for _, use := range []bool{false, true} {
-				s, err := openStore(dir, false, use)
-				if trial.want == nil {
-					if s != nil {
-						s.Close()
-					}
-					if err == nil || !strings.Contains(err.Error(), "expected sequence") {
-						t.Fatalf("checkpoint=%t accepted a broken ordering: %v", use, err)
-					}
-					continue
+			ack := ackAtSeam
+			if trial.name == "all-writes" {
+				ack = ackFinal
+			}
+			// With the matching watermark, and without one (FB-01's evidence).
+			for _, withAck := range []bool{true, false} {
+				os.Remove(ackPath)
+				if withAck {
+					mustOK(t, os.WriteFile(ackPath, ack, 0o600))
 				}
-				mustOK(t, err)
-				_, got, err := s.GetObject("pilot", "retained")
-				s.Close()
-				if err != nil || sha256.Sum256(got) != sha256.Sum256(trial.want) {
-					t.Fatalf("checkpoint=%t modeled current bytes mismatch: %q %v", use, got, err)
+				for _, use := range []bool{false, true} {
+					s, err := openStore(dir, false, use)
+					if trial.want == nil {
+						if s != nil {
+							s.Close()
+						}
+						if err == nil || !strings.Contains(err.Error(), "expected sequence") {
+							t.Fatalf("checkpoint=%t accepted a broken ordering: %v", use, err)
+						}
+						continue
+					}
+					mustOK(t, err)
+					_, got, err := s.GetObject("pilot", "retained")
+					s.Close()
+					if err != nil || sha256.Sum256(got) != sha256.Sum256(trial.want) {
+						t.Fatalf("checkpoint=%t modeled current bytes mismatch: %q %v", use, got, err)
+					}
 				}
 			}
 		})
+	}
+	// The final watermark records the second frame as acknowledged, so an
+	// image without it is acknowledged history lost: refused, not served.
+	mustOK(t, os.WriteFile(path, intact[:seam], 0o600))
+	mustOK(t, os.WriteFile(ackPath, ackFinal, 0o600))
+	for _, use := range []bool{false, true} {
+		s, err := openStore(dir, false, use)
+		if s != nil {
+			s.Close()
+		}
+		var wp *watermarkProblem
+		if !errors.As(err, &wp) || !errors.Is(err, errJournalRefused) {
+			t.Fatalf("checkpoint=%t: a journal cut below its acknowledged end opened: %v", use, err)
+		}
 	}
 }
 

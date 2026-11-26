@@ -452,6 +452,9 @@ const (
 	faultJournalRollback = "journal-rollback"
 	faultJournalOpen     = "journal-open"
 	faultCheckpointWrite = "checkpoint-write"
+	faultWatermarkWrite  = "watermark-write"
+	faultWatermarkDrop   = "watermark-drop"
+	faultTailDiscard     = "tail-discard"
 )
 
 func injectJournalFault(point string) error {
@@ -7753,6 +7756,19 @@ type Journal struct {
 	// checkpointFallback is the damaged-body checkpoint this open replayed
 	// the whole journal past, or nil.
 	checkpointFallback error
+
+	// The ack watermark (FB-01R): wm is an owner's writer, or nil; verdict is
+	// what the slot found at open said; recovered is an automatic discard of
+	// an unacknowledged tail; tailProven says a shared opener's tail lies
+	// past the slot in the boot that wrote it, so its view is a consistent
+	// prefix. lastFrameOff and lastCRC describe the frame ending at
+	// writeOffset (lastFrameOff -1 when unknown).
+	wm           *watermarkWriter
+	verdict      tailVerdict
+	recovered    *tailRecovery
+	tailProven   bool
+	lastFrameOff int64
+	lastCRC      uint32
 }
 
 // checkpointKind is the kind of a *checkpointProblem in err, or "".
@@ -7814,8 +7830,10 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 
 	first := j.nextSeq
 	frames := make([]byte, 0, total)
+	lastStart, lastCRC := 0, uint32(0)
 	for i, r := range recs {
 		start := len(frames)
+		lastStart = start
 		var header [journalHeaderSize]byte
 		copy(header[0:4], journalMagic)
 		binary.BigEndian.PutUint16(header[4:6], journalFrameVersion)
@@ -7827,6 +7845,7 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 		frames = append(frames, r.payload...)
 		crc := crc32.Checksum(frames[start:], castagnoliTable)
 		frames = binary.BigEndian.AppendUint32(frames, crc)
+		lastCRC = crc
 	}
 
 	if n, err := j.writeFrames(frames); err != nil {
@@ -7844,10 +7863,65 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 	// The frames are durable: advance the cursor before anything else can run
 	// (a panic in the hook below must not leave the cursor behind durable
 	// bytes, or the next append would overwrite them).
+	j.lastFrameOff = j.writeOffset + int64(lastStart)
 	j.writeOffset += int64(len(frames))
 	j.nextSeq = first + uint64(len(recs))
+	j.lastCRC = lastCRC
+	if err := j.advanceWatermark(); err != nil {
+		return 0, err
+	}
 	fireTestHook(hookAfterJournalSync)
 	return first, nil
+}
+
+// advanceWatermark moves the ack watermark to the durable end of the journal,
+// before the group there is acknowledged. If the slot cannot be written the
+// file is removed, so no slot older than an acknowledgement survives, and the
+// journal is poisoned; the durable group still counts. If even the removal
+// fails, the group is reported as failed (it stays durable and replays).
+func (j *Journal) advanceWatermark() error {
+	if j.wm == nil {
+		return nil
+	}
+	err := j.wm.write(j.writeOffset, j.lastFrameOff, j.nextSeq-1, j.lastCRC, 0, false)
+	if err == nil {
+		return nil
+	}
+	cause := fmt.Errorf("journal: updating the ack watermark failed, so no further commits until the store is reopened: %w", err)
+	j.poisoned = cause
+	derr := j.wm.drop()
+	j.wm = nil
+	if derr != nil {
+		j.poisoned = fmt.Errorf("%w; removing it also failed (%w), so this commit is reported failed though it is durable", cause, derr)
+		return j.poisoned
+	}
+	log.Printf("zeros3: %v; the watermark was removed, so the next open recovers as without one", cause)
+	return nil
+}
+
+// close writes a clean slot (when nothing failed and the last slot is not
+// already a clean one at this position) and closes the files.
+func (j *Journal) close() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.wm != nil {
+		l := j.wm.last
+		unchanged := l.clean() && l.Offset == j.writeOffset && l.FrameOff == j.lastFrameOff && l.Seq == j.nextSeq-1 && l.LastCRC == j.lastCRC
+		if j.poisoned == nil && !unchanged {
+			if err := j.wm.write(j.writeOffset, j.lastFrameOff, j.nextSeq-1, j.lastCRC, wmFlagClean, true); err != nil {
+				log.Printf("zeros3: journal: writing the closing ack watermark failed: %v", err)
+				if derr := j.wm.drop(); derr != nil {
+					log.Printf("zeros3: journal: removing the ack watermark failed: %v", derr)
+				}
+				j.wm = nil
+			}
+		}
+		if j.wm != nil {
+			j.wm.f.Close()
+			j.wm = nil
+		}
+	}
+	return j.f.Close()
 }
 
 func (j *Journal) writeFrames(b []byte) (int, error) {
@@ -7897,6 +7971,441 @@ func (j *Journal) poison(err error) {
 		j.poisoned = err
 	}
 	j.mu.Unlock()
+}
+
+// ---- ack watermark (FB-01R) ----
+//
+// journal/visibility.ack records, after every group's fsync and before the
+// group is acknowledged, where the journal then ended: offset S, the start,
+// sequence and CRC of the frame ending there, the kernel boot it was written
+// in and the store. Two 512-byte slots, one per 4 KiB page, alternate, each
+// with its own CRC32C; the newest valid slot counts. Old builds ignore the
+// file, and the journal's own bytes are unchanged. In the default lazy mode a slot is a pwrite
+// into the page cache, made durable at an owner open and a clean close; in
+// sync mode (ZEROS3_JOURNAL_WATERMARK=sync) every slot is fsynced before the
+// acknowledgement, at the cost of a second fsync per group.
+//
+// What it proves at the next open:
+//   - The journal must validate through S with the recorded frame ending at S,
+//     or acknowledged history was cut or damaged: the open refuses, even when
+//     the journal ends cleanly (a cut at a frame boundary).
+//   - A slot written in the running kernel boot means the page cache still
+//     holds every byte written to the journal since it, exactly as written: an
+//     owner writes one at open, after syncing the journal, before it appends.
+//     So an incomplete final frame past S is a write interrupted after the
+//     last completed fsync, never an acknowledged frame. The owner moves those
+//     bytes to journal/quarantine/tail-*/ and opens: automatic recovery.
+//   - A slot from sync mode proves the same after a host restart, for any
+//     damage past S: every acknowledgement waited for a durable slot.
+//
+// Without a usable slot, or after a restart in lazy mode, an uncertain tail is
+// refused as in FB-01. ZEROS3_JOURNAL_WATERMARK=off removes the file and keeps
+// FB-01's behaviour exactly.
+
+const (
+	journalWatermarkName  = "visibility.ack"
+	journalWatermarkMagic = "ZSWM"
+	journalWatermarkSlot  = 512
+	journalWatermarkPage  = 4096   // slot i starts at i*journalWatermarkPage
+	wmFlagSynced          = 1 << 0 // every slot since the owner's open was fsynced before its acknowledgement
+	wmFlagClean           = 1 << 1 // written by a clean close: no write was in flight
+)
+
+type journalWatermark struct {
+	Gen      uint64   `json:"generation"`
+	Flags    uint16   `json:"flags"`
+	Boot     [16]byte `json:"-"`
+	Store    [16]byte `json:"-"`
+	Offset   int64    `json:"offset"`
+	FrameOff int64    `json:"frame_offset"` // -1: unknown, the open that wrote it replayed no frame
+	Seq      uint64   `json:"frame_seq"`
+	LastCRC  uint32   `json:"last_crc"`
+	PID      uint32   `json:"pid"`
+	Unix     int64    `json:"unix_nanos"`
+}
+
+func (w *journalWatermark) synced() bool { return w.Flags&wmFlagSynced != 0 }
+func (w *journalWatermark) clean() bool  { return w.Flags&wmFlagClean != 0 }
+
+// sameBoot reports whether w was written in the running kernel boot.
+func (w *journalWatermark) sameBoot() bool {
+	b := currentBootID()
+	return b != [16]byte{} && w.Boot == b
+}
+
+func (w *journalWatermark) encode() []byte {
+	b := make([]byte, journalWatermarkSlot)
+	copy(b[0:4], journalWatermarkMagic)
+	binary.BigEndian.PutUint16(b[4:6], 1)
+	binary.BigEndian.PutUint16(b[6:8], w.Flags)
+	binary.BigEndian.PutUint64(b[8:16], w.Gen)
+	copy(b[16:32], w.Boot[:])
+	copy(b[32:48], w.Store[:])
+	binary.BigEndian.PutUint64(b[48:56], uint64(w.Offset))
+	binary.BigEndian.PutUint64(b[56:64], uint64(w.FrameOff))
+	binary.BigEndian.PutUint64(b[64:72], w.Seq)
+	binary.BigEndian.PutUint32(b[72:76], w.LastCRC)
+	binary.BigEndian.PutUint32(b[76:80], w.PID)
+	binary.BigEndian.PutUint64(b[80:88], uint64(w.Unix))
+	binary.BigEndian.PutUint32(b[journalWatermarkSlot-4:], crc32.Checksum(b[:journalWatermarkSlot-4], castagnoliTable))
+	return b
+}
+
+func decodeJournalWatermark(b []byte) (*journalWatermark, bool) {
+	if len(b) != journalWatermarkSlot || string(b[0:4]) != journalWatermarkMagic || binary.BigEndian.Uint16(b[4:6]) != 1 ||
+		crc32.Checksum(b[:journalWatermarkSlot-4], castagnoliTable) != binary.BigEndian.Uint32(b[journalWatermarkSlot-4:]) {
+		return nil, false
+	}
+	w := &journalWatermark{Flags: binary.BigEndian.Uint16(b[6:8]), Gen: binary.BigEndian.Uint64(b[8:16]),
+		Offset: int64(binary.BigEndian.Uint64(b[48:56])), FrameOff: int64(binary.BigEndian.Uint64(b[56:64])),
+		Seq: binary.BigEndian.Uint64(b[64:72]), LastCRC: binary.BigEndian.Uint32(b[72:76]),
+		PID: binary.BigEndian.Uint32(b[76:80]), Unix: int64(binary.BigEndian.Uint64(b[80:88]))}
+	copy(w.Boot[:], b[16:32])
+	copy(w.Store[:], b[32:48])
+	if w.Offset < 0 || w.FrameOff < -1 || w.FrameOff > w.Offset || (w.Offset == 0) != (w.Seq == 0) {
+		return nil, false
+	}
+	return w, true
+}
+
+var errWatermarkUnreadable = errors.New("journal: ack watermark has no valid slot")
+
+// readJournalWatermark returns the newest valid slot of the watermark at path,
+// os.ErrNotExist when there is no file, or errWatermarkUnreadable.
+func readJournalWatermark(path string) (*journalWatermark, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var best *journalWatermark
+	for off := 0; off+journalWatermarkSlot <= len(b) && off <= journalWatermarkPage; off += journalWatermarkPage {
+		if w, ok := decodeJournalWatermark(b[off : off+journalWatermarkSlot]); ok && (best == nil || w.Gen > best.Gen) {
+			best = w
+		}
+	}
+	if best == nil {
+		return nil, errWatermarkUnreadable
+	}
+	return best, nil
+}
+
+// journalWatermarkMode is ZEROS3_JOURNAL_WATERMARK: off, lazy (default) or sync.
+func journalWatermarkMode() string {
+	switch v := os.Getenv("ZEROS3_JOURNAL_WATERMARK"); v {
+	case "off", "sync":
+		return v
+	}
+	return "lazy"
+}
+
+var (
+	bootIDOnce sync.Once
+	bootIDVal  [16]byte
+	// testBootID, when a test sets it, stands in for the kernel boot ID (a
+	// different value models a host restart).
+	testBootID *[16]byte
+)
+
+// currentBootID is the running kernel's boot ID, or zero where it is unknown
+// (then no slot counts as written in this boot).
+func currentBootID() [16]byte {
+	if testBootID != nil {
+		return *testBootID
+	}
+	bootIDOnce.Do(func() {
+		b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+		if err != nil {
+			return
+		}
+		if raw, err := hex.DecodeString(strings.ReplaceAll(strings.TrimSpace(string(b)), "-", "")); err == nil && len(raw) == 16 {
+			copy(bootIDVal[:], raw)
+		}
+	})
+	return bootIDVal
+}
+
+func storeTag(storeID string) (t [16]byte) {
+	sum := sha256.Sum256([]byte("zeros3 store " + storeID))
+	copy(t[:], sum[:])
+	return t
+}
+
+// watermarkWriter owns the watermark file of an owner's journal.
+type watermarkWriter struct {
+	f    *os.File
+	path string
+	last journalWatermark
+	sync bool
+}
+
+// openWatermarkWriter writes base as the next generation after prev and syncs
+// it, so the slot that counts from now on was written in this boot.
+// Without a usable prev the file starts over, so no foreign or damaged slot
+// can outrank the new ones.
+//
+// When prev was written in this boot, in the same mode, at exactly this
+// position, it already proves what a fresh slot would, so it is kept and only
+// synced: an open that changes nothing leaves the store's bytes unchanged.
+func openWatermarkWriter(path string, base journalWatermark, prev *journalWatermark, syncEach bool) (*watermarkWriter, error) {
+	if prev != nil && prev.Boot == base.Boot && prev.Store == base.Store && prev.synced() == syncEach &&
+		prev.Offset == base.Offset && prev.FrameOff == base.FrameOff && prev.Seq == base.Seq && prev.LastCRC == base.LastCRC {
+		f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		ww := &watermarkWriter{f: f, path: path, sync: syncEach, last: *prev}
+		ww.last.PID = base.PID // the next slot records this process
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return nil, err
+		}
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			f.Close()
+			return nil, err
+		}
+		return ww, nil
+	}
+	flags := os.O_RDWR | os.O_CREATE
+	if prev == nil {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	ww := &watermarkWriter{f: f, path: path, sync: syncEach}
+	if prev != nil {
+		base.Gen = prev.Gen
+	}
+	ww.last = base
+	if err := ww.write(base.Offset, base.FrameOff, base.Seq, base.LastCRC, 0, true); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return ww, nil
+}
+
+func (ww *watermarkWriter) write(offset, frameOff int64, seq uint64, crc uint32, flags uint16, durable bool) error {
+	w := ww.last
+	w.Gen++
+	w.Offset, w.FrameOff, w.Seq, w.LastCRC = offset, frameOff, seq, crc
+	w.Flags = flags
+	if ww.sync {
+		w.Flags |= wmFlagSynced
+	}
+	w.Unix = time.Now().UnixNano()
+	if err := injectJournalFault(faultWatermarkWrite); err != nil {
+		return err
+	}
+	if _, err := ww.f.WriteAt(w.encode(), int64(w.Gen%2)*journalWatermarkPage); err != nil {
+		return err
+	}
+	if durable || ww.sync {
+		if err := ww.f.Sync(); err != nil {
+			return err
+		}
+	}
+	ww.last = w
+	return nil
+}
+
+// drop removes the watermark after a failed update, so no stale slot outlives
+// it: the next open then has no proof and falls back to refusing.
+func (ww *watermarkWriter) drop() error {
+	ww.f.Close()
+	if err := injectJournalFault(faultWatermarkDrop); err != nil {
+		return err
+	}
+	if err := os.Remove(ww.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDir(filepath.Dir(ww.path))
+}
+
+// journalFrameEndsAt checks that a valid frame with seq and crc starts at
+// frameOff and ends exactly at end, its own length field included.
+func journalFrameEndsAt(f *os.File, frameOff, end int64, seq uint64, crc uint32) (bool, error) {
+	if end == 0 {
+		return frameOff == 0 && seq == 0, nil
+	}
+	plen := end - frameOff - journalHeaderSize - 4
+	if plen < 0 || plen > maxJournalPayload {
+		return false, nil
+	}
+	var hdr [journalHeaderSize]byte
+	if _, err := f.ReadAt(hdr[:], frameOff); err != nil {
+		return false, nil
+	}
+	if int64(binary.BigEndian.Uint32(hdr[16:20])) != plen {
+		return false, nil
+	}
+	var buf []byte
+	got, ok, _, err := journalFrameAt(f, frameOff, end, plen, &buf)
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	last, err := journalLastCRC(f, end)
+	if err != nil {
+		return false, nil
+	}
+	return ok && got == seq && last == crc, nil
+}
+
+// watermarkFrameHolds checks that the frame w records ends at w.Offset. A slot
+// written by an open that replayed no frame does not know where that frame
+// starts; then the frame must be the one a verified checkpoint ends at, or one
+// a scan from the checkpoint (or from 0) reaches exactly.
+func watermarkFrameHolds(f *os.File, w *journalWatermark, start int64, startSeq uint64) (bool, error) {
+	if w.FrameOff >= 0 {
+		return journalFrameEndsAt(f, w.FrameOff, w.Offset, w.Seq, w.LastCRC)
+	}
+	if last, err := journalLastCRC(f, w.Offset); err != nil || last != w.LastCRC {
+		return false, nil
+	}
+	switch {
+	case w.Offset == start:
+		return w.Seq == startSeq, nil
+	case w.Offset < start:
+		return start > 0, nil // inside the checkpoint's proven prefix, and its CRC matches
+	}
+	sc, _, err := scanJournalRange(f, start, w.Offset, startSeq, false, nil)
+	if err != nil {
+		return false, err
+	}
+	return sc.Damage == nil && sc.LastSeq == w.Seq, nil
+}
+
+// watermarkProblem is acknowledged history the journal no longer holds as the
+// watermark recorded it.
+type watermarkProblem struct {
+	Offset   int64  `json:"offset"`
+	Seq      uint64 `json:"frame_seq"`
+	ValidEnd int64  `json:"valid_end"`
+	Detail   string `json:"detail"`
+}
+
+func (p *watermarkProblem) Error() string {
+	return fmt.Sprintf("acknowledged history damaged: the ack watermark records frame seq %d ending at offset %d, %s (cause watermark-below)", p.Seq, p.Offset, p.Detail)
+}
+
+// tailVerdict is what the watermark lets an open do with the journal.
+type tailVerdict struct {
+	Watermark *journalWatermark `json:"watermark,omitempty"`
+	Problem   *watermarkProblem `json:"problem,omitempty"` // refuse: acknowledged history cut or damaged
+	Discard   bool              `json:"discard"`           // the damage is past S and provably unacknowledged
+	Proof     string            `json:"proof,omitempty"`   // why, or why not
+	SameBoot  bool              `json:"same_boot"`
+}
+
+// judgeTail applies the watermark w (nil when there is none) to sc, a scan
+// from start, where a verified checkpoint left sequence startSeq (start 0 when
+// none was adopted); the checkpoint's binding proves the journal below start.
+func judgeTail(f *os.File, w *journalWatermark, sc journalScan, start int64, startSeq uint64) (tailVerdict, error) {
+	v := tailVerdict{Watermark: w}
+	if w == nil {
+		v.Proof = "no ack watermark"
+		return v, nil
+	}
+	v.SameBoot = w.sameBoot()
+	if w.Offset > sc.ValidEnd {
+		v.Problem = &watermarkProblem{Offset: w.Offset, Seq: w.Seq, ValidEnd: sc.ValidEnd,
+			Detail: fmt.Sprintf("but the journal validates only to offset %d", sc.ValidEnd)}
+		return v, nil
+	}
+	ok, err := watermarkFrameHolds(f, w, start, startSeq)
+	if err != nil {
+		return v, err
+	}
+	if !ok {
+		v.Problem = &watermarkProblem{Offset: w.Offset, Seq: w.Seq, ValidEnd: sc.ValidEnd,
+			Detail: "but the journal holds a different frame there"}
+		return v, nil
+	}
+	d := sc.Damage
+	switch {
+	case d == nil:
+		v.Proof = "the journal ends cleanly"
+	case v.SameBoot && d.ambiguousTail():
+		v.Discard = true
+		v.Proof = fmt.Sprintf("an incomplete final frame past the last completed fsync (offset %d), in the boot that wrote the watermark: an interrupted write, never acknowledged", w.Offset)
+	case w.synced() && !v.SameBoot:
+		v.Discard = true
+		v.Proof = fmt.Sprintf("damage past offset %d after a host restart; every acknowledgement waited for a synced watermark, so none lies past it", w.Offset)
+	case v.SameBoot:
+		v.Proof = fmt.Sprintf("damage past the watermark at offset %d that an interrupted write does not leave (%s); no acknowledged frame is affected", w.Offset, d.Cause)
+	default:
+		v.Proof = fmt.Sprintf("the host restarted since the watermark at offset %d was written, without sync mode: the tail may hold acknowledged frames written since", w.Offset)
+	}
+	return v, nil
+}
+
+// tailRecovery records an automatic discard of an unacknowledged tail.
+type tailRecovery struct {
+	Created    time.Time         `json:"created"`
+	Offset     int64             `json:"offset"`
+	Bytes      int64             `json:"bytes"`
+	SHA256     string            `json:"sha256"`
+	Damage     *journalDamage    `json:"damage"`
+	Watermark  *journalWatermark `json:"watermark"`
+	Proof      string            `json:"proof"`
+	Quarantine string            `json:"quarantine"`
+}
+
+// discardJournalTail moves the bytes past d.Offset into a new quarantine
+// directory, durably, and only then cuts the journal there and syncs it.
+func discardJournalTail(f *os.File, journalPath string, d *journalDamage, v tailVerdict) (*tailRecovery, error) {
+	jdir := filepath.Dir(journalPath)
+	rec := &tailRecovery{Created: time.Now().UTC(), Offset: d.Offset, Bytes: d.Size - d.Offset, Damage: d, Watermark: v.Watermark, Proof: v.Proof}
+	q := filepath.Join(jdir, "quarantine", "tail-"+rec.Created.Format("20060102T150405.000000000Z"))
+	if err := os.MkdirAll(q, 0o755); err != nil {
+		return nil, err
+	}
+	rec.Quarantine = q
+	tail := make([]byte, rec.Bytes)
+	if _, err := f.ReadAt(tail, d.Offset); err != nil && err != io.EOF {
+		return nil, err
+	}
+	sum := sha256.Sum256(tail)
+	rec.SHA256 = hex.EncodeToString(sum[:])
+	out, err := os.OpenFile(filepath.Join(q, "tail.bin"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := out.Write(tail); err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileDurable(q, filepath.Join(q, "record.json"), b); err != nil {
+		return nil, err
+	}
+	for _, dir := range []string{q, filepath.Dir(q), jdir} {
+		if err := syncDir(dir); err != nil {
+			return nil, err
+		}
+	}
+	if err := injectJournalFault(faultTailDiscard); err != nil {
+		return nil, err
+	}
+	if err := f.Truncate(d.Offset); err != nil {
+		return nil, err
+	}
+	if err := f.Sync(); err != nil {
+		return nil, err
+	}
+	return rec, nil
 }
 
 // replayJournal reads every complete, valid frame from f starting at
@@ -7969,11 +8478,12 @@ func replayJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep b
 
 // journalScan is the result of validating a journal from some offset.
 type journalScan struct {
-	ValidEnd int64          // just past the last valid frame
-	LastSeq  uint64         // sequence of that frame
-	Frames   int            // valid frames in this scan
-	Size     int64          // end of the scanned range
-	Damage   *journalDamage // nil when the range ends exactly at ValidEnd
+	ValidEnd  int64          // just past the last valid frame
+	LastSeq   uint64         // sequence of that frame
+	LastStart int64          // where that frame starts, or -1 when this scan validated none
+	Frames    int            // valid frames in this scan
+	Size      int64          // end of the scanned range
+	Damage    *journalDamage // nil when the range ends exactly at ValidEnd
 }
 
 // journalDamage describes the earliest frame that does not validate and the
@@ -8044,6 +8554,7 @@ func scanJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep boo
 	var hdr [journalHeaderSize]byte
 	var scratch []byte
 	n := 0
+	sc.LastStart = -1
 	stop := func(cause string, incomplete bool, detail string) (journalScan, error, error) {
 		sc.ValidEnd, sc.LastSeq, sc.Frames = offset, lastSeq, n
 		d := &journalDamage{Offset: offset, Seq: lastSeq + 1, Cause: cause, Detail: detail, Size: end, Incomplete: incomplete, LaterValid: -1, CorrectLen: -1}
@@ -8110,6 +8621,7 @@ func scanJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep boo
 		}
 		n++
 		lastSeq = seq
+		sc.LastStart = offset
 		offset += int64(journalHeaderSize) + int64(plen) + 4
 	}
 }
@@ -8264,6 +8776,7 @@ func openJournalWithCheckpoint(path string, readOnly bool, apply func(journalRec
 // cover more journal than the replay found.
 type journalOpenOpts struct {
 	readOnly   bool
+	storeID    string // binds the ack watermark; "" opens without one (FB-01 behaviour)
 	apply      func(journalRecord) error
 	checkpoint func(*os.File) (int64, uint64, error)
 	witness    func(f *os.File, validEnd int64) error
@@ -8306,6 +8819,8 @@ var errJournalRefused = errors.New("journal recovery refused")
 type journalRefusal struct {
 	Damage     *journalDamage
 	Checkpoint *checkpointProblem
+	Watermark  *watermarkProblem // acknowledged history cut or damaged below the ack watermark
+	Proof      string            // why the ack watermark could not account for Damage
 }
 
 func (e *journalRefusal) Unwrap() []error {
@@ -8315,6 +8830,9 @@ func (e *journalRefusal) Unwrap() []error {
 	}
 	if e.Checkpoint != nil {
 		errs = append(errs, e.Checkpoint)
+	}
+	if e.Watermark != nil {
+		errs = append(errs, e.Watermark)
 	}
 	return errs
 }
@@ -8336,6 +8854,14 @@ func (e *journalRefusal) Error() string {
 			b.WriteString("; ")
 		}
 		b.WriteString(c.Error())
+	}
+	if w := e.Watermark; w != nil {
+		if b.Len() > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(w.Error())
+	} else if e.Proof != "" && e.Damage != nil {
+		fmt.Fprintf(&b, "; not recovered automatically: %s", e.Proof)
 	}
 	b.WriteString("; nothing was changed: run `zeros3 journal inspect -store DIR`; only `zeros3 journal salvage` repairs, and it keeps the original")
 	return b.String()
@@ -8365,6 +8891,22 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 		return fail(err)
 	}
 	policy := currentJournalPolicy()
+	// The ack watermark is read before the journal: a live writer's later
+	// slots only cover more than the scan below can find.
+	wmMode := journalWatermarkMode()
+	wmPath := filepath.Join(filepath.Dir(path), journalWatermarkName)
+	var wm *journalWatermark
+	wmNote := "no ack watermark"
+	if o.storeID != "" && wmMode != "off" {
+		switch w, werr := readJournalWatermark(wmPath); {
+		case werr == nil && w.Store == storeTag(o.storeID):
+			wm = w
+		case werr == nil:
+			wmNote = "the ack watermark belongs to another store"
+		case !errors.Is(werr, os.ErrNotExist):
+			wmNote = fmt.Sprintf("the ack watermark is unreadable (%v)", werr)
+		}
+	}
 	var offset int64
 	var sequence uint64
 	var bodyDamaged error
@@ -8425,6 +8967,9 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 		var moreApply error
 		more, moreApply, err = scanJournalRange(f, sc.ValidEnd, st2.Size(), sc.LastSeq, false, o.apply)
 		more.Frames += sc.Frames
+		if more.LastStart < 0 {
+			more.LastStart = sc.LastStart
+		}
 		sc, applyErr = more, cmp.Or(applyErr, moreApply)
 	}
 	if err != nil {
@@ -8443,23 +8988,50 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 			return fail(&journalRefusal{Checkpoint: cp, Damage: sc.Damage})
 		}
 	}
+	verdict := tailVerdict{Proof: wmNote}
+	if o.storeID != "" && wmMode != "off" && policy.name == journalPolicyStrict.name {
+		if verdict, err = judgeTail(f, wm, sc, offset, sequence); err != nil {
+			return fail(err)
+		}
+		if wm == nil {
+			verdict.Proof = wmNote
+		}
+		if verdict.Problem != nil {
+			return fail(&journalRefusal{Damage: sc.Damage, Watermark: verdict.Problem})
+		}
+	}
 	var tail *journalDamage
+	var recovered *tailRecovery
 	if d := sc.Damage; d != nil {
 		switch {
 		case policy.tolerates(d):
 			// Historical policies cut the tail below.
-		case o.readOnly && d.ambiguousTail():
+		case o.readOnly && (d.ambiguousTail() || verdict.Discard):
 			// A shared opener changes nothing: it serves the valid prefix and
-			// reports the tail it could not account for.
+			// reports the tail, proven unacknowledged or not accounted for.
 			tail = d
-			log.Printf("zeros3: journal: a read-only open serves the valid prefix to offset %d; %s (a write still in flight, or a damaged tail the owner will refuse)", d.Offset, d.Detail)
+			if verdict.Discard {
+				log.Printf("zeros3: journal: a read-only open serves the valid prefix to offset %d; the rest is %s", d.Offset, verdict.Proof)
+			} else {
+				log.Printf("zeros3: journal: a read-only open serves the valid prefix to offset %d; %s (a write still in flight, or a damaged tail the owner will refuse; %s)", d.Offset, d.Detail, verdict.Proof)
+			}
+		case verdict.Discard && !o.readOnly:
+			rec, err := discardJournalTail(f, path, d, verdict)
+			if err != nil {
+				return fail(fmt.Errorf("journal: moving the unacknowledged tail past offset %d to quarantine failed, so the journal may still hold it: %w", d.Offset, err))
+			}
+			recovered = rec
+			sc.Size = d.Offset
+			log.Printf("zeros3: journal: recovered automatically: %s; moved %d bytes past offset %d (%s) to %s", verdict.Proof, rec.Bytes, d.Offset, d.Cause, rec.Quarantine)
 		default:
-			return fail(&journalRefusal{Damage: d})
+			return fail(&journalRefusal{Damage: d, Proof: verdict.Proof})
 		}
 	}
 	fireTestHook(hookJournalReplayed)
-	j = &Journal{f: f, writeOffset: sc.ValidEnd, nextSeq: sc.LastSeq + 1, tail: tail, checkpointFallback: bodyDamaged}
+	j = &Journal{f: f, writeOffset: sc.ValidEnd, nextSeq: sc.LastSeq + 1, tail: tail, checkpointFallback: bodyDamaged,
+		verdict: verdict, recovered: recovered}
 	if o.readOnly {
+		j.tailProven = tail != nil && verdict.Discard
 		j.poisoned = errJournalReadOnly
 		return j, nil, nil
 	}
@@ -8469,6 +9041,46 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 			return fail(err)
 		}
 	}
+	if o.storeID == "" {
+		return j, nil, nil
+	}
+	if wmMode == "off" {
+		// No slot may outlive the mode: a later open with it on would trust it.
+		if err := os.Remove(wmPath); err == nil {
+			if err := syncDir(filepath.Dir(wmPath)); err != nil {
+				return fail(err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fail(fmt.Errorf("journal: removing the ack watermark failed: %w", err))
+		}
+		return j, nil, nil
+	}
+	// The first slot of this open covers only durable bytes, so sync what an
+	// earlier process in this boot may have left in the page cache.
+	if err := f.Sync(); err != nil {
+		return fail(fmt.Errorf("journal: sync failed: %w", err))
+	}
+	frameOff := sc.LastStart
+	switch {
+	case sc.ValidEnd == 0:
+		frameOff = 0
+	case frameOff < 0 && wm != nil && wm.Offset == sc.ValidEnd:
+		frameOff = wm.FrameOff // verified above
+	}
+	crc, err := journalLastCRC(f, sc.ValidEnd)
+	if err != nil {
+		return fail(err)
+	}
+	if verdict.Problem != nil || (wm != nil && verdict.Watermark == nil) {
+		wm = nil // not ours to continue
+	}
+	base := journalWatermark{Boot: currentBootID(), Store: storeTag(o.storeID), Offset: sc.ValidEnd, FrameOff: frameOff,
+		Seq: sc.LastSeq, LastCRC: crc, PID: uint32(os.Getpid())}
+	ww, err := openWatermarkWriter(wmPath, base, wm, wmMode == "sync")
+	if err != nil {
+		return fail(fmt.Errorf("journal: writing the ack watermark failed: %w", err))
+	}
+	j.wm, j.lastFrameOff, j.lastCRC = ww, frameOff, crc
 	return j, nil, nil
 }
 
@@ -8681,8 +9293,58 @@ func OpenStore(root string) (*Store, error) { return openStore(root, true, nsChe
 // adoption or sealing), so `stats`, `verify` and `doctor` cannot disturb a live
 // writer and a later server still gets ownership.
 // A shared open loads a verified checkpoint too but never publishes one.
+//
+// It refuses a degraded view: a journal that ends in a tail the open could not
+// account for, so the namespace it would serve is only the valid prefix and
+// may lack acknowledged mutations (Store.Degraded). A tail proven
+// unacknowledged by the ack watermark is not degraded: that view is a
+// consistent prefix. OpenStoreSharedPrefix serves a degraded view to callers
+// that report it.
 func OpenStoreShared(root string) (*Store, error) {
+	s, err := OpenStoreSharedPrefix(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Degraded(); err != nil {
+		s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// OpenStoreSharedPrefix is OpenStoreShared that also serves a degraded view;
+// the caller must check Store.Degraded and say so wherever it reports.
+func OpenStoreSharedPrefix(root string) (*Store, error) {
 	return openStore(root, false, nsCheckpointDefault())
+}
+
+// errStoreDegraded marks a read-only view that is only the journal's valid
+// prefix, with a tail nobody could account for past it.
+var errStoreDegraded = errors.New("store: degraded read-only view")
+
+type degradedView struct{ tail *journalDamage }
+
+func (e *degradedView) Unwrap() []error { return []error{errStoreDegraded, e.tail} }
+
+func (e *degradedView) Error() string {
+	return fmt.Sprintf("store: degraded read-only view: only the journal's valid prefix to offset %d is served (%s), so acknowledged mutations may be missing; a write still in flight (retry), or a damaged journal an owner open refuses (run `zeros3 journal inspect`)", e.tail.Offset, e.tail.Detail)
+}
+
+// Degraded reports that this read-only view is only the journal's valid
+// prefix, past which a tail was not accounted for, or nil for a complete or
+// consistent view.
+func (s *Store) Degraded() error {
+	if s.journal == nil || s.journal.tail == nil || s.journal.tailProven {
+		return nil
+	}
+	return &degradedView{tail: s.journal.tail}
+}
+
+// warnDegraded prints, once per open, that a reported view is degraded.
+func warnDegraded(cmd string, s *Store) {
+	if err := s.Degraded(); err != nil {
+		fmt.Fprintf(os.Stderr, "zeros3: %s: WARNING: %v; the report below covers that prefix only\n", cmd, err)
+	}
 }
 
 // nsCheckpointDefault reports whether ordinary opens use the namespace
@@ -8770,7 +9432,7 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 	defer debug.SetGCPercent(debug.SetGCPercent(openGCPercent))
 	// The namespace is folded in while the journal is read: no record list is kept.
 	s.replayIn = &strIntern{m: map[string]string{}}
-	opts := journalOpenOpts{readOnly: !ownSegments, apply: s.applyRecord, witness: s.checkpointWitness}
+	opts := journalOpenOpts{readOnly: !ownSegments, apply: s.applyRecord, witness: s.checkpointWitness, storeID: format.StoreID}
 	if useCheckpoint {
 		opts.checkpoint = s.loadNamespaceCheckpoint
 	}
@@ -8785,25 +9447,25 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 	}
 	s.journal = j
 	if err := s.checkTierRoots(); err != nil {
-		j.f.Close()
+		j.close()
 		return nil, err
 	}
 	if !ownSegments {
 		s.segs = newSegMgr(s)
 		s.segs.readOnly = true
 		if err := s.loadSegmentsReadOnly(); err != nil {
-			j.f.Close()
+			j.close()
 			return nil, fmt.Errorf("store: indexing segments: %w", err)
 		}
 		return s.finishOpen()
 	}
 	if err := s.reloadPacks(); err != nil {
-		j.f.Close()
+		j.close()
 		return nil, fmt.Errorf("store: loading packs: %w", err)
 	}
 	s.segs = newSegMgr(s)
 	if err := s.openSegments(); err != nil {
-		j.f.Close()
+		j.close()
 		return nil, fmt.Errorf("store: recovering segments: %w", err)
 	}
 	return s.finishOpen()
@@ -8826,6 +9488,22 @@ func (s *Store) JournalTail() *journalDamage {
 		return nil
 	}
 	return s.journal.tail
+}
+
+// JournalTailProven reports that the shared open's JournalTail lies past the
+// ack watermark in the boot that wrote it: a write in flight or interrupted,
+// never acknowledged, so the view is a consistent prefix.
+func (s *Store) JournalTailProven() bool {
+	return s.journal != nil && s.journal.tailProven
+}
+
+// JournalRecovery reports the unacknowledged journal tail this owner open
+// moved to quarantine on the ack watermark's proof, or nil.
+func (s *Store) JournalRecovery() *tailRecovery {
+	if s.journal == nil {
+		return nil
+	}
+	return s.journal.recovered
 }
 
 func (s *Store) finishOpen() (*Store, error) {
@@ -12262,7 +12940,7 @@ func (s *Store) Close() error {
 	if s.segs != nil {
 		s.segs.close()
 	}
-	err := s.journal.f.Close()
+	err := s.journal.close()
 	for _, l := range []*storeLock{s.writerLock, s.readerLock} {
 		if l != nil {
 			l.release()
@@ -24451,11 +25129,12 @@ func runTier(args []string) {
 		return
 	}
 	if args[0] == "status" {
-		store, err := OpenStoreShared(*storeDir)
+		store, err := OpenStoreSharedPrefix(*storeDir)
 		if err != nil {
 			log.Fatalf("zeros3: failed to open store: %v", err)
 		}
 		defer store.Close()
+		warnDegraded("tier status", store)
 		rr, err := store.computeReachability(false)
 		if err == nil {
 			var res TierStatusResult
@@ -33054,8 +33733,16 @@ type journalReport struct {
 	Class       string                    `json:"class"`
 	Confidence  string                    `json:"confidence"`
 	Checkpoints []journalCheckpointStatus `json:"checkpoints"`
-	Verdict     string                    `json:"verdict"`
-	Salvage     string                    `json:"salvage,omitempty"`
+	// The ack watermark (FB-01R): its newest slot, what it is (ok, absent,
+	// off, foreign, unreadable, below: acknowledged history is missing), and
+	// what it proves about Damage.
+	Watermark       *journalWatermark `json:"watermark,omitempty"`
+	WatermarkStatus string            `json:"watermark_status"`
+	SameBoot        bool              `json:"watermark_same_boot"`
+	TailProof       string            `json:"tail_proof,omitempty"`
+	Recoverable     bool              `json:"recoverable"` // an owner open discards Damage automatically
+	Verdict         string            `json:"verdict"`
+	Salvage         string            `json:"salvage,omitempty"`
 }
 
 type journalCheckpointStatus struct {
@@ -33150,7 +33837,36 @@ func inspectJournal(root string) (*journalReport, error) {
 			bad++
 		}
 	}
+	var below *watermarkProblem
+	rep.WatermarkStatus = "absent"
+	if journalWatermarkMode() == "off" {
+		rep.WatermarkStatus = "off"
+	} else {
+		w, werr := readJournalWatermark(filepath.Join(root, "journal", journalWatermarkName))
+		switch {
+		case werr == nil && w.Store == storeTag(format.StoreID):
+			v, err := judgeTail(f, w, sc, 0, 0)
+			if err != nil {
+				return nil, err
+			}
+			rep.Watermark, rep.SameBoot, rep.TailProof, below = w, v.SameBoot, v.Proof, v.Problem
+			rep.WatermarkStatus = "ok"
+			if below != nil {
+				rep.WatermarkStatus, rep.TailProof = "below", below.Error()
+			}
+			rep.Recoverable = v.Discard && rep.Damage != nil && bad == 0
+		case werr == nil:
+			rep.WatermarkStatus = "foreign"
+		case !errors.Is(werr, os.ErrNotExist):
+			rep.WatermarkStatus = "unreadable"
+		}
+	}
 	switch {
+	case below != nil:
+		rep.Verdict = fmt.Sprintf("refused: %s", below.Error())
+		rep.Salvage = fmt.Sprintf("zeros3 journal salvage -store %s -cut %d -i-understand-data-loss (acknowledged frames are already missing; keeps the valid prefix, a copy of the original and the watermark)", root, rep.ValidEnd)
+	case rep.Recoverable:
+		rep.Verdict = fmt.Sprintf("recoverable: %s; an owner open moves the %d bytes past offset %d to journal/quarantine/tail-*/ and opens", rep.TailProof, rep.Bytes-rep.Damage.Offset, rep.Damage.Offset)
 	case rep.Damage == nil && bad == 0 && rebuild > 0:
 		rep.Verdict = "accepted: a checkpoint body is damaged but its trailer binds this journal; an owner open replays the whole journal, unchanged, and the next consolidation replaces the file"
 	case rep.Damage == nil && bad == 0:
@@ -33189,7 +33905,7 @@ func runJournal(args []string) {
 		} else {
 			printJournalReport(os.Stdout, rep)
 		}
-		if rep.Damage != nil || rep.Salvage != "" {
+		if (rep.Damage != nil && !rep.Recoverable) || rep.Salvage != "" {
 			os.Exit(1)
 		}
 	case "salvage":
@@ -33231,6 +33947,27 @@ func printJournalReport(w io.Writer, rep *journalReport) {
 			fmt.Fprintf(w, ": %s", c.Problem)
 		}
 		fmt.Fprintln(w)
+	}
+	switch wm := rep.Watermark; {
+	case wm != nil:
+		boot := "another boot"
+		if rep.SameBoot {
+			boot = "this boot"
+		}
+		mode := "lazy"
+		if wm.synced() {
+			mode = "sync"
+		}
+		fmt.Fprintf(w, "ack watermark: %s, offset %d (frame seq %d), written in %s, %s mode", rep.WatermarkStatus, wm.Offset, wm.Seq, boot, mode)
+		if wm.clean() {
+			fmt.Fprint(w, ", by a clean close")
+		}
+		fmt.Fprintln(w)
+	default:
+		fmt.Fprintf(w, "ack watermark: %s\n", rep.WatermarkStatus)
+	}
+	if rep.TailProof != "" && rep.Damage != nil {
+		fmt.Fprintf(w, "tail: %s\n", rep.TailProof)
 	}
 	fmt.Fprintf(w, "verdict: %s\n", rep.Verdict)
 	if rep.Salvage != "" {
@@ -33331,6 +34068,11 @@ func salvageJournal(root string, cut int64, ack bool) (*salvageRecord, error) {
 			rec.MovedAside = append(rec.MovedAside, c.File)
 		}
 	}
+	// The ack watermark describes the original journal: the next owner open
+	// writes a new one for the kept prefix.
+	if _, err := os.Stat(filepath.Join(jdir, journalWatermarkName)); err == nil {
+		rec.MovedAside = append(rec.MovedAside, journalWatermarkName)
+	}
 	b, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return nil, err
@@ -33415,6 +34157,9 @@ func runNamespaceCheckpoint(args []string) {
 		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
 	}
 	defer s.Close()
+	if err := s.Degraded(); err != nil {
+		log.Fatalf("zeros3: namespace-checkpoint: refusing to publish a checkpoint of %v", err)
+	}
 	if err := s.nsConsolidate(true); err != nil {
 		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
 	}
@@ -33639,11 +34384,12 @@ func runStats(args []string) {
 		os.Exit(2)
 	}
 
-	store, err := OpenStoreShared(*storeDir)
+	store, err := OpenStoreSharedPrefix(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	warnDegraded("stats", store)
 
 	res, err := store.computeStats(statsScope{bucket: *bucket, prefix: *prefix, key: *key})
 	if err != nil {
@@ -33830,11 +34576,12 @@ func runVersions(args []string) {
 		os.Exit(2)
 	}
 
-	store, err := OpenStoreShared(*storeDir)
+	store, err := OpenStoreSharedPrefix(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	warnDegraded("versions", store)
 
 	entries, cur, err := store.ListVersions(*bucket, *key)
 	if err != nil {
@@ -34108,11 +34855,17 @@ func runDoctor(args []string) {
 		}
 		defer lock.release()
 	}
-	store, err := OpenStoreShared(*storeDir)
+	// Retiring acts on what the view references: only a complete view may.
+	open := OpenStoreSharedPrefix
+	if *retire {
+		open = OpenStoreShared
+	}
+	store, err := open(*storeDir)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
 	defer store.Close()
+	warnDegraded("doctor", store)
 
 	if *retire {
 		store.sealSegments() // maintenance sees sealed packs only (section 4d)
@@ -66579,6 +67332,11 @@ func (s *Store) authorityMemoKey(ctx context.Context, pol OptimizePolicy) ([32]b
 		st, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
 			return errors.New("authority memo: file metadata unavailable")
+		}
+		if rel == filepath.Join("journal", journalWatermarkName) {
+			// Every owner open rewrites it; it only describes the journal,
+			// which is bound below.
+			return nil
 		}
 		if rel == filepath.Join("journal", "visibility.log") {
 			// Replay can truncate a clean journal to its existing size,

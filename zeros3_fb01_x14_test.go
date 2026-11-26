@@ -314,6 +314,9 @@ type fb01X14Tally struct {
 
 func TestFB01X14Engine(t *testing.T) {
 	fb01NoTailWait(t)
+	// FB-01's evidence is v1 without the ack watermark; FB-01R's harness
+	// (zeros3_fb01r_x14_test.go) runs the same images with it.
+	t.Setenv("ZEROS3_JOURNAL_WATERMARK", "off")
 	trials := 4
 	if v, err := strconv.Atoi(os.Getenv("FB01_X14_TRIALS")); err == nil && v > 0 {
 		trials = v

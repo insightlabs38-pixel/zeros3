@@ -10168,14 +10168,33 @@ func TestPrune_CrashBoundaries(t *testing.T) {
 				if err := os.Truncate(path, start+(int64(len(journalBytes(t, dir)))-start)/2); err != nil {
 					t.Fatal(err)
 				}
-				// FB-01: the torn frame is ambiguous, so the owner refuses
-				// until the operator salvages at the last acknowledged frame.
-				if _, err := OpenStore(dir); !errors.Is(err, errJournalRefused) {
-					t.Fatalf("restart over a torn frame: want a refusal, got %v", err)
+				// FB-01R: in the boot that wrote it, the ack watermark proves
+				// the torn frame unacknowledged, so the owner discards it.
+				// After a host restart in lazy mode the same bytes are still
+				// refused until the operator salvages (FB-01).
+				restarted := t.TempDir()
+				copyTreeT(t, dir, restarted)
+				func() {
+					fb01rOtherBoot(t)
+					defer func() { testBootID = nil }()
+					if _, err := OpenStore(restarted); !errors.Is(err, errJournalRefused) {
+						t.Fatalf("restart over a torn frame after a host restart: want a refusal, got %v", err)
+					}
+					if _, err := salvageJournal(restarted, start, true); err != nil {
+						t.Fatal(err)
+					}
+				}()
+				if v := formatVersionOf(t, restarted); v != c.wantFormat {
+					t.Fatalf("salvaged copy: format = %d, want %d", v, c.wantFormat)
 				}
-				if _, err := salvageJournal(dir, start, true); err != nil {
-					t.Fatal(err)
+				rs, err := OpenStore(dir)
+				if err != nil {
+					t.Fatalf("restart over a torn frame in the same boot: %v", err)
 				}
+				if r := rs.JournalRecovery(); r == nil || r.Offset != start {
+					t.Fatalf("recovery = %+v, want the tail past offset %d discarded", r, start)
+				}
+				rs.Close()
 			}
 			if v := formatVersionOf(t, dir); v != c.wantFormat {
 				t.Fatalf("format = %d, want %d", v, c.wantFormat)
