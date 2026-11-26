@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"cmp"
 	"compress/flate"
+	"compress/gzip"
 	"container/heap"
 	"container/list"
 	"context"
@@ -86,55 +87,55 @@ import (
 //   Lines    Subsystem
 //   -----    ---------
 //        1    Package overview, imports, constants, and shared utilities
-//      549    Content-defined chunking (CDC)
-//      736    Content-addressed chunk storage (CAS)
-//     2531    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5427    Small-object segments (inline manifests, store level 11)
-//     6677    Manifests (immutable, JSON)
-//     7475    Visibility journal (append-only, checksummed)
-//     7997    Store: format, namespace, and object CRUD
-//     8515    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12167    Version history/restore, history pruning, ListObjectsV2
-//    12773    SigV4 authentication (header and presigned-URL)
-//    13750    Request payload checksums and S3-shaped XML error/response types
-//    13967    HTTP routing and S3 operation handlers
-//    14400    Conditional operations (PUT/GET/HEAD preconditions)
-//    15095    CopyObject
-//    15400    Multipart upload
-//    16344    Stats and reachability scanning
-//    17932    Verify
-//    18148    Store locking and safe offline GC
-//    18458    Offline compaction (`zeros3 compact`)
-//    19695    Pack reclamation and repacking (`zeros3 repack`)
-//    20389    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20849    Online maintenance: epochs, pins, live GC and repack (B4)
-//    22213    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22726    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23791    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24642    Delta sync client, credentials, and parallel transfer
-//    27005    Bulk logical-chunk transport (v2)
-//    27916    Recursive directory sync
-//    28221    Remote replication (`zeros3 replicate`)
-//    29217    Peer-assisted corruption repair (`zeros3 repair`)
-//    29789    Namespace (prefix/bucket) replication
-//    30105    Copy-on-write namespace fork (`zeros3 fork`)
-//    30313    Snapshots and restore
-//    31475    Structural diff and inspect (introspection)
-//    32897    Portable snapshot bundles (`zeros3 bundle`)
-//    34094    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34729    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53459    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61954    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65856    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    66416    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    67323    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    68478    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    69422    Verified decoded-window cache (B9)
-//    69703    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70993    Windowed and estimated similarity deltas (extracted dcore)
-//    72830    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    80686    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86958    CLI dispatch, HTTP server/startup, and main
+//      550    Content-defined chunking (CDC)
+//      737    Content-addressed chunk storage (CAS)
+//     2532    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
+//     5428    Small-object segments (inline manifests, store level 11)
+//     6678    Manifests (immutable, JSON)
+//     7476    Visibility journal (append-only, checksummed)
+//     7998    Store: format, namespace, and object CRUD
+//     8516    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12168    Version history/restore, history pruning, ListObjectsV2
+//    12774    SigV4 authentication (header and presigned-URL)
+//    13751    Request payload checksums and S3-shaped XML error/response types
+//    13968    HTTP routing and S3 operation handlers
+//    14411    Conditional operations (PUT/GET/HEAD preconditions)
+//    15106    CopyObject
+//    15411    Multipart upload
+//    16355    Stats and reachability scanning
+//    17943    Verify
+//    18159    Store locking and safe offline GC
+//    18469    Offline compaction (`zeros3 compact`)
+//    19706    Pack reclamation and repacking (`zeros3 repack`)
+//    20400    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20860    Online maintenance: epochs, pins, live GC and repack (B4)
+//    22224    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22737    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23802    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24653    Delta sync client, credentials, and parallel transfer
+//    27155    Bulk logical-chunk transport (v2)
+//    28066    Recursive directory sync
+//    28371    Remote replication (`zeros3 replicate`)
+//    29418    Peer-assisted corruption repair (`zeros3 repair`)
+//    29990    Namespace (prefix/bucket) replication
+//    30306    Copy-on-write namespace fork (`zeros3 fork`)
+//    30514    Snapshots and restore
+//    31676    Structural diff and inspect (introspection)
+//    33098    Portable snapshot bundles (`zeros3 bundle`)
+//    34295    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34930    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    53660    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    62172    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    66074    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    66634    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    67541    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    68696    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    69640    Verified decoded-window cache (B9)
+//    69921    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    71211    Windowed and estimated similarity deltas (extracted dcore)
+//    73048    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    80904    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    87176    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -14228,6 +14229,16 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if rawPath == zeros3AuthBasePath && r.Method == http.MethodPost {
+		if check.sha256 == "" {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "base preparation requires a signed payload SHA-256")
+			return
+		}
+		if body, ok := readBufferedBodyLimit(w, r, rawPath, check, 16<<10); ok {
+			srv.handleAuthorityBase(w, r.Context(), body)
+		}
+		return
+	}
 	if rawPath == zeros3AuthImportPath && r.Method == http.MethodPost {
 		srv.handleAuthorityImport(w, r, check)
 		return
@@ -24723,6 +24734,7 @@ const (
 	zeros3SyncChunksPrefix  = "/_zeros3/v1/chunks/"
 	zeros3AuthExportPath    = "/_zeros3/v1/authority/export"
 	zeros3AuthImportPath    = "/_zeros3/v1/authority/import"
+	zeros3AuthBasePath      = "/_zeros3/v1/authority/base"
 	maxAuthCommitHeader     = 32 << 20
 
 	// M8E (section 15h/15i) snapshot extension endpoints. Every one of
@@ -24768,11 +24780,12 @@ type syncDiscoveryResponse struct {
 
 	// Optional bulk transport (section 15b-ter); absent from servers that
 	// predate it, which clients must then treat as v1-only.
-	BulkProtocol    int       `json:"bulk_protocol_version,omitempty"`
-	MaxBulkChunks   int       `json:"max_bulk_chunks,omitempty"`
-	MaxBulkBytes    int64     `json:"max_bulk_bytes,omitempty"`
-	AuthorityExport *AuthCaps `json:"authority_export,omitempty"`
-	AuthorityImport *AuthCaps `json:"authority_import,omitempty"`
+	BulkProtocol      int       `json:"bulk_protocol_version,omitempty"`
+	MaxBulkChunks     int       `json:"max_bulk_chunks,omitempty"`
+	MaxBulkBytes      int64     `json:"max_bulk_bytes,omitempty"`
+	AuthorityExport   *AuthCaps `json:"authority_export,omitempty"`
+	AuthorityImport   *AuthCaps `json:"authority_import,omitempty"`
+	AuthorityGzipBase bool      `json:"authority_gzip_base,omitempty"`
 }
 
 // syncChunkDescriptor unambiguously identifies one expected chunk: its
@@ -25306,6 +25319,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		CoreS3Profile:     coreS3ProfileVersion,
 		AuthorityExport:   &authority,
 		AuthorityImport:   &authority,
+		AuthorityGzipBase: true,
 	}
 	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
 	writeSyncJSON(w, http.StatusOK, d)
@@ -25327,9 +25341,130 @@ type authExportRequest struct {
 }
 
 type authImportRequest struct {
-	Version int    `json:"authority_version"`
-	SHA256  string `json:"object_sha256"`
+	Version int               `json:"authority_version"`
+	SHA256  string            `json:"object_sha256"`
+	Derived *authBaseIdentity `json:"derived_base,omitempty"`
 	syncCommitRequest
+}
+
+const (
+	maxAuthBaseInput  = 16 << 20
+	maxAuthBaseOutput = 32 << 20
+)
+
+var authBaseSlot = make(chan struct{}, 1)
+
+// authBaseIdentity binds a candidate to the exact revision of a named
+// destination object and to the verified digest of its gzip plaintext.
+type authBaseIdentity struct {
+	Bucket    string `json:"bucket"`
+	Key       string `json:"key"`
+	VersionID string `json:"version_id"`
+	ObjectSHA string `json:"object_sha256"`
+	BaseSHA   string `json:"base_sha256,omitempty"`
+	BaseSize  int64  `json:"base_size,omitempty"`
+}
+
+func (s *Store) deriveNamedAuthBase(ctx context.Context, identity authBaseIdentity, install bool) (xdBaseRef, error) {
+	var ref xdBaseRef
+	if install && (identity.BaseSize <= 0 || identity.BaseSize > maxAuthBaseOutput) {
+		return ref, errAuthLimit
+	}
+	select {
+	case authBaseSlot <- struct{}{}:
+		defer func() { <-authBaseSlot }()
+	default:
+		return ref, errors.New("base preparation is busy")
+	}
+	entry, man, err := s.headReplicaVersion(identity.Bucket, identity.Key, "")
+	if err != nil || entry.manifestUUID != identity.VersionID || man.ObjectSHA256 != identity.ObjectSHA {
+		return ref, errors.New("base object scope or revision changed")
+	}
+	if man.TotalLength <= 0 || man.TotalLength > maxAuthBaseInput {
+		return ref, errors.New("base object exceeds the compressed byte budget")
+	}
+	if err := ctx.Err(); err != nil {
+		return ref, err
+	}
+	compressed, err := s.manifestBytes(man)
+	if err != nil {
+		return ref, err
+	}
+	want, err := decodeHexSHA256(identity.ObjectSHA)
+	if err != nil || sha256.Sum256(compressed) != want {
+		return ref, errAuthMismatch
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return ref, err
+	}
+	defer reader.Close()
+	hash := sha256.New()
+	var out io.Writer = hash
+	var body bytes.Buffer
+	limit := int64(maxAuthBaseOutput)
+	if install {
+		limit = min(limit, identity.BaseSize)
+		body.Grow(int(limit) + 1)
+		out = io.MultiWriter(&body, hash)
+	}
+	size, err := io.Copy(out, io.LimitReader(reader, limit+1))
+	if err != nil {
+		return ref, err
+	}
+	if size <= 0 || size > limit {
+		return ref, errors.New("base plaintext exceeds its byte budget")
+	}
+	if err := ctx.Err(); err != nil {
+		return ref, err
+	}
+	hash.Sum(ref.SHA[:0])
+	ref.Size = size
+	if install {
+		if hex.EncodeToString(ref.SHA[:]) != identity.BaseSHA || ref.Size != identity.BaseSize {
+			return ref, errAuthMismatch
+		}
+		if err := s.installDerivedAuthPin(ref, &body); err != nil {
+			return ref, err
+		}
+	}
+	return ref, nil
+}
+
+func (s *Store) installDerivedAuthPin(ref xdBaseRef, data io.Reader) error {
+	if cur, err := s.authLoad(ref.SHA); err != nil || cur != nil {
+		return err
+	}
+	ing, err := s.ingestStream(data, false, ingestOptions{size: ref.Size})
+	if err != nil {
+		return err
+	}
+	if ing.size != ref.Size || ing.objSHA256 != ref.SHA {
+		return errAuthMismatch
+	}
+	pieces, err := chunkPieces(manifestV1{Chunks: ing.chunks})
+	if err != nil {
+		return err
+	}
+	return s.authPublish(&authRecord{SHA: ref.SHA, Size: ref.Size, Form: authFormPin, Gen: 1, Pieces: pieces})
+}
+
+func (srv *Server) handleAuthorityBase(w http.ResponseWriter, ctx context.Context, body []byte) {
+	var named authBaseIdentity
+	jsonErr := json.Unmarshal(body, &named)
+	_, versionOK := nsParseUUID(named.VersionID)
+	if jsonErr != nil || named.Bucket == "" || named.Key == "" || !versionOK || named.BaseSHA != "" || named.BaseSize != 0 {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "a named base revision is required")
+		return
+	}
+	ref, err := srv.store.deriveNamedAuthBase(ctx, named, false)
+	if err != nil {
+		writeSyncError(w, http.StatusConflict, "BaseUnavailable", "cannot derive a bounded verified gzip base")
+		return
+	}
+	named.BaseSHA = hex.EncodeToString(ref.SHA[:])
+	named.BaseSize = ref.Size
+	writeSyncJSON(w, http.StatusOK, named)
 }
 
 func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request, check payloadCheck) {
@@ -25391,6 +25526,21 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		return check.verify(sum, stamp, payloadCRC.Sum32())
 	}
 	proof := authoritySyncProof{refs: refs, chunk: sha256.New(), etag: md5.New()}
+	var derived *authDerivedImport
+	if named := req.Derived; named != nil {
+		base, baseErr := decodeHexSHA256(named.BaseSHA)
+		_, sourceErr := decodeHexSHA256(named.ObjectSHA)
+		_, versionOK := nsParseUUID(named.VersionID)
+		if named.Bucket != req.Bucket || named.Key == "" || !versionOK || baseErr != nil || sourceErr != nil ||
+			named.BaseSize <= 0 || named.BaseSize > maxAuthBaseOutput {
+			writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "derived base must name a verified revision in the destination bucket")
+			return
+		}
+		derived = &authDerivedImport{ref: xdBaseRef{SHA: base, Size: named.BaseSize}, install: func() error {
+			_, err := srv.store.deriveNamedAuthBase(r.Context(), *named, true)
+			return err
+		}}
+	}
 	verifyRoot := func(rec *authRecord) error {
 		if rec.Size != total {
 			return errAuthSyncManifest
@@ -25403,7 +25553,7 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		}
 		return nil
 	}
-	if err := srv.store.importAuthorityClosure(reader, &xdBaseRef{SHA: sha, Size: total}, verifyFrame, nil, verifyRoot); err != nil {
+	if err := srv.store.importAuthorityClosure(reader, &xdBaseRef{SHA: sha, Size: total}, verifyFrame, nil, verifyRoot, derived); err != nil {
 		var authErr *authError
 		if errors.As(err, &authErr) {
 			writeRequestError(w, err, zeros3AuthImportPath)
@@ -28391,7 +28541,8 @@ type replicateConfig struct {
 	Out             io.Writer
 	PreferAuthority bool
 	// AuthorityBaseKey optionally names another object in the destination bucket.
-	AuthorityBaseKey string
+	AuthorityBaseKey    string
+	DeriveAuthorityBase bool
 
 	// DestMustBeAbsent, when set, switches the destination-conflict
 	// precondition from the ordinary "matches whatever I last observed
@@ -28627,6 +28778,8 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 		return stats, false, fmt.Errorf("replicate: invalid source authority digest: %w", err)
 	}
 	export := authExportRequest{Bucket: p.cfg.Source.Bucket, Key: p.cfg.Source.Key, VersionID: p.desc.VersionID, Peer: *dstCaps}
+	var derived *authBaseIdentity
+	canDerive := p.cfg.DeriveAuthorityBase && p.destDiscovery.AuthorityGzipBase && p.wouldTransferBytes > 0
 	if p.destExists {
 		dst, err := requestSyncDescriptor(p.cfg.Dest, true, p.cfg.AuthorityBaseKey == p.cfg.Dest.Key, "")
 		if err != nil {
@@ -28640,6 +28793,8 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 				return syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.desc.Chunks), BytesAvoided: p.desc.Size}, true, nil
 			}
 			export.KnownBase = dst.ObjectSHA256
+		} else if canDerive && p.cfg.AuthorityBaseKey == p.cfg.Dest.Key {
+			derived = requestDerivedAuthBase(p.cfg.Dest, dst)
 		}
 	}
 	commit := authImportRequest{Version: authXferVersion, SHA256: p.desc.ObjectSHA256, syncCommitRequest: syncCommitRequest{
@@ -28647,14 +28802,6 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 		Bucket: p.cfg.Dest.Bucket, Key: p.cfg.Dest.Key, ContentType: p.desc.ContentType, Metadata: p.desc.Metadata,
 		Chunks: p.desc.Chunks, ExpectAbsent: p.pre.expectAbsent, ExpectedETag: p.pre.expectedETag,
 	}}
-	header, err := json.Marshal(commit)
-	if err != nil {
-		return stats, false, err
-	}
-	budget := min(p.wouldTransferBytes, int64(maxStreamedBodySize)) - int64(len(header)) - 4
-	if len(header) > maxAuthCommitHeader || budget <= 0 {
-		return stats, false, nil
-	}
 	if key := p.cfg.AuthorityBaseKey; key != "" && key != p.cfg.Dest.Key {
 		base := p.cfg.Dest
 		base.Key = key
@@ -28669,6 +28816,8 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 			export.KnownBases = hint.AuthorityBases[:min(len(hint.AuthorityBases), maxAuthAdvertisedBases)]
 			if hint.Authoritative {
 				export.KnownBase = hint.ObjectSHA256
+			} else if canDerive {
+				derived = requestDerivedAuthBase(base, hint)
 			}
 			components := slices.Clone(hint.AuthorityComponents)
 			for _, digest := range export.KnownComponents {
@@ -28681,6 +28830,18 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 			}
 			export.KnownComponents = components[:min(len(components), maxAuthAdvertisedComponents)]
 		}
+	}
+	if derived != nil && len(export.KnownBases) < maxAuthAdvertisedBases {
+		export.KnownBases = append(export.KnownBases, derived.BaseSHA)
+		commit.Derived = derived
+	}
+	header, err := json.Marshal(commit)
+	if err != nil {
+		return stats, false, err
+	}
+	budget := min(p.wouldTransferBytes, int64(maxStreamedBodySize)) - int64(len(header)) - 4
+	if len(header) > maxAuthCommitHeader || budget <= 0 {
+		return stats, false, nil
 	}
 
 	export.MaxBytes = budget
@@ -28788,6 +28949,41 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	}
 	return syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.desc.Chunks), UploadedBytes: total,
 		BytesAvoided: p.desc.Size - total, AuthorityBytes: total}, true, nil
+}
+
+func requestDerivedAuthBase(cfg syncClientConfig, hint syncObjectDescriptor) *authBaseIdentity {
+	if hint.Bucket != cfg.Bucket || hint.Key != cfg.Key || hint.Size <= 0 || hint.Size > maxAuthBaseInput {
+		return nil
+	}
+	base := authBaseIdentity{Bucket: cfg.Bucket, Key: cfg.Key, VersionID: hint.VersionID, ObjectSHA: hint.ObjectSHA256}
+	body, err := json.Marshal(base)
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := cfg.signAndDoStream(ctx, http.MethodPost, zeros3AuthBasePath, body, map[string]string{"Content-Type": "application/json"})
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+	payload, err := readAllLimited(resp.Body, 16<<10)
+	if err != nil {
+		return nil
+	}
+	var confirmed authBaseIdentity
+	if json.Unmarshal(payload, &confirmed) != nil || confirmed.Bucket != base.Bucket || confirmed.Key != base.Key ||
+		confirmed.VersionID != base.VersionID || confirmed.ObjectSHA != base.ObjectSHA ||
+		confirmed.BaseSize <= 0 || confirmed.BaseSize > maxAuthBaseOutput {
+		return nil
+	}
+	if _, err := decodeHexSHA256(confirmed.BaseSHA); err != nil {
+		return nil
+	}
+	return &confirmed
 }
 
 func executeReplicationPlan(p replicationPlan) (syncStats, error) {
@@ -28900,6 +29096,7 @@ func runReplicate(args []string) {
 	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything")
 	authority := fs.Bool("authority-closure", false, "attempt negotiated native closures when they cost less than transferring missing CDC chunks")
 	authorityBase := fs.String("authority-base", "", "optional s3:// URI of a related object in the destination bucket; requires -authority-closure and a single real replication")
+	deriveBase := fs.Bool("derive-authority-base", false, "try to derive a missing gzip authority dependency from the explicit destination base")
 	from := fs.String("from", "http://127.0.0.1:9000", "source ZeroS3 endpoint base URL (scheme://host[:port])")
 	to := fs.String("to", "http://127.0.0.1:9001", "destination ZeroS3 endpoint base URL (scheme://host[:port])")
 	fromAccessKey := fs.String("from-access-key", defaultAccessKeyID, "source access key ID")
@@ -28927,6 +29124,10 @@ func runReplicate(args []string) {
 
 	if *authorityBase != "" && (!*authority || *recursive || *dryRun) {
 		fmt.Fprintln(os.Stderr, "zeros3: replicate: -authority-base requires -authority-closure and a single real replication")
+		os.Exit(2)
+	}
+	if *deriveBase && *authorityBase == "" {
+		fmt.Fprintln(os.Stderr, "zeros3: replicate: -derive-authority-base requires -authority-base")
 		os.Exit(2)
 	}
 
@@ -29013,7 +29214,7 @@ func runReplicate(args []string) {
 		Out:              os.Stdout,
 		Workers:          *workers,
 		PreferAuthority:  *authority,
-		AuthorityBaseKey: baseKey,
+		AuthorityBaseKey: baseKey, DeriveAuthorityBase: *deriveBase,
 	}
 	if *dryRun {
 		p, err := planReplication(cfg)
@@ -59370,7 +59571,7 @@ const hookAuthImportRecord = "auth-import-record"
 // durable, then each record is proven by full reconstruction and published
 // bases-first. Records the destination already holds are kept.
 func (s *Store) ImportAuthorityClosure(r io.Reader) error {
-	return s.importAuthorityClosure(r, nil, nil, nil, nil)
+	return s.importAuthorityClosure(r, nil, nil, nil, nil, nil)
 }
 
 type authRecoveryLimit struct {
@@ -59378,7 +59579,12 @@ type authRecoveryLimit struct {
 	childDepth uint8
 }
 
-func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyFrame func() error, repair map[[32]byte]authRecoveryLimit, verifyRoot func(*authRecord) error) error {
+type authDerivedImport struct {
+	ref     xdBaseRef
+	install func() error
+}
+
+func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyFrame func() error, repair map[[32]byte]authRecoveryLimit, verifyRoot func(*authRecord) error, derived *authDerivedImport) error {
 	br := bufio.NewReaderSize(r, 1<<20)
 	h := sha256.New()
 	tr := io.TeeReader(br, h)
@@ -59420,6 +59626,7 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 		positions[rec.SHA] = len(recs)
 		recs = append(recs, rec)
 	}
+	needsDerived := false
 	for i, rec := range recs {
 		for _, b := range rec.Bases {
 			var base *authRecord
@@ -59432,6 +59639,12 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 				base, err = s.authLoad(b.SHA)
 				if err != nil {
 					return fmt.Errorf("import closure: read held base %x: %w", b.SHA[:6], err)
+				}
+				if derived != nil && b == derived.ref && rec.Depth > 0 {
+					needsDerived = true
+					if base == nil {
+						continue
+					}
 				}
 				if base == nil {
 					return fmt.Errorf("import closure: %w: thin stream needs base %x the destination does not hold", errAuthMissing, b.SHA[:6])
@@ -59518,6 +59731,11 @@ func (s *Store) importAuthorityClosure(r io.Reader, expected *xdBaseRef, verifyF
 	}
 	if err := b.Flush(); err != nil {
 		return err
+	}
+	if needsDerived {
+		if err := derived.install(); err != nil {
+			return fmt.Errorf("import closure: named base preparation failed: %w", err)
+		}
 	}
 	fireTestHook(hookAuthImportChunks)
 	for _, rec := range recs {
@@ -59650,7 +59868,7 @@ func (s *Store) recoverAuthorityFromPeer(bucket, key, peerVersion string, cfg sy
 		}
 		return nil
 	}
-	if err := s.importAuthorityClosure(reader, &xdBaseRef{SHA: sum, Size: local.man.TotalLength}, checkSize, limits, nil); err != nil {
+	if err := s.importAuthorityClosure(reader, &xdBaseRef{SHA: sum, Size: local.man.TotalLength}, checkSize, limits, nil, nil); err != nil {
 		return err
 	}
 	root, err := s.authLoad(sum)

@@ -49,10 +49,11 @@ class Relay(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, port, model_gzip, rate_bytes):
+    def __init__(self, port, model_gzip, rate_bytes, request_delay=0):
         self.port = port
         self.model_gzip = model_gzip
         self.rate_bytes = rate_bytes
+        self.request_delay = request_delay
         self.ready_at = [0., 0.]
         self.gzip = [0, 0, 0.]
         self.lock = threading.Lock()
@@ -96,7 +97,10 @@ class Forward(socketserver.BaseRequestHandler):
                 try:
                     while data := src.recv(65536):
                         if parser:
+                            headers = parser.headers
                             parser.feed(data)
+                            if self.server.request_delay and parser.headers > headers:
+                                time.sleep(self.server.request_delay * (parser.headers - headers))
                         self.server.count(index, len(data))
                         self.server.pace(index, len(data))
                         dst.sendall(data)
@@ -126,6 +130,7 @@ class RequestCounter:
         self.gzip_size = 0
         self.gzip_cpu = 0.
         self.frame_size = 0
+        self.headers = 0
 
     def feed(self, data):
         while data and not self.unparsed:
@@ -152,6 +157,7 @@ class RequestCounter:
                     self.unparsed = True
                 return
             request, *fields = self.header[:end].split(b"\r\n")
+            self.headers += 1
             method, path, _ = request.decode("ascii").split(" ")
             route = path.split("?", 1)[0]
             if not route.startswith("/_zeros3/"):
@@ -175,8 +181,8 @@ class RequestCounter:
 
 
 @contextmanager
-def relay(port, rate_bytes, model_gzip=False):
-    with Relay(port, model_gzip, rate_bytes) as server:
+def relay(port, rate_bytes, model_gzip=False, request_delay=0):
+    with Relay(port, model_gzip, rate_bytes, request_delay) as server:
         thread = threading.Thread(target=server.serve_forever, args=(.01,), daemon=True)
         thread.start()
         try:
@@ -322,8 +328,9 @@ def trial(args, env, directory, source, case, state, lane, seed, target, foregro
         temp = directory / "client-tmp"
         temp.mkdir()
         source_port, _, source_pid = source
-        with (relay(source_port, args.rate_bytes) as (src_tap, src_url),
-              relay(port, args.rate_bytes, args.model_gzip) as (dst_tap, dst_url),
+        delay = getattr(args, "request_delay", 0)
+        with (relay(source_port, args.rate_bytes, request_delay=delay) as (src_tap, src_url),
+              relay(port, args.rate_bytes, args.model_gzip, request_delay=delay) as (dst_tap, dst_url),
               (foreground(sink) if foreground else nullcontext()) as load):
             before_dst, before_src = stats(pid), stats(source_pid)
             start = time.perf_counter()
@@ -341,16 +348,20 @@ def trial(args, env, directory, source, case, state, lane, seed, target, foregro
                     command = ["replicate", "-workers", "2", "-from", src_url, "-to", dst_url,
                                "-from-access-key", KEY, "-from-secret-key", SECRET,
                                "-to-access-key", KEY, "-to-secret-key", SECRET]
-                    if lane in ("closure", "closure-cross"):
+                    if lane in ("closure", "closure-cross", "closure-derived"):
                         command += ["-authority-closure"]
                     if lane == "closure-cross" and state in ("different-key", "different-authority", "partial", "exact"):
                         command += ["-authority-base", f"s3://{BUCKET}/prior"]
+                    if lane == "closure-derived" and state in ("same-key", "different-key", "same-authority", "different-authority"):
+                        base = "target" if state.startswith("same-") else "prior"
+                        command += ["-authority-base", f"s3://{BUCKET}/{base}", "-derive-authority-base"]
                     command += [f"s3://{BUCKET}/target", f"s3://{BUCKET}/target"]
                 cli = run(args.binary, {**env, "TMPDIR": str(temp)}, command)
             elapsed = time.perf_counter() - start
             receiver, sender = delta(before_dst, stats(pid)), delta(before_src, stats(source_pid))
             src_wire, dst_wire = src_tap.snapshot(), dst_tap.snapshot()
         row = {"family": case, "state": state, "lane": lane, "seconds": elapsed, "rate_bytes": args.rate_bytes,
+                "request_delay": delay,
                 "sender": sender, "receiver": receiver, "client": cli,
                 "seed_sha256": file_digest(seed), "logical_bytes": target.stat().st_size,
                 "object_sha256": verified(sink, "target", target, {} if lane == "sync" else metadata),

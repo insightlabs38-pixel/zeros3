@@ -1,0 +1,12 @@
+{
+  "verdict": "C16_SPECIALIZED",
+  "baseline": "a0ab61b",
+  "policy": "opt-in, named same-bucket gzip dependency from a verified revision",
+  "typeScript_different_key_wire_bytes": {"put": 4175570, "cdc": 8381079, "derived": 382491},
+  "constrained_seconds": {"put": 4.135, "cdc": 8.756, "derived": 2.786},
+  "loopback_seconds": {"put": 0.035, "cdc": 0.091, "derived": 1.511},
+  "lean_source_seconds": 11.479,
+  "prepared_dependency_increases_retained_bytes": true,
+  "old_sources_and_receivers_verified": true,
+  "native_and_race_tests": "passed"
+}
