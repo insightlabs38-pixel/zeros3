@@ -2907,18 +2907,23 @@ type packInfo struct {
 
 func newPackInfo(id, path string, size int64, entries []packEntry) packInfo {
 	info := packInfo{id: id, path: path, size: size, records: len(entries)}
-	for _, e := range entries {
-		if isPackDict(e.codec) {
-			info.dicts++
-			info.dictBytes += int64(e.stored)
-			info.presetDict = info.presetDict || e.codec == packCodecPresetDict
-		} else if e.codec != packCodecRaw {
-			info.deflated++
-		}
-		info.logical += int64(e.logical)
-		info.stored += int64(e.stored)
+	for i := range entries {
+		info.count(&entries[i])
 	}
 	return info
+}
+
+// count folds one index entry into the pack's totals.
+func (info *packInfo) count(e *packEntry) {
+	if isPackDict(e.codec) {
+		info.dicts++
+		info.dictBytes += int64(e.stored)
+		info.presetDict = info.presetDict || e.codec == packCodecPresetDict
+	} else if e.codec != packCodecRaw {
+		info.deflated++
+	}
+	info.logical += int64(e.logical)
+	info.stored += int64(e.stored)
 }
 
 func isPackDict(codec byte) bool {
@@ -3017,38 +3022,64 @@ func allZero(b []byte) bool {
 // body SHA-256 the footer claims. Every length and offset is checked
 // arithmetically before it is used to size an allocation or a read.
 func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
+	var entries []packEntry
+	var seen map[[32]byte]struct{}
+	bodySHA, err := scanPackLayout(f, size, nil, func(n uint64) {
+		entries = make([]packEntry, 0, n)
+		seen = make(map[[32]byte]struct{}, n)
+	}, func(i uint64, e *packEntry) error {
+		if _, dup := seen[e.sha]; dup {
+			return fmt.Errorf("pack: index entry %d repeats chunk %x", i, e.sha)
+		}
+		seen[e.sha] = struct{}{}
+		entries = append(entries, *e)
+		return nil
+	})
+	if err != nil {
+		return nil, bodySHA, err
+	}
+	return entries, bodySHA, nil
+}
+
+// scanPackLayout validates a pack's header, footer and index, calling visit
+// for each index entry in order once the entry itself is valid; visit adds
+// the checks that need the earlier entries (a repeated digest). start, when
+// set, is called with the record count before the first entry. br, when set,
+// is reused to read the index. Every structural rule of the pack format is
+// here, so a lean open and a full load agree on which packs are valid.
+func scanPackLayout(f io.ReaderAt, size int64, br *bufio.Reader, start func(n uint64), visit func(i uint64, e *packEntry) error) ([32]byte, error) {
 	var bodySHA [32]byte
 	if size < packHeaderSize+packFooterSize {
-		return nil, bodySHA, fmt.Errorf("pack: file is %d bytes, smaller than header+footer", size)
+		return bodySHA, fmt.Errorf("pack: file is %d bytes, smaller than header+footer", size)
 	}
 	var hdr [packHeaderSize]byte
 	if _, err := f.ReadAt(hdr[:], 0); err != nil {
-		return nil, bodySHA, fmt.Errorf("pack: reading header: %w", err)
+		return bodySHA, fmt.Errorf("pack: reading header: %w", err)
 	}
 	if string(hdr[0:4]) != packMagic {
-		return nil, bodySHA, errors.New("pack: bad header magic")
+		return bodySHA, errors.New("pack: bad header magic")
 	}
 	if v := binary.LittleEndian.Uint16(hdr[4:6]); v != packFormatVersion {
-		return nil, bodySHA, fmt.Errorf("pack: unsupported format version %d", v)
+		return bodySHA, fmt.Errorf("pack: unsupported format version %d", v)
 	}
 	if !allZero(hdr[6:]) {
-		return nil, bodySHA, errors.New("pack: nonzero reserved header bytes")
+		return bodySHA, errors.New("pack: nonzero reserved header bytes")
 	}
 	var ft [packFooterSize]byte
 	if _, err := f.ReadAt(ft[:], size-packFooterSize); err != nil {
-		return nil, bodySHA, fmt.Errorf("pack: reading footer: %w", err)
+		return bodySHA, fmt.Errorf("pack: reading footer: %w", err)
 	}
 	if string(ft[0:4]) != packFooterMagic {
-		return nil, bodySHA, errors.New("pack: bad footer magic (truncated or unfinished pack)")
+		return bodySHA, errors.New("pack: bad footer magic (truncated or unfinished pack)")
 	}
 	if crc32.Checksum(ft[:60], packCRC) != binary.LittleEndian.Uint32(ft[60:64]) {
-		return nil, bodySHA, errors.New("pack: footer checksum mismatch")
+		return bodySHA, errors.New("pack: footer checksum mismatch")
 	}
 	if v := binary.LittleEndian.Uint16(ft[4:6]); v != packFormatVersion {
-		return nil, bodySHA, fmt.Errorf("pack: unsupported footer version %d", v)
+		return bodySHA, fmt.Errorf("pack: unsupported footer version %d", v)
 	}
 	if binary.LittleEndian.Uint16(ft[6:8]) != 0 {
-		return nil, bodySHA, errors.New("pack: nonzero footer flags")
+		return bodySHA, errors.New("pack: nonzero footer flags")
 	}
 	count := binary.LittleEndian.Uint64(ft[8:16])
 	indexOff := binary.LittleEndian.Uint64(ft[16:24])
@@ -3057,23 +3088,29 @@ func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
 
 	indexEnd := uint64(size) - packFooterSize
 	if indexOff < packHeaderSize || indexOff > indexEnd {
-		return nil, bodySHA, errors.New("pack: index offset out of range")
+		return bodySHA, errors.New("pack: index offset out of range")
 	}
 	indexLen := indexEnd - indexOff
 	if indexLen%packIndexEntrySize != 0 || count != indexLen/packIndexEntrySize {
-		return nil, bodySHA, errors.New("pack: record count does not match index length")
+		return bodySHA, errors.New("pack: record count does not match index length")
 	}
-
-	entries := make([]packEntry, 0, count)
-	seen := make(map[[32]byte]struct{}, count)
-	br := bufio.NewReaderSize(io.NewSectionReader(f, int64(indexOff), int64(indexLen)), 256<<10)
+	if start != nil {
+		start(count)
+	}
+	sec := io.NewSectionReader(f, int64(indexOff), int64(indexLen))
+	if br == nil {
+		br = bufio.NewReaderSize(sec, 256<<10)
+	} else {
+		br.Reset(sec)
+	}
 	var buf [packIndexEntrySize]byte
 	crc := uint32(0)
 	next := uint64(packHeaderSize)
 	presetMembers, presetCopies := 0, 0
+	var first, last packEntry
 	for i := uint64(0); i < count; i++ {
 		if _, err := io.ReadFull(br, buf[:]); err != nil {
-			return nil, bodySHA, fmt.Errorf("pack: reading index entry %d: %w", i, err)
+			return bodySHA, fmt.Errorf("pack: reading index entry %d: %w", i, err)
 		}
 		crc = crc32.Update(crc, packCRC, buf[:])
 		var e packEntry
@@ -3089,38 +3126,40 @@ func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
 			presetCopies++
 		}
 		if !allZero(buf[49:52]) {
-			return nil, bodySHA, fmt.Errorf("pack: index entry %d has nonzero reserved bytes", i)
+			return bodySHA, fmt.Errorf("pack: index entry %d has nonzero reserved bytes", i)
 		}
 		if err := checkPackLengths(e.codec, e.stored, e.logical); err != nil {
-			return nil, bodySHA, fmt.Errorf("pack: index entry %d: %w", i, err)
+			return bodySHA, fmt.Errorf("pack: index entry %d: %w", i, err)
 		}
 		if e.off != next+packRecordHeaderSize {
-			return nil, bodySHA, fmt.Errorf("pack: index entry %d payload offset %d is not contiguous", i, e.off)
+			return bodySHA, fmt.Errorf("pack: index entry %d payload offset %d is not contiguous", i, e.off)
 		}
 		next = e.off + uint64(e.stored)
 		if next > indexOff {
-			return nil, bodySHA, fmt.Errorf("pack: index entry %d payload runs past the record area", i)
+			return bodySHA, fmt.Errorf("pack: index entry %d payload runs past the record area", i)
 		}
-		if _, dup := seen[e.sha]; dup {
-			return nil, bodySHA, fmt.Errorf("pack: index entry %d repeats chunk %x", i, e.sha)
+		if err := visit(i, &e); err != nil {
+			return bodySHA, err
 		}
-		seen[e.sha] = struct{}{}
-		entries = append(entries, e)
+		if i == 0 {
+			first = e
+		}
+		last = e
 	}
 	if next != indexOff {
-		return nil, bodySHA, errors.New("pack: records do not end at the index")
+		return bodySHA, errors.New("pack: records do not end at the index")
 	}
 	if crc != indexCRC {
-		return nil, bodySHA, errors.New("pack: index checksum mismatch")
+		return bodySHA, errors.New("pack: index checksum mismatch")
 	}
 	if presetMembers > 0 || presetCopies > 0 {
-		if presetMembers == 0 || presetCopies != 2 || len(entries) < 3 ||
-			entries[0].codec != packCodecPresetDict || entries[len(entries)-1].codec != packCodecPresetDict ||
-			entries[0].logical > packDictMaxBytes || entries[len(entries)-1].logical != entries[0].logical+uint32(len(packDictCopyMagic)) {
-			return nil, bodySHA, errors.New("pack: invalid pack-local preset layout")
+		if presetMembers == 0 || presetCopies != 2 || count < 3 ||
+			first.codec != packCodecPresetDict || last.codec != packCodecPresetDict ||
+			first.logical > packDictMaxBytes || last.logical != first.logical+uint32(len(packDictCopyMagic)) {
+			return bodySHA, errors.New("pack: invalid pack-local preset layout")
 		}
 	}
-	return entries, bodySHA, nil
+	return bodySHA, nil
 }
 
 func isPackFileName(name string) bool {
@@ -3887,6 +3926,10 @@ type locIndex struct {
 	dups  []locRec
 	tbl   []uint32
 	shift uint
+	// filter, when set, answers "certainly absent" for most digests the level
+	// does not hold, so a negative lookup skips the level's search. Levels
+	// other than the oldest carry one (section 4c).
+	filter *locFilter
 }
 
 func (ix *locIndex) size() int { return len(ix.recs) + len(ix.dups) }
@@ -3896,6 +3939,11 @@ func (ix *locIndex) size() int { return len(ix.recs) + len(ix.dups) }
 // reports a repeat whose logical length contradicts its primary through
 // onClash instead of indexing it. recs must hold fewer than 1<<32 records.
 func buildLocIndex(recs []locRec, onClash func(prim, rep *locRec)) *locIndex {
+	return buildLocIndexF(recs, onClash, false)
+}
+
+// buildLocIndexF is buildLocIndex with a filter when asked (section 4c).
+func buildLocIndexF(recs []locRec, onClash func(prim, rep *locRec), filter bool) *locIndex {
 	nb := min(bits.Len(uint(len(recs)/4)), 24)
 	groupLocRecs(recs, min(nb, locGroupBits))
 	ix := &locIndex{shift: uint(32 - nb)}
@@ -3917,16 +3965,7 @@ func buildLocIndex(recs []locRec, onClash func(prim, rep *locRec)) *locIndex {
 		recs = append(make([]locRec, 0, w), recs[:w]...)
 	}
 	ix.recs = recs[:w]
-	ix.tbl = make([]uint32, 1<<nb+1)
-	j := 0
-	for b := range 1 << nb {
-		ix.tbl[b] = uint32(j)
-		for j < w && int(binary.BigEndian.Uint32(ix.recs[j].sum[:4])>>ix.shift) == b {
-			j++
-		}
-	}
-	ix.tbl[1<<nb] = uint32(w)
-	return ix
+	return finishLocIndex(ix, filter)
 }
 
 // locGroupBits is how many leading digest bits groupLocRecs splits on. Few
@@ -3977,12 +4016,13 @@ func groupLocRecs(recs []locRec, nb int) {
 }
 
 func mergeLocIndex(a, b *locIndex, onClash func(prim, rep *locRec)) *locIndex {
-	recs := make([]locRec, 0, a.size()+b.size())
-	recs = append(append(append(append(recs, a.recs...), a.dups...), b.recs...), b.dups...)
-	return buildLocIndex(recs, onClash)
+	return mergeLevels([]*locIndex{a, b}, nil, false, onClash)
 }
 
 func (ix *locIndex) find(sum *[32]byte) *locRec {
+	if ix.filter != nil && !ix.filter.has(sum) {
+		return nil
+	}
 	b := binary.BigEndian.Uint32(sum[:4]) >> ix.shift
 	lo, hi := ix.tbl[b], ix.tbl[b+1]
 	for lo < hi {
@@ -4009,6 +4049,257 @@ func (ix *locIndex) dupsOf(sum *[32]byte) []locRec {
 		j++
 	}
 	return ix.dups[i:j]
+}
+
+// ---- locator levels: filters, linear merges, the level bound (section 4c) ----
+//
+// A level is immutable. Publishing a pack adds a level holding its records;
+// levels are merged so that their count stays at most locMaxLevels (default
+// 4) and each is at least locRatio times larger than the next, which bounds
+// both the probes of a lookup and the copying a record goes through. The
+// ratio grows with the store (locRatio), so a large store still needs few
+// levels. A merge is a linear k-way merge of already sorted runs, and it drops
+// the records of retired packs: retirement leaves them in place only until
+// the next merge that touches their level, and a level that is mostly retired
+// records is rewritten on its own. Small merges (both levels under
+// locSyncMerge records) run under packMu as part of the publish; larger ones
+// run in the background (Store.locMergeKick), outside packMu, and publish by
+// pointer swap: under packMu the merged range is replaced only if the
+// current snapshot still holds exactly those levels, in order, so a merge
+// that raced with a reload is discarded. A level the background is merging is
+// frozen: publishes never merge it, so the background's range stays intact.
+// Readers keep whatever snapshot they loaded; old levels are freed when no
+// snapshot names them.
+
+var locMaxLevels = func() int {
+	if v, err := strconv.Atoi(os.Getenv("ZEROS3_LOCATOR_LEVELS")); err == nil && v >= 2 && v <= 64 {
+		return v
+	}
+	return 4
+}()
+
+const (
+	locSyncMerge   = 1 << 16 // records: a merge this small runs inside the publish
+	locUnit        = 1 << 12 // the size the smallest level may reach before the ratio applies
+	locFilterBits  = 10      // filter bits per record: about 1% false positives
+	locPurgeMinRec = 1 << 12 // a level smaller than this is not rewritten just to drop retired records
+)
+
+// locRatio is the size ratio between neighbouring levels for a locator of
+// total records: the smallest r >= 2 with locUnit * r^(maxLevels-1) >= total.
+func locRatio(total, maxLevels int) int {
+	if maxLevels < 2 || total <= locUnit {
+		return 2
+	}
+	r := int(math.Ceil(math.Pow(float64(total)/locUnit, 1/float64(maxLevels-1))))
+	for r > 2 && float64(locUnit)*math.Pow(float64(r-1), float64(maxLevels-1)) >= float64(total) {
+		r--
+	}
+	return max(r, 2)
+}
+
+// locFilter is a split-block Bloom filter: 256-bit blocks, one bit set in each
+// of a block's eight 32-bit words per digest. Digests are SHA-256 outputs, so
+// their own bits are the hash (bytes 8..16: independent of the level table's
+// leading bits). A digest made to collide in the filter costs one exact
+// search; the filter never decides a positive answer.
+type locFilter struct {
+	blocks [][8]uint32
+}
+
+var locFilterSalt = [8]uint32{0x47b6137b, 0x44974d91, 0x8824ad5b, 0xa2b7289d, 0x705495c7, 0x2df1424b, 0x9efc4947, 0x5c6bfb31}
+
+func newLocFilter(n int) *locFilter {
+	return &locFilter{blocks: make([][8]uint32, max(1, (n*locFilterBits+255)/256))}
+}
+
+func (f *locFilter) slot(sum *[32]byte) (*[8]uint32, uint32) {
+	h := binary.LittleEndian.Uint32(sum[8:12])
+	return &f.blocks[uint64(h)*uint64(len(f.blocks))>>32], binary.LittleEndian.Uint32(sum[12:16])
+}
+
+func (f *locFilter) add(sum *[32]byte) {
+	b, k := f.slot(sum)
+	for i := range b {
+		b[i] |= 1 << ((k * locFilterSalt[i]) >> 27)
+	}
+}
+
+func (f *locFilter) has(sum *[32]byte) bool {
+	b, k := f.slot(sum)
+	for i := range b {
+		if b[i]&(1<<((k*locFilterSalt[i])>>27)) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *locFilter) bytes() int {
+	if f == nil {
+		return 0
+	}
+	return len(f.blocks) * 32
+}
+
+// finishLocIndex builds the lookup table (and the filter when asked) of a
+// level whose recs hold one record per digest in cmpLocRec order.
+func finishLocIndex(ix *locIndex, filter bool) *locIndex {
+	w := len(ix.recs)
+	nb := min(bits.Len(uint(w/4)), 24)
+	ix.shift = uint(32 - nb)
+	ix.tbl = make([]uint32, 1<<nb+1)
+	j := 0
+	for b := range 1 << nb {
+		ix.tbl[b] = uint32(j)
+		for j < w && int(binary.BigEndian.Uint32(ix.recs[j].sum[:4])>>ix.shift) == b {
+			j++
+		}
+	}
+	ix.tbl[1<<nb] = uint32(w)
+	ix.filter = nil
+	if filter && w > 0 {
+		f := newLocFilter(w)
+		for i := range ix.recs {
+			f.add(&ix.recs[i].sum)
+		}
+		ix.filter = f
+	}
+	return ix
+}
+
+// mergeLevels is one linear merge of the sorted runs (recs and dups) of
+// levels, dropping the records of packs gone reports retired. The first
+// record of a digest becomes its primary, a later one of the same length a
+// fallback, and one whose length contradicts the primary goes to onClash.
+func mergeLevels(levels []*locIndex, gone func(r *locRec) bool, filter bool, onClash func(prim, rep *locRec)) *locIndex {
+	runs := make([][]locRec, 0, 2*len(levels))
+	total := 0
+	for _, ix := range levels {
+		for _, r := range [][]locRec{ix.recs, ix.dups} {
+			if len(r) > 0 {
+				runs = append(runs, r)
+				total += len(r)
+			}
+		}
+	}
+	out := &locIndex{recs: make([]locRec, 0, total)}
+	emit := func(r *locRec) {
+		if gone != nil && gone(r) {
+			return
+		}
+		if n := len(out.recs); n > 0 && out.recs[n-1].sum == r.sum {
+			if out.recs[n-1].logical() != r.logical() {
+				onClash(&out.recs[n-1], r)
+			} else {
+				out.dups = append(out.dups, *r)
+			}
+			return
+		}
+		out.recs = append(out.recs, *r)
+	}
+	for len(runs) > 0 {
+		k := 0
+		for j := 1; j < len(runs); j++ {
+			if cmpLocRec(&runs[j][0], &runs[k][0]) < 0 {
+				k = j
+			}
+		}
+		// Copy run k while it stays below every other run's head.
+		r, n := runs[k], 1
+		if len(runs) == 1 {
+			n = len(r)
+		}
+		for ; n < len(r); n++ {
+			below := true
+			for j := range runs {
+				if j != k && cmpLocRec(&runs[j][0], &r[n]) < 0 {
+					below = false
+					break
+				}
+			}
+			if !below {
+				break
+			}
+		}
+		for i := range n {
+			emit(&r[i])
+		}
+		if n == len(r) {
+			runs = slices.Delete(runs, k, k+1)
+		} else {
+			runs[k] = r[n:]
+		}
+	}
+	if cap(out.recs)-len(out.recs) > len(out.recs)/16+64 {
+		out.recs = slices.Clip(append(make([]locRec, 0, len(out.recs)), out.recs...))
+	}
+	return finishLocIndex(out, filter)
+}
+
+// locSettle applies the publish-time merges to levels (oldest first) and
+// returns them: while the newest two levels are both small and unfrozen,
+// merge them if they break the size ratio or the level bound. Larger merges
+// are the background's (locPlan).
+func locSettle(levels []*locIndex, frozen map[*locIndex]bool, gone func(r *locRec) bool, onClash func(prim, rep *locRec)) []*locIndex {
+	total := 0
+	for _, ix := range levels {
+		total += ix.size()
+	}
+	r := locRatio(total, locMaxLevels)
+	for n := len(levels); n >= 2; n = len(levels) {
+		a, b := levels[n-2], levels[n-1]
+		if frozen[a] || frozen[b] || a.size() > locSyncMerge || b.size() > locSyncMerge {
+			break
+		}
+		if r*b.size() < a.size() && n <= locMaxLevels {
+			break
+		}
+		levels = levels[:n-2]
+		if m := mergeLevels([]*locIndex{a, b}, gone, n-2 > 0, onClash); m.size() > 0 {
+			levels = append(levels, m)
+		}
+	}
+	return levels
+}
+
+// locPlan picks the next background merge for levels: [i, j] (inclusive) to
+// merge into one, or ok false. In order: a level of at least locPurgeMinRec
+// records of which a quarter belong to retired packs is rewritten alone;
+// the newest pair that breaks the size ratio is merged; while there are more
+// than locMaxLevels levels the adjacent pair with the fewest records is
+// merged. Frozen levels are never planned.
+func locPlan(levels []*locIndex, frozen map[*locIndex]bool, goneIn func(ix *locIndex) int) (i, j int, ok bool) {
+	free := func(k int) bool { return !frozen[levels[k]] }
+	if goneIn != nil {
+		for k, ix := range levels {
+			if free(k) && ix.size() >= locPurgeMinRec && 4*goneIn(ix) >= ix.size() {
+				return k, k, true
+			}
+		}
+	}
+	total := 0
+	for _, ix := range levels {
+		total += ix.size()
+	}
+	r := locRatio(total, locMaxLevels)
+	for k := len(levels) - 1; k >= 1; k-- {
+		if free(k) && free(k-1) && r*levels[k].size() >= levels[k-1].size() {
+			return k - 1, k, true
+		}
+	}
+	if len(levels) > locMaxLevels {
+		best := -1
+		for k := 1; k < len(levels); k++ {
+			if free(k) && free(k-1) && (best < 0 || levels[k].size()+levels[k-1].size() < levels[best].size()+levels[best-1].size()) {
+				best = k
+			}
+		}
+		if best > 0 {
+			return best - 1, best, true
+		}
+	}
+	return 0, 0, false
 }
 
 // packState is an immutable snapshot of the pack set and its locator, swapped
@@ -4165,6 +4456,11 @@ func (p packInfo) label() string {
 // the new copy becomes a fallback; one whose logical length contradicts the
 // indexed copy is reported rather than indexed.
 func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, error) {
+	return st.withPackF(info, entries, nil)
+}
+
+// withPackF is withPack leaving the levels in frozen to a background merge.
+func (st *packState) withPackF(info packInfo, entries []packEntry, frozen map[*locIndex]bool) (*packState, error) {
 	for i, p := range st.packs {
 		if p.id == info.id && p.tier == info.tier && !st.isGone(uint32(i)) {
 			return st, nil
@@ -4178,21 +4474,21 @@ func (st *packState) withPack(info packInfo, entries []packEntry) (*packState, e
 		packs = slices.Clip(packs)
 	}
 	next := &packState{packs: append(packs, info), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash), gone: st.gone}
-	return st.addRecords(next, uint32(len(st.packs)), info.tier, entries)
+	return st.addRecords(next, uint32(len(st.packs)), info.tier, entries, frozen)
 }
 
 // withRecords returns a snapshot that also indexes more records of the already
 // registered pack idx (an open segment growing). Pack descriptors are shared, so
 // a growing segment costs one new locator level per commit group and nothing
 // proportional to the number of packs.
-func (st *packState) withRecords(idx uint32, t tier, entries []packEntry) (*packState, error) {
+func (st *packState) withRecords(idx uint32, t tier, entries []packEntry, frozen map[*locIndex]bool) (*packState, error) {
 	next := &packState{packs: st.packs, levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash), gone: st.gone}
-	return st.addRecords(next, idx, t, entries)
+	return st.addRecords(next, idx, t, entries, frozen)
 }
 
 // addRecords indexes entries as records of pack idx into next, which was cloned
-// from st.
-func (st *packState) addRecords(next *packState, idx uint32, t tier, entries []packEntry) (*packState, error) {
+// from st, then applies the publish-time merges (locSettle).
+func (st *packState) addRecords(next *packState, idx uint32, t tier, entries []packEntry, frozen map[*locIndex]bool) (*packState, error) {
 	onClash := func(prim, rep *locRec) {
 		next.clash = append(next.clash, clashMessage(prim.sum, prim, rep, next.packs))
 	}
@@ -4218,12 +4514,261 @@ func (st *packState) addRecords(next *packState, idx uint32, t tier, entries []p
 	if len(recs) == 0 {
 		return next, nil
 	}
-	next.levels = append(next.levels, buildLocIndex(recs, onClash))
-	for n := len(next.levels); n >= 2 && 2*next.levels[n-1].size() >= next.levels[n-2].size(); n = len(next.levels) {
-		merged := mergeLocIndex(next.levels[n-2], next.levels[n-1], onClash)
-		next.levels = append(next.levels[:n-2], merged)
-	}
+	ix := buildLocIndexF(recs, onClash, len(next.levels) > 0)
+	next.levels = locSettle(append(next.levels, ix), frozen, next.goneRec(), onClash)
 	return next, nil
+}
+
+// goneRec reports the records of retired packs (nil when none is retired).
+func (st *packState) goneRec() func(r *locRec) bool {
+	if st.gone == nil {
+		return nil
+	}
+	return func(r *locRec) bool { return st.isGone(r.packIdx()) }
+}
+
+// goneIn counts ix's records that belong to retired packs.
+func (st *packState) goneIn(ix *locIndex) int {
+	if st.gone == nil {
+		return 0
+	}
+	n := 0
+	for _, run := range [][]locRec{ix.recs, ix.dups} {
+		for i := range run {
+			if st.isGone(run[i].packIdx()) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// needsMerge reports whether the background has work on these levels.
+func (st *packState) needsMerge(frozen map[*locIndex]bool) bool {
+	_, _, ok := locPlan(st.levels, frozen, st.goneIn)
+	return ok
+}
+
+// settled returns st with every planned merge applied in place of the
+// background (tests and tools without a Store).
+func (st *packState) settled() *packState {
+	next := &packState{packs: slices.Clip(st.packs), levels: slices.Clone(st.levels), bad: st.bad, clash: slices.Clip(st.clash), gone: st.gone}
+	for {
+		i, j, ok := locPlan(next.levels, nil, next.goneIn)
+		if !ok {
+			return next
+		}
+		onClash := func(prim, rep *locRec) {
+			next.clash = append(next.clash, clashMessage(prim.sum, prim, rep, next.packs))
+		}
+		merged := mergeLevels(next.levels[i:j+1], next.goneRec(), i > 0, onClash)
+		next.levels = slices.Concat(next.levels[:i], locNonEmpty(merged), next.levels[j+1:])
+	}
+}
+
+func locNonEmpty(ix *locIndex) []*locIndex {
+	if ix.size() == 0 {
+		return nil
+	}
+	return []*locIndex{ix}
+}
+
+// ---- the background locator merger (section 4c) ---------------------------
+
+// locMerger runs the merges too large for a publish, one at a time, in a
+// goroutine that exists only while there is work.
+type locMerger struct {
+	mu      sync.Mutex
+	running bool
+	again   bool
+	closed  bool
+	wg      sync.WaitGroup
+	purge   atomic.Bool        // a retirement happened: look for levels to rewrite
+	frozen  map[*locIndex]bool // levels being merged; guarded by Store.packMu
+	stats   locMergeStats
+}
+
+// locMergeStats are cumulative counters (tests, benchmarks and stats).
+type locMergeStats struct {
+	Merges, Discarded, Purges, RecordsIn, RecordsOut atomic.Int64
+	MergeNS, MaxMergeNS, MaxSwapNS                   atomic.Int64
+	MaxLevels                                        atomic.Int64
+}
+
+func atomicMax(a *atomic.Int64, v int64) {
+	for {
+		old := a.Load()
+		if v <= old || a.CompareAndSwap(old, v) {
+			return
+		}
+	}
+}
+
+// locPublished stores next as the locator (caller holds packMu) and starts
+// the background merger when next has work for it.
+func (s *Store) locPublished(next *packState) {
+	s.packSt.Store(next)
+	atomicMax(&s.loc.stats.MaxLevels, int64(len(next.levels)))
+	if _, _, ok := locPlan(next.levels, s.loc.frozen, nil); ok {
+		s.locMergeKick()
+	}
+}
+
+func (s *Store) locMergeKick() {
+	m := &s.loc
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	if m.running {
+		m.again = true
+		return
+	}
+	m.running = true
+	m.wg.Add(1)
+	go s.locMergeLoop()
+}
+
+// locMergeStop waits for a running merge to finish and starts no more.
+func (s *Store) locMergeStop() {
+	m := &s.loc
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	m.wg.Wait()
+}
+
+// locMergeWait waits until the merger has nothing left to do (tests).
+func (s *Store) locMergeWait() {
+	for {
+		s.loc.mu.Lock()
+		idle := !s.loc.running
+		s.loc.mu.Unlock()
+		if idle {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (s *Store) locMergeLoop() {
+	m := &s.loc
+	defer m.wg.Done()
+	for {
+		if !s.locMergeOnce() {
+			m.mu.Lock()
+			if !m.again || m.closed {
+				m.running = false
+				m.mu.Unlock()
+				return
+			}
+			m.again = false
+			m.mu.Unlock()
+		}
+	}
+}
+
+// hookLocMergeBeforePublish fires between a background merge and its publish.
+const hookLocMergeBeforePublish = "loc-merge-before-publish"
+
+// locMergeOnce plans, builds and publishes one background merge; false when
+// there was nothing to do or the store is closing.
+func (s *Store) locMergeOnce() bool {
+	m := &s.loc
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return false
+	}
+	var goneIn func(*locIndex) int
+	purging := m.purge.Swap(false)
+	if purging {
+		st := s.packSnap()
+		counts := make(map[*locIndex]int, len(st.levels))
+		for _, ix := range st.levels {
+			counts[ix] = st.goneIn(ix)
+		}
+		goneIn = func(ix *locIndex) int { return counts[ix] }
+	}
+	s.packMu.Lock()
+	st := s.packSnap()
+	i, j, ok := locPlan(st.levels, m.frozen, goneIn)
+	if !ok {
+		s.packMu.Unlock()
+		return false
+	}
+	if purging && i == j {
+		m.purge.Store(true) // look for the next level to rewrite after this one
+	}
+	rng := slices.Clone(st.levels[i : j+1])
+	if m.frozen == nil {
+		m.frozen = map[*locIndex]bool{}
+	}
+	for _, ix := range rng {
+		m.frozen[ix] = true
+	}
+	s.packMu.Unlock()
+	defer func() {
+		s.packMu.Lock()
+		for _, ix := range rng {
+			delete(m.frozen, ix)
+		}
+		s.packMu.Unlock()
+	}()
+
+	t0 := time.Now()
+	var clashes [][2]locRec
+	merged := mergeLevels(rng, st.goneRec(), i > 0, func(prim, rep *locRec) { clashes = append(clashes, [2]locRec{*prim, *rep}) })
+	ns := time.Since(t0).Nanoseconds()
+	m.stats.MergeNS.Add(ns)
+	atomicMax(&m.stats.MaxMergeNS, ns)
+	in := 0
+	for _, ix := range rng {
+		in += ix.size()
+	}
+	fireTestHook(hookLocMergeBeforePublish)
+	m.mu.Lock()
+	closed = m.closed
+	m.mu.Unlock()
+	if closed {
+		return false
+	}
+
+	s.packMu.Lock()
+	defer s.packMu.Unlock()
+	ts := time.Now()
+	cur := s.packSnap()
+	p := -1
+	for k := 0; k+len(rng) <= len(cur.levels); k++ {
+		if cur.levels[k] == rng[0] && slices.Equal(cur.levels[k:k+len(rng)], rng) {
+			p = k
+			break
+		}
+	}
+	if p < 0 {
+		m.stats.Discarded.Add(1) // the locator was rebuilt meanwhile
+		return true
+	}
+	packs := cur.packs
+	if !cur.extended.CompareAndSwap(false, true) {
+		packs = slices.Clip(packs)
+	}
+	next := &packState{packs: packs, bad: cur.bad, clash: slices.Clip(cur.clash), gone: cur.gone,
+		levels: slices.Concat(cur.levels[:p], locNonEmpty(merged), cur.levels[p+len(rng):])}
+	for _, c := range clashes {
+		next.clash = append(next.clash, clashMessage(c[0].sum, &c[0], &c[1], next.packs))
+	}
+	s.packSt.Store(next)
+	atomicMax(&m.stats.MaxSwapNS, time.Since(ts).Nanoseconds())
+	m.stats.Merges.Add(1)
+	if i == j {
+		m.stats.Purges.Add(1)
+	}
+	m.stats.RecordsIn.Add(int64(in))
+	m.stats.RecordsOut.Add(int64(merged.size()))
+	return true
 }
 
 // packRecordHint reads a pack footer's record count, clamped by what the
@@ -4255,12 +4800,11 @@ func packRecordHint(path string) int {
 // primary selection and fallbacks.
 func loadPackState(root string, format int) (*packState, error) {
 	type found struct {
-		t    tier
-		dir  string
-		name string
+		t          tier
+		path, name string
+		base, hint int
 	}
 	var files []found
-	hint := 0
 	for t := tierHot; t < numTiers; t++ {
 		if t != tierHot && format < storeFormatVersionTiers {
 			break
@@ -4275,56 +4819,147 @@ func loadPackState(root string, format int) (*packState, error) {
 		}
 		for _, e := range ents {
 			if !e.IsDir() && isPackFileName(e.Name()) {
-				files = append(files, found{t, dir, e.Name()})
-				hint += packRecordHint(filepath.Join(dir, e.Name()))
+				files = append(files, found{t: t, path: filepath.Join(dir, e.Name()), name: e.Name()})
 			}
 		}
+	}
+	// Lean open (section 4c): one footer read per pack sizes one record array;
+	// each pack's index is then parsed straight into its slice of it, with no
+	// per-pack entry list or digest map, and the failed packs' slices and the
+	// pack-local dictionary records are squeezed out in place.
+	parallelFor(len(files), maintWorkers(), 16, func(i int) { files[i].hint = packRecordHint(files[i].path) })
+	hint := 0
+	for i := range files {
+		files[i].base = hint
+		hint += files[i].hint
 	}
 	if hint >= math.MaxUint32 {
 		return nil, errors.New("pack locator is full: too many packed records")
 	}
-	st := &packState{}
-	recs := make([]locRec, 0, hint)
-	// Each pack's footer and index are read concurrently; they are folded in below
-	// in directory order, so the locator is the one a serial load would build.
-	type loadedPack struct {
-		info    packInfo
-		entries []packEntry
-		err     error
+	recs := make([]locRec, hint)
+	type loaded struct {
+		info   packInfo
+		lo, hi int // the locator records within the pack's slice
+		err    error
 	}
-	loaded := make([]loadedPack, len(files))
-	parallelFor(len(files), maintWorkers(), 4, func(i int) {
-		l := &loaded[i]
-		l.info, l.entries, l.err = loadPackFile(filepath.Join(files[i].dir, files[i].name))
+	out := make([]loaded, len(files))
+	parallelForState(len(files), maintWorkers(), 4, func() *packIndexWorker { return &packIndexWorker{} }, func(*packIndexWorker) {}, func(w *packIndexWorker, i int) {
+		f := &files[i]
+		l := &out[i]
+		l.info, l.lo, l.hi, l.err = w.load(f.path, recs[f.base:f.base+f.hint], uint32(i), f.t)
 	})
+	st := &packState{}
+	w := 0
 	for fi, f := range files {
-		info, entries, err := loaded[fi].info, loaded[fi].entries, loaded[fi].err
-		if err != nil {
+		l := &out[fi]
+		if l.err != nil {
 			name := f.name
 			if f.t != tierHot {
 				name = f.t.String() + "/" + name
 			}
-			st.bad = append(st.bad, packProblem{name: name, err: err})
+			st.bad = append(st.bad, packProblem{name: name, err: l.err})
 			continue
 		}
 		if len(st.packs) >= packIdxMask {
 			return nil, errors.New("pack locator is full: too many packs")
 		}
-		info.tier = f.t
 		idx := uint32(len(st.packs))
-		st.packs = append(st.packs, info)
-		for i := range entries {
-			if entries[i].codec == packCodecPresetDict {
-				continue
+		st.packs = append(st.packs, l.info)
+		src := recs[f.base+l.lo : f.base+l.hi]
+		if idx != uint32(fi) {
+			for j := range src {
+				src[j].pack = uint32(f.t)<<packIdxBits | idx
 			}
-			recs = append(recs, mkLocRec(&entries[i], idx, f.t))
 		}
-		if len(recs) >= math.MaxUint32 {
-			return nil, errors.New("pack locator is full: too many packed records")
-		}
+		w += copy(recs[w:], src)
 	}
-	st.index(recs)
+	st.index(recs[:w])
 	return st, nil
+}
+
+// packIndexWorker parses pack indexes for loadPackState; one per goroutine.
+type packIndexWorker struct {
+	br   *bufio.Reader
+	keys []uint64 // open-addressing set of digest prefixes, for the repeat check
+	vals []uint32 // entry number + 1; 0 marks an empty slot
+	tmp  []locRec // a pack whose index outgrows its footer hint (never valid)
+}
+
+// load validates one pack exactly as loadPackFile does and writes a locator
+// record for every index entry into dst (entry i at dst[i]); dst[lo:hi] are
+// the records the locator indexes (pack-local dictionary records excluded).
+func (w *packIndexWorker) load(path string, dst []locRec, idx uint32, t tier) (packInfo, int, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return packInfo{}, 0, 0, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return packInfo{}, 0, 0, err
+	}
+	if w.br == nil {
+		w.br = bufio.NewReaderSize(nil, 256<<10)
+	}
+	info := packInfo{path: path, size: fi.Size(), tier: t}
+	out := dst
+	bodySHA, err := scanPackLayout(f, fi.Size(), w.br, func(n uint64) {
+		info.records = int(n)
+		if n > uint64(len(dst)) {
+			w.tmp = slices.Grow(w.tmp[:0], int(min(n, 1<<24)))[:0]
+			out = nil
+		}
+		slots := 1 << bits.Len(uint(2*n))
+		if cap(w.keys) < slots {
+			w.keys, w.vals = make([]uint64, slots), make([]uint32, slots)
+		}
+		w.keys, w.vals = w.keys[:slots], w.vals[:slots]
+		clear(w.vals)
+	}, func(i uint64, e *packEntry) error {
+		rec := mkLocRec(e, idx, t)
+		pre := binary.BigEndian.Uint64(e.sha[:8])
+		mask := uint64(len(w.keys) - 1)
+		for k := (pre * 0x9e3779b97f4a7c15) >> 1 & mask; ; k = (k + 1) & mask {
+			if w.vals[k] == 0 {
+				w.keys[k], w.vals[k] = pre, uint32(i)+1
+				break
+			}
+			if w.keys[k] == pre {
+				j := int(w.vals[k] - 1)
+				var prev *locRec
+				if out != nil {
+					prev = &out[j]
+				} else {
+					prev = &w.tmp[j]
+				}
+				if prev.sum == e.sha {
+					return fmt.Errorf("pack: index entry %d repeats chunk %x", i, e.sha)
+				}
+			}
+		}
+		if out != nil {
+			out[i] = rec
+		} else {
+			w.tmp = append(w.tmp, rec)
+		}
+		info.count(e)
+		return nil
+	})
+	if err != nil {
+		return packInfo{}, 0, 0, err
+	}
+	info.id = hex.EncodeToString(bodySHA[:])
+	if filepath.Base(path) != info.id+packFileSuffix {
+		return packInfo{}, 0, 0, fmt.Errorf("pack: file name does not match footer id %s", info.id)
+	}
+	if out == nil {
+		return packInfo{}, 0, 0, fmt.Errorf("pack: index of %d records changed while the store opened", info.records)
+	}
+	lo, hi := 0, info.records
+	if info.presetDict { // the layout check put the two copies first and last
+		lo, hi = 1, hi-1
+	}
+	return info, lo, hi, nil
 }
 
 // index builds the open-time locator from every record of st.packs. Clash
@@ -4361,11 +4996,11 @@ func (s *Store) packSnap() *packState {
 func (s *Store) addPack(info packInfo, entries []packEntry) error {
 	s.packMu.Lock()
 	defer s.packMu.Unlock()
-	next, err := s.packSnap().withPack(info, entries)
+	next, err := s.packSnap().withPackF(info, entries, s.loc.frozen)
 	if err != nil {
 		return err
 	}
-	s.packSt.Store(next)
+	s.locPublished(next)
 	return nil
 }
 
@@ -6221,16 +6856,16 @@ func (s *Store) segPublish(seg *segment, entries []packEntry) error {
 		// First durable records of this segment: it joins the locator now, so a
 		// segment that never held a record never appears in it.
 		var err error
-		if st, err = st.withPack(packInfo{id: seg.id, tier: tierHot, path: seg.path, open: true}, nil); err != nil {
+		if st, err = st.withPackF(packInfo{id: seg.id, tier: tierHot, path: seg.path, open: true}, nil, s.loc.frozen); err != nil {
 			return err
 		}
 		idx = len(st.packs) - 1
 	}
-	next, err := st.withRecords(uint32(idx), tierHot, entries)
+	next, err := st.withRecords(uint32(idx), tierHot, entries, s.loc.frozen)
 	if err != nil {
 		return err
 	}
-	s.packSt.Store(next)
+	s.locPublished(next)
 	return nil
 }
 
@@ -6780,7 +7415,7 @@ func (s *Store) loadSegmentsReadOnly() error {
 			return err
 		}
 	}
-	s.packSt.Store(next)
+	s.locPublished(next)
 	return nil
 }
 
@@ -9416,6 +10051,7 @@ type Store struct {
 	// process holding exclusive ownership while compacting.
 	packMu sync.Mutex
 	packSt atomic.Pointer[packState]
+	loc    locMerger // background locator merges (section 4c)
 
 	// reconSeen is the (authority generation, pack set) key of the last online
 	// relayout plan that found nothing to move (section 13d1).
@@ -13125,6 +13761,7 @@ func (s *Store) archiveVersionLocked(bucket, key string, seq uint64, p journalAr
 // Close releases the store's open file handles.
 func (s *Store) Close() error {
 	s.stopMaintenance()
+	s.locMergeStop()
 	// Under mu, so no consolidation can start after the wait below begins; a
 	// running one stops at its next check and restores its overlay.
 	s.mu.Lock()
@@ -24357,6 +24994,10 @@ func (s *Store) maintSwap(ep *maintEpoch, carry *packCarry, condemned [][32]byte
 	s.retire.mu.Unlock()
 	s.packSt.Store(st.withoutPacks(idx))
 	s.packMu.Unlock()
+	if len(idx) > 0 {
+		s.loc.purge.Store(true) // the next merges drop their records; a mostly retired level is rewritten
+		s.locMergeKick()
+	}
 	rep.SwapMicros = time.Since(ts).Microseconds()
 	thaw()
 	fireTestHook(hookMaintSwapped)
