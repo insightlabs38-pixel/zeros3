@@ -384,6 +384,12 @@ Current intentional deviations include:
 - **AbortMultipartUpload is not idempotent.** A repeated abort reports
   `NoSuchUpload`.
 - **Multipart non-final minimum is fixed at 5 MiB.**
+- **A part's chunk list must fit one journal record.** An `UploadPart` or
+  `UploadPartCopy` whose record would exceed 8 MiB (about 90,000 chunks:
+  1.37 GiB of content that cuts every chunk at the 16 KiB minimum, over
+  5 GiB for typical content) is refused with `EntityTooLarge` before anything
+  is recorded; an earlier part with the same number is kept. Smaller parts
+  avoid it. Out-of-line part lists are planned.
 
 ## Deliberately unsupported S3 areas
 

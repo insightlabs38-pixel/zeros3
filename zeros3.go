@@ -17218,14 +17218,44 @@ func (s *Store) requireUpload(bucket, key, uploadID string) error {
 	return err
 }
 
+// multipartNow is the clock commitPart stamps parts with (a test hook).
+var multipartNow = time.Now
+
+// errPartMetadataTooLarge reports a part whose chunk list cannot fit one
+// journal frame (ZS-MPU-01). Until part lists move out of line (M-C2), such a
+// part is refused with a client error before anything is recorded, instead
+// of failing inside the journal append as an InternalError.
+type errPartMetadataTooLarge struct {
+	chunks, payload int
+	size            int64
+}
+
+func (e *errPartMetadataTooLarge) Error() string {
+	return fmt.Sprintf("this %d-byte part cut into %d chunks needs a %d-byte part record, over this server's limit of %d bytes; upload it as smaller parts",
+		e.size, e.chunks, e.payload, maxJournalPayload)
+}
+
+// encodeUploadPartPayload encodes an UploadPart journal record, refusing one
+// the journal could not append or replay (payload above maxJournalPayload).
+func encodeUploadPartPayload(p journalUploadPartPayload) ([]byte, error) {
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > maxJournalPayload {
+		return nil, &errPartMetadataTooLarge{chunks: len(p.Chunks), payload: len(payload), size: p.Size}
+	}
+	return payload, nil
+}
+
 // commitPart records an already-ingested part (CDC-chunked into the
 // ordinary CAS outside s.mu, like an ordinary PUT's ingest) with one
 // journal frame carrying its chunk list/size/ETag, under a re-validated
 // upload session exactly like commitObjectRoot re-validates its bucket.
 func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ingestResult) (string, error) {
 	etag := hex.EncodeToString(ing.etagMD5[:])
-	uploadedAt := time.Now().UTC()
-	payload, err := json.Marshal(journalUploadPartPayload{
+	uploadedAt := multipartNow().UTC()
+	payload, err := encodeUploadPartPayload(journalUploadPartPayload{
 		UploadID: uploadID, PartNumber: partNumber, Size: ing.size,
 		ETag: etag, Chunks: ing.chunks, UploadedAt: uploadedAt,
 	})
@@ -17820,7 +17850,10 @@ type listMultipartUploadsResult struct {
 // bad ETag, etc.) are mapped by their own callers, which know which
 // resource string is right for their operation.
 func writeMultipartError(w http.ResponseWriter, err error, resource string) {
+	var tooLarge *errPartMetadataTooLarge
 	switch {
+	case errors.As(err, &tooLarge):
+		writeS3Error(w, "EntityTooLarge", tooLarge.Error(), resource)
 	case errors.Is(err, errNoSuchUpload):
 		writeS3Error(w, "NoSuchUpload", "the specified multipart upload does not exist", resource)
 	case errors.Is(err, errNoSuchBucket):
