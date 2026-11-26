@@ -3103,17 +3103,22 @@ func scanPackLayout(f io.ReaderAt, size int64, br *bufio.Reader, start func(n ui
 	} else {
 		br.Reset(sec)
 	}
-	var buf [packIndexEntrySize]byte
+	// buf and e escape (the reader and visit see them), so they are made once
+	// per pack, not once per entry: an open reads every index entry, and a
+	// per-entry allocation would make the open's peak heap several times the
+	// locator it builds. visit copies what it keeps.
+	buf := make([]byte, packIndexEntrySize)
+	e := new(packEntry)
 	crc := uint32(0)
 	next := uint64(packHeaderSize)
 	presetMembers, presetCopies := 0, 0
 	var first, last packEntry
 	for i := uint64(0); i < count; i++ {
-		if _, err := io.ReadFull(br, buf[:]); err != nil {
+		if _, err := io.ReadFull(br, buf); err != nil {
 			return bodySHA, fmt.Errorf("pack: reading index entry %d: %w", i, err)
 		}
-		crc = crc32.Update(crc, packCRC, buf[:])
-		var e packEntry
+		crc = crc32.Update(crc, packCRC, buf)
+		*e = packEntry{}
 		copy(e.sha[:], buf[0:32])
 		e.off = binary.LittleEndian.Uint64(buf[32:40])
 		e.stored = binary.LittleEndian.Uint32(buf[40:44])
@@ -3138,13 +3143,13 @@ func scanPackLayout(f io.ReaderAt, size int64, br *bufio.Reader, start func(n ui
 		if next > indexOff {
 			return bodySHA, fmt.Errorf("pack: index entry %d payload runs past the record area", i)
 		}
-		if err := visit(i, &e); err != nil {
+		if err := visit(i, e); err != nil {
 			return bodySHA, err
 		}
 		if i == 0 {
-			first = e
+			first = *e
 		}
-		last = e
+		last = *e
 	}
 	if next != indexOff {
 		return bodySHA, errors.New("pack: records do not end at the index")
@@ -3955,16 +3960,16 @@ func buildLocIndexF(recs []locRec, onClash func(prim, rep *locRec), filter bool)
 	ix := &locIndex{shift: uint(32 - nb)}
 	w := 0
 	for i := range recs {
-		r := recs[i]
+		r := &recs[i] // a pointer into recs: a local copy handed to onClash would escape, one allocation per record
 		if w > 0 && recs[w-1].sum == r.sum {
 			if recs[w-1].logical() != r.logical() {
-				onClash(&recs[w-1], &r)
+				onClash(&recs[w-1], r)
 			} else {
-				ix.dups = append(ix.dups, r)
+				ix.dups = append(ix.dups, *r)
 			}
 			continue
 		}
-		recs[w] = r
+		recs[w] = *r
 		w++
 	}
 	if cap(recs)-w > w/16+64 {

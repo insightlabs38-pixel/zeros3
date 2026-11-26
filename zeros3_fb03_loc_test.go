@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1087,5 +1088,26 @@ func TestFB03_LocBackgroundMerge(t *testing.T) {
 	s.locMergeOnce()
 	if stats.Discarded.Load() < discarded+1 || len(s.packSnap().packs) != 0 {
 		t.Fatalf("a merge of a reloaded locator was published: discarded %d, %d packs", stats.Discarded.Load()-discarded, len(s.packSnap().packs))
+	}
+}
+
+// TestFB03_LocOpenAllocs bounds what an open allocates per record (M-A8:
+// open peak memory at most twice steady): the record array, the filter and
+// the bucket table, and no per-entry garbage while the indexes are read.
+func TestFB03_LocOpenAllocs(t *testing.T) {
+	root, n := t.TempDir(), 40000
+	fb03Gen(t, root, n, 1024)
+	var m0, m1 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m0)
+	st, err := loadPackState(root, storeFormatVersionPacked)
+	runtime.ReadMemStats(&m1)
+	if err != nil || st.distinct() != n {
+		t.Fatalf("open: %v, %d distinct", err, st.distinct())
+	}
+	mallocs, bytes := m1.Mallocs-m0.Mallocs, m1.TotalAlloc-m0.TotalAlloc
+	t.Logf("%d records: %d allocations, %.1f bytes per record", n, mallocs, float64(bytes)/float64(n))
+	if mallocs > uint64(n/16) || bytes > uint64(64*n+2<<20) { // 2 MiB: the workers' read buffers and repeat sets
+		t.Fatalf("open allocated %d objects, %d bytes for %d records", mallocs, bytes, n)
 	}
 }
