@@ -1,0 +1,344 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The shadow pack charges the native record and index widths. Its test-only
+// slice directory never becomes a ZeroS3 store feature.
+const c13SliceCodec = byte(4)
+const c13AuxRecord = byte(5)
+const c13SliceBytes = 12
+
+var errC13Pack = errors.New("invalid C13 shadow pack")
+
+type c13PackEntry struct {
+	packEntry
+	aux bool
+}
+
+type c13PackBuilder struct {
+	body []byte
+	rows []c13PackEntry
+}
+
+func (b *c13PackBuilder) add(sum [32]byte, stored []byte, logical int, codec byte, aux bool) packEntry {
+	entry := packEntry{sha: sum, off: uint64(len(b.body) + packRecordHeaderSize),
+		stored: uint32(len(stored)), logical: uint32(logical), codec: codec}
+	header := make([]byte, packRecordHeaderSize)
+	copy(header, sum[:])
+	binary.LittleEndian.PutUint32(header[32:], entry.stored)
+	binary.LittleEndian.PutUint32(header[36:], entry.logical)
+	header[40] = codec
+	b.body = append(b.body, header...)
+	b.body = append(b.body, stored...)
+	b.rows = append(b.rows, c13PackEntry{entry, aux})
+	return entry
+}
+
+func (b *c13PackBuilder) finish() []byte {
+	at := len(b.body)
+	for _, row := range b.rows {
+		entry := make([]byte, packIndexEntrySize)
+		copy(entry, row.sha[:])
+		binary.LittleEndian.PutUint64(entry[32:], row.off)
+		binary.LittleEndian.PutUint32(entry[40:], row.stored)
+		binary.LittleEndian.PutUint32(entry[44:], row.logical)
+		entry[48] = row.codec
+		if row.aux {
+			entry[49] = c13AuxRecord
+		}
+		b.body = append(b.body, entry...)
+	}
+	digest := sha256.Sum256(b.body)
+	footer := make([]byte, packFooterSize)
+	binary.LittleEndian.PutUint64(footer, uint64(at))
+	binary.LittleEndian.PutUint64(footer[8:], uint64(len(b.rows)))
+	copy(footer[16:], digest[:])
+	copy(footer[48:], "C13FOOT1")
+	return append(b.body, footer...)
+}
+
+type c13PackedObject struct {
+	sum [32]byte
+	raw []byte
+}
+
+func c13EmitGroup(builder *c13PackBuilder, objects []c13PackedObject, limit int, cmp *packCompressor) bool {
+	if limit == 0 || len(objects) < 2 {
+		for _, object := range objects {
+			encoded, codec := cmp.encode(object.raw)
+			builder.add(object.sum, encoded, len(object.raw), codec, false)
+		}
+		return false
+	}
+	type encoding struct {
+		payload []byte
+		codec   byte
+	}
+	individual := make([]encoding, 0, len(objects))
+	var data []byte
+	oldBytes := int64(len(objects)) * packRecordBytes
+	for _, object := range objects {
+		encoded, codec := cmp.encode(object.raw)
+		oldBytes += int64(len(encoded))
+		individual = append(individual, encoding{slices.Clone(encoded), codec})
+		data = append(data, object.raw...)
+	}
+	encoded, codec := cmp.encode(data)
+	extra := int64(packRecordBytes + len(encoded) + len(objects)*c13SliceBytes)
+	if extra+int64(len(objects)*packRecordBytes) >= oldBytes {
+		for i, object := range objects {
+			enc := individual[i]
+			builder.add(object.sum, enc.payload, len(object.raw), enc.codec, false)
+		}
+		return false
+	}
+	group := builder.add(sha256.Sum256(data), encoded, len(data), codec, true)
+	var start uint32
+	for _, object := range objects {
+		ref := binary.LittleEndian.AppendUint64(nil, group.off)
+		ref = binary.LittleEndian.AppendUint32(ref, start)
+		builder.add(object.sum, ref, len(object.raw), c13SliceCodec, false)
+		start += uint32(len(object.raw))
+	}
+	return true
+}
+
+type c13ShadowPack struct {
+	body   []byte
+	own    map[[32]byte]packEntry
+	groups map[uint64]packEntry
+}
+
+func c13OpenShadow(blob []byte) (c13ShadowPack, error) {
+	var pack c13ShadowPack
+	if len(blob) < packHeaderSize+packFooterSize || string(blob[:8]) != "C13PACK1" {
+		return pack, errC13Pack
+	}
+	body := blob[:len(blob)-packFooterSize]
+	tail := blob[len(body):]
+	at, count := binary.LittleEndian.Uint64(tail), binary.LittleEndian.Uint64(tail[8:])
+	if at < packHeaderSize || at > uint64(len(body)) || count > uint64(len(body))/packIndexEntrySize ||
+		at+count*packIndexEntrySize != uint64(len(body)) || string(tail[48:56]) != "C13FOOT1" ||
+		sha256.Sum256(body) != [32]byte(tail[16:48]) {
+		return pack, errC13Pack
+	}
+	pack.body = body[:at]
+	pack.own, pack.groups = make(map[[32]byte]packEntry), make(map[uint64]packEntry)
+	next := uint64(packHeaderSize + packRecordHeaderSize)
+	for i := uint64(0); i < count; i++ {
+		record := body[at+i*packIndexEntrySize:]
+		e := packEntry{sha: [32]byte(record[:32]), off: binary.LittleEndian.Uint64(record[32:]),
+			stored: binary.LittleEndian.Uint32(record[40:]), logical: binary.LittleEndian.Uint32(record[44:]), codec: record[48]}
+		if e.off != next || e.off > at || uint64(e.stored) > at-e.off || e.logical < 1 || e.logical > c13MaxBlock {
+			return pack, errC13Pack
+		}
+		next += uint64(e.stored) + packRecordHeaderSize
+		header := body[e.off-packRecordHeaderSize : e.off]
+		if e.sha != [32]byte(header[:32]) || binary.LittleEndian.Uint32(header[32:]) != e.stored ||
+			binary.LittleEndian.Uint32(header[36:]) != e.logical || header[40] != e.codec {
+			return pack, errC13Pack
+		}
+		if record[49] == c13AuxRecord && e.codec <= packCodecDeflate {
+			pack.groups[e.off] = e
+		} else if record[49] == 0 {
+			pack.own[e.sha] = e
+		} else {
+			return pack, errC13Pack
+		}
+	}
+	if next != at+packRecordHeaderSize {
+		return pack, errC13Pack
+	}
+	return pack, nil
+}
+
+func (p c13ShadowPack) decode(e packEntry, buf []byte) ([]byte, error) {
+	if e.codec > packCodecDeflate {
+		return nil, errC13Pack
+	}
+	stored := p.body[e.off : e.off+uint64(e.stored)]
+	return decodePackPayload(e.codec, stored, e.logical, e.sha, buf)
+}
+
+func (p c13ShadowPack) extent(e packEntry) (packEntry, uint32, error) {
+	if e.codec != c13SliceCodec {
+		return e, 0, nil
+	}
+	if e.stored != c13SliceBytes {
+		return packEntry{}, 0, errC13Pack
+	}
+	ref := p.body[e.off : e.off+c13SliceBytes]
+	frame, ok := p.groups[binary.LittleEndian.Uint64(ref)]
+	start := binary.LittleEndian.Uint32(ref[8:])
+	if !ok || start > frame.logical || e.logical > frame.logical-start {
+		return packEntry{}, 0, errC13Pack
+	}
+	return frame, start, nil
+}
+
+func (p c13ShadowPack) verifySweep(objects []c13PackedObject, grouped bool) (frames, fetched int, err error) {
+	type member struct {
+		object c13PackedObject
+		start  uint32
+	}
+	type frame struct {
+		e       packEntry
+		members []member
+	}
+	var requests []frame
+	byOffset := make(map[uint64]int)
+	for _, object := range objects {
+		e, ok := p.own[object.sum]
+		if !ok || int(e.logical) != len(object.raw) {
+			return 0, 0, errC13Pack
+		}
+		group, start, err := p.extent(e)
+		if err != nil {
+			return 0, 0, err
+		}
+		if i, ok := byOffset[group.off]; grouped && ok {
+			requests[i].members = append(requests[i].members, member{object, start})
+		} else {
+			byOffset[group.off] = len(requests)
+			requests = append(requests, frame{group, []member{{object, start}}})
+		}
+	}
+	buf := make([]byte, c13MaxBlock)
+	for _, req := range requests {
+		decoded, err := p.decode(req.e, buf)
+		if err != nil {
+			return 0, 0, err
+		}
+		frames++
+		fetched += int(req.e.stored)
+		for _, member := range req.members {
+			lo := int(member.start)
+			got := decoded[lo : lo+len(member.object.raw)]
+			if !bytes.Equal(got, member.object.raw) || sha256.Sum256(got) != member.object.sum {
+				return 0, 0, errC13Pack
+			}
+		}
+	}
+	return frames, fetched, nil
+}
+
+func TestC13ShadowPack(t *testing.T) {
+	input, output := os.Getenv("C13_INPUT"), os.Getenv("C13_SHADOW")
+	if input == "" {
+		t.Skip("requires a frozen C13 private fixture")
+	}
+	limit, err := strconv.Atoi(os.Getenv("C13_CAP"))
+	if err != nil || limit != 0 && limit != 8192 && limit != 32768 {
+		t.Fatal("invalid cohort bound")
+	}
+	keys := make(map[string][]byte)
+	err = filepath.WalkDir(input, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		key, err := filepath.Rel(input, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		keys[filepath.ToSlash(key)] = data
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var objects, batch []c13PackedObject
+	seen := make(map[[32]byte]bool)
+	cohort, size, groups := "", 0, 0
+	builder := &c13PackBuilder{body: make([]byte, packHeaderSize)}
+	copy(builder.body, "C13PACK1")
+	comp := newPackCompressor()
+	start := time.Now()
+	for _, key := range slices.Sorted(maps.Keys(keys)) {
+		data := keys[key]
+		sum := sha256.Sum256(data)
+		object := c13PackedObject{sum, data}
+		objects = append(objects, object)
+		if seen[sum] {
+			continue
+		}
+		seen[sum] = true
+		next, _, _ := strings.Cut(key, "/")
+		if len(batch) > 0 && (next != cohort || size+len(data) > max(1, limit)) {
+			if c13EmitGroup(builder, batch, limit, comp) {
+				groups++
+			}
+			batch, size = nil, 0
+		}
+		batch = append(batch, object)
+		size += len(data)
+		cohort = next
+	}
+	if len(batch) > 0 && c13EmitGroup(builder, batch, limit, comp) {
+		groups++
+	}
+	wire := builder.finish()
+	buildSec := time.Since(start).Seconds()
+	f, err := os.Create(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(wire); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wire, err = os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack, err := c13OpenShadow(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := slices.Clone(wire)
+	corrupt[packHeaderSize+packRecordHeaderSize] ^= 1
+	if _, err := c13OpenShadow(corrupt); err == nil {
+		t.Fatal("corrupted shadow pack opened")
+	}
+	for _, grouped := range []bool{false, true} {
+		start = time.Now()
+		var frames, fetched int
+		for range 7 {
+			n, m, err := pack.verifySweep(objects, grouped)
+			if err != nil {
+				t.Fatal(err)
+			}
+			frames, fetched = n, m
+		}
+		report, _ := json.Marshal(map[string]any{"group_cap": limit, "native_widths": true,
+			"objects": len(objects), "unique": len(seen), "groups": groups, "file_size": len(wire),
+			"build_seconds": buildSec, "sweep_seconds": time.Since(start).Seconds() / 7,
+			"frames_per_sweep": frames, "fetched_bytes_per_sweep": fetched, "coalesced": grouped})
+		fmt.Printf("C13SHADOW %s\n", report)
+	}
+}

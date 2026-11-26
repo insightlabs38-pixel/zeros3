@@ -1,0 +1,197 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+type c13StoreObject struct {
+	data []byte
+	sum  [32]byte
+}
+
+type c13StoreOption struct {
+	records []authRecord
+	parts   [][]byte
+	oldCost int64
+	newCost int64
+}
+
+func c13PriceStored(data []byte, comp *packCompressor) int64 {
+	payload, _ := comp.encode(data)
+	return int64(len(payload)) + packRecordBytes
+}
+
+func c13AddRecord(opt *c13StoreOption, rec authRecord) error {
+	payload, err := rec.marshal()
+	if err != nil {
+		return err
+	}
+	opt.records = append(opt.records, rec)
+	opt.newCost += agEntryCost(int64(len(payload)))
+	return nil
+}
+
+func c13PlanBlock(items []c13StoreObject, comp *packCompressor) (c13StoreOption, error) {
+	var opt c13StoreOption
+	var data []byte
+	for _, item := range items {
+		data = append(data, item.data...)
+		opt.oldCost += c13PriceStored(item.data, comp)
+	}
+	base := sha256.Sum256(data)
+	n := int64(len(data))
+	opt.parts = append(opt.parts, data)
+	opt.newCost += c13PriceStored(data, comp)
+	if err := c13AddRecord(&opt, authRecord{SHA: base, Size: n, Gen: 1, Form: authFormPin, Pieces: []authPiece{{base, n}}}); err != nil {
+		return opt, err
+	}
+	src := []xdSrc{{sha: base, data: data}}
+	var offset int64
+	for _, item := range items {
+		length := int64(len(item.data))
+		ops := []xdOp{{base: 0, off: offset, n: length}}
+		p, refs, err := xdEncodeOpsSum(src, ops, item.data, item.sum, 64<<10)
+		if err != nil {
+			return opt, err
+		}
+		opt.newCost += c13PriceStored(p, comp)
+		opt.parts = append(opt.parts, p)
+		rec := authRecord{SHA: item.sum, Size: length, Gen: 1, Form: authFormDelta, Depth: 1,
+			Bases: refs, Pieces: []authPiece{{sha256.Sum256(p), int64(len(p))}}}
+		if err := c13AddRecord(&opt, rec); err != nil {
+			return opt, err
+		}
+		offset += length
+	}
+	return opt, nil
+}
+
+func c13PublishGroup(store *Store, opt c13StoreOption) error {
+	batch := store.newCASBatch()
+	defer batch.Abort()
+	for _, part := range opt.parts {
+		if _, err := batch.Add(part); err != nil {
+			return err
+		}
+	}
+	if err := batch.Flush(); err != nil {
+		return err
+	}
+	for i := range opt.records {
+		rec := &opt.records[i]
+		if _, _, err := store.authProve(rec, 0); err != nil {
+			return err
+		}
+		if err := store.authPublish(rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestC13NativeStoreGroups(t *testing.T) {
+	root, corpus := os.Getenv("C13_STORE"), os.Getenv("C13_INPUT")
+	if root == "" {
+		t.Skip("requires a private C13 store clone")
+	}
+	target, err := strconv.Atoi(os.Getenv("C13_CAP"))
+	if err != nil || target < 8192 || target > 32768 {
+		t.Fatal("expected an 8–32 KiB block limit")
+	}
+	price := os.Getenv("C13_GATE") == "1"
+	store, err := OpenStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	previous := agWanted
+	agWanted = true
+	defer func() { agWanted = previous }()
+	var group []c13StoreObject
+	var words, groups, selected, objects int
+	var oldPrice, newPrice, staged int64
+	comp := newPackCompressor()
+	flush := func() error {
+		defer func() { group, words = nil, 0 }()
+		if len(group) < 2 {
+			return nil
+		}
+		opt, err := c13PlanBlock(group, comp)
+		if err != nil {
+			return err
+		}
+		groups++
+		oldPrice += opt.oldCost
+		newPrice += opt.newCost
+		if price && opt.newCost >= opt.oldCost {
+			return nil
+		}
+		if err := c13PublishGroup(store, opt); err != nil {
+			return err
+		}
+		selected++
+		objects += len(group)
+		for _, part := range opt.parts {
+			staged += int64(len(part))
+		}
+		return nil
+	}
+	t0 := time.Now()
+	seen := make(map[[32]byte]bool)
+	cohort := ""
+	err = filepath.WalkDir(corpus, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(corpus, path)
+		if err != nil {
+			return err
+		}
+		key := filepath.ToSlash(rel)
+		next, _, found := strings.Cut(key, "/")
+		if !found {
+			return fmt.Errorf("invalid fixture key %q", key)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		_, man, err := store.HeadObject("frontier", key)
+		if err != nil || man.ObjectSHA256 != fmt.Sprintf("%x", sum) {
+			return fmt.Errorf("fixture %q differs from store: %v", key, err)
+		}
+		if seen[sum] {
+			return nil
+		}
+		seen[sum] = true
+		if next != cohort || words+len(data) > target {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+		cohort = next
+		words += len(data)
+		group = append(group, c13StoreObject{data: data, sum: sum})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := flush(); err != nil {
+		t.Fatal(err)
+	}
+	stats, _ := json.Marshal(map[string]any{"groups": groups, "selected_groups": selected, "objects": objects,
+		"estimated_old_pack_bytes": oldPrice, "estimated_group_and_records_bytes": newPrice,
+		"staged_logical_bytes": staged, "seconds": time.Since(t0).Seconds()})
+	fmt.Printf("C13GROUP %s\n", stats)
+}

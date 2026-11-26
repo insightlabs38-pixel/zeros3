@@ -1,0 +1,342 @@
+package main
+
+import (
+	"bytes"
+	"compress/zlib"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"math"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+const c13MaxBlock = 32 << 10
+
+type c13BenchIndex struct {
+	Scope   string                       `json:"scope"`
+	Objects map[string][]json.RawMessage `json:"objects"`
+	Blocks  map[string][]json.RawMessage `json:"blocks"`
+	Dicts   map[string][]json.RawMessage `json:"dicts"`
+}
+
+type c13BenchObject struct {
+	frame       string
+	start, size int
+	sum         [32]byte
+}
+
+type c13BenchBlock struct {
+	file          *os.File
+	offset        int64
+	stored, plain int
+	codec         string
+	dict          []byte
+	digest        [32]byte
+}
+
+type c13BenchArchive struct {
+	files   map[string]*os.File
+	objects map[string]c13BenchObject
+	blocks  map[string]c13BenchBlock
+	buffers sync.Pool
+	cache   *chunkCache
+}
+
+type c13DecodeBuffer struct {
+	in, out [c13MaxBlock]byte
+}
+
+func c13DecodeRow(row []json.RawMessage, fields ...any) error {
+	if len(row) != len(fields) {
+		return errors.New("invalid cohort row")
+	}
+	for i, f := range fields {
+		if err := json.Unmarshal(row[i], f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func c13OpenBench(root, scope string) (_ *c13BenchArchive, err error) {
+	raw, err := os.ReadFile(filepath.Join(root, "INDEX"))
+	if err != nil {
+		return nil, err
+	}
+	const magic = "C13INDEX1"
+	if len(raw) < len(magic)+32 || !bytes.HasPrefix(raw, []byte(magic)) {
+		return nil, errors.New("invalid cohort index")
+	}
+	zr, err := zlib.NewReader(bytes.NewReader(raw[len(magic)+32:]))
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(zr, (8<<20)+1))
+	closeErr := zr.Close()
+	if err != nil || closeErr != nil || len(data) > 8<<20 || sha256.Sum256(data) != [32]byte(raw[len(magic):len(magic)+32]) {
+		return nil, errors.New("invalid cohort index digest")
+	}
+	var index c13BenchIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, err
+	}
+	if index.Scope != scope {
+		return nil, errors.New("invalid cohort scope")
+	}
+	a := &c13BenchArchive{files: make(map[string]*os.File),
+		objects: make(map[string]c13BenchObject, len(index.Objects)),
+		blocks:  make(map[string]c13BenchBlock, len(index.Blocks))}
+	a.buffers.New = func() any { return &c13DecodeBuffer{} }
+	defer func() {
+		if err != nil {
+			a.close()
+		}
+	}()
+	open := func(name string) (*os.File, error) {
+		if f := a.files[name]; f != nil {
+			return f, nil
+		}
+		if filepath.Base(name) != name || !strings.HasPrefix(name, "pack-") {
+			return nil, errors.New("invalid cohort pack name")
+		}
+		f, err := os.Open(filepath.Join(root, name))
+		if err == nil {
+			a.files[name] = f
+		}
+		return f, err
+	}
+	dicts := make(map[string][]byte, len(index.Dicts))
+	for key, row := range index.Dicts {
+		var cohort, pack, expected string
+		var at int64
+		var size, refs int
+		if err := c13DecodeRow(row, &cohort, &pack, &at, &size, &expected, &refs); err != nil {
+			return nil, err
+		}
+		if size < 1 || size > 8192 || refs < 1 || at < 0 {
+			return nil, errors.New("invalid cohort dictionary extent")
+		}
+		f, err := open(pack)
+		if err != nil {
+			return nil, err
+		}
+		b := make([]byte, size)
+		if _, err := f.ReadAt(b, at); err != nil {
+			return nil, err
+		}
+		id := sha256.Sum256(append([]byte(scope+"\x00"+cohort+"\x00"), b...))
+		if fmt.Sprintf("%x", id) != key || fmt.Sprintf("%x", sha256.Sum256(b)) != expected {
+			return nil, errors.New("invalid cohort dictionary digest")
+		}
+		dicts[key] = b
+	}
+	for key, row := range index.Blocks {
+		var b c13BenchBlock
+		var pack, dict string
+		if err := c13DecodeRow(row, &pack, &b.offset, &b.stored, &b.plain, &b.codec, &dict); err != nil {
+			return nil, err
+		}
+		if b.offset < 0 || b.plain < 1 || b.plain > c13MaxBlock || b.stored < 1 || b.stored > b.plain ||
+			b.codec == "raw" && b.stored != b.plain {
+			return nil, errors.New("invalid cohort block extent")
+		}
+		f, err := open(pack)
+		if err != nil {
+			return nil, err
+		}
+		b.file, b.dict = f, dicts[dict]
+		if dict != "" && b.dict == nil {
+			return nil, errors.New("missing cohort dictionary")
+		}
+		a.blocks[key] = b
+	}
+	for key, row := range index.Objects {
+		var o c13BenchObject
+		var sum string
+		if err := c13DecodeRow(row, &o.frame, &o.start, &o.size, &sum); err != nil {
+			return nil, err
+		}
+		d, err := decodeHexSHA256(sum)
+		if err != nil || o.start < 0 || o.size < 1 || o.size > 4096 || o.start > a.blocks[o.frame].plain-o.size {
+			return nil, errors.New("invalid cohort object extent")
+		}
+		o.sum = d
+		a.objects[key] = o
+	}
+	return a, nil
+}
+
+func (a *c13BenchArchive) close() {
+	for _, f := range a.files {
+		f.Close()
+	}
+}
+
+type c13ReadCost struct {
+	read, decoded int
+	hit           bool
+}
+
+func (a *c13BenchArchive) read(key string) ([]byte, c13ReadCost, error) {
+	o := a.objects[key]
+	b := a.blocks[o.frame]
+	if a.cache != nil {
+		if got, ok := a.cache.get(&b.digest); ok {
+			return got[o.start : o.start+o.size], c13ReadCost{hit: true}, nil
+		}
+	}
+	cost := c13ReadCost{read: b.stored, decoded: b.plain}
+	buf := a.buffers.Get().(*c13DecodeBuffer)
+	defer a.buffers.Put(buf)
+	coded := buf.in[:b.stored]
+	if _, err := b.file.ReadAt(coded, b.offset); err != nil {
+		return nil, cost, err
+	}
+	raw := coded
+	switch b.codec {
+	case "raw":
+	case "deflate", "prefix":
+		src := bytes.NewReader(coded)
+		fr := getInflaterDict(src, b.dict)
+		defer putInflater(fr)
+		raw = buf.out[:b.plain]
+		if _, err := io.ReadFull(fr, raw); err != nil {
+			return nil, cost, err
+		}
+		var probe [1]byte
+		if n, err := fr.Read(probe[:]); n != 0 || err != io.EOF || src.Len() != 0 {
+			return nil, cost, errors.New("invalid cohort compressed extent")
+		}
+	default:
+		return nil, cost, errors.New("unsupported native cohort codec")
+	}
+	data := raw[o.start : o.start+o.size]
+	if sha256.Sum256(data) != o.sum {
+		return nil, cost, errors.New("invalid cohort object digest")
+	}
+	if a.cache != nil {
+		if sha256.Sum256(raw) != b.digest {
+			return nil, cost, errors.New("invalid cohort frame digest")
+		}
+		a.cache.offer(&b.digest, raw, a.cache.epoch.Load())
+	}
+	return slices.Clone(data), cost, nil
+}
+
+// Seed the independent expected frame hashes from frozen component bytes.
+// Actual frame reads still verify their bytes before cache admission.
+func (a *c13BenchArchive) enableCache(budget int64, want map[string][]byte) {
+	frames := make(map[string][]byte, len(a.blocks))
+	for id, block := range a.blocks {
+		frames[id] = make([]byte, block.plain)
+	}
+	for key, o := range a.objects {
+		copy(frames[o.frame][o.start:], want[key])
+	}
+	for id, block := range a.blocks {
+		block.digest = sha256.Sum256(frames[id])
+		a.blocks[id] = block
+	}
+	a.cache = newChunkCache(budget)
+}
+
+func TestC13NativeCohortReads(t *testing.T) {
+	root, scope, corpus := os.Getenv("C13_PACK"), os.Getenv("C13_SCOPE"), os.Getenv("C13_CORPUS")
+	if root == "" {
+		t.Skip("requires a C13 lab pack")
+	}
+	budget, _ := strconv.ParseInt(os.Getenv("C13_CACHE"), 10, 64)
+	for _, width := range []int{1, 8} {
+		t0 := time.Now()
+		a, err := c13OpenBench(root, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		openTime := time.Since(t0)
+		defer a.close()
+		keys := slices.Sorted(maps.Keys(a.objects))
+		want := make(map[string][]byte, len(keys))
+		var eligible []string
+		for _, key := range keys {
+			if strings.Contains(key, "/eval/") {
+				eligible = append(eligible, key)
+			}
+			data, err := os.ReadFile(filepath.Join(corpus, scope, filepath.FromSlash(key)))
+			if err != nil || sha256.Sum256(data) != a.objects[key].sum {
+				t.Fatalf("fixture %s: %v", key, err)
+			}
+			want[key] = data
+		}
+		if budget > 0 {
+			a.enableCache(budget, want)
+		}
+		rng := rand.New(rand.NewPCG(613, 2026))
+		requests := make([]string, 4096)
+		for i := range requests {
+			requests[i] = eligible[rng.IntN(len(eligible))]
+		}
+		for _, phase := range []string{"first-pass", "same-request-repeat"} {
+			var before, after syscall.Rusage
+			var initial, final runtime.MemStats
+			syscall.Getrusage(syscall.RUSAGE_SELF, &before)
+			runtime.ReadMemStats(&initial)
+			started := time.Now()
+			lat := make([]time.Duration, len(requests))
+			counts := make([]c13ReadCost, len(requests))
+			var workers sync.WaitGroup
+			for w := range width {
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					for i := w; i < len(requests); i += width {
+						key := requests[i]
+						start := time.Now()
+						got, cost, err := a.read(key)
+						lat[i] = time.Since(start)
+						counts[i] = cost
+						if err != nil || !bytes.Equal(got, want[key]) {
+							t.Errorf("inexact read %q: %v", key, err)
+						}
+					}
+				}()
+			}
+			workers.Wait()
+			elapsed := time.Since(started)
+			runtime.ReadMemStats(&final)
+			syscall.Getrusage(syscall.RUSAGE_SELF, &after)
+			slices.Sort(lat)
+			var fetched, decoded, hits int
+			for _, count := range counts {
+				fetched += count.read
+				decoded += count.decoded
+				if count.hit {
+					hits++
+				}
+			}
+			stats := map[string]any{"scope": scope, "width": width, "phase": phase, "requests": len(requests),
+				"elapsed_seconds": elapsed.Seconds(), "open_seconds": openTime.Seconds(), "bytes_read": fetched,
+				"decoded_bytes": decoded, "heap_allocated": final.TotalAlloc - initial.TotalAlloc,
+				"allocations":  final.Mallocs - initial.Mallocs,
+				"cache_budget": budget, "cache_hits": hits,
+				"cpu_seconds": float64(after.Utime.Nano()+after.Stime.Nano()-before.Utime.Nano()-before.Stime.Nano()) / 1e9}
+			for _, p := range []int{50, 95, 99} {
+				stats[fmt.Sprintf("p%d_ns", p)] = lat[int(math.Ceil(float64(len(lat)*p)/100))-1].Nanoseconds()
+			}
+			result, _ := json.Marshal(stats)
+			fmt.Printf("C13READ %s\n", result)
+		}
+	}
+}
