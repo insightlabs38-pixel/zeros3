@@ -27,6 +27,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/md5"
+	cryptorand "crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha3"
@@ -11965,6 +11966,7 @@ type multipartUpload struct {
 type Store struct {
 	locatorFromGeneration atomic.Bool // a destructive pass first reloads authoritative pack indexes
 	writeBinaryManifests  bool
+	writeMetadataPages    bool
 
 	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
 	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
@@ -13775,6 +13777,539 @@ type nsTableWriter struct {
 	dir      nsDirectory
 }
 
+const (
+	metaPageMagic     = "ZMP1"
+	metaPageTarget    = 4 << 10
+	metaPageLimit     = 16 * metaPageTarget
+	metaPageHeader    = 8
+	metaPageKeyMax    = 4 << 10
+	metaPageKeyBudget = 16 * metaPageLimit
+)
+
+type metadataPageNode struct {
+	first []byte
+	sum   [32]byte
+	rows  uint64
+}
+
+type metadataPageRows struct {
+	first, last, body []byte
+	rowCount          int
+	keyBytes          int
+}
+
+func (p *metadataPageRows) append(key, value []byte) {
+	if p.rowCount == 0 {
+		p.first = bytes.Clone(key)
+	}
+	shared := 0
+	for shared < min(len(p.last), len(key)) && p.last[shared] == key[shared] {
+		shared++
+	}
+	p.body = binary.AppendUvarint(p.body, uint64(shared))
+	p.body = binary.AppendUvarint(p.body, uint64(len(key)-shared))
+	p.body = binary.AppendUvarint(p.body, uint64(len(value)))
+	p.body = append(p.body, key[shared:]...)
+	p.body = append(p.body, value...)
+	p.last = append(p.last[:0], key...)
+	p.rowCount++
+	p.keyBytes += len(key)
+}
+
+func (p *metadataPageRows) encode(level uint8, dictionary []string) ([]byte, error) {
+	out := make([]byte, metaPageHeader, metaPageHeader+len(p.body)+32)
+	copy(out, metaPageMagic)
+	out[4] = level
+	out = binary.AppendUvarint(out, uint64(p.rowCount))
+	out = binary.AppendUvarint(out, uint64(len(dictionary)))
+	for _, text := range dictionary {
+		out = appendManifestString(out, text)
+	}
+	out = append(out, p.body...)
+	if len(out) > metaPageLimit {
+		return nil, errors.New("metadata page exceeds its hard byte limit")
+	}
+	return out, nil
+}
+
+type metadataTreeBuilder struct {
+	boundary          hash.Hash
+	emit              func([32]byte, []byte) error
+	leaf              metadataPageRows
+	dictionary        *nsDict
+	dictBytes         int
+	previous, scratch []byte
+	leaves            []metadataPageNode
+}
+
+func newMetadataTree(key [32]byte, emit func([32]byte, []byte) error) *metadataTreeBuilder {
+	return &metadataTreeBuilder{boundary: hmac.New(sha256.New, key[:]), emit: emit, dictionary: newNSDict(nil)}
+}
+
+func (b *metadataTreeBuilder) cut(key []byte, bytes int) bool {
+	if bytes < metaPageTarget {
+		return false
+	}
+	b.boundary.Reset()
+	b.boundary.Write(key)
+	var sum [32]byte
+	b.boundary.Sum(sum[:0])
+	return sum[0]&15 == 0
+}
+
+func (b *metadataTreeBuilder) page(rows *metadataPageRows, level uint8, dictionary []string, entries uint64) (metadataPageNode, error) {
+	data, err := rows.encode(level, dictionary)
+	if err != nil {
+		return metadataPageNode{}, err
+	}
+	sum := sha256.Sum256(data)
+	if err := b.emit(sum, data); err != nil {
+		return metadataPageNode{}, err
+	}
+	return metadataPageNode{first: rows.first, sum: sum, rows: entries}, nil
+}
+
+func (b *metadataTreeBuilder) flushLeaf() error {
+	node, err := b.page(&b.leaf, 0, b.dictionary.strs, uint64(b.leaf.rowCount))
+	if err != nil {
+		return err
+	}
+	b.leaves = append(b.leaves, node)
+	b.leaf = metadataPageRows{body: b.leaf.body[:0]}
+	b.dictionary, b.dictBytes = newNSDict(nil), 0
+	return nil
+}
+
+func (b *metadataTreeBuilder) add(key []byte, value *objectEntry) error {
+	if len(key) == 0 || len(key) > metaPageKeyMax || bytes.Compare(key, b.previous) <= 0 || value == nil {
+		return errors.New("metadata pages require strictly ordered named rows")
+	}
+	// Reserve key, dictionary and row overhead before mutating the page's
+	// dictionary. A row outside this family can remain in the flat checkpoint.
+	if b.leaf.rowCount > 0 && (b.leaf.keyBytes+len(key) > metaPageKeyBudget ||
+		len(b.leaf.body)+b.dictBytes+len(key)+len(value.contentType)+len(value.manifestUUID)+len(value.etag)+128 > metaPageLimit) {
+		if err := b.flushLeaf(); err != nil {
+			return err
+		}
+	}
+	previousStrings := len(b.dictionary.strs)
+	b.scratch = b.dictionary.appendObject(b.scratch[:0], value)
+	for _, text := range b.dictionary.strs[previousStrings:] {
+		b.dictBytes += len(text) + binary.MaxVarintLen64
+	}
+	b.leaf.append(key, b.scratch)
+	b.previous = append(b.previous[:0], key...)
+	if b.cut(key, len(b.leaf.body)+b.dictBytes) {
+		return b.flushLeaf()
+	}
+	return nil
+}
+
+func (b *metadataTreeBuilder) finish() (metadataPageNode, error) {
+	if b.leaf.rowCount > 0 || len(b.leaves) == 0 {
+		if err := b.flushLeaf(); err != nil {
+			return metadataPageNode{}, err
+		}
+	}
+	nodes := b.leaves
+	for level := uint8(1); len(nodes) > 1; level++ {
+		var next []metadataPageNode
+		var rows metadataPageRows
+		var count uint64
+		flush := func() error {
+			node, err := b.page(&rows, level, nil, count)
+			if err != nil {
+				return err
+			}
+			next = append(next, node)
+			rows, count = metadataPageRows{body: rows.body[:0]}, 0
+			return nil
+		}
+		for _, child := range nodes {
+			if rows.rowCount > 1 && (rows.keyBytes+len(child.first) > metaPageKeyBudget ||
+				len(rows.body)+len(child.first)+96 > metaPageLimit) {
+				if err := flush(); err != nil {
+					return metadataPageNode{}, err
+				}
+			}
+			var value [sha256.Size + binary.MaxVarintLen64]byte
+			copy(value[:], child.sum[:])
+			n := binary.PutUvarint(value[sha256.Size:], child.rows)
+			rows.append(child.first, value[:sha256.Size+n])
+			count += child.rows
+			if rows.rowCount > 1 && b.cut(child.first, len(rows.body)) {
+				if err := flush(); err != nil {
+					return metadataPageNode{}, err
+				}
+			}
+		}
+		if rows.rowCount != 0 {
+			if err := flush(); err != nil {
+				return metadataPageNode{}, err
+			}
+		}
+		nodes = next
+	}
+	return nodes[0], nil
+}
+
+type metadataPageEntry struct {
+	key    []byte
+	object *objectEntry
+	child  [32]byte
+	count  uint64
+}
+
+func decodeMetadataPage(data []byte) (uint8, []metadataPageEntry, error) {
+	if len(data) < metaPageHeader || len(data) > metaPageLimit || string(data[:4]) != metaPageMagic ||
+		data[4] > 32 || !allZero(data[5:8]) {
+		return 0, nil, errors.New("invalid metadata page header")
+	}
+	level := data[4]
+	r := binaryManifestReader{rest: data[metaPageHeader:]}
+	count := r.count(len(r.rest) / (sha256.Size + 4))
+	strings := r.count(len(r.rest))
+	if level != 0 && (strings != 0 || count == 0) {
+		return 0, nil, errors.New("invalid metadata branch")
+	}
+	g := nsGen{strs: make([]string, strings)}
+	for i := range g.strs {
+		g.strs[i] = r.text()
+	}
+	rows := make([]metadataPageEntry, 0, count)
+	var last []byte
+	keyBytes := 0
+	for i := 0; i < count; i++ {
+		shared := r.count(len(last))
+		suffix := r.count(len(r.rest))
+		size := r.count(len(r.rest))
+		keyBytes += shared + suffix
+		if shared+suffix > metaPageKeyMax || keyBytes > metaPageKeyBudget {
+			return 0, nil, errors.New("metadata page key expansion exceeds its limit")
+		}
+		key := append(bytes.Clone(last[:shared]), r.take(suffix)...)
+		value := r.take(size)
+		if r.err != nil || bytes.Compare(key, last) <= 0 {
+			return 0, nil, errors.New("invalid or unordered metadata row")
+		}
+		item := metadataPageEntry{key: key}
+		if level == 0 {
+			e, err := g.decodeObject(value)
+			if err != nil {
+				return 0, nil, err
+			}
+			item.object = e
+		} else {
+			if len(value) <= sha256.Size {
+				return 0, nil, errors.New("truncated metadata child")
+			}
+			copy(item.child[:], value[:sha256.Size])
+			body := binaryManifestReader{rest: value[sha256.Size:]}
+			item.count = uint64(body.count(math.MaxInt))
+			if body.err != nil || item.count == 0 || len(body.rest) != 0 {
+				return 0, nil, errors.New("invalid metadata child row count")
+			}
+		}
+		rows, last = append(rows, item), key
+	}
+	if r.err != nil || len(r.rest) != 0 {
+		return 0, nil, errors.New("trailing or malformed metadata page bytes")
+	}
+	return level, rows, nil
+}
+
+const (
+	metadataArchiveName   = "namespace-visible-pages.zpg"
+	metadataArchiveMagic  = "ZMPACK01"
+	metadataArchiveFooter = 72
+)
+
+func metadataCheckpointBinding(m nsMeta) (sum [32]byte) {
+	h := sha256.New()
+	io.WriteString(h, m.StoreID)
+	var fields [20]byte
+	binary.LittleEndian.PutUint64(fields[:8], uint64(m.Offset))
+	binary.LittleEndian.PutUint64(fields[8:16], m.Sequence)
+	binary.LittleEndian.PutUint32(fields[16:], m.LastCRC)
+	h.Write(fields[:])
+	for _, block := range m.Blocks {
+		h.Write(block[:])
+	}
+	h.Sum(sum[:0])
+	return
+}
+
+func (s *Store) metadataPageKey() (key [32]byte, err error) {
+	path := filepath.Join(s.root, "journal", "metadata-page-key")
+	read := func() error {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if len(data) != len(key) {
+				return errors.New("invalid metadata page boundary key")
+			}
+			copy(key[:], data)
+		}
+		return err
+	}
+	if err := read(); !os.IsNotExist(err) {
+		return key, err
+	}
+	if _, err := cryptorand.Read(key[:]); err != nil {
+		return key, err
+	}
+	f, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "metadata-key-*.tmp")
+	if err != nil {
+		return key, err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if _, err := f.Write(key[:]); err != nil {
+		return key, err
+	}
+	if err := f.Sync(); err != nil {
+		return key, err
+	}
+	if err := f.Close(); err != nil {
+		return key, err
+	}
+	if err := os.Link(f.Name(), path); err != nil {
+		if os.IsExist(err) {
+			err = read()
+		}
+		return key, err
+	}
+	return key, syncDir(filepath.Dir(path))
+}
+
+func (s *Store) writeMetadataArchive(gen *nsGen) error {
+	key, err := s.metadataPageKey()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(s.root, "journal")
+	f, err := os.CreateTemp(dir, ".metadata-pages-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	w := bufio.NewWriterSize(f, 256<<10)
+	if _, err := io.WriteString(w, metadataArchiveMagic); err != nil {
+		return err
+	}
+	b := newMetadataTree(key, func(_ [32]byte, page []byte) error {
+		var head [4]byte
+		binary.LittleEndian.PutUint32(head[:], uint32(len(page)))
+		if _, err := w.Write(head[:]); err != nil {
+			return err
+		}
+		_, err := w.Write(page)
+		return err
+	})
+	table, _ := gen.tables()
+	for it, n := table.iter(""), 0; ; it.next() {
+		if !it.ok {
+			if it.err != nil {
+				return it.err
+			}
+			break
+		}
+		if n%4096 == 0 && s.ns.abort.Load() {
+			return errStoreClosed
+		}
+		n++
+		entry, err := gen.decodeObject(it.payload)
+		if err != nil {
+			return err
+		}
+		if err := b.add(it.key, entry); err != nil {
+			return err
+		}
+	}
+	root, err := b.finish()
+	if err != nil {
+		return err
+	}
+	var end [metadataArchiveFooter]byte
+	copy(end[:32], root.sum[:])
+	binary.LittleEndian.PutUint64(end[32:40], root.rows)
+	binding := metadataCheckpointBinding(gen.meta)
+	copy(end[40:], binding[:])
+	if _, err := w.Write(end[:]); err != nil {
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), filepath.Join(dir, metadataArchiveName)); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+type metadataArchiveReport struct {
+	Root  string `json:"root_sha256"`
+	Rows  uint64 `json:"rows"`
+	Pages int    `json:"pages"`
+	Bytes int64  `json:"archive_bytes"`
+}
+
+func walkMetadataTree(root [32]byte, read func([32]byte) ([]byte, error), visit func([]byte, *objectEntry) error) (uint64, int, error) {
+	seen := map[[32]byte]bool{}
+	var prior []byte
+	var walk func([32]byte, int, []byte) (uint64, error)
+	walk = func(sum [32]byte, expectedLevel int, first []byte) (uint64, error) {
+		if seen[sum] {
+			return 0, errors.New("metadata page repeated in one tree")
+		}
+		seen[sum] = true
+		data, err := read(sum)
+		if err != nil {
+			return 0, err
+		}
+		if sha256.Sum256(data) != sum {
+			return 0, errors.New("metadata page digest mismatch")
+		}
+		level, rows, err := decodeMetadataPage(data)
+		if err != nil {
+			return 0, err
+		}
+		if expectedLevel >= 0 && int(level) != expectedLevel ||
+			first != nil && (len(rows) == 0 || !bytes.Equal(first, rows[0].key)) {
+			return 0, errors.New("metadata child disagrees with its parent")
+		}
+		var count uint64
+		for _, row := range rows {
+			if level == 0 {
+				if bytes.Compare(row.key, prior) <= 0 {
+					return 0, errors.New("metadata leaves are out of order")
+				}
+				prior = append(prior[:0], row.key...)
+				if err := visit(row.key, row.object); err != nil {
+					return 0, err
+				}
+				count++
+				continue
+			}
+			n, err := walk(row.child, int(level)-1, row.key)
+			if err != nil {
+				return 0, err
+			}
+			if n != row.count || n > math.MaxUint64-count {
+				return 0, errors.New("metadata child row count disagrees with its parent")
+			}
+			count += n
+		}
+		return count, nil
+	}
+	n, err := walk(root, -1, nil)
+	return n, len(seen), err
+}
+
+func verifyMetadataArchive(path string, gen *nsGen) (metadataArchiveReport, error) {
+	var report metadataArchiveReport
+	f, err := os.Open(path)
+	if err != nil {
+		return report, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return report, err
+	}
+	report.Bytes = info.Size()
+	var magic [len(metadataArchiveMagic)]byte
+	if _, err := f.ReadAt(magic[:], 0); err != nil || string(magic[:]) != metadataArchiveMagic ||
+		info.Size() < int64(len(magic)+metadataArchiveFooter) {
+		return report, errors.New("invalid metadata archive header")
+	}
+	limit := info.Size() - metadataArchiveFooter
+	var end [metadataArchiveFooter]byte
+	if _, err := f.ReadAt(end[:], limit); err != nil {
+		return report, err
+	}
+	binding := metadataCheckpointBinding(gen.meta)
+	if !bytes.Equal(end[40:], binding[:]) {
+		return report, errors.New("metadata archive binds another namespace checkpoint")
+	}
+	type location struct {
+		at   int64
+		size int
+	}
+	pages := map[[32]byte]location{}
+	var head [4]byte
+	frame := make([]byte, metaPageLimit)
+	for at := int64(len(magic)); at < limit; {
+		if _, err := f.ReadAt(head[:], at); err != nil {
+			return report, err
+		}
+		at += int64(len(head))
+		size := int(binary.LittleEndian.Uint32(head[:]))
+		if size < metaPageHeader || size > metaPageLimit || int64(size) > limit-at {
+			return report, errors.New("invalid metadata page frame")
+		}
+		if _, err := f.ReadAt(frame[:size], at); err != nil {
+			return report, err
+		}
+		sum := sha256.Sum256(frame[:size])
+		if pages[sum].size != 0 {
+			return report, errors.New("repeated metadata page frame")
+		}
+		pages[sum] = location{at: at, size: size}
+		at += int64(size)
+	}
+	table, _ := gen.tables()
+	it := table.iter("")
+	root := [32]byte(end[:32])
+	report.Root = hex.EncodeToString(root[:])
+	report.Rows, report.Pages, err = walkMetadataTree(root, func(sum [32]byte) ([]byte, error) {
+		p := pages[sum]
+		if p.size == 0 {
+			return nil, errors.New("missing referenced metadata page")
+		}
+		body := make([]byte, p.size)
+		_, err := f.ReadAt(body, p.at)
+		return body, err
+	}, func(key []byte, entry *objectEntry) error {
+		if !it.ok || !bytes.Equal(it.key, key) {
+			return errors.New("metadata page keys disagree with the exact checkpoint")
+		}
+		canonical, err := gen.decodeObject(it.payload)
+		if err != nil || *canonical != *entry {
+			return errors.New("metadata page row differs from the exact checkpoint")
+		}
+		it.next()
+		return nil
+	})
+	if err != nil {
+		return report, err
+	}
+	if it.ok || it.err != nil || report.Rows != binary.LittleEndian.Uint64(end[32:40]) || report.Pages != len(pages) {
+		return report, errors.New("metadata archive has missing or unreferenced rows or pages")
+	}
+	return report, nil
+}
+
+func (s *Store) verifyMetadataPages() (metadataArchiveReport, error) {
+	s.mu.Lock()
+	gen := s.ns.gen
+	if gen != nil {
+		gen.acquire()
+	}
+	s.mu.Unlock()
+	if gen == nil {
+		return metadataArchiveReport{}, errors.New("no live namespace checkpoint to bind metadata pages")
+	}
+	defer gen.release()
+	return verifyMetadataArchive(filepath.Join(s.root, "journal", metadataArchiveName), gen)
+}
+
 func (w *nsTableWriter) add(key, payload []byte) error {
 	if w.nrows == 0 {
 		w.first = append(w.first[:0], key...)
@@ -14504,6 +15039,11 @@ func (s *Store) nsBuild(snap *nsSnapshot) (*nsGen, error) {
 	if err := syncDir(dir); err != nil {
 		gen.f.Close()
 		return nil, err
+	}
+	if s.writeMetadataPages {
+		if err := s.writeMetadataArchive(gen); err != nil {
+			log.Printf("zeros3: metadata page checkpoint: %v", err)
+		}
 	}
 	return gen, nil
 }
@@ -39850,6 +40390,7 @@ func runNamespaceCheckpoint(args []string) {
 	fs := flag.NewFlagSet("namespace-checkpoint", flag.ExitOnError)
 	root := fs.String("store", "./zeros3-data", "path to an existing offline store")
 	compact := fs.Bool("compact-history", false, "deprecated, no effect: the checkpoint is always the paged V4 layout, which stores history compactly")
+	pages := fs.Bool("pages", false, "also build and verify canonical visible metadata pages alongside the V4 checkpoint")
 	fs.Parse(args)
 	if *compact {
 		fmt.Fprintln(os.Stderr, "zeros3: namespace-checkpoint: -compact-history is deprecated and has no effect; the V4 checkpoint always stores history compactly")
@@ -39870,8 +40411,39 @@ func runNamespaceCheckpoint(args []string) {
 	if err := s.Degraded(); err != nil {
 		log.Fatalf("zeros3: namespace-checkpoint: refusing to publish a checkpoint of %v", err)
 	}
+	s.writeMetadataPages = *pages
 	if err := s.nsConsolidate(true); err != nil {
 		log.Fatalf("zeros3: namespace-checkpoint: %v", err)
+	}
+	if *pages {
+		report, err := s.verifyMetadataPages()
+		if err != nil {
+			log.Fatalf("zeros3: namespace-checkpoint: %v", err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
+func runNamespacePages(args []string) {
+	fs := flag.NewFlagSet("namespace-pages", flag.ExitOnError)
+	root := fs.String("store", "./zeros3-data", "path to an existing store")
+	fs.Parse(args)
+	if _, err := os.Stat(filepath.Join(*root, "FORMAT.json")); err != nil {
+		log.Fatalf("zeros3: namespace-pages: %v", err)
+	}
+	s, err := OpenStoreShared(*root)
+	if err != nil {
+		log.Fatalf("zeros3: namespace-pages: %v", err)
+	}
+	defer s.Close()
+	report, err := s.verifyMetadataPages()
+	if err != nil {
+		log.Fatalf("zeros3: namespace-pages: %v", err)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		log.Fatal(err)
 	}
 }
 
@@ -39980,6 +40552,7 @@ func runServe(args []string) {
 	locatorCache := fs.Bool("locator-generation", false, "use a matching sealed-pack locator generation at startup; fall back to pack indexes")
 	locatorTags := fs.Bool("locator-tags", false, "use a compact tag index with full-digest verification of every hit against a matching generation")
 	binaryManifests := fs.Bool("binary-manifests", false, "write binary manifest records with an explicit store feature marker (research)")
+	metadataPages := fs.Bool("metadata-pages", false, "build canonical visible metadata pages when publishing a namespace checkpoint (research)")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -40070,6 +40643,7 @@ func runServe(args []string) {
 	}
 	defer store.Close()
 	store.writeBinaryManifests = *binaryManifests
+	store.writeMetadataPages = *metadataPages
 	if *bgYield != "off" {
 		store.backgroundYield = *bgYield
 	}
@@ -94981,6 +95555,8 @@ func main() {
 		runServe(args)
 	case "namespace-checkpoint":
 		runNamespaceCheckpoint(args)
+	case "namespace-pages":
+		runNamespacePages(args)
 	case "journal":
 		runJournal(args)
 	case "stats":
@@ -95030,7 +95606,7 @@ func main() {
 	case "authority":
 		runAuthority(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, journal, presign, versions, restore, gc, compact, repack, pack-parity, locator-build, scrub, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, namespace-pages, journal, presign, versions, restore, gc, compact, repack, pack-parity, locator-build, scrub, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
 		os.Exit(2)
 	}
 }

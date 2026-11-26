@@ -1,0 +1,15 @@
+=== RUN   TestFB09MetadataPagesMatchCheckpoint
+    zeros3_fb09_pages_test.go:61: exact checkpoint comparison checked 80 then 81 visible rows; rejected damaged and stale sidecars
+--- PASS: TestFB09MetadataPagesMatchCheckpoint (0.16s)
+=== RUN   TestFB09MetadataPageCanonicalOrderAndLimit
+    zeros3_fb09_pages_test.go:120: five insertion orders yielded one root; maximum all-missed-boundary page=65334 bytes (limit=65536)
+--- PASS: TestFB09MetadataPageCanonicalOrderAndLimit (0.14s)
+=== RUN   TestFB09MetadataBranchGolden
+--- PASS: TestFB09MetadataBranchGolden (0.00s)
+=== RUN   TestFB09MetadataLeafGolden
+--- PASS: TestFB09MetadataLeafGolden (0.00s)
+=== RUN   TestFB09MetadataPageScale
+    zeros3_fb09_pages_test.go:194: set ZEROS3_TEST_METADATA_SCALE=1 for generated metadata scaling
+--- SKIP: TestFB09MetadataPageScale (0.00s)
+PASS
+ok  	zeros3	1.326s
