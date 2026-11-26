@@ -1,0 +1,8 @@
+=== RUN   TestXDeltaRoundTripAndRejection
+--- PASS: TestXDeltaRoundTripAndRejection (0.41s)
+=== RUN   TestC14SparseXDInNativeGraph
+--- PASS: TestC14SparseXDInNativeGraph (5.64s)
+=== RUN   TestC14SparseXDDenseAndZeroControls
+--- PASS: TestC14SparseXDDenseAndZeroControls (0.08s)
+PASS
+ok  	zeros3	7.165s

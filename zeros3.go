@@ -124,17 +124,17 @@ import (
 //    34094    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
 //    34729    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
 //    53459    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61717    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65528    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    66087    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66994    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    68149    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    69093    Verified decoded-window cache (B9)
-//    69374    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70664    Windowed and estimated similarity deltas (extracted dcore)
-//    72501    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    80357    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86629    CLI dispatch, HTTP server/startup, and main
+//    61888    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65790    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    66350    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    67257    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    68412    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    69356    Verified decoded-window cache (B9)
+//    69637    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70927    Windowed and estimated similarity deltas (extracted dcore)
+//    72764    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    80620    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86892    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -53650,6 +53650,173 @@ func xdSingleChange(base, target []byte) []xdOp {
 	return ops
 }
 
+const (
+	xdSparsePage         = 4096
+	xdSparseGap          = 32 << 10
+	xdSparseSpan         = 256 << 10
+	xdSparseFeatureLimit = 64
+)
+
+type xdSparseExtent struct {
+	off int
+	end int
+}
+
+// xdSparseExtents removes long zero runs from the rolling-index search. All
+// returned offsets still refer to the original exact object.
+func xdSparseExtents(data []byte) ([]xdSparseExtent, xdSparseExtent) {
+	if len(data) < 1<<20 || len(data) > int(authWindowMin) {
+		return nil, xdSparseExtent{}
+	}
+	var extents []xdSparseExtent
+	var largest xdSparseExtent
+	var start, at int
+	for at < len(data) {
+		end := min(at+xdSparsePage, len(data))
+		if !allZero(data[at:end]) {
+			at = end
+			continue
+		}
+		zero := at
+		for at = end; at < len(data); at = end {
+			end = min(at+xdSparsePage, len(data))
+			if !allZero(data[at:end]) {
+				break
+			}
+		}
+		if at-zero < xdSparseGap {
+			continue
+		}
+		if zero > start {
+			extents = append(extents, xdSparseExtent{start, zero})
+		}
+		if at-zero > largest.end-largest.off {
+			largest = xdSparseExtent{zero, at}
+		}
+		start = at
+	}
+	if start < len(data) {
+		extents = append(extents, xdSparseExtent{start, len(data)})
+	}
+	dense := 0
+	for _, extent := range extents {
+		dense += extent.end - extent.off
+	}
+	if dense > len(data)/4 {
+		return nil, xdSparseExtent{}
+	}
+	return extents, largest
+}
+
+func xdSparseOps(ctx context.Context, base, target []byte) ([]xdOp, error) {
+	from, zero := xdSparseExtents(base)
+	to, _ := xdSparseExtents(target)
+	if len(from) == 0 || len(to) == 0 {
+		return nil, nil
+	}
+	source := make([][]byte, 0, len(from))
+	for _, extent := range from {
+		source = append(source, base[extent.off:extent.end])
+	}
+	params := dwDcoreDefaultParams()
+	params.MinSampleBits = 2
+	matcher, err := dwDcoreBuildIndex(source, params)
+	if err != nil {
+		return nil, err
+	}
+	var result []xdOp
+	push := func(at, n, src int) {
+		if n == 0 {
+			return
+		}
+		op := xdOp{tpos: int64(at), n: int64(n), base: 0, off: int64(src)}
+		if src < 0 {
+			op.base = -1
+			op.lit = target[at : at+n]
+		}
+		if len(result) > 0 {
+			prev := &result[len(result)-1]
+			if prev.base == op.base && prev.tpos+prev.n == op.tpos {
+				if src >= 0 && prev.off+prev.n == op.off && prev.n+op.n <= int64(xdSparseSpan) {
+					prev.n += op.n
+					return
+				}
+				if src < 0 {
+					prev.n += op.n
+					prev.lit = target[prev.tpos : prev.tpos+prev.n]
+					return
+				}
+			}
+		}
+		result = append(result, op)
+	}
+	emitHole := func(at, end int) {
+		for at < end {
+			n := min(end-at, zero.end-zero.off, xdSparseSpan)
+			if n <= 0 {
+				push(at, end-at, -1)
+				return
+			}
+			// Use the same location when the hole is present in both.
+			src := zero.off
+			if at >= zero.off && at+n <= zero.end {
+				src = at
+			}
+			push(at, n, src)
+			at += n
+		}
+	}
+	at := 0
+	for _, extent := range to {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		emitHole(at, extent.off)
+		data := target[extent.off:extent.end]
+		for _, op := range matcher.Match(data) {
+			src := -1
+			if op.Base >= 0 {
+				src = from[op.Base].off + int(op.Off)
+			}
+			push(extent.off+int(op.TPos), int(op.N), src)
+		}
+		at = extent.end
+	}
+	emitHole(at, len(target))
+	return result, nil
+}
+
+func xdSparseBlob(ctx context.Context, base xdSrc, target []byte, sum [32]byte) ([]byte, error) {
+	ops, err := xdSparseOps(ctx, base.data, target)
+	if err != nil || len(ops) == 0 {
+		return nil, err
+	}
+	blob, refs, err := xdEncodeOpsSum([]xdSrc{base}, ops, target, sum, xdSparseSpan)
+	if len(refs) != 1 {
+		return nil, err
+	}
+	return blob, err
+}
+
+// xdSparseFeatures nominates bases from distinct nonzero pages. Fingerprints
+// rank work only; the encoder verifies all COPY operations against bytes.
+func xdSparseFeatures(data []byte) []uint64 {
+	extents, _ := xdSparseExtents(data)
+	var features []uint64
+	for _, extent := range extents {
+		for at := extent.off; at+xdSparsePage <= extent.end; at += xdSparsePage {
+			page := data[at : at+xdSparsePage]
+			if !allZero(page) {
+				sum := sha256.Sum256(page)
+				features = append(features, binary.LittleEndian.Uint64(sum[:]))
+			}
+		}
+	}
+	slices.Sort(features)
+	features = slices.Compact(features)
+	return slices.Clone(features[:min(len(features), xdSparseFeatureLimit)])
+}
+
 // xdEncodeOps serializes a COPY/ADD program already matched against bases.
 func xdEncodeOps(bases []xdSrc, ops []xdOp, target []byte, frameSpan int64) ([]byte, []xdBaseRef, error) {
 	return xdEncodeOpsSum(bases, ops, target, sha256.Sum256(target), frameSpan)
@@ -61379,6 +61546,7 @@ func runAuthority(args []string) {
 	indexedDiscovery := fs.Bool("indexed-discovery", false, "migrate or optimize: also consider verified same-bucket bases proposed by the persistent index")
 	fastReencode := fs.Bool("fast-reencode", false, "optimize apply: try an exact prefix/suffix XD program before rebuilding a single base index (research)")
 	retainDeltaPlans := fs.Bool("retain-delta-plans", false, "optimize apply: retain small native delta envelopes in a bounded plan cache (research)")
+	sparseFiles := fs.Bool("sparse-files", false, "optimize: also price sparse 1–32 MiB file deltas using same-bucket nonzero pages")
 	windowKiB := fs.Int64("window-kib", 0, "migrate: ZW1 frame size in KiB (64–1024, 0 uses the default)")
 	segmentKiB := fs.Int64("segment-kib", 0, "migrate: restartable program segment in KiB (16–1024, 0 uses the default 128, -1 writes unsegmented ZW1)")
 	priceCurrent := fs.Bool("price-current-storage", false, "migrate: price existing pack sizes and raw new components instead of assuming recompression")
@@ -61402,6 +61570,9 @@ func runAuthority(args []string) {
 	maxTargets := fs.Int("max-targets", 0, "optimize: analyze at most this many original contents, newest first (0 = unlimited)")
 	reuseAnalysis := fs.Bool("reuse-analysis", false, "optimize: skip a repeated no-change apply while local store metadata and policy are unchanged")
 	fs.Parse(args[1:])
+	if *sparseFiles && sub != "optimize" {
+		log.Fatal("zeros3: authority -sparse-files requires optimize")
+	}
 	if *finalize && (sub != "optimize" || !*apply || !*archive && *profile != "archive" || *priceCurrent) {
 		log.Fatal("zeros3: authority -finalize requires archive optimize -apply with recompression pricing")
 	}
@@ -61582,7 +61753,7 @@ func runAuthority(args []string) {
 			AllowRep: !*noRep, AllowDelta: !*noDelta, HardCodecs: *hard, Workers: *workers, Apply: *apply, SegmentKiB: *segmentKiB, ReserveFreeBytes: *reserveMiB << 20,
 			PriceCurrentStorage: *priceCurrent, CodecReplay: *codecReplay}, Profile: *profile, ReadWeight: *readWeight, ReadBudget: *readBudget, Algorithm: *algorithm,
 			Discovery: *discovery, AnchorBytes: *anchorBytes, Canonical: *canonical || *execs, Executables: *execs, Splice: *splice, MaxTargets: *maxTargets,
-			FastReencode: *fastReencode, RetainDeltaPlans: *retainDeltaPlans}
+			FastReencode: *fastReencode, RetainDeltaPlans: *retainDeltaPlans, SparseFiles: *sparseFiles}
 		var hintSeconds float64
 		if *indexedDiscovery && pol.AllowDelta {
 			start := time.Now()
@@ -61754,6 +61925,7 @@ type OptimizePolicy struct {
 	AnchorBytes       int                                 `json:"anchor_bytes"`      // windowed bases: bytes per COPY anchor (B7 default 8; 1024 = B6)
 	FastReencode      bool                                `json:"fast_reencode,omitempty"`
 	RetainDeltaPlans  bool                                `json:"retain_delta_plans,omitempty"`
+	SparseFiles       bool                                `json:"sparse_files,omitempty"`
 	Region            rsParams                            `json:"-"`
 	discover          func(g *rgGraph, v int32) rgCandSet // research hook: replaces discovery (oracles)
 	recordBlock       int64                               // research: price record files in this allocation unit
@@ -61868,6 +62040,7 @@ type rgOpt struct {
 	depth      int   // recorded depth of a kept delta (dependents' bases must stay below it)
 	loc        int   // locality slack of the encoder
 	win        bool  // windowed codec
+	sparse     bool  // XD chosen from the sparse extent matcher
 	union      bool  // multi-base program matched over the union of its bases (B7), else refined base by base
 	sum        [32]byte
 	rep        *authRepCand
@@ -63314,6 +63487,16 @@ func (g *rgGraph) generate(ctx context.Context) error {
 	}
 	var feats [][]rsFeat
 	var lvls []uint8
+	type sparseKey struct {
+		bucket string
+		page   uint64
+	}
+	var sparsePages [][]uint64
+	var sparseIndex map[sparseKey][]int32
+	if pol.SparseFiles && pol.AllowDelta {
+		sparsePages = make([][]uint64, len(g.nodes))
+		sparseIndex = make(map[sparseKey][]int32)
+	}
 	if region {
 		feats, lvls = make([][]rsFeat, len(g.nodes)), make([]uint8, len(g.nodes))
 	}
@@ -63330,6 +63513,15 @@ func (g *rgGraph) generate(ctx context.Context) error {
 				continue
 			}
 			data = b
+			if sparseIndex != nil && nd.live {
+				sparsePages[v] = xdSparseFeatures(b)
+				for _, page := range sparsePages[v] {
+					key := sparseKey{nd.obj.bucket, page}
+					if len(sparseIndex[key]) < 32 {
+						sparseIndex[key] = append(sparseIndex[key], v)
+					}
+				}
+			}
 			nd.sk = authFeatures(b, 16)
 			if region {
 				feats[v], lvls[v] = pol.Region.features(b)
@@ -63385,7 +63577,32 @@ func (g *rgGraph) generate(ctx context.Context) error {
 				return err
 			}
 			nd := g.nodes[v]
-			if nd.sk == nil || pol.Order == "newest" && nd.newest {
+			if pol.Order == "newest" && nd.newest {
+				continue
+			}
+			if sparseIndex != nil && len(sparsePages[v]) >= 2 {
+				votes := make(map[int32]int)
+				for _, page := range sparsePages[v] {
+					for _, u := range sparseIndex[sparseKey{nd.obj.bucket, page}] {
+						if u != v {
+							votes[u]++
+						}
+					}
+				}
+				bases := make([]int32, 0, len(votes))
+				for u, count := range votes {
+					if count >= 2 {
+						bases = append(bases, u)
+					}
+				}
+				slices.SortFunc(bases, func(a, b int32) int {
+					return cmp.Or(cmp.Compare(votes[b], votes[a]), cmp.Compare(a, b))
+				})
+				if err := g.sparseOpts(ctx, m, nd, bases[:min(len(bases), 2)], comp); err != nil {
+					return err
+				}
+			}
+			if nd.sk == nil {
 				continue
 			}
 			var cs rgCandSet
@@ -63441,6 +63658,41 @@ func (g *rgGraph) generate(ctx context.Context) error {
 		if err := g.repOpts(ctx, m, eligible); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (g *rgGraph) sparseOpts(ctx context.Context, m *authMigrator, nd *rgNode, bases []int32, comp *packCompressor) error {
+	if len(bases) == 0 {
+		return nil
+	}
+	target, err := m.source(nd.obj.man)
+	if err != nil {
+		return nil
+	}
+	for _, base := range bases {
+		un := g.nodes[base]
+		data, err := m.source(un.obj.man)
+		if err != nil {
+			continue
+		}
+		start := time.Now()
+		blob, err := xdSparseBlob(ctx, xdSrc{un.sha, data}, target, nd.sha)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		g.disc.SparseCandidates++
+		g.encNS += time.Since(start).Nanoseconds()
+		if err != nil || len(blob) == 0 {
+			continue
+		}
+		g.encs++
+		o, err := g.deltaOpt(nd, blob, authPieceEnds(blob), []int32{base}, 0, false, comp)
+		if err != nil {
+			continue
+		}
+		o.sparse, o.label = true, "delta-sparse"
+		nd.opts = append(nd.opts, o)
 	}
 	return nil
 }
@@ -65460,6 +65712,16 @@ func (g *rgGraph) encodeFor(ctx context.Context, nd *rgNode, o *rgOpt, rep *Opti
 		srcs = append(srcs, xdSrc{g.nodes[b].sha, bb})
 		xs = append(xs, bb)
 	}
+	if o.sparse {
+		blob, err := xdSparseBlob(ctx, srcs[0], target, nd.sha)
+		if err != nil {
+			return nil, err
+		}
+		if len(blob) == 0 || sha256.Sum256(blob) != o.sum {
+			return nil, errors.New("sparse re-encoding differs from the plan")
+		}
+		return g.writeBlob(ctx, blob, authPieceEnds(blob))
+	}
 	if g.pol.FastReencode && len(srcs) == 1 {
 		if ops := xdSingleChange(xs[0], target); ops != nil {
 			rep.FastXDAttempts++
@@ -65888,6 +66150,7 @@ type DiscoveryStats struct {
 	Singles           int     `json:"singles"`
 	IndexOpenSeconds  float64 `json:"index_open_seconds,omitempty"`
 	IndexedCandidates int     `json:"indexed_candidates,omitempty"`
+	SparseCandidates  int     `json:"sparse_candidates,omitempty"`
 	IndexFallback     bool    `json:"index_fallback,omitempty"`
 	Multi             int     `json:"multi_sets"`
 	MultiGain         int64   `json:"multi_estimated_gain"`  // estimated bytes multi-base programs save over the best single

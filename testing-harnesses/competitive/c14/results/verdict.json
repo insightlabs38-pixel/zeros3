@@ -1,0 +1,13 @@
+{
+  "verdict": "C14_SPECIALIZED",
+  "baseline": "2078378",
+  "production_policy": "authority optimize -sparse-files",
+  "archive_allocated": {
+    "ext4_rebuild": {"cdc": 385024, "generic": 385024, "sparse": 315392},
+    "ext4_incremental": {"cdc": 458752, "generic": 458752, "sparse": 438272},
+    "sqlite": {"cdc": 708608, "generic": 413696, "sparse": 413696}
+  },
+  "mixed_sparse_chosen": false,
+  "sqlite_overflow_guidance": "research_only",
+  "native_test_and_race": "passed"
+}

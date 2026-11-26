@@ -1,0 +1,14 @@
+=== RUN   TestXDeltaRoundTripAndRejection
+--- PASS: TestXDeltaRoundTripAndRejection (0.05s)
+=== RUN   TestB6HistoryApplyConverges
+--- PASS: TestB6HistoryApplyConverges (1.20s)
+=== RUN   TestB6InterruptedRecovers
+--- PASS: TestB6InterruptedRecovers (2.38s)
+=== RUN   TestB7OptimizeMultiBase
+--- PASS: TestB7OptimizeMultiBase (1.42s)
+=== RUN   TestC14SparseXDInNativeGraph
+--- PASS: TestC14SparseXDInNativeGraph (0.36s)
+=== RUN   TestC14SparseXDDenseAndZeroControls
+--- PASS: TestC14SparseXDDenseAndZeroControls (0.01s)
+PASS
+ok  	zeros3	5.421s

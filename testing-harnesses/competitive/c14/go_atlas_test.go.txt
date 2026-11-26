@@ -1,0 +1,165 @@
+package main
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"strconv"
+	"testing"
+)
+
+const c14Page = 4096
+
+type c14Extent struct {
+	off int
+	end int
+}
+
+// c14Extents removes long zero runs from the rolling-index search. All
+// returned offsets still refer to the original exact object.
+func c14Extents(data []byte, minHole int) ([]c14Extent, c14Extent) {
+	var extents []c14Extent
+	var largest c14Extent
+	var start, at int
+	for at < len(data) {
+		end := min(at+c14Page, len(data))
+		if !allZero(data[at:end]) {
+			at = end
+			continue
+		}
+		zero := at
+		for at = end; at < len(data); at = end {
+			end = min(at+c14Page, len(data))
+			if !allZero(data[at:end]) {
+				break
+			}
+		}
+		if at-zero < minHole {
+			continue
+		}
+		if zero > start {
+			extents = append(extents, c14Extent{start, zero})
+		}
+		if at-zero > largest.end-largest.off {
+			largest = c14Extent{zero, at}
+		}
+		start = at
+	}
+	if start < len(data) {
+		extents = append(extents, c14Extent{start, len(data)})
+	}
+	return extents, largest
+}
+
+func c14SparseOps(base, target []byte, minHole, sampleBits, maxHoleCopy int) ([]xdOp, int, int, error) {
+	from, zero := c14Extents(base, minHole)
+	to, _ := c14Extents(target, minHole)
+	source := make([][]byte, 0, len(from))
+	sourceBytes := 0
+	for _, extent := range from {
+		source = append(source, base[extent.off:extent.end])
+		sourceBytes += extent.end - extent.off
+	}
+	params := dwDcoreDefaultParams()
+	params.MinSampleBits = sampleBits
+	matcher, err := dwDcoreBuildIndex(source, params)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	var result []xdOp
+	push := func(at, n, src int) {
+		if n == 0 {
+			return
+		}
+		op := xdOp{tpos: int64(at), n: int64(n), base: 0, off: int64(src)}
+		if src < 0 {
+			op.base = -1
+			op.lit = target[at : at+n]
+		}
+		if len(result) > 0 {
+			prev := &result[len(result)-1]
+			if prev.base == op.base && prev.tpos+prev.n == op.tpos {
+				if src >= 0 && prev.off+prev.n == op.off && prev.n+op.n <= int64(maxHoleCopy) {
+					prev.n += op.n
+					return
+				}
+				if src < 0 {
+					prev.n += op.n
+					prev.lit = target[prev.tpos : prev.tpos+prev.n]
+					return
+				}
+			}
+		}
+		result = append(result, op)
+	}
+	emitHole := func(at, end int) {
+		for at < end {
+			n := min(end-at, zero.end-zero.off, maxHoleCopy)
+			if n <= 0 {
+				push(at, end-at, -1)
+				return
+			}
+			// Use the same location when the hole is present in both.
+			src := zero.off
+			if at >= zero.off && at+n <= zero.end {
+				src = at
+			}
+			push(at, n, src)
+			at += n
+		}
+	}
+	at, targetBytes := 0, 0
+	for _, extent := range to {
+		emitHole(at, extent.off)
+		data := target[extent.off:extent.end]
+		for _, op := range matcher.Match(data) {
+			src := -1
+			if op.Base >= 0 {
+				src = from[op.Base].off + int(op.Off)
+			}
+			push(extent.off+int(op.TPos), int(op.N), src)
+		}
+		at = extent.end
+		targetBytes += len(data)
+	}
+	emitHole(at, len(target))
+	return result, sourceBytes, targetBytes, nil
+}
+
+func TestC14NativeSparseEncode(t *testing.T) {
+	prefix := os.Getenv("C14_BASE")
+	if prefix == "" {
+		t.Skip("use the C14 native sparse driver")
+	}
+	value := func(key string) int {
+		n, err := strconv.Atoi(os.Getenv(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	base, err := os.ReadFile(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.ReadFile(os.Getenv("C14_TARGET"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := value("C14_FRAME")
+	ops, scanned, walked, err := c14SparseOps(base, target, value("C14_GAP"), value("C14_SAMPLE"), value("C14_HOLE_COPY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, refs, err := xdEncodeOps([]xdSrc{{sha256.Sum256(base), base}}, ops, target, int64(frame))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || len(ops) == 0 {
+		t.Fatal("sparse corpus failed to use the verified base")
+	}
+	if err := os.WriteFile(os.Getenv("C14_PROGRAM"), blob, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("C14 {\"source_indexed_bytes\":%d,\"target_matched_bytes\":%d,\"ops\":%d}\n", scanned, walked, len(ops))
+}

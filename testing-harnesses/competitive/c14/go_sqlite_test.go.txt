@@ -1,0 +1,226 @@
+package main
+
+import (
+	"bytes"
+	"cmp"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"maps"
+	"os"
+	"slices"
+	"testing"
+)
+
+type c14SQLIdentity struct {
+	row  uint64
+	part int
+}
+
+func c14SQLVarint(data []byte, at int) (uint64, int, bool) {
+	var value uint64
+	for i := 0; i < 9 && at+i < len(data); i++ {
+		b := data[at+i]
+		if i == 8 {
+			return value<<8 | uint64(b), at + 9, true
+		}
+		value = value<<7 | uint64(b&127)
+		if b < 128 {
+			return value, at + i + 1, true
+		}
+	}
+	return 0, at, false
+}
+
+// c14SQLLabels follows table-leaf rowids into their payload overflow chains.
+// The hints only select byte matchers; they never supply reconstruction data.
+func c14SQLLabels(data []byte) map[int][]c14SQLIdentity {
+	labels := map[int][]c14SQLIdentity{}
+	if len(data) < c14Page || string(data[:16]) != "SQLite format 3\000" ||
+		binary.BigEndian.Uint16(data[16:18]) != c14Page || len(data)%c14Page != 0 {
+		return labels
+	}
+	usable := c14Page - int(data[20])
+	for off := 0; off+c14Page <= len(data); off += c14Page {
+		page := data[off : off+usable]
+		header := 0
+		if off == 0 {
+			header = 100
+		}
+		if page[header] != 0x0d {
+			continue
+		}
+		count := int(binary.BigEndian.Uint16(page[header+3:]))
+		content := int(binary.BigEndian.Uint16(page[header+5:]))
+		table := header + 8
+		if table+2*count > content || content >= usable {
+			continue
+		}
+		for i := 0; i < count; i++ {
+			cell := int(binary.BigEndian.Uint16(page[table+2*i:]))
+			if cell < content || cell >= usable {
+				continue
+			}
+			payload, cursor, ok := c14SQLVarint(page, cell)
+			if !ok || payload > uint64(len(data)) {
+				continue
+			}
+			row, cursor, ok := c14SQLVarint(page, cursor)
+			if !ok {
+				continue
+			}
+			labels[off] = append(labels[off], c14SQLIdentity{row, 0})
+			n := int(payload)
+			if n <= usable-35 {
+				continue
+			}
+			minLocal := ((usable - 12) * 32 / 255) - 23
+			local := minLocal + (n-minLocal)%(usable-4)
+			if local > usable-35 {
+				local = minLocal
+			}
+			if cursor+local+4 > usable {
+				continue
+			}
+			next := binary.BigEndian.Uint32(page[cursor+local:])
+			seen := make(map[uint32]bool)
+			for left, part := n-local, 1; left > 0 && part <= 512; left, part = left-(usable-4), part+1 {
+				if next == 0 || uint64(next) > uint64(len(data)/c14Page) || seen[next] {
+					break
+				}
+				seen[next] = true
+				pos := (int(next) - 1) * c14Page
+				labels[pos] = append(labels[pos], c14SQLIdentity{row, part})
+				next = binary.BigEndian.Uint32(data[pos:])
+			}
+		}
+	}
+	return labels
+}
+
+func c14SQLProgram(base, target []byte, semantic bool) ([]xdOp, int) {
+	offsets := map[[32]byte]int{}
+	for off := 0; off+c14Page <= len(base); off += c14Page {
+		hash := sha256.Sum256(base[off : off+c14Page])
+		if _, ok := offsets[hash]; !ok {
+			offsets[hash] = off
+		}
+	}
+	identity := map[c14SQLIdentity][]int{}
+	var targetLabels map[int][]c14SQLIdentity
+	if semantic {
+		baseLabels := c14SQLLabels(base)
+		for _, at := range slices.Sorted(maps.Keys(baseLabels)) {
+			for _, id := range baseLabels[at] {
+				if len(identity[id]) < 4 {
+					identity[id] = append(identity[id], at)
+				}
+			}
+		}
+		targetLabels = c14SQLLabels(target)
+	}
+	params := dwDcoreDefaultParams()
+	params.MinSampleBits = 1
+	params.MaxAnchors = 1 << 12
+	var result []xdOp
+	push := func(at, n, source int) {
+		op := xdOp{tpos: int64(at), n: int64(n), base: 0, off: int64(source)}
+		if source < 0 {
+			op.base = -1
+			op.lit = target[at : at+n]
+		}
+		if len(result) > 0 {
+			last := &result[len(result)-1]
+			if op.base == last.base && op.tpos == last.tpos+last.n &&
+				(source < 0 || op.off == last.off+last.n) {
+				last.n += op.n
+				if source < 0 {
+					last.lit = target[last.tpos : last.tpos+last.n]
+				}
+				return
+			}
+		}
+		result = append(result, op)
+	}
+	relocated := 0
+	displacement := 0
+	for at := 0; at < len(target); at += c14Page {
+		block := target[at:min(at+c14Page, len(target))]
+		if at+len(block) <= len(base) && bytes.Equal(base[at:at+len(block)], block) {
+			push(at, len(block), at)
+			displacement = 0
+			continue
+		}
+		if pos, ok := offsets[sha256.Sum256(block)]; ok && bytes.Equal(base[pos:pos+len(block)], block) {
+			push(at, len(block), pos)
+			displacement = pos - at
+			continue
+		}
+		votes := map[int]int{}
+		for _, id := range targetLabels[at] {
+			for _, pos := range identity[id] {
+				votes[pos]++
+			}
+		}
+		var ranked []int
+		for pos := range votes {
+			ranked = append(ranked, pos)
+		}
+		slices.SortFunc(ranked, func(a, b int) int {
+			return cmp.Or(cmp.Compare(votes[b], votes[a]), cmp.Compare(a, b))
+		})
+		ranked = append(ranked[:min(len(ranked), 3)], at, at+displacement)
+		ranked = slices.Compact(ranked)
+		var regions [][]byte
+		var begins []int
+		for _, pos := range ranked {
+			if pos < 0 || pos >= len(base) {
+				continue
+			}
+			begin := max(0, pos-256)
+			end := min(len(base), pos+len(block)+256)
+			regions = append(regions, base[begin:end])
+			begins = append(begins, begin)
+		}
+		matcher, err := dwDcoreBuildIndex(regions, params)
+		if err != nil || len(regions) == 0 {
+			push(at, len(block), -1)
+			continue
+		}
+		for _, op := range matcher.Match(block) {
+			pos := -1
+			if op.Base >= 0 {
+				pos = begins[op.Base] + int(op.Off)
+				if votes[(pos/c14Page)*c14Page] > 0 && (pos/c14Page)*c14Page != at {
+					relocated += int(op.N)
+				}
+			}
+			push(at+int(op.TPos), int(op.N), pos)
+		}
+	}
+	return result, relocated
+}
+
+func TestC14NativeSQLiteEncode(t *testing.T) {
+	baseName := os.Getenv("C14_BASE")
+	if baseName == "" {
+		t.Skip("use the C14 SQLite driver")
+	}
+	base, err := os.ReadFile(baseName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.ReadFile(os.Getenv("C14_TARGET"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops, guided := c14SQLProgram(base, target, os.Getenv("C14_SQL_MODE") == "overflow")
+	blob, _, err := xdEncodeOps([]xdSrc{{sha256.Sum256(base), base}}, ops, target, 128<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("C14_PROGRAM"), blob, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("C14 {\"guided_bytes\":%d,\"ops\":%d}\n", guided, len(ops))
+}
