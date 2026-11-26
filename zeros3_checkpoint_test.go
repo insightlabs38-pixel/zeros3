@@ -176,6 +176,48 @@ func assertCheckpointRefused(t *testing.T, dir, kind string) {
 	checkpointTestOpen(t, dir, false)
 }
 
+// assertCheckpointRebuilt: an owner open does not adopt a generation whose
+// trailer binds the journal but whose body is unusable. It replays the whole
+// journal to the same namespace as an open without the checkpoint, records the
+// fallback, changes nothing on disk, and the trailer still witnesses the
+// journal: a cut below it is refused.
+func assertCheckpointRebuilt(t *testing.T, dir string) {
+	t.Helper()
+	jp := filepath.Join(dir, "journal", "visibility.log")
+	ckp := filepath.Join(dir, "journal", nsGenName)
+	before, ckBefore := fb01SHA(jp), fb01SHA(ckp)
+	plain := checkpointTestOpen(t, dir, false)
+	want := nsDump(t, plain)
+	plain.Close()
+	s, err := openStore(dir, true, true)
+	if err != nil {
+		t.Fatalf("want a rebuild from the journal, got %v", err)
+	}
+	s.ns.auto = false
+	if s.ns.gen != nil || checkpointKind(s.CheckpointFallback()) != checkpointBodyDamaged {
+		t.Fatalf("want a %s fallback, got gen=%v fallback=%v", checkpointBodyDamaged, s.ns.gen != nil, s.CheckpointFallback())
+	}
+	if got := nsDump(t, s); got != want {
+		t.Fatal("the rebuilt namespace differs from a replay without the checkpoint")
+	}
+	mustOK(t, s.Close())
+	if fb01SHA(jp) != before || fb01SHA(ckp) != ckBefore {
+		t.Fatal("the rebuild changed the journal or the checkpoint")
+	}
+	cut := t.TempDir()
+	mustOK(t, os.CopyFS(cut, os.DirFS(dir)))
+	mustOK(t, os.Truncate(filepath.Join(cut, "journal", "visibility.log"), 0))
+	for _, useCk := range []bool{true, false} {
+		s, err := openStore(cut, true, useCk)
+		if s != nil {
+			s.Close()
+		}
+		if !errors.Is(err, errJournalRefused) || checkpointKind(err) != checkpointContradicts {
+			t.Fatalf("checkpoint=%v: a journal cut below the damaged generation's binding was not refused: %v", useCk, err)
+		}
+	}
+}
+
 func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	dir, _ := checkpointTestSeed(t)
 	ck := filepath.Join(dir, "journal", nsGenName)
@@ -202,6 +244,13 @@ func TestNamespaceCheckpointRejectsInvalidFramesAndPrefix(t *testing.T) {
 	mustOK(t, os.WriteFile(ck, broken, 0o600))
 	reject()
 	assertCheckpointRefused(t, dir, checkpointDamaged)
+	// FB-01R: damage to the body alone (the first page) leaves the trailer's
+	// binding intact; the open rebuilds from the journal, still witnessed.
+	body := bytes.Clone(good)
+	body[len(nsGenMagic)+1] ^= 1
+	mustOK(t, os.WriteFile(ck, body, 0o600))
+	reject()
+	assertCheckpointRebuilt(t, dir)
 
 	foreign, _ := checkpointTestSeed(t)
 	mustOK(t, os.WriteFile(ck, good, 0o600))

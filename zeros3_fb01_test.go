@@ -320,6 +320,29 @@ func TestFB01ReproF6JNL01(t *testing.T) {
 // checkpoint: an owner open with the checkpoint refuses, names it and changes
 // nothing; then an explicit salvage that keeps the whole journal moves the
 // checkpoint into quarantine, so the next open rebuilds from the journal.
+// fb01RebuildFromJournal is the FB-01R path for a generation whose trailer
+// still binds the journal: the owner open replays the whole journal instead of
+// adopting it, records why, and changes nothing on disk.
+func fb01RebuildFromJournal(t testing.TB, dir string) {
+	t.Helper()
+	jp := fb01Journal(dir)
+	before := fb01SHA(jp)
+	s, err := openStore(dir, true, true)
+	if err != nil {
+		t.Fatalf("want a rebuild from the journal, got %v", err)
+	}
+	s.ns.auto = false
+	fallback := s.CheckpointFallback()
+	gen := s.ns.gen != nil
+	s.Close()
+	if gen || checkpointKind(fallback) != checkpointBodyDamaged {
+		t.Fatalf("want a %s fallback, got adopted=%v fallback=%v", checkpointBodyDamaged, gen, fallback)
+	}
+	if fb01SHA(jp) != before {
+		t.Fatal("a rebuild changed the journal")
+	}
+}
+
 func fb01RebuildAfterRefusal(t testing.TB, dir string) {
 	t.Helper()
 	jp := fb01Journal(dir)

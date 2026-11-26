@@ -7749,6 +7749,19 @@ type Journal struct {
 	// tail is set for a shared opener whose journal ends in an incomplete
 	// frame it could not account for: it serves the valid prefix only.
 	tail *journalDamage
+
+	// checkpointFallback is the damaged-body checkpoint this open replayed
+	// the whole journal past, or nil.
+	checkpointFallback error
+}
+
+// checkpointKind is the kind of a *checkpointProblem in err, or "".
+func checkpointKind(err error) string {
+	var cp *checkpointProblem
+	if errors.As(err, &cp) {
+		return cp.Kind
+	}
+	return ""
 }
 
 // appendFrame durably appends one journal frame and returns its sequence
@@ -8354,6 +8367,7 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 	policy := currentJournalPolicy()
 	var offset int64
 	var sequence uint64
+	var bodyDamaged error
 	adopted := false
 	if o.checkpoint != nil {
 		var checkpointErr error
@@ -8366,6 +8380,13 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 		case policy.ignoreCheckpoint:
 			offset, sequence = 0, 0
 			log.Printf("zeros3: namespace checkpoint ignored: %v", checkpointErr)
+		case checkpointKind(checkpointErr) == checkpointBodyDamaged:
+			// Proof exists: the trailer binds the journal prefix the body was
+			// built from, so replaying the whole journal yields the same
+			// namespace, and the witness below still checks the binding.
+			offset, sequence = 0, 0
+			bodyDamaged = checkpointErr
+			log.Printf("zeros3: %v; rebuilding the namespace from the whole journal (its binding verifies, so nothing is lost; the next consolidation replaces the file)", checkpointErr)
 		default:
 			var cp *checkpointProblem
 			if !errors.As(checkpointErr, &cp) {
@@ -8437,7 +8458,7 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 		}
 	}
 	fireTestHook(hookJournalReplayed)
-	j = &Journal{f: f, writeOffset: sc.ValidEnd, nextSeq: sc.LastSeq + 1, tail: tail}
+	j = &Journal{f: f, writeOffset: sc.ValidEnd, nextSeq: sc.LastSeq + 1, tail: tail, checkpointFallback: bodyDamaged}
 	if o.readOnly {
 		j.poisoned = errJournalReadOnly
 		return j, nil, nil
@@ -8786,6 +8807,15 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 		return nil, fmt.Errorf("store: recovering segments: %w", err)
 	}
 	return s.finishOpen()
+}
+
+// CheckpointFallback reports the damaged-body namespace checkpoint this open
+// did not adopt, replaying the whole journal instead, or nil.
+func (s *Store) CheckpointFallback() error {
+	if s.journal == nil {
+		return nil
+	}
+	return s.journal.checkpointFallback
 }
 
 // JournalTail reports the incomplete final journal frame a shared open could
@@ -10478,27 +10508,11 @@ func openNSGen(f *os.File, cache *nsPageCache) (*nsGen, func() error, error) {
 		}
 		return nil
 	}
-	var tail [16]byte
-	if _, err := f.ReadAt(tail[:], body-16); err != nil || string(tail[8:]) != nsGenFooter {
-		return nil, nil, errors.New("namespace generation: unrecognized trailer")
-	}
-	metaLen := int64(binary.LittleEndian.Uint32(tail[:]))
-	metaOff := body - 16 - metaLen
-	if metaOff < int64(len(nsGenMagic)) {
-		return nil, nil, errors.New("namespace generation: invalid trailer length")
-	}
-	mb := make([]byte, metaLen)
-	if _, err := f.ReadAt(mb, metaOff); err != nil || crc32.Checksum(mb, castagnoliTable) != binary.LittleEndian.Uint32(tail[4:]) {
-		return nil, nil, errors.New("namespace generation: trailer checksum mismatch")
-	}
-	var magic [len(nsGenMagic)]byte
-	if _, err := f.ReadAt(magic[:], 0); err != nil || string(magic[:]) != nsGenMagic {
-		return nil, nil, errors.New("namespace generation: unrecognized format")
-	}
-	g := &nsGen{f: f, id: nsGenIDs.Add(1), cache: cache}
-	if err := gob.NewDecoder(bytes.NewReader(mb)).Decode(&g.meta); err != nil {
+	meta, metaOff, err := readNSGenTrailer(f, body)
+	if err != nil {
 		return nil, nil, err
 	}
+	g := &nsGen{f: f, id: nsGenIDs.Add(1), cache: cache, meta: *meta}
 	g.strs = g.meta.Strings
 	// The history pages follow the object pages: the tables cannot overlap.
 	lo := int64(len(nsGenMagic))
@@ -10509,6 +10523,34 @@ func openNSGen(f *os.File, cache *nsPageCache) (*nsGen, func() error, error) {
 	}
 	g.refs.Store(1)
 	return g, verify, nil
+}
+
+// readNSGenTrailer reads the generation's metadata trailer, which carries its
+// own CRC32C apart from the file's SHA-256, and returns it with its offset.
+// body is the file size less the SHA-256.
+func readNSGenTrailer(f *os.File, body int64) (*nsMeta, int64, error) {
+	var tail [16]byte
+	if _, err := f.ReadAt(tail[:], body-16); err != nil || string(tail[8:]) != nsGenFooter {
+		return nil, 0, errors.New("namespace generation: unrecognized trailer")
+	}
+	metaLen := int64(binary.LittleEndian.Uint32(tail[:]))
+	metaOff := body - 16 - metaLen
+	if metaOff < int64(len(nsGenMagic)) {
+		return nil, 0, errors.New("namespace generation: invalid trailer length")
+	}
+	mb := make([]byte, metaLen)
+	if _, err := f.ReadAt(mb, metaOff); err != nil || crc32.Checksum(mb, castagnoliTable) != binary.LittleEndian.Uint32(tail[4:]) {
+		return nil, 0, errors.New("namespace generation: trailer checksum mismatch")
+	}
+	var magic [len(nsGenMagic)]byte
+	if _, err := f.ReadAt(magic[:], 0); err != nil || string(magic[:]) != nsGenMagic {
+		return nil, 0, errors.New("namespace generation: unrecognized format")
+	}
+	m := &nsMeta{}
+	if err := gob.NewDecoder(bytes.NewReader(mb)).Decode(m); err != nil {
+		return nil, 0, err
+	}
+	return m, metaOff, nil
 }
 
 // validate checks the directory's pages lie in order within [lo, hi) and
@@ -11054,16 +11096,26 @@ const (
 	checkpointDamaged     = "damaged"
 	checkpointForeign     = "foreign"
 	checkpointContradicts = "contradicts-journal"
+	// checkpointBodyDamaged is a V4 generation whose separately checksummed
+	// trailer still verifies and binds this journal's prefix, but whose body
+	// does not. It is not adopted; the open replays the whole journal, as
+	// ZEROS3_NAMESPACE_CHECKPOINT=off does, and the trailer keeps witnessing
+	// the journal. The namespace is the journal's, so nothing is lost.
+	checkpointBodyDamaged = "damaged-body"
 )
 
 var (
 	errCheckpointPrefix  = errors.New("checkpoint: journal prefix changed")
 	errCheckpointForeign = errors.New("checkpoint: written for another store")
+	errCheckpointBody    = errors.New("checkpoint: body damaged; its trailer binds this journal")
 )
 
 func (c *checkpointProblem) Error() string {
 	at := "refused with the covered offset and frame seq unreadable"
-	if c.Offset >= 0 {
+	switch {
+	case c.Kind == checkpointBodyDamaged:
+		at = fmt.Sprintf("not adopted; its trailer binds the journal to offset %d, frame seq %d", c.Offset, c.Seq)
+	case c.Offset >= 0:
 		at = fmt.Sprintf("refused at offset %d, frame seq %d", c.Offset, c.Seq)
 	}
 	return fmt.Sprintf("namespace checkpoint journal/%s %s: %s, cause checkpoint-%s: %v", c.File, c.Kind, at, c.Kind, c.Err)
@@ -11081,6 +11133,8 @@ func newCheckpointProblem(file string, offset int64, seq uint64, err error) erro
 		kind = checkpointContradicts
 	case errors.Is(err, errCheckpointForeign):
 		kind = checkpointForeign
+	case errors.Is(err, errCheckpointBody):
+		kind = checkpointBodyDamaged
 	}
 	return &checkpointProblem{File: file, Kind: kind, Offset: offset, Seq: seq, Err: err}
 }
@@ -11093,15 +11147,44 @@ func (s *Store) loadNamespaceGeneration(journal *os.File) (int64, uint64, error)
 		return 0, 0, err
 	}
 	g, verify, err := openNSGen(f, s.ns.cache)
+	if err == nil {
+		if err = s.nsAdopt(g, journal, verify); err == nil {
+			return g.meta.Offset, g.meta.Sequence, nil
+		}
+	}
+	defer f.Close()
+	// The file cannot be adopted. What its separately checksummed trailer
+	// still proves decides between a rebuild from the journal and a refusal.
+	_, offset, seq, err := s.nsGenBinding(f, journal, err)
+	return 0, 0, newCheckpointProblem(nsGenName, offset, seq, err)
+}
+
+// nsGenBinding classifies a generation that failed to load with cause: a
+// trailer that is unreadable or malformed is damage (-1 offset); one for
+// another store is foreign; one whose binding the journal does not match
+// contradicts it; otherwise the trailer proves the journal prefix and only the
+// body is unusable (errCheckpointBody).
+func (s *Store) nsGenBinding(f *os.File, journal *os.File, cause error) (*nsMeta, int64, uint64, error) {
+	info, err := f.Stat()
 	if err != nil {
-		f.Close()
-		return 0, 0, newCheckpointProblem(nsGenName, -1, 0, err)
+		return nil, -1, 0, cause
 	}
-	if err := s.nsAdopt(g, journal, verify); err != nil {
-		f.Close()
-		return 0, 0, newCheckpointProblem(nsGenName, g.meta.Offset, g.meta.Sequence, err)
+	m, _, err := readNSGenTrailer(f, info.Size()-sha256.Size)
+	if err != nil || !m.Published || m.Offset < 0 || (m.Sequence == 0) != (m.Offset == 0) {
+		return nil, -1, 0, cause
 	}
-	return g.meta.Offset, g.meta.Sequence, nil
+	if m.StoreID != s.format.StoreID {
+		return m, m.Offset, m.Sequence, errCheckpointForeign
+	}
+	blocks, berr := journalBlockHashes(journal, m.Offset, nil, 0)
+	crc, cerr := journalLastCRC(journal, m.Offset)
+	if berr != nil || cerr != nil || crc != m.LastCRC || !slices.Equal(blocks, m.Blocks) {
+		return m, m.Offset, m.Sequence, errCheckpointPrefix
+	}
+	if errors.Is(cause, errCheckpointBody) {
+		return m, m.Offset, m.Sequence, cause
+	}
+	return m, m.Offset, m.Sequence, fmt.Errorf("%w: %v", errCheckpointBody, cause)
 }
 
 func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
@@ -11123,34 +11206,36 @@ func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 	blocks, err := journalBlockHashes(journal, m.Offset, nil, 0)
 	crc, crcErr := journalLastCRC(journal, m.Offset)
 	wg.Wait()
-	if fileErr != nil {
-		return fileErr
-	}
+	// The binding comes first: the trailer passed its own checksum, so a
+	// journal that differs from it is a contradiction whatever the body holds.
 	if err != nil || crcErr != nil || crc != m.LastCRC || !slices.Equal(blocks, m.Blocks) {
 		return errCheckpointPrefix
+	}
+	if fileErr != nil {
+		return fmt.Errorf("%w: %v", errCheckpointBody, fileErr)
 	}
 	rows := 0
 	buckets := make(map[string]*bucketEntry, len(m.Buckets))
 	for _, b := range m.Buckets {
 		if b.Name == "" || b.Count < 0 || buckets[b.Name] != nil {
-			return errors.New("checkpoint: invalid bucket")
+			return fmt.Errorf("%w: invalid bucket", errCheckpointBody)
 		}
 		rows += b.Count
 		buckets[b.Name] = &bucketEntry{name: s.replayIn.get([]byte(b.Name)), createdAt: b.Created, count: b.Count}
 	}
 	if rows != m.Obj.Rows {
-		return errors.New("checkpoint: bucket counts disagree with the object table")
+		return fmt.Errorf("%w: bucket counts disagree with the object table", errCheckpointBody)
 	}
 	uploads := make(map[string]*multipartUpload, len(m.Uploads))
 	for _, r := range m.Uploads {
 		if r.ID == "" || len(r.Parts) > 10000 || uploads[r.ID] != nil {
-			return errors.New("checkpoint: invalid multipart upload")
+			return fmt.Errorf("%w: invalid multipart upload", errCheckpointBody)
 		}
 		u := &multipartUpload{uploadID: r.ID, bucket: r.Bucket, key: r.Key, contentType: r.ContentType,
 			metadata: r.Metadata, createdAt: r.Created, parts: make(map[int]*multipartPart, len(r.Parts))}
 		for _, p := range r.Parts {
 			if p.Number < 1 || p.Number > 10000 || p.Size < 0 || u.parts[p.Number] != nil {
-				return errors.New("checkpoint: invalid multipart part")
+				return fmt.Errorf("%w: invalid multipart part", errCheckpointBody)
 			}
 			u.parts[p.Number] = &multipartPart{partNumber: p.Number, size: p.Size, etag: p.ETag, chunks: p.Chunks, uploadedAt: p.Uploaded}
 		}
@@ -11167,8 +11252,10 @@ func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 // loadNamespaceCheckpoint adopts the newest checkpoint layout present: the V4
 // generation, else the legacy V3, else V2. A file that is present but cannot be
 // used is returned as a *checkpointProblem and an older layout is not tried in
-// its place: a damaged checkpoint can no longer witness the journal, so only an
-// operator decides to rebuild without it (FB-01, ADR-JNL-01).
+// its place: a checkpoint that can no longer witness the journal leaves the
+// rebuild to an operator (FB-01, ADR-JNL-01). The one exception is a V4 whose
+// trailer still binds the journal (checkpointBodyDamaged): the open replays the
+// whole journal and the trailer goes on witnessing it (FB-01R).
 func (s *Store) loadNamespaceCheckpoint(journal *os.File) (int64, uint64, error) {
 	offset, seq, err := s.loadNamespaceGeneration(journal)
 	if !errors.Is(err, os.ErrNotExist) {
@@ -32973,7 +33060,7 @@ type journalReport struct {
 
 type journalCheckpointStatus struct {
 	File    string `json:"file"`
-	Status  string `json:"status"` // ok, damaged, foreign, contradicts-journal
+	Status  string `json:"status"` // ok, damaged, damaged-body, foreign, contradicts-journal
 	Offset  int64  `json:"offset"`
 	Seq     uint64 `json:"frame_seq"`
 	Problem string `json:"problem,omitempty"`
@@ -33053,13 +33140,19 @@ func inspectJournal(root string) (*journalReport, error) {
 			add(name, offset, seq, err)
 		}
 	}
-	bad := 0
+	bad, rebuild := 0, 0
 	for _, c := range rep.Checkpoints {
-		if c.Status != "ok" {
+		switch c.Status {
+		case "ok":
+		case checkpointBodyDamaged:
+			rebuild++
+		default:
 			bad++
 		}
 	}
 	switch {
+	case rep.Damage == nil && bad == 0 && rebuild > 0:
+		rep.Verdict = "accepted: a checkpoint body is damaged but its trailer binds this journal; an owner open replays the whole journal, unchanged, and the next consolidation replaces the file"
 	case rep.Damage == nil && bad == 0:
 		rep.Verdict = "clean: an owner open accepts this journal unchanged"
 	case rep.Damage != nil:

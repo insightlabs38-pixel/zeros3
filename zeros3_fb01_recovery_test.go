@@ -4,6 +4,7 @@ package main
 // inspect and salvage. Truth is kept outside the store (fb01Truth).
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -278,9 +279,22 @@ func TestFB01ConflictingCheckpoint(t *testing.T) {
 		kind     string
 		offWorks bool // the off-mode witness sees it too
 	}{
+		// FB-01R: the trailer binds the journal, so every open rebuilds from
+		// the whole journal (kind "" means the open must succeed, losing nothing).
 		{"checkpoint body bit flip", func(dir string) {
 			b := append([]byte(nil), good...)
-			b[len(b)/3] ^= 4
+			b[len(nsGenMagic)+1] ^= 4
+			os.WriteFile(filepath.Join(dir, ck), b, 0o644)
+		}, "", true},
+		{"checkpoint body bit flip, journal cut below it", func(dir string) {
+			b := append([]byte(nil), good...)
+			b[len(nsGenMagic)+1] ^= 4
+			os.WriteFile(filepath.Join(dir, ck), b, 0o644)
+			os.Truncate(fb01Journal(dir), fr[10].off)
+		}, checkpointContradicts, true},
+		{"checkpoint trailer bit flip", func(dir string) {
+			b := append([]byte(nil), good...)
+			b[len(b)-sha256.Size-20] ^= 4
 			os.WriteFile(filepath.Join(dir, ck), b, 0o644)
 		}, checkpointDamaged, false},
 		{"checkpoint truncated", func(dir string) { os.WriteFile(filepath.Join(dir, ck), good[:len(good)/2], 0o644) }, checkpointDamaged, false},
@@ -301,6 +315,12 @@ func TestFB01ConflictingCheckpoint(t *testing.T) {
 				mode := fmt.Sprintf("%s checkpoint=%v", fb01ModeName(owner), useCk)
 				r := fb01Open(t, dir, tr, "M-A1-checkpoint", c.name, mode, func(d string) (*Store, error) { return openStore(d, owner, useCk) })
 				fb01Must(t, r)
+				if c.kind == "" {
+					if r.Outcome != "OK" || r.Lost != 0 || !r.Preserved {
+						t.Fatalf("%s | %s: want a rebuild from the journal, got %s %s", c.name, mode, r.Outcome, r.Err)
+					}
+					continue
+				}
 				if useCk || c.offWorks {
 					if r.Outcome != "REFUSE" || !strings.Contains(r.Err, "cause checkpoint-"+c.kind) || !strings.Contains(r.Err, "refused at offset") && c.kind != checkpointDamaged {
 						t.Fatalf("%s | %s: want a %s refusal, got %s %s", c.name, mode, c.kind, r.Outcome, r.Err)

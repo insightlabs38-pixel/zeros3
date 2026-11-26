@@ -457,10 +457,10 @@ func TestNamespaceGenerationDamage(t *testing.T) {
 	}
 	s.Close()
 
-	// Reopening refuses the file (digest) and changes nothing (FB-01, E2); an
-	// explicit salvage moves it aside and the next open rebuilds from the
-	// journal.
-	fb01RebuildAfterRefusal(t, dir)
+	// Reopening does not adopt the file (digest) and changes nothing; its
+	// trailer still binds the journal, so the open rebuilds from the journal
+	// (FB-01R).
+	fb01RebuildFromJournal(t, dir)
 	s = b3Store(t, dir, true)
 	if got := nsDump(t, s); got != want {
 		t.Fatal("rebuilt open differs from the journal state")
@@ -468,7 +468,8 @@ func TestNamespaceGenerationDamage(t *testing.T) {
 	mustOK(t, s.nsConsolidate(true))
 	mustOK(t, s.Close())
 
-	// A truncated or stale file is refused too.
+	// A truncated file has lost its trailer: nothing witnesses the journal,
+	// so it is refused until an explicit salvage (FB-01, E2).
 	mustOK(t, os.Truncate(path, 100))
 	fb01RebuildAfterRefusal(t, dir)
 	s = b3Store(t, dir, true)
@@ -1288,10 +1289,10 @@ func TestAuthorityRevertAllRefusesIncompleteNamespace(t *testing.T) {
 				t.Fatalf("format level %d after a refused revert, want %d", l2, level)
 			}
 
-			// Reopening refuses the damaged file (FB-01, E2); after an explicit
-			// salvage moves it aside the journal replays and every body,
+			// Reopening does not adopt the damaged file; its trailer binds the
+			// journal, so the journal replays (FB-01R) and every body,
 			// including the historical one, is still exact.
-			fb01RebuildAfterRefusal(t, dir)
+			fb01RebuildFromJournal(t, dir)
 			s, err = openStore(dir, true, true)
 			mustOK(t, err)
 			defer s.Close()
@@ -1354,11 +1355,11 @@ func TestCommitHistoryLookupFailsBeforeJournal(t *testing.T) {
 		return dir, s
 	}
 	// After the failure, a replay from the journal alone must show h unchanged.
-	// The damaged checkpoint is refused on reopen (FB-01, E2) until an explicit
-	// salvage moves it aside.
+	// The damaged checkpoint is not adopted on reopen; its trailer binds the
+	// journal, so the open rebuilds from it (FB-01R).
 	recovered := func(t *testing.T, dir string) *Store {
 		t.Helper()
-		fb01RebuildAfterRefusal(t, dir)
+		fb01RebuildFromJournal(t, dir)
 		s := b3Store(t, dir, true)
 		if _, got, err := s.GetObject("b", "h"); err != nil || !bytes.Equal(got, v2) {
 			t.Fatalf("h after replay = %q, %v", got, err)
@@ -1740,17 +1741,24 @@ func TestNamespaceCheckpointRejectsInvalidInterior(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mustOK(t, os.WriteFile(path, pristine, 0o644))
 			b3RewriteGen(t, path, c.page, c.meta)
-			// FB-01 (E2): the invalid generation is refused, not skipped; an
-			// explicit salvage moves it aside and the journal rebuilds.
-			fb01RebuildAfterRefusal(t, dir)
+			// FB-01R: the trailer still binds the journal, so the open replays
+			// the whole journal instead of adopting the invalid generation,
+			// records why, and changes nothing on disk.
+			jsum := fb01SHA(fb01Journal(dir))
 			s := b3Store(t, dir, true)
 			if s.ns.gen != nil {
 				t.Fatal("a generation with an invalid interior was adopted")
+			}
+			if k := checkpointKind(s.CheckpointFallback()); k != checkpointBodyDamaged {
+				t.Fatalf("the rebuild was not recorded as a %s fallback: %v", checkpointBodyDamaged, s.CheckpointFallback())
 			}
 			if got := nsDump(t, s); got != want {
 				t.Fatal("rebuilt open differs from the journal state")
 			}
 			mustOK(t, s.Close())
+			if fb01SHA(fb01Journal(dir)) != jsum {
+				t.Fatal("the rebuild changed the journal")
+			}
 		})
 	}
 
