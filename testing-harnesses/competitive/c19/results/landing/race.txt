@@ -1,0 +1,37 @@
+=== RUN   TestC16NamedBaseReplication
+=== RUN   TestC16NamedBaseReplication/related
+=== RUN   TestC16NamedBaseReplication/replica
+--- PASS: TestC16NamedBaseReplication (2.99s)
+    --- PASS: TestC16NamedBaseReplication/related (0.23s)
+    --- PASS: TestC16NamedBaseReplication/replica (0.28s)
+=== RUN   TestC18PackDictionaryRepair
+=== RUN   TestC18PackDictionaryRepair/primary
+=== RUN   TestC18PackDictionaryRepair/backup
+=== RUN   TestC18PackDictionaryRepair/both
+=== RUN   TestC18PackDictionaryRepair/unrelated-member
+--- PASS: TestC18PackDictionaryRepair (0.69s)
+    --- PASS: TestC18PackDictionaryRepair/primary (0.20s)
+    --- PASS: TestC18PackDictionaryRepair/backup (0.19s)
+    --- PASS: TestC18PackDictionaryRepair/both (0.13s)
+    --- PASS: TestC18PackDictionaryRepair/unrelated-member (0.16s)
+=== RUN   TestFB02_SnapshotSessionDeletedMidRestore
+=== RUN   TestFB02_SnapshotSessionDeletedMidRestore/sessions=true
+=== RUN   TestFB02_SnapshotSessionDeletedMidRestore/sessions=false
+--- PASS: TestFB02_SnapshotSessionDeletedMidRestore (0.10s)
+    --- PASS: TestFB02_SnapshotSessionDeletedMidRestore/sessions=true (0.03s)
+    --- PASS: TestFB02_SnapshotSessionDeletedMidRestore/sessions=false (0.06s)
+=== RUN   TestFB02_SnapshotSessionOldServer
+--- PASS: TestFB02_SnapshotSessionOldServer (0.04s)
+=== RUN   TestFB03_ConcurrentSinksLinearizable
+=== RUN   TestFB03_ConcurrentSinksLinearizable/seed-loose
+=== NAME  TestFB03_ConcurrentSinksLinearizable
+    zeros3_fb03_cas_test.go:542: FB03_LINEAR ops=280 passes=23 retired=38 reclaimed=11868805 late_revived_pinned=0
+--- PASS: TestFB03_ConcurrentSinksLinearizable (3.62s)
+    --- PASS: TestFB03_ConcurrentSinksLinearizable/seed-loose (0.11s)
+=== RUN   TestFB03_PackFDCacheConcurrent
+--- PASS: TestFB03_PackFDCacheConcurrent (0.20s)
+=== RUN   TestFB03_LocBackgroundMerge
+    zeros3_fb03_loc_test.go:986: 300000 records: 4 levels at the end, at most 4 seen (4 recorded); 7 merges, max merge 932.5 ms, max swap 1466.6 us; 4772494 reads
+--- PASS: TestFB03_LocBackgroundMerge (32.19s)
+PASS
+ok  	zeros3	40.899s

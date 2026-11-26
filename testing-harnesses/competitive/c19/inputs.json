@@ -1,0 +1,50 @@
+[
+  {
+    "family": "urllib3",
+    "version": "2.2.2",
+    "filename": "urllib3-2.2.2.tar.gz",
+    "source": "https://files.pythonhosted.org/packages/43/6d/fa469ae21497ddc8bc93e5877702dca7cb8f911e337aca7452b5724f1bb6/urllib3-2.2.2.tar.gz",
+    "sha256": "dd505485549a7a552833da5e6063639d0d177c04f23bc3864e41e5dc5f612168",
+    "bytes": 292266
+  },
+  {
+    "family": "urllib3",
+    "version": "2.2.3",
+    "filename": "urllib3-2.2.3.tar.gz",
+    "source": "https://files.pythonhosted.org/packages/ed/63/22ba4ebfe7430b76388e7cd448d5478814d3032121827c12a2cc287e2260/urllib3-2.2.3.tar.gz",
+    "sha256": "e7d814a81dad81e6caf2ec9fdedb284ecc9c73076b62654547cc64ccdcae26e9",
+    "bytes": 300677
+  },
+  {
+    "family": "chinook",
+    "version": "1.4.4",
+    "filename": "chinook-1.4.4.sqlite",
+    "source": "https://github.com/lerocha/chinook-database/releases/download/v1.4.4/Chinook_Sqlite.sqlite",
+    "sha256": "bdf635be69850bd3be09c9a2dbeef7ddfb80036bd3ef3381383cd03b61e4a61a",
+    "bytes": 1067008
+  },
+  {
+    "family": "chinook",
+    "version": "1.4.5",
+    "filename": "chinook-1.4.5.sqlite",
+    "source": "https://github.com/lerocha/chinook-database/releases/download/v1.4.5/Chinook_Sqlite.sqlite",
+    "sha256": "bdf635be69850bd3be09c9a2dbeef7ddfb80036bd3ef3381383cd03b61e4a61a",
+    "bytes": 1067008
+  },
+  {
+    "family": "typescript",
+    "version": "5.6.2",
+    "filename": "typescript-5.6.2.tgz",
+    "source": "https://registry.npmjs.org/typescript/-/typescript-5.6.2.tgz",
+    "sha256": "6e954963e7689a13573927021cf1fe2d7f85d7808eba49f03f84cb5d77cdd6bf",
+    "bytes": 4174769
+  },
+  {
+    "family": "typescript",
+    "version": "5.6.3",
+    "filename": "typescript-5.6.3.tgz",
+    "source": "https://registry.npmjs.org/typescript/-/typescript-5.6.3.tgz",
+    "sha256": "ef67f8d8ad895858024b7339d3e34bf112cae3c5db1f538c3079038b17ae30fa",
+    "bytes": 4174590
+  }
+]
