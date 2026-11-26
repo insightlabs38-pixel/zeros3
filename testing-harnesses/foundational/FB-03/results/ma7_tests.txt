@@ -1,0 +1,73 @@
+--- PASS: TestAuthorityRetiredEquivalents (0.40s)
+    --- PASS: TestAuthorityRetiredEquivalents/missing_component:_verify,_reachability,_findings,_maintenance_and_mutations_refuse (0.40s)
+--- PASS: TestB10GroupedDamagedRecordRefusesGC (0.68s)
+    --- PASS: TestB10GroupedDamagedRecordRefusesGC/grouped=false (0.33s)
+    --- PASS: TestB10GroupedDamagedRecordRefusesGC/grouped=true (0.35s)
+    zeros3_fb03_maint_test.go:192: reclaimed 186468 of the control's 1675794 bytes; 0 packs retired (control 1)
+--- PASS: TestFB03_MaintIsolatesCorruptRecord (0.22s)
+--- PASS: TestFB03_MaintProceedsAroundMissingLeaf (0.33s)
+    --- PASS: TestFB03_MaintProceedsAroundMissingLeaf/loose-chunk (0.11s)
+    --- PASS: TestFB03_MaintProceedsAroundMissingLeaf/pack-gone (0.12s)
+    --- PASS: TestFB03_MaintProceedsAroundMissingLeaf/manifest-gone (0.10s)
+    zeros3_fb03_maint_test.go:337: an isolating pass reaches [maint-marked maint-reconciled reach-chunk-check pack-record-written pack-before-sync pack-after-sync maint-carried maint-condemned maint-drained maint-before-file-unlink maint-retired]
+--- PASS: TestFB03_MaintCrashDuringIsolatedPass (1.37s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/maint-marked (0.12s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/maint-reconciled (0.11s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/reach-chunk-check (0.11s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/pack-record-written (0.12s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/pack-before-sync (0.10s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/pack-after-sync (0.12s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/maint-carried (0.11s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/maint-condemned (0.11s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/maint-drained (0.12s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/maint-before-file-unlink (0.11s)
+    --- PASS: TestFB03_MaintCrashDuringIsolatedPass/maint-retired (0.12s)
+    zeros3_fb03_maint_test.go:512: round 0: 11 objects, damage none; {Damage: Reclaimed:70377 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 1: 16 objects, damage none; {Damage: Reclaimed:330453 Retired:1 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 2: 16 objects, damage none; {Damage: Reclaimed:566001 Retired:3 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 3: 14 objects, damage packed; {Damage: Reclaimed:663815 Retired:3 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 0: 4 objects, damage manifest; {Damage:reference Reclaimed:0 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 1: 3 objects, damage manifest; {Damage:reference Reclaimed:0 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 2: 3 objects, damage none; {Damage: Reclaimed:604903 Retired:2 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 3: 4 objects, damage loose; {Damage:leaf Reclaimed:282055 Retired:1 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 0: 5 objects, damage manifest; {Damage:reference Reclaimed:0 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 1: 3 objects, damage none; {Damage: Reclaimed:261697 Retired:1 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 2: 3 objects, damage none; {Damage: Reclaimed:278279 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 3: 3 objects, damage packed; {Damage: Reclaimed:297103 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 0: 7 objects, damage none; {Damage: Reclaimed:183030 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 1: 11 objects, damage manifest; {Damage:reference Reclaimed:0 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 2: 10 objects, damage manifest; {Damage:reference Reclaimed:0 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 3: 15 objects, damage packed; {Damage: Reclaimed:68605 Retired:0 Held:1 Quar:1}
+    zeros3_fb03_maint_test.go:512: round 0: 7 objects, damage none; {Damage: Reclaimed:172902 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 1: 10 objects, damage manifest; {Damage:reference Reclaimed:0 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 2: 9 objects, damage none; {Damage: Reclaimed:716265 Retired:2 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 3: 7 objects, damage packed; {Damage: Reclaimed:564991 Retired:2 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 0: 7 objects, damage none; {Damage: Reclaimed:195815 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 1: 10 objects, damage none; {Damage: Reclaimed:606280 Retired:2 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 2: 14 objects, damage loose; {Damage:leaf Reclaimed:1262 Retired:0 Held:0 Quar:0}
+    zeros3_fb03_maint_test.go:512: round 3: 19 objects, damage none; {Damage: Reclaimed:137662 Retired:1 Held:0 Quar:0}
+--- PASS: TestFB03_MaintModel (1.14s)
+    --- PASS: TestFB03_MaintModel/seed=0 (0.24s)
+    --- PASS: TestFB03_MaintModel/seed=1 (0.17s)
+    --- PASS: TestFB03_MaintModel/seed=2 (0.16s)
+    --- PASS: TestFB03_MaintModel/seed=3 (0.17s)
+    --- PASS: TestFB03_MaintModel/seed=4 (0.17s)
+    --- PASS: TestFB03_MaintModel/seed=5 (0.23s)
+--- PASS: TestFB03_IdleStoreRunsNoMark (1.20s)
+--- PASS: TestFB03_IdleRecheckHorizon (0.59s)
+--- PASS: TestFB03_MaintAuthorityDamageIsReference (0.75s)
+    --- PASS: TestFB03_MaintAuthorityDamageIsReference/grouped-last-frame (0.28s)
+    --- PASS: TestFB03_MaintAuthorityDamageIsReference/grouped-inner-frame (0.23s)
+    --- PASS: TestFB03_MaintAuthorityDamageIsReference/missing-component (0.25s)
+--- PASS: TestGC_MissingLiveChunkKeepsLiveData_K7 (0.02s)
+--- PASS: TestRepack_IsolatesCorruptLiveSource (0.16s)
+--- PASS: TestPackCompression_RepackAbortsOnDamagedCompressedData (0.57s)
+    --- PASS: TestPackCompression_RepackAbortsOnDamagedCompressedData/damaged_live_source (0.21s)
+    --- PASS: TestPackCompression_RepackAbortsOnDamagedCompressedData/damaged_replacement/truncate (0.19s)
+    --- PASS: TestPackCompression_RepackAbortsOnDamagedCompressedData/damaged_replacement/flip-compressed-payload (0.17s)
+--- PASS: TestRepack_KeepUnchangedChecksReplacement (0.45s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/identical (0.13s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/mixed-unchanged (0.14s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/compressible (0.09s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/corrupt (0.07s)
+ok  	zeros3	7.980s

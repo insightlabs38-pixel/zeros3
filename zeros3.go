@@ -44,6 +44,7 @@ import (
 	"hash"
 	"hash/adler32"
 	"hash/crc32"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"iter"
@@ -1291,6 +1292,7 @@ func (s *Store) casPublishWith(files []casStaged, replace bool, pre []string) (e
 }
 
 func (s *Store) casPublishClaimed(files []casStaged, claims []*pubClaim, replace bool, pre []string) (err error) {
+	defer s.maintTouch() // a loose file nothing commits is garbage (section 13d3)
 	if len(files) == 0 {
 		s.casRemoveDirs(pre)
 		return nil
@@ -6946,6 +6948,7 @@ func sortedMetadataKV(metadata map[string]string) []metadataKV {
 // caller must record in the journal so that manifest corruption can be
 // detected on replay/read independent of the UUID filename.
 func (s *Store) publishManifest(m manifestV1) (id string, sum [32]byte, err error) {
+	defer s.maintTouch()
 	data, err := json.Marshal(m)
 	if err != nil {
 		return "", sum, err
@@ -9473,6 +9476,12 @@ type Store struct {
 	writerLock *storeLock
 	readerLock *storeLock
 	maintRun   *maintRunner
+	// Damage isolation and the dirty gate (section 13d3): copies maintenance
+	// keeps in place, events outside the journal that can make garbage, and the
+	// mark of the last pass that found nothing to do.
+	quar        packQuarantine
+	maintEvents atomic.Uint64
+	maintIdleAt atomic.Pointer[maintIdleKey]
 }
 
 // OpenStore opens the store rooted at root, initializing it (writing
@@ -18623,6 +18632,7 @@ type reachabilityResult struct {
 	manifests     map[string]*reachManifest // live manifest UUID -> decoded manifest (reachOpts.keepManifests)
 	tbl           *digestTable              // every live chunk digest with its claimed length (set by reachabilityScan)
 	manTbl        *digestTable              // the digest of every live manifest, which names an inline manifest record
+	authPresent   bool                      // the store keeps authority bodies: a missing CDC chunk may stand for a body that vanished
 
 	// Optional structured representations (section 16d). Their physical chunks
 	// are part of ReferencedChunks/ChunkLength; a root that cannot be trusted
@@ -18659,6 +18669,41 @@ type reachabilityResult struct {
 // only broken *live* data and journal replay do.
 func (r reachabilityResult) OK() bool {
 	return r.issueTracker.ok() && r.JournalOK
+}
+
+// deletionSafe reports that the scan's live set is exact, so deleting what it
+// does not name is safe: the scan is OK, or its only issues are live chunks
+// that are missing, the wrong length or unreadable (the leaf damage of section
+// 13d3). Every record that can add a digest to the live set -- the journal, a
+// manifest, a part list, a snapshot, a representation root or closure, an
+// authority body and its bases -- was read and verified; a chunk adds none.
+// A store with authority bodies is the exception: a reclaimed CDC list stands
+// in for a body record, so a missing CDC chunk there can be the only trace of
+// a record that vanished, and its pieces would no longer be marked.
+func (r reachabilityResult) deletionSafe() bool {
+	n := len(r.invalidChunks)
+	return r.JournalOK && r.Missing+r.Corrupt+r.Invalid == n && (n == 0 || r.tbl != nil && !r.authPresent)
+}
+
+// damageClass names the scan's damage for reports: "", "leaf" or "reference".
+func damageClass(r reachabilityResult) string {
+	switch {
+	case r.OK():
+		return ""
+	case r.deletionSafe():
+		return "leaf"
+	}
+	return "reference"
+}
+
+// damagedDigests is the leaf damage of a deletion-safe scan: the live chunks
+// that failed their check.
+func (r reachabilityResult) damagedDigests() [][32]byte {
+	out := make([][32]byte, 0, len(r.invalidChunks))
+	for _, i := range r.invalidChunks {
+		out = append(out, r.tbl.keys[i])
+	}
+	return out
 }
 
 // live is the set of digests pack maintenance must keep: the referenced chunks
@@ -20204,6 +20249,7 @@ type GCResult struct {
 
 	LiveSetOK bool          `json:"live_set_ok"`
 	Issues    []VerifyIssue `json:"issues,omitempty"`
+	Damage    string        `json:"damage,omitempty"` // "leaf" or "reference" (section 13d3)
 
 	ChunksScanned     int `json:"chunks_scanned"`
 	ChunksReachable   int `json:"chunks_reachable"`
@@ -20270,6 +20316,7 @@ func (store *Store) gcOffline(apply bool) (GCResult, error) {
 		SnapshotRootCount:   rr.SnapshotRootCount,
 		LiveSetOK:           rr.OK(),
 		Issues:              rr.Issues,
+		Damage:              damageClass(rr),
 	}
 
 	var unreachableChunkPaths, unreachableManifestPaths []string
@@ -20353,7 +20400,9 @@ func (store *Store) gcOffline(apply bool) (GCResult, error) {
 	// Fail-closed: a destructive pass never runs against a live root set
 	// it cannot fully trust. Dry-run (above) already reported the same
 	// issues -- this is the one place apply itself refuses to act on them.
-	if !rr.OK() {
+	// Damaged live chunks alone leave the live set exact (section 13d3): they
+	// are live, so nothing below touches them, and fully dead packs hold none.
+	if !rr.deletionSafe() {
 		return res, errGCUnsafe
 	}
 
@@ -21711,6 +21760,9 @@ type packEncoding struct {
 	order func(t tier, cands []compactCandidate)
 	// checkpoint runs before staging a replacement batch, outside publication locks.
 	checkpoint func() error
+	// isolate: a live record no copy of which reads back takes the packs holding
+	// it out of the carry (into the quarantine) instead of failing it.
+	isolate bool
 }
 
 type repackOptions struct {
@@ -21757,6 +21809,10 @@ type RepackResult struct {
 	PacksKeptUnchanged int         `json:"packs_kept_unchanged,omitempty"`
 	PreflightReadBytes int64       `json:"preflight_read_bytes,omitempty"`
 	Selected           []packUsage `json:"selected,omitempty"`
+	// Damage isolation (section 13d3): packs left in place because they hold a
+	// copy of a damaged live digest, and the copies a carry could not read.
+	HeldPacks   int                 `json:"held_packs,omitempty"`
+	Quarantined []QuarantinedRecord `json:"quarantined,omitempty"`
 
 	// BytesRead is the logical (decoded) bytes of the copied chunks;
 	// BytesWritten, BytesDeleted and BytesReclaimed are physical pack-file
@@ -21905,7 +21961,42 @@ type packCarry struct {
 // carryLivePacks republishes every live record of the doomed packs that lacks
 // a verified copy elsewhere (steps 1-3 of the section comment) and proves each
 // carried chunk readable outside them. Nothing is removed.
+//
+// With enc.isolate, a live record that no copy yields is not a failure: every
+// pack holding it leaves the doomed set (and enters the quarantine) and the
+// carry is planned again without them; a round that met such a record
+// published nothing. Each round drops at least one pack.
 func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, enc packEncoding, res *RepackResult) (*packCarry, error) {
+	if !enc.isolate {
+		return s.carryLivePacksOnce(doomed, live, dest, target, enc, res, nil)
+	}
+	for {
+		saved := *res
+		var bad []carryFailure
+		c, err := s.carryLivePacksOnce(doomed, live, dest, target, enc, res, &bad)
+		if !errors.Is(err, errCarryDamaged) {
+			return c, err
+		}
+		*res = saved
+		var dropped []packUsage
+		doomed, dropped = s.dropHolders(doomed, bad)
+		if len(dropped) == 0 {
+			return nil, fmt.Errorf("chunk %x has no readable copy to carry over: %w; nothing was removed", bad[0].sum, bad[0].err)
+		}
+		for _, u := range dropped {
+			s.retire.cancel(u.tier, u.ID)
+			res.HeldPacks++
+			if !u.fullyDead() {
+				res.PacksRewritten--
+			}
+		}
+		if len(doomed) == 0 {
+			return nil, nil
+		}
+	}
+}
+
+func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, enc packEncoding, res *RepackResult, bad *[]carryFailure) (*packCarry, error) {
 	if len(doomed) == 0 {
 		return nil, nil
 	}
@@ -21988,6 +22079,10 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 	}
 	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
 	abort := func(c compactCandidate, err error) error {
+		if bad != nil {
+			*bad = append(*bad, carryFailure{c.sum, err})
+			return nil // staging goes on, so one round finds every unreadable record
+		}
 		return fmt.Errorf("chunk %x has no readable copy to carry over: %w; nothing was removed", c.sum, err)
 	}
 	// Every replacement is staged before any is published, so an unreadable
@@ -22066,8 +22161,13 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 			if err != nil {
 				return nil, err
 			}
-			staged = append(staged, stagedPack{pl.t, path, entries, len(entries) - len(comp.packChunkEntries(entries))})
+			if path != "" {
+				staged = append(staged, stagedPack{pl.t, path, entries, len(entries) - len(comp.packChunkEntries(entries))})
+			}
 		}
+	}
+	if bad != nil && len(*bad) > 0 {
+		return nil, errCarryDamaged
 	}
 	for _, sp := range staged {
 		info, err := s.publishPack(sp.t, sp.path, sp.entries)
@@ -22183,6 +22283,16 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	if opt.Tier != "" && opt.Tier != "all" {
 		sel = slices.DeleteFunc(sel, func(u packUsage) bool { return u.Tier != opt.Tier })
 	}
+	if rr.deletionSafe() { // section 13d3: packs holding a damaged live chunk stay as they are
+		held := s.heldPacks(rr.damagedDigests())
+		sel = slices.DeleteFunc(sel, func(u packUsage) bool {
+			if held[[2]string{u.Tier, u.ID}] && !u.fullyDead() {
+				res.HeldPacks++
+				return true
+			}
+			return false
+		})
+	}
 	if opt.MaxSourcePacks > 0 && len(sel) > opt.MaxSourcePacks {
 		// A fully live, incompressible pack can be selected repeatedly by
 		// recompression. Prefer actual reclamation when bounding a pass.
@@ -22219,14 +22329,17 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 		res.BytesReclaimed = oldBytes - res.BytesWritten
 		return res, nil
 	}
-	if !rr.OK() {
+	if !rr.deletionSafe() {
 		return res, errGCUnsafe
 	}
 	if clash := s.packClashes(); len(clash) > 0 {
 		return res, fmt.Errorf("repack: refusing to run: %s", clash[0])
 	}
 	s.removeStalePackStaging()
-	if err := s.replacePacksLive(sel, live, opt.TargetBytes, enc, &res); err != nil {
+	enc.isolate = true
+	err := s.replacePacksLive(sel, live, opt.TargetBytes, enc, &res)
+	res.Quarantined = s.quar.list()
+	if err != nil {
 		return res, fmt.Errorf("repack: %w", err)
 	}
 	res.BytesReclaimed = res.BytesDeleted - res.BytesWritten
@@ -23060,6 +23173,7 @@ type maintEpoch struct {
 	packs0   map[[2]string]bool
 	agMark   agLoc // log end at T0: grouped records after it are too new to condemn
 	pinCount atomic.Int64
+	idle     maintIdleKey // the dirty gate's view of the mark
 }
 
 // mpin records that an operation relies on the chunk or inline-manifest
@@ -23190,7 +23304,10 @@ func (s *Store) tryReaderLease() *storeLock {
 // journal end and the applied namespace agree; neither lock is held beyond the
 // O(1) view acquisition and the copy of the multipart part lists.
 func (s *Store) maintBegin() (*maintEpoch, error) {
+	// Events are read before T0: a file an uncounted event wrote is older than T0.
+	events := s.maintEvents.Load()
 	ep := &maintEpoch{t0: time.Now(), packs0: map[[2]string]bool{}}
+	ep.idle = maintIdleKey{events: events, at: ep.t0}
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -23214,6 +23331,8 @@ func (s *Store) maintBegin() (*maintEpoch, error) {
 			ep.packs0[[2]string{p.tier.String(), p.id}] = true
 		}
 	}
+	ep.idle.jSeq = ep.jSeq
+	ep.idle.packs, ep.idle.npacks = sealedPackHash(st)
 	s.maint.Store(ep)
 	return ep, nil
 }
@@ -23378,6 +23497,261 @@ func (r *retireSet) pending() (n int, bytes int64) {
 	return n, bytes
 }
 
+// ---- damage isolation and the dirty gate (section 13d3) -------------------
+//
+// Damage is classified by what it does to the mark. A live root whose metadata
+// cannot be read -- the journal, a manifest, a multipart part list, a
+// snapshot, a representation root or closure, an authority body or its bases --
+// may name digests the mark never saw. Buckets share chunks and metadata, so no
+// namespace can be proven unaffected: such a pass deletes nothing anywhere
+// (errGCUnsafe). A live chunk that is missing, has the wrong length or fails a
+// read is leaf damage: chunks carry no references (every structure the mark
+// followed to reach them was read and verified), so the live set stays exact
+// and whatever it does not name is garbage, whatever the damaged chunk held.
+// The damage is then kept where it is -- no pack holding a copy of a damaged
+// digest is rewritten or retired, and a loose copy is live -- and the rest of
+// the pass proceeds. A store with authority bodies (section 16e) is the
+// exception: there a reclaimed CDC list stands in for a body record, so a
+// missing CDC chunk can be the only trace of a record that vanished (a lost
+// record file, or a damaged last frame that reads as a torn tail), and its
+// pieces would no longer be marked. Chunk damage there blocks deletion as
+// reference damage does; a damaged region of an unsealed group is reported.
+//
+// A carry that cannot read a live record (the online mark checks presence and
+// length only) is isolated the same way: every pack holding that digest leaves
+// the doomed set and enters the quarantine, the carry is planned again without
+// them, and later passes leave those packs alone until the copy reads back or
+// its pack leaves the locator. The quarantine is kept in memory (no format
+// change): after a restart the first carry that reaches the damage finds it
+// again.
+//
+// A scheduled pass is skipped while the store is as the last pass that found
+// nothing to do saw it at its mark: same journal sequence, same sealed packs,
+// and no garbage-making event outside the journal (a loose chunk or manifest
+// file published, a snapshot deleted, a representation root or authority body
+// written or retired). A missed event only delays reclamation, and a pass runs
+// at least every maintIdleRecheck however idle the store is. An explicit
+// request always runs.
+
+// QuarantinedRecord is a copy of a live digest that maintenance could not read
+// and keeps where it is: its pack is neither rewritten nor retired.
+type QuarantinedRecord struct {
+	Digest    string    `json:"digest"`
+	Pack      string    `json:"pack"` // tier/id
+	FirstSeen time.Time `json:"first_seen"`
+	Reason    string    `json:"reason"`
+}
+
+type quarKey struct {
+	tier tier
+	id   string
+	sum  [32]byte
+}
+
+type packQuarantine struct {
+	mu sync.Mutex
+	m  map[quarKey]*QuarantinedRecord
+}
+
+func (q *packQuarantine) add(t tier, id string, sum [32]byte, why string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.m == nil {
+		q.m = map[quarKey]*QuarantinedRecord{}
+	}
+	k := quarKey{t, id, sum}
+	if q.m[k] == nil {
+		q.m[k] = &QuarantinedRecord{Digest: hex.EncodeToString(sum[:]), Pack: t.String() + "/" + id, FirstSeen: time.Now().UTC(), Reason: why}
+	}
+}
+
+// packs is the set of quarantined packs, keyed like packUsage (tier name, id).
+func (q *packQuarantine) packs() map[[2]string]bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make(map[[2]string]bool, len(q.m))
+	for k := range q.m {
+		out[[2]string{k.tier.String(), k.id}] = true
+	}
+	return out
+}
+
+func (q *packQuarantine) list() []QuarantinedRecord {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]QuarantinedRecord, 0, len(q.m))
+	for _, r := range q.m {
+		out = append(out, *r)
+	}
+	slices.SortFunc(out, func(a, b QuarantinedRecord) int {
+		return cmp.Or(cmp.Compare(a.Pack, b.Pack), cmp.Compare(a.Digest, b.Digest))
+	})
+	return out
+}
+
+// recheck releases every entry whose pack left the locator or whose copy now
+// reads back and verifies.
+func (q *packQuarantine) recheck(s *Store, live *liveSet) {
+	q.mu.Lock()
+	keys := slices.Collect(maps.Keys(q.m))
+	q.mu.Unlock()
+	st := s.packSnap()
+	for _, k := range keys {
+		if !live.has(k.sum) || !quarStillDamaged(st, k) {
+			q.mu.Lock()
+			delete(q.m, k)
+			q.mu.Unlock()
+		}
+	}
+}
+
+// quarStillDamaged reports that the quarantined copy is still in the locator
+// and still fails to read back.
+func quarStillDamaged(st *packState, k quarKey) bool {
+	var locs [4]packLoc
+	for _, loc := range st.appendLocs(locs[:0], k.sum) {
+		if p := st.packs[loc.pack]; p.tier == k.tier && p.id == k.id {
+			if _, err := st.readPacked(k.sum, loc); err != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// quarantineDigest quarantines every packed copy of sum.
+func (s *Store) quarantineDigest(sum [32]byte, why string) {
+	st := s.packSnap()
+	var locs [4]packLoc
+	for _, loc := range st.appendLocs(locs[:0], sum) {
+		if p := st.packs[loc.pack]; !st.isGone(uint32(loc.pack)) {
+			s.quar.add(p.tier, p.id, sum, why)
+		}
+	}
+}
+
+// heldPacks is the set of packs a pass must leave in place: those holding a
+// copy of one of the damaged digests, and the quarantined ones.
+func (s *Store) heldPacks(damaged [][32]byte) map[[2]string]bool {
+	held := s.quar.packs()
+	st := s.packSnap()
+	var locs [4]packLoc
+	for _, sum := range damaged {
+		for _, loc := range st.appendLocs(locs[:0], sum) {
+			p := st.packs[loc.pack]
+			held[[2]string{p.tier.String(), p.id}] = true
+		}
+	}
+	return held
+}
+
+// carryFailure is a live record a carry could not read from any copy.
+type carryFailure struct {
+	sum [32]byte
+	err error
+}
+
+// errCarryDamaged ends a carry round that met unreadable live records; nothing
+// was published.
+var errCarryDamaged = errors.New("live records could not be read")
+
+// dropHolders removes from doomed every pack the locator says holds a copy of
+// one of bad, quarantining each copy; it returns the remaining packs and the
+// removed ones.
+func (s *Store) dropHolders(doomed []packUsage, bad []carryFailure) (keep, dropped []packUsage) {
+	holders := map[[2]string]bool{}
+	st := s.packSnap()
+	var locs [4]packLoc
+	for _, f := range bad {
+		s.quarantineDigest(f.sum, f.err.Error())
+		for _, loc := range st.appendLocs(locs[:0], f.sum) {
+			p := st.packs[loc.pack]
+			holders[[2]string{p.tier.String(), p.id}] = true
+		}
+	}
+	for _, u := range doomed {
+		if holders[[2]string{u.Tier, u.ID}] {
+			dropped = append(dropped, u)
+		} else {
+			keep = append(keep, u)
+		}
+	}
+	return keep, dropped
+}
+
+// drop takes the packs holding a copy of one of bad out of the carry's doomed
+// set (after its replacements were published): they stay in the locator.
+func (c *packCarry) drop(s *Store, bad []carryFailure) int {
+	keep, dropped := s.dropHolders(c.doomed, bad)
+	for _, u := range dropped {
+		delete(c.skip, u.idx)
+		s.retire.cancel(u.tier, u.ID)
+	}
+	c.doomed = keep
+	return len(dropped)
+}
+
+// maintIdleRecheck bounds how long the dirty gate may skip scheduled passes.
+var maintIdleRecheck = 24 * time.Hour
+
+// maintIdleKey is the state a pass saw at its mark.
+type maintIdleKey struct {
+	jSeq   uint64
+	events uint64
+	packs  uint64 // order-independent hash of the sealed packs in the locator
+	npacks int
+	at     time.Time
+}
+
+func (k maintIdleKey) same(o maintIdleKey) bool {
+	return k.jSeq == o.jSeq && k.events == o.events && k.packs == o.packs && k.npacks == o.npacks
+}
+
+// maintTouch counts an event outside the journal that can make garbage. Call
+// it after the file it concerns is written or removed.
+func (s *Store) maintTouch() { s.maintEvents.Add(1) }
+
+func sealedPackHash(st *packState) (uint64, int) {
+	var h uint64
+	n := 0
+	for i, p := range st.packs {
+		if p.open || st.isGone(uint32(i)) {
+			continue
+		}
+		f := fnv.New64a()
+		f.Write([]byte(p.tier.String()))
+		f.Write([]byte{'/'})
+		f.Write([]byte(p.id))
+		h += f.Sum64()
+		n++
+	}
+	return h, n
+}
+
+// maintIdle reports that a scheduled pass would find nothing: the last pass
+// found nothing to do, recently enough, and nothing has changed since its mark.
+func (s *Store) maintIdle() bool {
+	k := s.maintIdleAt.Load()
+	if k == nil || time.Since(k.at) >= maintIdleRecheck {
+		return false
+	}
+	cur := maintIdleKey{events: s.maintEvents.Load()}
+	_, cur.jSeq = s.journalEnd()
+	cur.packs, cur.npacks = sealedPackHash(s.packSnap())
+	return cur.same(*k)
+}
+
+// foundNothing reports a pass that completed, saw no damage and had nothing to
+// reclaim, carry, defer or leave pending.
+func (r *MaintReport) foundNothing() bool {
+	return r.Error == "" && !r.Canceled && r.Deferred == "" && r.LiveSetOK && len(r.Issues) == 0 &&
+		r.CandidatePacks == 0 && r.PacksDeferred == 0 && r.PacksWritten == 0 && r.PacksRetired == 0 &&
+		r.PendingPacks == 0 && r.RecordsCopied == 0 && r.BytesWritten == 0 && r.BytesReclaimed == 0 &&
+		r.ChunksDeleted+r.ManifestsDeleted+r.RepRootsDeleted+r.AuthBodiesDeleted+r.TmpFilesDeleted == 0 &&
+		r.RetainedPinned == 0 && r.DeferredItems == 0 && r.LateRecords == 0 && r.RevivedRecords == 0 &&
+		r.HeldPacks == 0 && len(r.Quarantined) == 0
+}
+
 // ---- the pass -------------------------------------------------------------
 
 const (
@@ -23428,6 +23802,13 @@ type MaintReport struct {
 	JournalRoots  int           `json:"journal_roots"`
 	LiveSetOK     bool          `json:"live_set_ok"`
 	Issues        []VerifyIssue `json:"issues,omitempty"`
+	// Damage (section 13d3): "leaf" when the only issues are live chunks (the
+	// pass proceeds around them), "reference" when a root could not be resolved
+	// (the pass deletes nothing: errGCUnsafe).
+	Damage        string              `json:"damage,omitempty"`
+	DamagedChunks int                 `json:"damaged_chunks,omitempty"` // live digests the mark found missing, short or unreadable
+	HeldPacks     int                 `json:"held_packs,omitempty"`     // packs left in place because they hold a damaged or quarantined copy
+	Quarantined   []QuarantinedRecord `json:"quarantined,omitempty"`    // after the pass
 
 	MarkMicros   int64 `json:"mark_us"`   // commitMu + mu hold at T0
 	FreezeMicros int64 `json:"freeze_us"` // pins of condemned pack records waited at most this long
@@ -23494,13 +23875,20 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	}
 	defer s.maintMu.Unlock()
 	rep.Started = time.Now().UTC()
+	var idle *maintIdleKey
 	defer func() {
 		rep.Finished = time.Now().UTC()
 		rep.NetBytesReclaimed = rep.BytesReclaimed - rep.BytesWritten
 		rep.PendingPacks, rep.PendingBytes = s.retire.pending()
+		rep.Quarantined = s.quar.list()
 		if err != nil {
 			rep.Error = err.Error()
 			rep.Canceled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		}
+		if idle != nil && rep.foundNothing() {
+			s.maintIdleAt.Store(idle)
+		} else {
+			s.maintIdleAt.Store(nil)
 		}
 	}()
 	var checkpoint func() error
@@ -23521,6 +23909,7 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		return rep, err
 	}
 	rep.MarkMicros = time.Since(t).Microseconds()
+	idle = &ep.idle
 	defer func() { rep.Pins = ep.pinCount.Load() }()
 	defer s.maintEnd(ep)
 	defer s.retire.dropUnswapped()
@@ -23555,14 +23944,24 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	}
 	rep.ScanMS = time.Since(t).Milliseconds()
 	rep.JournalRoots, rep.LiveSetOK, rep.Issues = rr.JournalRootCount, rr.OK(), rr.Issues
+	// Section 13d3: an unresolved root stops all deletion; damaged live chunks
+	// only keep the packs holding them.
+	var damaged [][32]byte
 	if !rr.OK() {
-		return rep, errGCUnsafe
+		if !rr.deletionSafe() {
+			rep.Damage = "reference"
+			return rep, errGCUnsafe
+		}
+		damaged = rr.damagedDigests()
+		rep.Damage, rep.DamagedChunks = "leaf", len(damaged)
 	}
 	live := rr.liveSet()
 	ep.live.Store(live)
 	if err := ctx.Err(); err != nil {
 		return rep, err
 	}
+	s.quar.recheck(s, live)
+	held := s.heldPacks(damaged)
 
 	var files []doomedFile
 	if opt.GC {
@@ -23570,11 +23969,12 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 			return rep, err
 		}
 	}
-	doomed := s.maintSelectPacks(ep, live, opt, &rep)
+	doomed := s.maintSelectPacks(ep, live, held, opt, &rep)
 	enc := opt.encoding()
 	enc.checkpoint = checkpoint
+	enc.isolate = true
 	if opt.Layout == layoutRecon {
-		if doomed, err = s.maintRelayout(ep, live, opt, doomed, &enc, &rep); err != nil {
+		if doomed, err = s.maintRelayout(ep, live, held, opt, doomed, &enc, &rep); err != nil {
 			return rep, err
 		}
 	}
@@ -23588,6 +23988,7 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		rep.PacksWritten += rres.PacksWritten
 		rep.RecordsCopied += rres.RecordsCopied
 		rep.BytesWritten += rres.BytesWritten
+		rep.HeldPacks += rres.HeldPacks
 		if err != nil {
 			return rep, fmt.Errorf("maintenance: %w", err)
 		}
@@ -23781,13 +24182,18 @@ func (s *Store) maintDeadFiles(ep *maintEpoch, rr *reachabilityResult, live *liv
 
 // maintSelectPacks picks the packs of this pass among those published by T0:
 // with no live record (GC), or mostly dead (repack), most reclaimable first.
-func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, opt MaintOptions, rep *MaintReport) []packUsage {
+// A held pack (section 13d3) is left out unless it holds no live record.
+func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, held map[[2]string]bool, opt MaintOptions, rep *MaintReport) []packUsage {
 	var sel []packUsage
 	for _, u := range s.packUsagesLive(live) {
 		if !ep.packs0[[2]string{u.Tier, u.ID}] || s.packSnap().packs[u.idx].open {
 			continue
 		}
 		if opt.GC && u.fullyDead() || opt.Repack && u.partiallyDead() && u.Utilization*100 < float64(opt.MaxLivePercent) {
+			if held[[2]string{u.Tier, u.ID}] && !u.fullyDead() {
+				rep.HeldPacks++
+				continue
+			}
 			sel = append(sel, u)
 		}
 	}
@@ -23802,7 +24208,7 @@ func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, opt MaintOptions
 
 // maintRelayout adds the packs of families the planner would relay out (within the pass budget) and
 // orders the carry; a plan is memoized until the records or the pack set change.
-func (s *Store) maintRelayout(ep *maintEpoch, live *liveSet, opt MaintOptions, doomed []packUsage, enc *packEncoding, rep *MaintReport) ([]packUsage, error) {
+func (s *Store) maintRelayout(ep *maintEpoch, live *liveSet, held map[[2]string]bool, opt MaintOptions, doomed []packUsage, enc *packEncoding, rep *MaintReport) ([]packUsage, error) {
 	st := s.packSnap()
 	h := sha256.New()
 	fmt.Fprintf(h, "%d", s.auth.gen.Load())
@@ -23821,7 +24227,7 @@ func (s *Store) maintRelayout(ep *maintEpoch, live *liveSet, opt MaintOptions, d
 	us := s.packUsagesLive(live)
 	var add []packUsage
 	for _, u := range plan.selectPacks(us, doomed)[len(doomed):] {
-		if !ep.packs0[[2]string{u.Tier, u.ID}] || st.packs[u.idx].open {
+		if !ep.packs0[[2]string{u.Tier, u.ID}] || st.packs[u.idx].open || held[[2]string{u.Tier, u.ID}] {
 			return doomed, nil // a family's packs move together or not at all
 		}
 		add = append(add, u)
@@ -23862,8 +24268,10 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 	}
 	comp := newBlockCompressor(opt.Compress, opt.BlockLog)
 	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
+	var bad []carryFailure
 	abort := func(c compactCandidate, err error) error {
-		return fmt.Errorf("maintenance: chunk %x has no readable copy to carry: %w", c.sum, err)
+		bad = append(bad, carryFailure{c.sum, err})
+		return nil // isolated below: its packs stay in place
 	}
 	for t := range numTiers {
 		if len(by[t]) == 0 {
@@ -23884,7 +24292,17 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 		rep.BytesWritten += info.size
 		rep.RecordsCopied += len(comp.packChunkEntries(entries))
 	}
+	isBad := map[[32]byte]bool{}
+	if len(bad) > 0 {
+		rep.HeldPacks += carry.drop(s, bad)
+		for _, f := range bad {
+			isBad[f.sum] = true
+		}
+	}
 	for _, c := range need {
+		if isBad[c.sum] {
+			continue
+		}
 		if _, err := s.casReadH(c.sum, carry.skip, h); err != nil {
 			return n, fmt.Errorf("maintenance: chunk %x is not readable outside the retired packs: %w", c.sum, err)
 		}
@@ -24078,6 +24496,7 @@ type maintRunner struct {
 	mu      sync.Mutex
 	running bool
 	passes  uint64
+	skipped uint64 // scheduled passes the dirty gate skipped (section 13d3)
 	last    *MaintReport
 }
 
@@ -24086,6 +24505,7 @@ type MaintStatus struct {
 	Enabled  bool         `json:"enabled"`
 	Running  bool         `json:"running"`
 	Passes   uint64       `json:"passes"`
+	Skipped  uint64       `json:"skipped,omitempty"` // idle: nothing changed since a pass that found nothing
 	Interval string       `json:"interval"`
 	Options  MaintOptions `json:"options"`
 	Last     *MaintReport `json:"last,omitempty"`
@@ -24131,7 +24551,7 @@ func (s *Store) maintenanceStatus() MaintStatus {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return MaintStatus{Enabled: true, Running: r.running, Passes: r.passes, Interval: r.every.String(), Options: r.opt, Last: r.last}
+	return MaintStatus{Enabled: true, Running: r.running, Passes: r.passes, Skipped: r.skipped, Interval: r.every.String(), Options: r.opt, Last: r.last}
 }
 
 func (r *maintRunner) loop(ctx context.Context) {
@@ -24147,6 +24567,12 @@ func (r *maintRunner) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick:
+			if r.s.maintIdle() { // an explicit request (kick) always runs
+				r.mu.Lock()
+				r.skipped++
+				r.mu.Unlock()
+				continue
+			}
 		case <-r.kick:
 		}
 		r.mu.Lock()
@@ -33494,6 +33920,7 @@ func (s *Store) deleteSnapshot(id string) error {
 		}
 		return err
 	}
+	s.maintTouch()
 	return syncDir(filepath.Join(s.root, "snapshots"))
 }
 
@@ -39936,6 +40363,7 @@ func (s *Store) ensureRepFormat() error {
 // staged in tmp/, fsynced, renamed and the directories fsynced. A published
 // root is immutable; republishing the same manifest replaces it atomically.
 func (s *Store) publishRepRoot(r *repRoot) error {
+	defer s.maintTouch()
 	floor, err := s.repPublicationFloor(r)
 	if err != nil {
 		return err
@@ -57658,6 +58086,7 @@ func (s *Store) authPublish(rec *authRecord) error {
 // A recovery caller holds the exclusive store lock. Keep the old record until
 // the fsynced replacement is ready to be renamed over it.
 func (s *Store) authPublishChecked(rec *authRecord, recoverCorrupt bool) error {
+	defer s.maintTouch()
 	data, err := rec.marshal()
 	if err != nil {
 		return err
@@ -59365,12 +59794,18 @@ type authReachCtx struct {
 func (s *Store) newAuthReachCtx(res *reachabilityResult) *authReachCtx {
 	a := &authReachCtx{s: s, res: res, files: map[[32]byte]bool{}, recs: map[[32]byte]*authRecord{}, visited: map[[32]byte]bool{}, faulty: map[[32]byte]bool{}, live: map[[32]byte]bool{}, depth: map[[32]byte]int{}}
 	if s.authMay() {
+		res.authPresent = true
 		list, err := s.authFiles()
 		if err != nil {
 			res.addIssue("invalid", "bodies", err.Error())
 		}
 		for _, f := range list {
 			a.files[f] = true
+		}
+		// A damaged region of an unsealed group hides whatever frames it held:
+		// a live record there is simply absent from the listing.
+		for _, d := range s.agDamagedRegions() {
+			res.addIssue("corrupt", "authority groups", d)
 		}
 	}
 	return a
@@ -71353,6 +71788,7 @@ func (s *Store) authRetireMany(shas [][32]byte, missingOK bool) error {
 }
 
 func (s *Store) authRetireManyLocked(shas [][32]byte, missingOK bool) error {
+	defer s.maintTouch()
 	var tombs [][]byte
 	var grouped, files [][32]byte
 	for _, sha := range shas {
@@ -71676,6 +72112,18 @@ func (s *Store) agUngroup() (int, error) {
 	s.formatMu.Unlock()
 	s.authInvalidate()
 	return len(live), err
+}
+
+// agDamagedRegions lists the regions the index skipped as damage, in group order.
+func (s *Store) agDamagedRegions() []string {
+	x := &s.auth.ag
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	var out []string
+	for _, q := range slices.Sorted(maps.Keys(x.groups)) {
+		out = append(out, x.groups[q].damaged...)
+	}
+	return out
 }
 
 // agVerify checks every frame of every group (CRC, record parse, content address) and the index.

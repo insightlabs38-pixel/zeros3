@@ -9133,10 +9133,11 @@ func TestGC_AdversarialMatrix_K1toK5(t *testing.T) {
 	}
 }
 
-// TestGC_RefusesOnCorruptLiveRoot_K7 proves Phase J: destructive apply
-// refuses outright when the live root set is not fully valid, while
-// dry-run still reports the problem.
-func TestGC_RefusesOnCorruptLiveRoot_K7(t *testing.T) {
+// TestGC_MissingLiveChunkKeepsLiveData_K7: a missing live chunk is leaf damage
+// (FB-03 M-A7, section 13d3). Dry-run and apply both report it; apply runs,
+// since the live set is still exact, and deletes nothing the object reaches.
+// Damage to a root keeps the refusal (the snapshot tests below).
+func TestGC_MissingLiveChunkKeepsLiveData_K7(t *testing.T) {
 	g1CDCSpecific(t, "corruption")
 	useLooseLayout(t, "removes and later restores the loose chunk file by path")
 	dir := t.TempDir()
@@ -9173,9 +9174,27 @@ func TestGC_RefusesOnCorruptLiveRoot_K7(t *testing.T) {
 		t.Fatalf("expected dry-run to report the missing-chunk issue")
 	}
 
-	_, err = gcCollect(dir, true)
-	if !errors.Is(err, errGCUnsafe) {
-		t.Fatalf("expected destructive apply to refuse with errGCUnsafe, got %v", err)
+	if dry.Damage != "leaf" {
+		t.Fatalf("a missing chunk is leaf damage, got %q", dry.Damage)
+	}
+	before := countChunkFiles(t, dir)
+	res, err := gcCollect(dir, true)
+	if err != nil || res.LiveSetOK || res.Damage != "leaf" || res.ChunksDeleted != 0 || res.ManifestsDeleted != 0 {
+		t.Fatalf("apply over leaf damage: %v %+v", err, res)
+	}
+	if countChunkFiles(t, dir) != before {
+		t.Fatal("apply deleted a chunk the damaged object reaches")
+	}
+	s, err = OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, _, err := s.GetObject("b", "k"); err == nil {
+		t.Fatal("the damaged object was served")
+	}
+	if v, err := s.Verify(true); err != nil || v.OK() || v.Missing != 1 {
+		t.Fatalf("the damage must stay visible: %v %+v", err, v.Issues)
 	}
 }
 
@@ -32400,31 +32419,39 @@ func TestRepack_AbortsWhenASourcePackIsUnusable(t *testing.T) {
 	}
 }
 
-func TestRepack_AbortsOnCorruptLiveSource(t *testing.T) {
+// A corrupt live record in a pack chosen for rewrite takes that pack out of
+// the repack (FB-03 M-A7): the pack stays byte for byte, its copy is
+// quarantined, nothing is laundered and the rest of the repack runs.
+func TestRepack_IsolatesCorruptLiveSource(t *testing.T) {
 	useLooseLayout(t, "fixture is loose chunks that compact/repack convert (the packed default is covered by the direct-pack and TestLayoutMatrix tests)")
 	fx := buildDeadPackStore(t, 1_500_000, 1_500_000, 82)
 	s, _ := OpenStore(fx.dir)
 	rr, _ := s.computeReachability(false)
 	u := partialPackOf(t, s, rr)
 	live := livePackedDigests(t, s, rr.ReferencedChunks, u)
-	flipPackedByte(t, s, live[len(live)/2])
+	victim := live[len(live)/2]
+	flipPackedByte(t, s, victim)
+	damaged, err := os.ReadFile(s.packSnap().packs[u.idx].path)
+	mustOK(t, err)
 	s.Close()
-	before := packFileSet(t, fx.dir)
 
-	_, err := repackStore(fx.dir, repackTestOpt)
-	if err == nil || !strings.Contains(err.Error(), "nothing was removed") {
-		t.Fatalf("err = %v", err)
+	res, err := repackStore(fx.dir, repackTestOpt)
+	if err != nil || res.HeldPacks != 1 || len(res.Quarantined) != 1 || res.Quarantined[0].Digest != hex.EncodeToString(victim[:]) {
+		t.Fatalf("repack over a corrupt live record: %v %+v", err, res)
 	}
-	if now := packFileSet(t, fx.dir); !reflect.DeepEqual(now, before) {
-		t.Fatalf("pack set changed after an aborted repack: %v -> %v", before, now)
+	if now := packFileSet(t, fx.dir); !now[u.ID+packFileSuffix] {
+		t.Fatalf("the pack holding the damaged record was removed: %v", now)
 	}
 	if stale, _ := filepath.Glob(filepath.Join(fx.dir, "tmp", "pack-*.tmp")); len(stale) != 0 {
 		t.Fatalf("staging file left behind: %v", stale)
 	}
 	s, _ = OpenStore(fx.dir)
 	defer s.Close()
-	if vr, _ := s.Verify(true); vr.OK() {
-		t.Fatal("deep verify must still report the corrupt live chunk")
+	if got, err := os.ReadFile(fb03PackPath(t, s, u.ID)); err != nil || !bytes.Equal(got, damaged) {
+		t.Fatalf("the held pack changed: %v", err)
+	}
+	if vr, _ := s.Verify(true); vr.OK() || vr.Corrupt != 1 || len(vr.Issues) != 1 {
+		t.Fatalf("deep verify must report exactly the corrupt live chunk: %+v", vr.Issues)
 	}
 }
 
@@ -33450,17 +33477,25 @@ func TestPackCompression_RepackAbortsOnDamagedCompressedData(t *testing.T) {
 		if loc, _ := s.packLookup(live[len(live)/2]); loc.codec != packCodecDeflate {
 			t.Fatalf("source record is codec %d", loc.codec)
 		}
-		flipPackedByte(t, s, live[len(live)/2])
+		victim := live[len(live)/2]
+		flipPackedByte(t, s, victim)
+		holders := fb03Holders(t, s, victim)
 		s.Close()
-		before := packFileSet(t, fx.dir)
-		if _, err := repackStore(fx.dir, opt); err == nil || !strings.Contains(err.Error(), "nothing was removed") {
-			t.Fatalf("err = %v", err)
+		// FB-03 M-A7: the pass isolates the damaged record instead of aborting:
+		// its pack stays byte for byte, the rest is repacked.
+		res, err := repackStore(fx.dir, opt)
+		if err != nil || res.HeldPacks != 1 || len(res.Quarantined) != 1 || res.Quarantined[0].Digest != hex.EncodeToString(victim[:]) {
+			t.Fatalf("repack over a damaged live record: %+v %v", res, err)
 		}
-		if now := packFileSet(t, fx.dir); !reflect.DeepEqual(now, before) {
-			t.Fatalf("pack set changed: %v -> %v", before, now)
-		}
+		fb03KeepsHolders(t, holders)
 		if stale, _ := filepath.Glob(filepath.Join(fx.dir, "tmp", "pack-*.tmp")); len(stale) != 0 {
 			t.Fatalf("staging file left behind: %v", stale)
+		}
+		s, _ = OpenStore(fx.dir)
+		vr, err := s.Verify(true)
+		s.Close()
+		if err != nil || vr.Corrupt != 1 || vr.Missing != 0 {
+			t.Fatalf("after the isolating repack: %v %+v", err, vr.Issues)
 		}
 	})
 	for _, damage := range []string{"truncate", "flip-compressed-payload"} {
@@ -44348,8 +44383,9 @@ func TestRepack_KeepUnchangedChecksReplacement(t *testing.T) {
 				if err != nil || report.PacksKeptUnchanged != 0 || report.BytesWritten == 0 || report.BytesReclaimed <= 0 {
 					t.Fatalf("compressible pack should follow ordinary repack: %+v %v", report, err)
 				}
-			case "corrupt":
-				if err == nil || report.PacksKeptUnchanged != 0 || !reflect.DeepEqual(before, packFileSet(t, lab.dir)) {
+			case "corrupt": // FB-03 M-A7: held in place and quarantined, never rewritten
+				if err != nil || report.PacksKeptUnchanged != 0 || report.HeldPacks != 1 || len(report.Quarantined) != 1 ||
+					report.BytesWritten != 0 || !reflect.DeepEqual(before, packFileSet(t, lab.dir)) {
 					t.Fatalf("corrupt pack cannot pass the no-write proof: %+v %v", report, err)
 				}
 				return

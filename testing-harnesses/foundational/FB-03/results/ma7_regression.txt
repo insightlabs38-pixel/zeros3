@@ -1,0 +1,3 @@
+# M-A7 regression set at f9ca12e+M-A7 working tree, 2026-11-26T12:45:50Z
+# go test -count=1 -timeout 60m -run 'Maint|Tier|Rebalance|Archive|Compact|Verify|Scrub|Prune|Retire|Quarant|GC|Repack|Pack|Authority|B9|B10|FB03|FB02|B4|P1C' .
+ok  	zeros3	805.083s
