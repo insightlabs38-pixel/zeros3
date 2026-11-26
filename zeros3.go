@@ -16369,6 +16369,10 @@ func (s *Store) CreateBucket(name string) error {
 }
 
 func (s *Store) createBucket(name string) error {
+	return s.createBucketAt(name, time.Now().UTC())
+}
+
+func (s *Store) createBucketAt(name string, createdAt time.Time) error {
 	if name == "" {
 		return fmt.Errorf("invalid bucket name")
 	}
@@ -16379,7 +16383,6 @@ func (s *Store) createBucket(name string) error {
 	if _, exists := s.buckets[name]; exists {
 		return nil
 	}
-	createdAt := time.Now().UTC()
 	payload, err := json.Marshal(journalCreateBucketPayload{Bucket: name, CreatedAt: createdAt})
 	if err != nil {
 		return err
@@ -40445,6 +40448,194 @@ func runNamespacePages(args []string) {
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// copyLegacyStore reconstructs a current-only namespace in a separate store.
+// Every byte is checked against the source journal and manifest before the
+// destination path is published. Unsupported roots cause a refusal.
+func copyLegacyStore(source, destination string) error {
+	if os.Getenv("ZEROS3_JOURNAL_FORMAT") == "j2" {
+		return errors.New("unset ZEROS3_JOURNAL_FORMAT to write a legacy journal")
+	}
+	if _, err := os.Stat(filepath.Join(source, "FORMAT.json")); err != nil {
+		return err
+	}
+	source, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return err
+	}
+	source, err = filepath.Abs(source)
+	if err != nil {
+		return err
+	}
+	destination, err = filepath.Abs(destination)
+	if err != nil {
+		return err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(destination))
+	if err != nil {
+		return err
+	}
+	if rel, err := filepath.Rel(source, parent); err != nil || rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return errors.New("legacy destination must be outside the source store")
+	}
+	destination = filepath.Join(parent, filepath.Base(destination))
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		return fmt.Errorf("legacy destination must be a new path: %s", destination)
+	}
+	lock, err := flockStore(source, writerLockDir, syscall.LOCK_EX, false)
+	if err != nil {
+		return fmt.Errorf("legacy copy requires an offline source: %w", err)
+	}
+	defer lock.release()
+	s, err := OpenStoreShared(source)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if f := s.formatSnapshot(); f.RequiredLevel != 0 || levelHasAuthority(f.StoreFormatVersion) {
+		return errors.New("legacy copy requires a store without adopted body authority")
+	}
+	s.mu.Lock()
+	hist, releaseHist, err := s.nsHistoryView("")
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	hasHistory := hist.next()
+	err = hist.err
+	releaseHist()
+	if err != nil {
+		return err
+	}
+	snapshots, issues := s.scanSnapshots()
+	if hasHistory || len(s.uploads) != 0 || len(snapshots) != 0 || len(issues) != 0 {
+		return errors.New("legacy copy requires a current-only store without history, uploads or snapshots")
+	}
+	if err := os.Mkdir(destination, 0700); err != nil {
+		return err
+	}
+	published := false
+	defer func() {
+		if !published {
+			os.Remove(destination)
+		}
+	}()
+	candidate, err := os.MkdirTemp(destination, ".pending-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(candidate)
+	dst, err := OpenStore(candidate)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			dst.Close()
+		}
+	}()
+	if err := s.copyLegacyRoots(dst); err != nil {
+		return err
+	}
+	checked, err := dst.Verify(true)
+	if err != nil {
+		return err
+	}
+	if !checked.OK() {
+		return errors.New("legacy copy failed independent destination verification")
+	}
+	err = dst.Close()
+	closed = true
+	if err != nil {
+		return err
+	}
+	if err := syncDir(candidate); err != nil {
+		return err
+	}
+	if err := os.Rename(candidate, filepath.Join(destination, "store")); err != nil {
+		return err
+	}
+	published = true
+	if err := syncDir(destination); err != nil {
+		return err
+	}
+	return syncDir(parent)
+}
+
+func (s *Store) copyLegacyRoots(dst *Store) error {
+	for _, b := range s.ListBuckets() {
+		if err := dst.createBucketAt(b.name, b.createdAt); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	view, release, err := s.nsObjectView("")
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	defer release()
+	for view.next() {
+		e, err := view.value()
+		if err != nil {
+			return err
+		}
+		bucket, key, found := strings.Cut(string(view.key), "\x00")
+		if !found || !validSnapshotUUID(e.manifestUUID) {
+			return errors.New("invalid legacy copy source identity")
+		}
+		ref := bundleManifestRef{uuid: e.manifestUUID, sha: e.manifestSHA256}
+		_, m, err := s.readBundleManifest(ref)
+		if err != nil {
+			return err
+		}
+		if m.TotalLength != e.size || m.ETag != e.etag || m.ContentType != e.contentType {
+			return errors.New("legacy copy source manifest disagrees with its namespace root")
+		}
+		h := sha256.New()
+		for _, chunk := range m.Chunks {
+			// The exact reference was parsed and validated by readBundleManifest.
+			sum, _ := decodeHexSHA256(chunk.SHA256)
+			body, err := s.casRead(sum)
+			if err != nil {
+				return err
+			}
+			if int64(len(body)) != chunk.Length {
+				return errors.New("legacy copy chunk length differs from its manifest")
+			}
+			h.Write(body)
+			if _, err := dst.casWrite(body); err != nil {
+				return err
+			}
+		}
+		if hex.EncodeToString(h.Sum(nil)) != m.ObjectSHA256 {
+			return errors.New("legacy copy source whole-object SHA-256 mismatch")
+		}
+		id, digest, err := dst.publishManifest(m)
+		if err != nil {
+			return err
+		}
+		if _, err := dst.commitObjectRoot(bucket, key, id, digest, m); err != nil {
+			return err
+		}
+	}
+	return view.err
+}
+
+func runLegacyCopy(args []string) {
+	fs := flag.NewFlagSet("legacy-copy", flag.ExitOnError)
+	root := fs.String("store", "./zeros3-data", "path to the offline source store")
+	out := fs.String("out", "", "new directory that receives the verified legacy store under store/")
+	fs.Parse(args)
+	if *out == "" {
+		log.Fatal("zeros3: legacy-copy requires -out")
+	}
+	if err := copyLegacyStore(*root, *out); err != nil {
+		log.Fatalf("zeros3: legacy-copy: %v", err)
+	}
+	fmt.Println(filepath.Join(*out, "store"))
 }
 
 func runLocatorBuild(args []string) {
@@ -95557,6 +95748,8 @@ func main() {
 		runNamespaceCheckpoint(args)
 	case "namespace-pages":
 		runNamespacePages(args)
+	case "legacy-copy":
+		runLegacyCopy(args)
 	case "journal":
 		runJournal(args)
 	case "stats":
@@ -95606,7 +95799,7 @@ func main() {
 	case "authority":
 		runAuthority(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, namespace-pages, journal, presign, versions, restore, gc, compact, repack, pack-parity, locator-build, scrub, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, namespace-pages, legacy-copy, journal, presign, versions, restore, gc, compact, repack, pack-parity, locator-build, scrub, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
 		os.Exit(2)
 	}
 }

@@ -6,11 +6,89 @@ import (
 	"encoding/hex"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestFB09LegacyCopy(t *testing.T) {
+	for _, mode := range []string{"legacy", "j2"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("ZEROS3_JOURNAL_FORMAT", mode)
+			dir := t.TempDir()
+			source, dst := filepath.Join(dir, "source"), filepath.Join(dir, "legacy")
+			s, err := OpenStore(source)
+			mustOK(t, err)
+			mustOK(t, s.CreateBucket("b"))
+			mustOK(t, s.CreateBucket("empty"))
+			created := s.ListBuckets()[0].createdAt
+			_, err = s.PutObject("b", "json", []byte("legacy content"), "text/plain", nil)
+			mustOK(t, err)
+			s.writeBinaryManifests = true
+			payload := b4Body(77, 2<<20)
+			_, err = s.PutObject("b", "typed", payload, "application/octet-stream", map[string]string{"owner": "local fixture"})
+			mustOK(t, err)
+			_, original, err := s.HeadObject("b", "typed")
+			mustOK(t, err)
+			t.Setenv("ZEROS3_JOURNAL_FORMAT", "")
+			if err := copyLegacyStore(source, dst); err == nil || !strings.Contains(err.Error(), "offline source") {
+				t.Fatalf("live copy was accepted: %v", err)
+			}
+			mustOK(t, s.Close())
+			mustOK(t, copyLegacyStore(source, dst))
+			legacyStore := filepath.Join(dst, "store")
+			d, err := OpenStoreShared(legacyStore)
+			mustOK(t, err)
+			defer d.Close()
+			entry, body, err := d.GetObject("b", "typed")
+			mustOK(t, err)
+			m, raw, err := d.readManifestSHA(entry.manifestUUID, entry.manifestSHA256)
+			mustOK(t, err)
+			if !bytes.HasPrefix(raw, []byte("{")) || !reflect.DeepEqual(m, original) || !bytes.Equal(body, payload) {
+				t.Fatalf("legacy copy changed object data, metadata or identity: %+v", m)
+			}
+			buckets := d.ListBuckets()
+			if len(d.formatSnapshot().Features) != 0 || len(buckets) != 2 || !buckets[0].createdAt.Equal(created) {
+				t.Fatal("legacy copy changed bucket metadata or published a new feature")
+			}
+			if err := copyLegacyStore(source, dst); err == nil {
+				t.Fatal("legacy copy accepted an existing destination")
+			}
+			if old := os.Getenv("ZEROS3_TEST_PRE_FB09"); old != "" {
+				if output, err := exec.Command(old, "verify", "-deep", "-store", source).CombinedOutput(); err == nil || !bytes.Contains(output, []byte("does not support")) {
+					t.Fatalf("actual old binary did not refuse the typed original: %v\n%s", err, output)
+				}
+				if output, err := exec.Command(old, "verify", "-deep", "-store", legacyStore).CombinedOutput(); err != nil {
+					t.Fatalf("actual old binary did not verify the copy: %v\n%s", err, output)
+				}
+				t.Log("actual pre-FB09 binary refused the typed source and deep-verified the separate legacy copy")
+			}
+		})
+	}
+}
+
+func TestFB09LegacyCopyRefusesHistory(t *testing.T) {
+	dir := t.TempDir()
+	source, dst := filepath.Join(dir, "source"), filepath.Join(dir, "legacy")
+	s, err := OpenStore(source)
+	mustOK(t, err)
+	mustOK(t, s.CreateBucket("b"))
+	for _, body := range []string{"first", "second"} {
+		_, err = s.PutObject("b", "versioned", []byte(body), "text/plain", nil)
+		mustOK(t, err)
+	}
+	mustOK(t, s.Close())
+	if err := copyLegacyStore(source, dst); err == nil || !strings.Contains(err.Error(), "current-only") {
+		t.Fatalf("history-bearing source was accepted: %v", err)
+	}
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Fatalf("failed copy made a destination visible: %v", err)
+	}
+}
 
 func fb09Manifest() manifestV1 {
 	const uuid = "019ab000-0000-7000-8000-000000000001"

@@ -1,6 +1,6 @@
 # FB-09 · Binary metadata and canonical pages
 
-**In progress.** `serve -binary-manifests` selects a bounded binary
+**Partial.** `serve -binary-manifests` selects a bounded binary
 manifest encoder for eligible new records. It persists the
 `manifestbin` feature before publishing the first binary manifest.
 The legacy encoder is still the default and the new reader handles
@@ -37,9 +37,20 @@ whole archive. Five insertion orders yielded one root. When every
 key missed the content boundary, the largest page was 65,334 bytes
 against a 65,536-byte cap.
 
-The scale comparison generated realistic byte shapes through the
-native encoders and excluded history and uploads from both sides.
-Old-reader downgrade and snapshot publication remain open, along with
-authoritative page reachability and the journal record work in FB-10.
+The scale comparison used generated rows with native encoders.
+It measured the visible-key table on both sides.
+
+`legacy-copy -store SOURCE -out DESTINATION` reconstructs a separate
+current-only store at `DESTINATION/store`. It verifies each chunk,
+object hash and metadata before publishing the destination. The actual
+pre-FB09 binary verified copies from both v1 and J2 originals and
+refused the typed originals. The copier requires an offline source and
+refuses retained history, snapshots, pending uploads and adopted body
+authority. It preserves bucket timestamps, manifest IDs and object
+metadata. The destination has a new store identity and journal sequence.
+
+Authoritative page reachability, durable snapshot page reuse and the
+journal record format remain open for FB-10 and FB-11. The million-object
+snapshot and default format gates remain owner decisions.
 
 [Reproduction](REPRODUCE.md) · [Evidence](results/)

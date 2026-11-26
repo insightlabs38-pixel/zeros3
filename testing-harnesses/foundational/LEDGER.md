@@ -26,7 +26,7 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | FB-06 | PARTIAL | [Exact generation and compact opt-in tags](FB-06/README.md) passed the local scale and ingest medians, forced collisions, retirement and process-cut gates. Budgeted background refresh and infrastructure qualification remain open. |
 | FB-07 | PARTIAL | [Physical scrub, scoped repair, and two-pass raw carry](FB-07/README.md) passed local exact recovery and fault gates. Compressed carry and additional physical codecs, scrub scheduling and cross-domain taxonomy remain open. |
 | FB-08 | PARTIAL | [Signed native protocol v3](FB-08/README.md) replicated 1,000 objects in nine or eleven requests, resumed an authenticated connection-cut prefix, and improved throttled text transfer. Directory batching, source passthrough, durable process-cut acknowledgments and WAN qualification remain open. |
-| FB-09 | IN PROGRESS | [Binary manifests and canonical visible-key pages](FB-09/README.md) with exact goldens, old-reader refusal and sidecar row equality. Generated archive is 99.3% of flat v4 at 1M and 10M keys. Downgrade and durable snapshot page reuse remain open. |
+| FB-09 | PARTIAL | [Binary manifests, canonical visible-key pages and verified current-only downgrade](FB-09/README.md). Generated archive is 99.3% of flat v4 at 1M and 10M keys. Durable snapshot page reuse and authority remain open for FB-11. |
 | FB-10 | pending | remaining M-C2/C5 journal and publication |
 | FB-11 | pending | M-F5/G1 snapshots and optional range proofs |
 | FB-12 | pending | M-D1/D2 compression and delta |
