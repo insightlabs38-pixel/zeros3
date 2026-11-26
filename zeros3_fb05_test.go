@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"slices"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestFB05RewriteBudgetRetiresDeadSeparately(t *testing.T) {
@@ -67,6 +70,84 @@ func TestFB05RewriteBudgetRetiresDeadSeparately(t *testing.T) {
 		opt.MaxRewriteBytes, second.RewriteSourceBytes, second.DeferredSourceBytes, second.BytesWritten)
 	mustOK(t, s.Close())
 	b4Verify(t, dir, want)
+}
+
+func TestFB05MultipartExpiryScopeAndRetry(t *testing.T) {
+	for _, mode := range []string{"v1", "j2"} {
+		t.Run(mode, func(t *testing.T) {
+			if mode == "j2" {
+				t.Setenv("ZEROS3_JOURNAL_FORMAT", "j2")
+			} else {
+				t.Setenv("ZEROS3_JOURNAL_FORMAT", "")
+			}
+			dir := t.TempDir()
+			s := b4OpenMaint(t, dir)
+			defer s.Close()
+			mustOK(t, s.CreateBucket("b"))
+			mustOK(t, s.CreateBucket("other"))
+			create := func(bucket, key string, at time.Time) string {
+				id, err := s.createMultipartUpload(bucket, key, "application/octet-stream", nil, at)
+				mustOK(t, err)
+				return id
+			}
+			now := time.Now().UTC().Truncate(24 * time.Hour)
+			at := now.AddDate(0, 0, -2)
+			old := create("b", "temp/old", at.Add(-time.Nanosecond))
+			atBoundary := create("b", "temp/boundary", at)
+			outsidePrefix := create("b", "keep/old", at.AddDate(0, 0, -1))
+			outsideBucket := create("other", "temp/old", at.AddDate(0, 0, -1))
+			payload := b4Body(18, 70<<10)
+			_, err := s.UploadPart("b", "temp/old", old, 1, payload)
+			mustOK(t, err)
+			rule := &multipartExpiryRule{Bucket: "b", Prefix: "temp/", Days: 2}
+			if len(s.eligibleMultipartExpiry(rule, now.Add(-time.Nanosecond), 1)) != 0 {
+				t.Fatal("expiry before UTC midnight")
+			}
+			opt := b4Opts()
+			off, err := s.maintainOnline(context.Background(), opt)
+			mustOK(t, err)
+			if off.ExpiredUploads != 0 {
+				t.Fatalf("expiry with no rule: %+v", off)
+			}
+			opt.MultipartExpiry = rule
+			testJournalFault = func(point string, _ int) (int, error) {
+				if point == faultJournalSync {
+					return 0, syscall.ENOSPC
+				}
+				return 0, nil
+			}
+			defer func() { testJournalFault = nil }()
+			failed, err := s.maintainOnline(context.Background(), opt)
+			testJournalFault = nil
+			if !errors.Is(err, syscall.ENOSPC) || failed.ExpiredUploads != 0 {
+				t.Fatalf("failed abort appeared durable: %+v, %v", failed, err)
+			}
+			parts, err := s.ListParts("b", "temp/old", old)
+			mustOK(t, err)
+			if len(parts) != 1 {
+				t.Fatalf("failed abort removed recent part: %v", parts)
+			}
+			mustOK(t, s.Close())
+			s = b4OpenMaint(t, dir)
+			defer s.Close()
+			rep, err := s.maintainOnline(context.Background(), opt)
+			mustOK(t, err)
+			if rep.ExpiredUploads != 1 {
+				t.Fatalf("expiry did not match one upload: %+v", rep)
+			}
+			mustOK(t, s.Close())
+			s = b4OpenMaint(t, dir)
+			defer s.Close()
+			if _, err := s.ListParts("b", "temp/old", old); !errors.Is(err, errNoSuchUpload) {
+				t.Fatalf("expired upload revived: %v", err)
+			}
+			for _, up := range [][3]string{{"b", "temp/boundary", atBoundary}, {"b", "keep/old", outsidePrefix}, {"other", "temp/old", outsideBucket}} {
+				_, err := s.ListParts(up[0], up[1], up[2])
+				mustOK(t, err)
+			}
+			t.Logf("%s: default expired=0, failed sync expired=0, retry expired=%d, guards survived reopen=3", mode, rep.ExpiredUploads)
+		})
+	}
 }
 
 func TestFB05RawCompressionAdmission(t *testing.T) {

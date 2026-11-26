@@ -17,3 +17,9 @@ text, the control uses deterministic random bytes, and both start
 with all-raw packs. Run both passes and verify from a fresh process.
 The positive source also tests an insufficient aggregate scratch
 budget followed by verification, reopen and a successful retry.
+
+`TestFB05MultipartExpiryScopeAndRetry` journals fixed initiation
+times, verifies a recent part, injects sync ENOSPC and retries
+after reopening. The fixture uses both journal formats. The
+bucket, prefix, UTC cutoff and default-off controls are verified
+independently.

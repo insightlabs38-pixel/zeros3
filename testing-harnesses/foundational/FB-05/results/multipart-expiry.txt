@@ -1,0 +1,8 @@
+=== RUN   TestFB05MultipartExpiryScopeAndRetry
+=== RUN   TestFB05MultipartExpiryScopeAndRetry/v1
+    zeros3_fb05_test.go:148: v1: default expired=0, failed sync expired=0, retry expired=1, guards survived reopen=3
+=== RUN   TestFB05MultipartExpiryScopeAndRetry/j2
+    zeros3_fb05_test.go:148: j2: default expired=0, failed sync expired=0, retry expired=1, guards survived reopen=3
+--- PASS: TestFB05MultipartExpiryScopeAndRetry (0.03s)
+    --- PASS: TestFB05MultipartExpiryScopeAndRetry/v1 (0.01s)
+    --- PASS: TestFB05MultipartExpiryScopeAndRetry/j2 (0.01s)

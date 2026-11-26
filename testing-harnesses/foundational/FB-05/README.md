@@ -42,3 +42,14 @@ after reopening found every object intact. A 4 KiB cap admitted
 the same group, which published 2,026 bytes across multiple packs.
 The option covers pack staging. Grouped authority compaction and
 the store's foreground staging have separate controls.
+
+The local multipart expiry rule is enabled with
+`-maintenance-abort-multipart-days` and an explicit
+`-maintenance-abort-multipart-bucket`. An optional
+`-maintenance-abort-multipart-prefix` limits matching keys. Each
+pass aborts at most 128 uploads, based on initiation and a UTC
+midnight boundary. It uses the existing ordered abort journal
+operation and leaves nonmatching sessions and object versions
+alone. An injected sync ENOSPC left the recent part visible.
+After reopening, retry expired exactly one upload in v1 and J2.
+Version expiry and S3 lifecycle configuration APIs remain open.

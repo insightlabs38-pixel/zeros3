@@ -18921,13 +18921,13 @@ func (s *Store) CreateMultipartUpload(bucket, key, contentType string, metadata 
 	var id string
 	err := s.submitSerialMutation(func() error {
 		var err error
-		id, err = s.createMultipartUpload(bucket, key, contentType, metadata)
+		id, err = s.createMultipartUpload(bucket, key, contentType, metadata, time.Now().UTC())
 		return err
 	})
 	return id, err
 }
 
-func (s *Store) createMultipartUpload(bucket, key, contentType string, metadata map[string]string) (string, error) {
+func (s *Store) createMultipartUpload(bucket, key, contentType string, metadata map[string]string, createdAt time.Time) (string, error) {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -18936,7 +18936,6 @@ func (s *Store) createMultipartUpload(bucket, key, contentType string, metadata 
 		return "", errNoSuchBucket
 	}
 	uploadID := newUUIDv7()
-	createdAt := time.Now().UTC()
 	md := sortedMetadataKV(metadata)
 	payload, err := json.Marshal(journalCreateMultipartPayload{
 		UploadID: uploadID, Bucket: bucket, Key: key,
@@ -25399,19 +25398,71 @@ const (
 
 // MaintOptions bounds one online pass.
 type MaintOptions struct {
-	GC              bool          `json:"gc"`     // loose files, orphan roots and packs with no live record
-	Repack          bool          `json:"repack"` // also rewrite mostly dead packs
-	MaxSourcePacks  int           `json:"max_source_packs"`
-	RecompressRaw   bool          `json:"recompress_raw,omitempty"`
-	MaxRewriteBytes int64         `json:"max_rewrite_source_bytes,omitempty"` // input pack bytes; dead packs consume none
-	MaxStageBytes   int64         `json:"max_stage_bytes,omitempty"`          // concurrently staged replacement pack bytes
-	MaxLivePercent  int           `json:"max_live_percent"`
-	TargetBytes     int64         `json:"target_bytes"`
-	Compress        bool          `json:"compress"`
-	MaxDeletes      int           `json:"max_deletes"`                // loose files and roots condemned per pass
-	Wait            time.Duration `json:"wait"`                       // bound on each grace period
-	BlockLog        uint8         `json:"record_block_log,omitempty"` // restartable records in replacement packs
-	Layout          packLayout    `json:"-"`                          // layoutRecon: also relayout packs by reconstruction co-access
+	GC              bool                 `json:"gc"`     // loose files, orphan roots and packs with no live record
+	Repack          bool                 `json:"repack"` // also rewrite mostly dead packs
+	MaxSourcePacks  int                  `json:"max_source_packs"`
+	RecompressRaw   bool                 `json:"recompress_raw,omitempty"`
+	MaxRewriteBytes int64                `json:"max_rewrite_source_bytes,omitempty"` // input pack bytes; dead packs consume none
+	MaxStageBytes   int64                `json:"max_stage_bytes,omitempty"`          // concurrently staged replacement pack bytes
+	MaxLivePercent  int                  `json:"max_live_percent"`
+	TargetBytes     int64                `json:"target_bytes"`
+	Compress        bool                 `json:"compress"`
+	MaxDeletes      int                  `json:"max_deletes"`                // loose files and roots condemned per pass
+	Wait            time.Duration        `json:"wait"`                       // bound on each grace period
+	BlockLog        uint8                `json:"record_block_log,omitempty"` // restartable records in replacement packs
+	Layout          packLayout           `json:"-"`                          // layoutRecon: also relayout packs by reconstruction co-access
+	MultipartExpiry *multipartExpiryRule `json:"multipart_expiry,omitempty"`
+}
+
+// multipartExpiryRule implements locally configured
+// AbortIncompleteMultipartUpload for one bucket and key prefix.
+type multipartExpiryRule struct {
+	Bucket string `json:"bucket"`
+	Prefix string `json:"prefix,omitempty"`
+	Days   int    `json:"days_after_initiation"`
+}
+
+const maxMultipartExpiryPerPass = 128
+
+func (s *Store) eligibleMultipartExpiry(rule *multipartExpiryRule, now time.Time, limit int) []*multipartUpload {
+	if rule == nil {
+		return nil
+	}
+	// Eligibility starts at the next UTC midnight after the configured
+	// number of days from initiation. Part activity does not restart it.
+	cutoff := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -rule.Days)
+	var eligible []*multipartUpload
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, up := range s.uploads {
+		if up.bucket == rule.Bucket && strings.HasPrefix(up.key, rule.Prefix) && up.createdAt.Before(cutoff) {
+			eligible = append(eligible, up)
+			if len(eligible) == limit {
+				break
+			}
+		}
+	}
+	return eligible
+}
+
+func (s *Store) expireMultipart(ctx context.Context, rule *multipartExpiryRule, now time.Time) (int, error) {
+	expired := 0
+	for _, up := range s.eligibleMultipartExpiry(rule, now, maxMultipartExpiryPerPass) {
+		if err := ctx.Err(); err != nil {
+			return expired, err
+		}
+		// ID, key, bucket and initiation time are immutable. The ordered
+		// abort rechecks that this exact session is still open.
+		err := s.AbortMultipartUpload(up.bucket, up.key, up.uploadID)
+		if errors.Is(err, errNoSuchUpload) {
+			continue
+		}
+		if err != nil {
+			return expired, err
+		}
+		expired++
+	}
+	return expired, nil
 }
 
 func (o MaintOptions) encoding() packEncoding {
@@ -25426,15 +25477,16 @@ func defaultMaintOptions() MaintOptions {
 // MaintReport is the machine-readable outcome of one online pass. Byte figures
 // are physical file bytes.
 type MaintReport struct {
-	RecordGroups  *AGReport     `json:"record_groups,omitempty"`
-	Pass          uint64        `json:"pass"`
-	Started       time.Time     `json:"started"`
-	Finished      time.Time     `json:"finished"`
-	MarkSeq       uint64        `json:"mark_seq"`       // last journal frame the T0 mark covers
-	ReconciledSeq uint64        `json:"reconciled_seq"` // last frame whose roots were reconciled
-	JournalRoots  int           `json:"journal_roots"`
-	LiveSetOK     bool          `json:"live_set_ok"`
-	Issues        []VerifyIssue `json:"issues,omitempty"`
+	ExpiredUploads int           `json:"expired_multipart_uploads,omitempty"`
+	RecordGroups   *AGReport     `json:"record_groups,omitempty"`
+	Pass           uint64        `json:"pass"`
+	Started        time.Time     `json:"started"`
+	Finished       time.Time     `json:"finished"`
+	MarkSeq        uint64        `json:"mark_seq"`       // last journal frame the T0 mark covers
+	ReconciledSeq  uint64        `json:"reconciled_seq"` // last frame whose roots were reconciled
+	JournalRoots   int           `json:"journal_roots"`
+	LiveSetOK      bool          `json:"live_set_ok"`
+	Issues         []VerifyIssue `json:"issues,omitempty"`
 	// Damage (section 13d3): "leaf" when the only issues are live chunks (the
 	// pass proceeds around them), "reference" when a root could not be resolved
 	// (the pass deletes nothing: errGCUnsafe).
@@ -25544,6 +25596,10 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		if err := checkpoint(); err != nil {
 			return rep, err
 		}
+	}
+	rep.ExpiredUploads, err = s.expireMultipart(ctx, opt.MultipartExpiry, rep.Started)
+	if err != nil {
+		return rep, fmt.Errorf("maintenance: expiring multipart uploads: %w", err)
 	}
 	t := time.Now()
 	ep, err := s.maintBegin()
@@ -26369,7 +26425,7 @@ func (r *maintRunner) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick:
-			if r.s.maintIdle() { // an explicit request (kick) always runs
+			if r.s.maintIdle() && len(r.s.eligibleMultipartExpiry(r.opt.MultipartExpiry, time.Now(), 1)) == 0 {
 				r.mu.Lock()
 				r.skipped++
 				r.mu.Unlock()
@@ -37563,6 +37619,9 @@ func runServe(args []string) {
 	maintRaw := fs.Bool("maintenance-recompress-raw", false, "screen and compress verified raw packs within the online rewrite budget")
 	maintRewriteMiB := fs.Int64("maintenance-max-rewrite-mib", 0, "online maintenance: source MiB budget for rewrites (0 uses the pack-count policy); fully dead sources are outside this budget")
 	maintStageMiB := fs.Int64("maintenance-max-stage-mib", 0, "online maintenance: cap concurrently staged replacement pack MiB (0 is unlimited)")
+	maintExpiryDays := fs.Int("maintenance-abort-multipart-days", 0, "online maintenance: abort incomplete multipart uploads after this many UTC days (0 is off)")
+	maintExpiryBucket := fs.String("maintenance-abort-multipart-bucket", "", "explicit bucket for incomplete multipart expiry")
+	maintExpiryPrefix := fs.String("maintenance-abort-multipart-prefix", "", "optional key prefix within the multipart expiry bucket")
 	maintLive := fs.Int("maintenance-max-live-percent", defaultRepackMaxLivePercent, "online repack: rewrite packs whose live share is below this percentage")
 	maintDeletes := fs.Int("maintenance-max-deletes", 1<<18, "online gc: most loose files and roots removed per pass")
 	maintWait := fs.Duration("maintenance-wait", 10*time.Minute, "online maintenance: longest wait for in-flight requests at each grace period before a pass defers")
@@ -37607,6 +37666,15 @@ func runServe(args []string) {
 		os.Exit(2)
 	}
 	maintOpt.MaxStageBytes = *maintStageMiB << 20
+	if *maintExpiryDays < 0 || *maintExpiryDays > 36500 ||
+		(*maintExpiryDays > 0 && (*maintMode == "off" || *maintExpiryBucket == "")) ||
+		(*maintExpiryDays == 0 && (*maintExpiryBucket != "" || *maintExpiryPrefix != "")) {
+		fmt.Fprintln(os.Stderr, "zeros3: serve: multipart expiry requires online maintenance, an explicit bucket, and 1 to 36500 days")
+		os.Exit(2)
+	}
+	if *maintExpiryDays > 0 {
+		maintOpt.MultipartExpiry = &multipartExpiryRule{Bucket: *maintExpiryBucket, Prefix: *maintExpiryPrefix, Days: *maintExpiryDays}
+	}
 	if *maintRaw && (*maintMode != "all" || maintOpt.MaxRewriteBytes <= 0) {
 		fmt.Fprintln(os.Stderr, "zeros3: serve: -maintenance-recompress-raw requires -maintenance all and a positive rewrite budget")
 		os.Exit(2)
