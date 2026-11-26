@@ -1,0 +1,32 @@
+=== RUN   TestFB06ScaleOpen
+    zeros3_fb06_scale_test.go:60: physical stage records=16777216 packs=128 prepare=6.146007034s generation=10.951928901s generation_bytes=1090670672
+FB06 profile=canonical records=16777216 open_ms=4423.529 retained_bytes=927035400 bytes_per_record=55.256 rss=935112kB peak_rss=935112kB
+FB06 profile=generation records=16777216 open_ms=1634.979 retained_bytes=927043128 bytes_per_record=55.256 rss=922000kB peak_rss=922000kB
+FB06 profile=tags records=16777216 open_ms=123.682 retained_bytes=151097160 bytes_per_record=9.006 rss=163520kB peak_rss=163520kB
+FB06 profile=tags-advised-cold records=16777216 open_ms=159.375 retained_bytes=151097272 bytes_per_record=9.006 rss=163428kB peak_rss=163428kB
+--- PASS: TestFB06ScaleOpen (23.67s)
+=== RUN   TestFB06DedupIngest
+FB06 pair=0 profile=canonical objects=192 bytes=31457280 elapsed_ms=197.178 mib_s=152.147
+FB06 pair=0 profile=tags objects=192 bytes=31457280 elapsed_ms=300.744 mib_s=99.753
+FB06 pair=1 profile=tags objects=192 bytes=31457280 elapsed_ms=239.109 mib_s=125.466
+FB06 pair=1 profile=canonical objects=192 bytes=31457280 elapsed_ms=205.219 mib_s=146.185
+FB06 pair=2 profile=canonical objects=192 bytes=31457280 elapsed_ms=188.455 mib_s=159.189
+FB06 pair=2 profile=tags objects=192 bytes=31457280 elapsed_ms=190.567 mib_s=157.425
+FB06 pair=3 profile=tags objects=192 bytes=31457280 elapsed_ms=209.057 mib_s=143.502
+FB06 pair=3 profile=canonical objects=192 bytes=31457280 elapsed_ms=196.381 mib_s=152.765
+FB06 pair=4 profile=canonical objects=192 bytes=31457280 elapsed_ms=215.900 mib_s=138.953
+FB06 pair=4 profile=tags objects=192 bytes=31457280 elapsed_ms=214.142 mib_s=140.094
+FB06 pair=5 profile=tags objects=192 bytes=31457280 elapsed_ms=201.800 mib_s=148.662
+FB06 pair=5 profile=canonical objects=192 bytes=31457280 elapsed_ms=345.141 mib_s=86.921
+--- PASS: TestFB06DedupIngest (3.20s)
+=== RUN   TestFB06TagLevelCollisionAndReadFailure
+    zeros3_fb06_test.go:86: verified 1000 forced equal-tag misses and reconstructed the same pack locations after truncation
+--- PASS: TestFB06TagLevelCollisionAndReadFailure (0.10s)
+=== RUN   TestFB06GenerationRoundTripAndFallback
+2026/11/26 15:55:16 zeros3: ignoring locator generation: locator generation: page checksum mismatch
+2026/11/26 15:55:16 zeros3: ignoring locator generation: locator generation: invalid header or length
+2026/11/26 15:55:16 zeros3: ignoring locator generation: locator generation: invalid header or length
+--- PASS: TestFB06GenerationRoundTripAndFallback (0.11s)
+=== RUN   TestFB06GenerationPublishCut
+--- PASS: TestFB06GenerationPublishCut (0.03s)
+PASS

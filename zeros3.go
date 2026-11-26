@@ -3952,6 +3952,7 @@ type locIndex struct {
 	dups  []locRec
 	tbl   []uint32
 	shift uint
+	disk  *locatorTagLevel
 	// filter, when set, answers "certainly absent" for most digests the level
 	// does not hold, so a negative lookup skips the level's search. Every
 	// level of a locator carries one (section 4c): most lookups during ingest
@@ -3960,7 +3961,17 @@ type locIndex struct {
 	filter *locFilter
 }
 
-func (ix *locIndex) size() int { return len(ix.recs) + len(ix.dups) }
+func (ix *locIndex) primaryCount() int {
+	if ix.disk != nil {
+		if fallback := ix.disk.fallback.Load(); fallback != nil {
+			return len(fallback.recs)
+		}
+		return len(ix.disk.tags)
+	}
+	return len(ix.recs)
+}
+
+func (ix *locIndex) size() int { return ix.primaryCount() + len(ix.dups) }
 
 // buildLocIndex takes ownership of recs (any order), keeps the first record
 // of each digest as its primary, moves same-length repeats to dups, and
@@ -4048,6 +4059,9 @@ func mergeLocIndex(a, b *locIndex, onClash func(prim, rep *locRec)) *locIndex {
 }
 
 func (ix *locIndex) find(sum *[32]byte) *locRec {
+	if ix.disk != nil {
+		return ix.findTag(sum)
+	}
 	if ix.filter != nil && !ix.filter.has(sum) {
 		return nil
 	}
@@ -4068,6 +4082,11 @@ func (ix *locIndex) find(sum *[32]byte) *locRec {
 }
 
 func (ix *locIndex) dupsOf(sum *[32]byte) []locRec {
+	if ix.disk != nil {
+		if fallback := ix.disk.fallback.Load(); fallback != nil {
+			return fallback.dupsOf(sum)
+		}
+	}
 	if len(ix.dups) == 0 {
 		return nil
 	}
@@ -4394,13 +4413,13 @@ func locSettle(levels []*locIndex, frozen map[*locIndex]bool, gone func(r *locRe
 	}
 	for n := len(levels); n >= 2; n = len(levels) {
 		a, b := levels[n-2], levels[n-1]
-		free := !frozen[a] && !frozen[b]
+		free := a.disk == nil && b.disk == nil && !frozen[a] && !frozen[b]
 		switch {
 		case free && a.size() <= locSyncMerge && b.size() <= locSyncMerge && (r*b.size() >= a.size() || n > locMaxLevels):
 			merge(n - 2)
 		case n > locMaxLevels && free:
 			i := n - 2
-			if n >= 3 && a.size() > locSyncMerge && !frozen[levels[n-3]] && (b.size() <= locSyncMerge || levels[n-3].size() < b.size()) {
+			if n >= 3 && a.size() > locSyncMerge && levels[n-3].disk == nil && !frozen[levels[n-3]] && (b.size() <= locSyncMerge || levels[n-3].size() < b.size()) {
 				i = n - 3
 			}
 			merge(i)
@@ -4425,10 +4444,12 @@ func locSettle(levels []*locIndex, frozen map[*locIndex]bool, gone func(r *locRe
 // exist: the publishes made during it add one level beside it and then merge
 // among themselves, so a quiet store still sheds its retired records.
 func locPlan(levels []*locIndex, frozen map[*locIndex]bool, goneIn func(ix *locIndex) int, keepNewest bool) (i, j int, ok bool) {
-	free := func(k int) bool { return !frozen[levels[k]] && !(keepNewest && k == len(levels)-1) }
+	free := func(k int) bool {
+		return levels[k].disk == nil && !frozen[levels[k]] && !(keepNewest && k == len(levels)-1)
+	}
 	if goneIn != nil {
 		for k, ix := range levels {
-			alone := !frozen[ix] && (free(k) || len(levels) < locMaxLevels)
+			alone := ix.disk == nil && !frozen[ix] && (free(k) || len(levels) < locMaxLevels)
 			if alone && ix.size() >= locPurgeMinRec && 4*goneIn(ix) >= ix.size() {
 				return k, k, true
 			}
@@ -4537,6 +4558,12 @@ const locBatch = 8
 // different digests are independent, so their cache misses overlap
 // (F3-LOC-07). Every answer is still an exact digest comparison.
 func (ix *locIndex) findN(sums []*[32]byte, out []*locRec) {
+	if ix.disk != nil {
+		for i, sum := range sums {
+			out[i] = ix.findTag(sum)
+		}
+		return
+	}
 	var lo, hi [locBatch]uint32
 	n := len(sums)
 	for k := 0; k < n; k++ {
@@ -4638,11 +4665,10 @@ func (st *packState) appendLocs(dst []packLoc, sum [32]byte) []packLoc {
 func (st *packState) primaries() iter.Seq2[*[32]byte, packLoc] {
 	return func(yield func(*[32]byte, packLoc) bool) {
 		for _, ix := range st.levels {
-			for j := range ix.recs {
-				r := &ix.recs[j]
+			for r := range ix.iterPrimaries() {
 				if len(st.levels) > 1 || st.gone != nil {
-					if b := st.best(&r.sum); b != r {
-						if b == nil || st.find(ix, &r.sum) != b {
+					if b := st.best(&r.sum); !sameLocatorRecord(b, r) {
+						if b == nil || !sameLocatorRecord(st.find(ix, &r.sum), b) {
 							continue // retired, or the primary is in another level
 						}
 						r = b // a retired primary's surviving copy in this level
@@ -4659,7 +4685,7 @@ func (st *packState) primaries() iter.Seq2[*[32]byte, packLoc] {
 // distinct counts the digests that have a primary location.
 func (st *packState) distinct() int {
 	if len(st.levels) == 1 && st.gone == nil {
-		return len(st.levels[0].recs)
+		return st.levels[0].primaryCount()
 	}
 	n := 0
 	for range st.primaries() {
@@ -5067,11 +5093,12 @@ func loadPackState(root string, format int) (*packState, error) {
 }
 
 const (
-	locatorGenerationName   = "locator-generation-v1"
-	locatorGenerationMagic  = "ZSLGEN01"
+	locatorGenerationName   = "locator-generation-v2"
+	locatorGenerationMagic  = "ZSLGEN02"
 	locatorGenerationHeader = 64
 	locatorGenerationPack   = 32
 	locatorGenerationPage   = 1024
+	locatorGenerationRow    = packIndexEntrySize + 4
 )
 
 const hookLocatorBeforePublish = "locator-generation-before-publish"
@@ -5081,6 +5108,148 @@ type locatorPackBinding struct {
 	indexOffset uint64
 	indexCRC    uint32
 	stamp       int64
+}
+
+type locatorTagLevel struct {
+	file     *os.File
+	packs    []packInfo
+	tags     []uint64
+	base     int64
+	fallback atomic.Pointer[locIndex]
+	once     sync.Once
+}
+
+// locatorTag is the next 64 digest bits after the table's bucket prefix.
+// Within a bucket it preserves the order of the full digests.
+func locatorTag(sum *[32]byte, prefix uint) uint64 {
+	head := binary.BigEndian.Uint64(sum[:8])
+	tail := binary.BigEndian.Uint64(sum[8:16])
+	return head<<prefix | tail>>(64-prefix)
+}
+
+func decodeLocatorRecord(row []byte, record *locRec) {
+	copy(record.sum[:], row[:32])
+	record.pack = binary.LittleEndian.Uint32(row[32:])
+	record.stored = binary.LittleEndian.Uint32(row[36:])
+	record.lc = binary.LittleEndian.Uint32(row[40:])
+	record.offLo = binary.LittleEndian.Uint32(row[44:])
+	record.offHi = binary.LittleEndian.Uint32(row[48:])
+}
+
+func sameLocatorRecord(a, b *locRec) bool {
+	return a == b || a != nil && b != nil && a.pack == b.pack && a.off() == b.off()
+}
+
+func (d *locatorTagLevel) rebuild() *locIndex {
+	d.once.Do(func() {
+		var w packIndexWorker
+		var recs []locRec
+		for i, p := range d.packs {
+			start := len(recs)
+			recs = slices.Grow(recs, p.records)[:start+p.records]
+			_, lo, hi, err := w.load(p.path, recs[start:], uint32(i), p.tier)
+			if err != nil {
+				recs = recs[:start]
+				continue
+			}
+			copied := copy(recs[start:], recs[start+lo:start+hi])
+			recs = recs[:start+copied]
+		}
+		d.fallback.Store(buildLocIndexF(recs, func(_, _ *locRec) {}, true))
+	})
+	return d.fallback.Load()
+}
+
+func (d *locatorTagLevel) validRecord(record *locRec) bool {
+	loc := record.loc()
+	if uint32(loc.pack) >= uint32(len(d.packs)) {
+		return false
+	}
+	p := d.packs[loc.pack]
+	index := uint64(p.size - packFooterSize - int64(p.records)*packIndexEntrySize)
+	return p.tier == loc.tier && loc.off >= packHeaderSize+packRecordHeaderSize &&
+		loc.off <= index && uint64(loc.stored) <= index-loc.off &&
+		checkPackLengths(loc.codec, loc.stored, loc.logical) == nil
+}
+
+func (ix *locIndex) findTag(sum *[32]byte) *locRec {
+	d := ix.disk
+	if fallback := d.fallback.Load(); fallback != nil {
+		return fallback.find(sum)
+	}
+	b := binary.BigEndian.Uint32(sum[:4]) >> ix.shift
+	lo, hi := ix.tbl[b], ix.tbl[b+1]
+	tag := locatorTag(sum, 32-ix.shift)
+	at, _ := slices.BinarySearch(d.tags[lo:hi], tag)
+	var row [locatorGenerationRow]byte
+	var record locRec
+	for i := lo + uint32(at); i < hi && d.tags[i] == tag; i++ {
+		offset := d.base + int64(i)*locatorGenerationRow + int64(i/locatorGenerationPage)*4
+		if _, err := d.file.ReadAt(row[:], offset); err != nil ||
+			crc32.Checksum(row[:packIndexEntrySize], packCRC) != binary.LittleEndian.Uint32(row[packIndexEntrySize:]) {
+			return d.rebuild().find(sum)
+		}
+		decodeLocatorRecord(row[:], &record)
+		if !d.validRecord(&record) || locatorTag(&record.sum, 32-ix.shift) != tag ||
+			binary.BigEndian.Uint32(record.sum[:4])>>ix.shift != b {
+			return d.rebuild().find(sum)
+		}
+		if record.sum == *sum {
+			return &record
+		}
+	}
+	return nil
+}
+
+func (ix *locIndex) iterPrimaries() iter.Seq[*locRec] {
+	return func(yield func(*locRec) bool) {
+		d := ix.disk
+		if d == nil {
+			for i := range ix.recs {
+				if !yield(&ix.recs[i]) {
+					return
+				}
+			}
+			return
+		}
+		var prior [32]byte
+		havePrior := false
+		buf := make([]byte, locatorGenerationPage*locatorGenerationRow)
+		reading := true
+		for lo, hi := range locatorPageRange(len(d.tags)) {
+			if !reading || d.fallback.Load() != nil {
+				break
+			}
+			at := d.base + int64(lo)*locatorGenerationRow + int64(lo/locatorGenerationPage)*4
+			reader := io.NewSectionReader(d.file, at, int64((hi-lo)*locatorGenerationRow+4))
+			if err := readLocatorPage(reader, buf[:(hi-lo)*locatorGenerationRow]); err != nil {
+				d.rebuild()
+				break
+			}
+			page := make([]locRec, hi-lo)
+			for i := range page {
+				record := &page[i]
+				decodeLocatorRecord(buf[i*locatorGenerationRow:], record)
+				if !d.validRecord(record) || havePrior && bytes.Compare(record.sum[:], prior[:]) <= 0 {
+					d.rebuild()
+					reading = false
+					break
+				}
+				if !yield(record) {
+					return
+				}
+				prior, havePrior = record.sum, true
+			}
+		}
+		if fallback := d.fallback.Load(); fallback != nil {
+			for i := range fallback.recs {
+				record := &fallback.recs[i]
+				if (!havePrior || bytes.Compare(record.sum[:], prior[:]) > 0) && !yield(record) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // locatorInventory derives the generation key from the real immutable pack
@@ -5165,6 +5334,17 @@ func locatorSectionBytes(count, width uint64) uint64 {
 	return count*width + 4*((count+locatorGenerationPage-1)/locatorGenerationPage)
 }
 
+func locatorTableCount(count uint64) uint64 {
+	if count == 0 {
+		return 0
+	}
+	return 1<<locatorPrefixBits(count) + 1
+}
+
+func locatorPrefixBits(count uint64) uint {
+	return uint(max(0, min(bits.Len64(count/4)-1, 24)))
+}
+
 func locatorPageRange(count int) iter.Seq2[int, int] {
 	return func(yield func(int, int) bool) {
 		for lo := 0; lo < count; lo += locatorGenerationPage {
@@ -5199,7 +5379,7 @@ func writeLocatorGeneration(root string, st *packState, key [32]byte) error {
 	if err := writeLocatorPage(w, hdr[:]); err != nil {
 		return err
 	}
-	buf := make([]byte, locatorGenerationPage*packIndexEntrySize)
+	buf := make([]byte, locatorGenerationPage*locatorGenerationRow)
 	for lo, hi := range locatorPageRange(len(st.packs)) {
 		for i, p := range st.packs[lo:hi] {
 			row := buf[i*locatorGenerationPack : (i+1)*locatorGenerationPack]
@@ -5213,18 +5393,43 @@ func writeLocatorGeneration(root string, st *packState, key [32]byte) error {
 			return err
 		}
 	}
+	if len(ix.recs) != 0 {
+		count := uint64(len(ix.recs))
+		prefix := locatorPrefixBits(count)
+		record := 0
+		for lo, hi := range locatorPageRange(int(locatorTableCount(count))) {
+			for bucket := lo; bucket < hi; bucket++ {
+				for record < len(ix.recs) && int(binary.BigEndian.Uint32(ix.recs[record].sum[:4])>>(32-prefix)) < bucket {
+					record++
+				}
+				binary.LittleEndian.PutUint32(buf[(bucket-lo)*4:], uint32(record))
+			}
+			if err := writeLocatorPage(w, buf[:(hi-lo)*4]); err != nil {
+				return err
+			}
+		}
+		for lo, hi := range locatorPageRange(len(ix.recs)) {
+			for i := lo; i < hi; i++ {
+				binary.LittleEndian.PutUint64(buf[(i-lo)*8:], locatorTag(&ix.recs[i].sum, prefix))
+			}
+			if err := writeLocatorPage(w, buf[:(hi-lo)*8]); err != nil {
+				return err
+			}
+		}
+	}
 	for _, run := range [][]locRec{ix.recs, ix.dups} {
 		for lo, hi := range locatorPageRange(len(run)) {
 			for i, record := range run[lo:hi] {
-				row := buf[i*packIndexEntrySize : (i+1)*packIndexEntrySize]
+				row := buf[i*locatorGenerationRow : (i+1)*locatorGenerationRow]
 				copy(row[:32], record.sum[:])
 				binary.LittleEndian.PutUint32(row[32:], record.pack)
 				binary.LittleEndian.PutUint32(row[36:], record.stored)
 				binary.LittleEndian.PutUint32(row[40:], record.lc)
 				binary.LittleEndian.PutUint32(row[44:], record.offLo)
 				binary.LittleEndian.PutUint32(row[48:], record.offHi)
+				binary.LittleEndian.PutUint32(row[packIndexEntrySize:], crc32.Checksum(row[:packIndexEntrySize], packCRC))
 			}
-			if err := writeLocatorPage(w, buf[:(hi-lo)*packIndexEntrySize]); err != nil {
+			if err := writeLocatorPage(w, buf[:(hi-lo)*locatorGenerationRow]); err != nil {
 				return err
 			}
 		}
@@ -5246,11 +5451,20 @@ func writeLocatorGeneration(root string, st *packState, key [32]byte) error {
 }
 
 func loadLocatorGeneration(root, storeID string, files []packInventoryFile) (*packState, error) {
+	return loadLocatorGenerationProfile(root, storeID, files, false)
+}
+
+func loadLocatorGenerationProfile(root, storeID string, files []packInventoryFile, tags bool) (*packState, error) {
 	f, err := os.Open(filepath.Join(root, locatorGenerationName))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	keepFile := false
+	defer func() {
+		if !keepFile {
+			f.Close()
+		}
+	}()
 	file, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -5263,10 +5477,12 @@ func loadLocatorGeneration(root, storeID string, files []packInventoryFile) (*pa
 	np := binary.LittleEndian.Uint64(hdr[40:])
 	n := binary.LittleEndian.Uint64(hdr[48:])
 	nd := binary.LittleEndian.Uint64(hdr[56:])
+	buckets := locatorTableCount(n)
+	tableBytes := locatorSectionBytes(buckets, 4) + locatorSectionBytes(n, 8)
 	if string(hdr[:8]) != locatorGenerationMagic || np != uint64(len(files)) || np > packIdxMask ||
-		n >= math.MaxUint32 || nd >= math.MaxUint32 || n+nd >= math.MaxUint32 ||
+		n >= math.MaxUint32 || nd >= math.MaxUint32 || n+nd >= math.MaxUint32 || n == 0 && nd != 0 ||
 		uint64(file.Size()) != locatorGenerationHeader+4+locatorSectionBytes(np, locatorGenerationPack)+
-			locatorSectionBytes(n, packIndexEntrySize)+locatorSectionBytes(nd, packIndexEntrySize) {
+			tableBytes+locatorSectionBytes(n, locatorGenerationRow)+locatorSectionBytes(nd, locatorGenerationRow) {
 		return nil, errors.New("locator generation: invalid header or length")
 	}
 	bindings, key, err := locatorInventory(files, storeID)
@@ -5277,7 +5493,7 @@ func loadLocatorGeneration(root, storeID string, files []packInventoryFile) (*pa
 		return nil, errors.New("locator generation: pack inventory changed")
 	}
 	packs := make([]packInfo, len(files))
-	buf := make([]byte, locatorGenerationPage*packIndexEntrySize)
+	buf := make([]byte, locatorGenerationPage*locatorGenerationRow)
 	var counted uint64
 	for lo, hi := range locatorPageRange(len(files)) {
 		if err := readLocatorPage(r, buf[:(hi-lo)*locatorGenerationPack]); err != nil {
@@ -5307,36 +5523,86 @@ func loadLocatorGeneration(root, storeID string, files []packInventoryFile) (*pa
 	if counted != n+nd {
 		return nil, errors.New("locator generation: record totals do not match pack footers")
 	}
-	ix := &locIndex{recs: make([]locRec, int(n)), dups: make([]locRec, int(nd))}
-	for group, run := range [][]locRec{ix.recs, ix.dups} {
-		for lo, hi := range locatorPageRange(len(run)) {
-			if err := readLocatorPage(r, buf[:(hi-lo)*packIndexEntrySize]); err != nil {
+	ix := &locIndex{dups: make([]locRec, int(nd))}
+	recordBase := int64(locatorGenerationHeader + 4 + locatorSectionBytes(np, locatorGenerationPack) + tableBytes)
+	startGroup := 0
+	if tags && n > 0 {
+		ix.shift = 32 - locatorPrefixBits(n)
+		ix.tbl = make([]uint32, int(buckets))
+		ix.disk = &locatorTagLevel{file: f, packs: packs, tags: make([]uint64, int(n)), base: recordBase}
+		for lo, hi := range locatorPageRange(len(ix.tbl)) {
+			if err := readLocatorPage(r, buf[:(hi-lo)*4]); err != nil {
+				return nil, err
+			}
+			for i := lo; i < hi; i++ {
+				ix.tbl[i] = binary.LittleEndian.Uint32(buf[(i-lo)*4:])
+				if uint64(ix.tbl[i]) > n || i > 0 && ix.tbl[i] < ix.tbl[i-1] {
+					return nil, errors.New("locator generation: invalid bucket table")
+				}
+			}
+		}
+		if ix.tbl[0] != 0 || uint64(ix.tbl[len(ix.tbl)-1]) != n {
+			return nil, errors.New("locator generation: invalid bucket table endpoints")
+		}
+		for lo, hi := range locatorPageRange(len(ix.disk.tags)) {
+			if err := readLocatorPage(r, buf[:(hi-lo)*8]); err != nil {
+				return nil, err
+			}
+			for i := lo; i < hi; i++ {
+				ix.disk.tags[i] = binary.LittleEndian.Uint64(buf[(i-lo)*8:])
+			}
+		}
+		for i := 1; i < len(ix.tbl); i++ {
+			if !slices.IsSorted(ix.disk.tags[ix.tbl[i-1]:ix.tbl[i]]) {
+				return nil, errors.New("locator generation: tags are not ordered within the bucket")
+			}
+		}
+		startGroup = 1
+		recordBase += int64(locatorSectionBytes(n, locatorGenerationRow))
+	} else {
+		ix.recs = make([]locRec, int(n))
+	}
+	if _, err := f.Seek(recordBase, io.SeekStart); err != nil {
+		return nil, err
+	}
+	r.Reset(f)
+	for group, count := range [2]int{int(n), int(nd)} {
+		if group < startGroup {
+			continue
+		}
+		var prev locRec
+		for lo, hi := range locatorPageRange(count) {
+			if err := readLocatorPage(r, buf[:(hi-lo)*locatorGenerationRow]); err != nil {
 				return nil, err
 			}
 			for j := lo; j < hi; j++ {
-				at := (j - lo) * packIndexEntrySize
-				row := buf[at : at+packIndexEntrySize]
-				rec := &run[j]
-				copy(rec.sum[:], row[:32])
-				rec.pack = binary.LittleEndian.Uint32(row[32:])
-				rec.stored = binary.LittleEndian.Uint32(row[36:])
-				rec.lc = binary.LittleEndian.Uint32(row[40:])
-				rec.offLo = binary.LittleEndian.Uint32(row[44:])
-				rec.offHi = binary.LittleEndian.Uint32(row[48:])
+				var rec locRec
+				decodeLocatorRecord(buf[(j-lo)*locatorGenerationRow:], &rec)
 				loc := rec.loc()
 				if uint32(loc.pack) >= uint32(np) || loc.tier != packs[loc.pack].tier ||
 					loc.off < packHeaderSize+packRecordHeaderSize || loc.off > bindings[loc.pack].indexOffset ||
 					uint64(loc.stored) > bindings[loc.pack].indexOffset-loc.off ||
 					checkPackLengths(loc.codec, loc.stored, loc.logical) != nil ||
-					(j > 0 && (cmpLocRec(&run[j-1], rec) >= 0 || group == 0 && run[j-1].sum == rec.sum)) {
+					(j > 0 && (cmpLocRec(&prev, &rec) >= 0 || group == 0 && prev.sum == rec.sum)) {
 					return nil, errors.New("locator generation: invalid or unordered record")
+				}
+				prev = rec
+				if group != 0 {
+					ix.dups[j] = rec
+				} else {
+					ix.recs[j] = rec
 				}
 			}
 		}
 	}
 	st := &packState{packs: packs}
 	if ix.size() > 0 {
-		st.levels = []*locIndex{finishLocIndex(ix, true)}
+		if ix.disk != nil {
+			keepFile = true
+		} else {
+			finishLocIndex(ix, true)
+		}
+		st.levels = []*locIndex{ix}
 	}
 	return st, nil
 }
@@ -11354,10 +11620,10 @@ func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 // openStoreWith is openStore that, with maintain, also makes the store the only
 // writer process so it may run online maintenance (section 13d2).
 func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Store, error) {
-	return openStoreWithLocator(root, ownSegments, useCheckpoint, maintain, false)
+	return openStoreWithLocator(root, ownSegments, useCheckpoint, maintain, false, false)
 }
 
-func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, locatorCache bool) (*Store, error) {
+func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("store: failed to create the store directory: %w", err)
 	}
@@ -11382,7 +11648,7 @@ func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, loc
 	if err != nil {
 		return nil, fmt.Errorf("store: taking the writer lock: %w", err)
 	}
-	s, err := openStoreLocked(root, ownSegments, useCheckpoint, locatorCache)
+	s, err := openStoreLocked(root, ownSegments, useCheckpoint, locatorCache, locatorTags)
 	if err != nil {
 		if lock != nil {
 			lock.release()
@@ -11397,7 +11663,7 @@ func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, loc
 	return s, nil
 }
 
-func openStoreLocked(root string, ownSegments, useCheckpoint, locatorCache bool) (*Store, error) {
+func openStoreLocked(root string, ownSegments, useCheckpoint, locatorCache, locatorTags bool) (*Store, error) {
 	for _, sub := range []string{"", "journal", "chunks", "manifests", "tmp", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("store: failed to create %s: %w", sub, err)
@@ -11456,13 +11722,13 @@ func openStoreLocked(root string, ownSegments, useCheckpoint, locatorCache bool)
 		}
 		return s.finishOpen()
 	}
-	if locatorCache {
+	if locatorCache || locatorTags {
 		files, err := listPackInventory(root, format.StoreFormatVersion)
 		if err != nil {
 			j.close()
 			return nil, fmt.Errorf("store: listing packs: %w", err)
 		}
-		if st, err := loadLocatorGeneration(root, format.StoreID, files); err == nil {
+		if st, err := loadLocatorGenerationProfile(root, format.StoreID, files, locatorTags); err == nil {
 			s.packSt.Store(st)
 			s.locatorFromGeneration.Store(true)
 		} else if !errors.Is(err, fs.ErrNotExist) {
@@ -38076,6 +38342,7 @@ func runServe(args []string) {
 	maintLayout := fs.String("maintenance-layout", "locality", "online repack: locality, or recon to also relayout authority families by reconstruction co-access (research)")
 	bgYield := fs.String("background-yield", "off", "online maintenance and import proofs: off, adaptive to S3 activity, or fixed delay (research control)")
 	locatorCache := fs.Bool("locator-generation", false, "use a matching sealed-pack locator generation at startup; fall back to pack indexes")
+	locatorTags := fs.Bool("locator-tags", false, "use a compact tag index with full-digest verification of every hit against a matching generation")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -38160,7 +38427,7 @@ func runServe(args []string) {
 	}
 	defer lock.release()
 
-	store, err := openStoreWithLocator(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache)
+	store, err := openStoreWithLocator(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache, *locatorTags)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}

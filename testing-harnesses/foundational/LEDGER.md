@@ -23,7 +23,7 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | J2 | PARTIAL | [Opt-in single-flush groups, real recovery gates and mixed performance evidence](FB-J2/README.md). General throughput and read tails carry into FB-04/FB-10. |
 | FB-04 | COMPLETE | [M-B1 shared mutation queue, 1,000-key single sync and foreground validation](FB-04/README.md). Both journal backends passed focused race and process-kill gates. |
 | FB-05 | PARTIAL | [Budgeted maintenance](FB-05/README.md) with source/scratch limits, screened raw compression and scoped multipart expiry. X9 native 4 MiB replay and mixed-corpus compression pass. Foreground p99, native class placement, and full lifecycle configuration remain open. |
-| FB-06 | IN PROGRESS | [Pack-set-bound exact locator generation](FB-06/README.md) with opt-in startup, verified fallback and interrupted publication coverage. Compact tags, memory, open-time and ingest gates remain open. |
+| FB-06 | PARTIAL | [Exact generation and compact opt-in tags](FB-06/README.md) passed the local scale and ingest medians, forced collisions, retirement and process-cut gates. Budgeted background refresh and infrastructure qualification remain open. |
 | FB-07 | pending | M-C4 integrity and targeted repair |
 | FB-08 | pending | M-F1/F2/F3 native protocol v3 |
 | FB-09 | pending | M-C1/C3 ZF2 metadata pages |

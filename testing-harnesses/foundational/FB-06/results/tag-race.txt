@@ -1,0 +1,26 @@
+=== RUN   TestB4OnlineReclaimsDeadData
+    zeros3_b4_test.go:214: pass: {ExpiredUploads:0 RecordGroups:0xc000218240 Pass:0 Started:2026-11-26 20:56:40.17741177 +0000 UTC Finished:2026-11-26 20:56:40.525427244 +0000 UTC MarkSeq:60 ReconciledSeq:60 JournalRoots:0 LiveSetOK:true Issues:[] Damage: DamagedChunks:0 HeldPacks:0 Quarantined:[] MarkMicros:837 FreezeMicros:219 SwapMicros:136 WriterWaitMS:0 ReaderWaitMS:0 ScanMS:15 YieldMicros:0 PaceMicros:0 CandidatePacks:1 RewriteSourceBytes:0 DeferredSourceBytes:0 DeadSourceBytes:0 RawCandidateBytes:0 RawProbeBytes:0 RawDeclined:0 PacksDeferred:0 PacksWritten:1 RecordsCopied:26 BytesWritten:792068 LateRecords:0 RevivedRecords:0 PacksRetired:1 PackBytesReclaimed:2381778 ChunksDeleted:25 ManifestsDeleted:12 RepRootsDeleted:0 AuthBodiesDeleted:0 TmpFilesDeleted:0 BytesReclaimed:3444054 NetBytesReclaimed:2651986 RetainedPinned:0 RetainedPinnedBytes:0 DeferredItems:0 DeferredBytes:0 PendingPacks:0 PendingBytes:0 Pins:0 Recon:<nil> Deferred: Canceled:false Error:}
+--- PASS: TestB4OnlineReclaimsDeadData (1.22s)
+=== RUN   TestFB03_LocPlanQuietPurge
+--- PASS: TestFB03_LocPlanQuietPurge (0.08s)
+=== RUN   TestFB06ScaleOpen
+    zeros3_fb06_scale_test.go:28: set ZEROS3_FB06_SCALE to the generated record count
+--- SKIP: TestFB06ScaleOpen (0.00s)
+=== RUN   TestFB06DedupIngest
+    zeros3_fb06_scale_test.go:134: set ZEROS3_FB06_INGEST=1 for paired native ingest timings
+--- SKIP: TestFB06DedupIngest (0.00s)
+=== RUN   TestFB06TagLevelCollisionAndReadFailure
+    zeros3_fb06_test.go:117: verified 1000 forced equal-tag misses and reconstructed the same pack locations after truncation
+--- PASS: TestFB06TagLevelCollisionAndReadFailure (0.43s)
+=== RUN   TestFB06GenerationRoundTripAndFallback
+2026/11/26 15:56:41 zeros3: ignoring locator generation: locator generation: page checksum mismatch
+2026/11/26 15:56:41 zeros3: ignoring locator generation: locator generation: invalid header or length
+2026/11/26 15:56:41 zeros3: ignoring locator generation: locator generation: invalid header or length
+--- PASS: TestFB06GenerationRoundTripAndFallback (0.48s)
+=== RUN   TestFB06GenerationPublishCut
+--- PASS: TestFB06GenerationPublishCut (0.09s)
+=== RUN   TestFB06GenerationCannotResurrectRetiredPacks
+2026/11/26 15:56:41 zeros3: ignoring locator generation: locator generation: pack inventory changed
+--- PASS: TestFB06GenerationCannotResurrectRetiredPacks (0.17s)
+PASS
+ok  	zeros3	3.526s

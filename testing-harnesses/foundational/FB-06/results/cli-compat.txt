@@ -1,0 +1,3 @@
+locator generation: 1 sealed packs
+pre-generation binary: exact 2 MiB signed GET after sidecar publication
+tag-profile binary: exact 2 MiB signed GET and HEAD
