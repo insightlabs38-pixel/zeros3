@@ -26560,6 +26560,9 @@ type syncDiscoveryResponse struct {
 	AuthorityExport   *AuthCaps `json:"authority_export,omitempty"`
 	AuthorityImport   *AuthCaps `json:"authority_import,omitempty"`
 	AuthorityGzipBase bool      `json:"authority_gzip_base,omitempty"`
+	// CommitIfUnchanged: the commit honours syncCommitRequest.IfUnchanged
+	// (FB-02 M-A5).
+	CommitIfUnchanged bool `json:"commit_if_unchanged,omitempty"`
 }
 
 // syncChunkDescriptor unambiguously identifies one expected chunk: its
@@ -26640,6 +26643,13 @@ type syncCommitRequest struct {
 	Chunks       []syncChunkDescriptor `json:"chunks"`
 	ExpectAbsent bool                  `json:"expect_absent"`
 	ExpectedETag string                `json:"expected_etag"`
+	// IfUnchanged (FB-02 M-A5, additive) asks for the explicit idempotent
+	// commit: when the destination already holds a version equivalent to
+	// this one (syncIdentity), nothing is written and that version is
+	// returned. The check runs before the manifest is written, and before
+	// ExpectAbsent/ExpectedETag. Servers advertise it as commit_if_unchanged;
+	// older servers ignore the field and publish as usual.
+	IfUnchanged bool `json:"if_unchanged,omitempty"`
 }
 
 type syncCommitResponse struct {
@@ -26648,6 +26658,47 @@ type syncCommitResponse struct {
 	VersionID string `json:"version_id"`
 	ETag      string `json:"etag"`
 	Size      int64  `json:"size"`
+	// Unchanged reports that an idempotent commit found an equivalent
+	// version and wrote nothing.
+	Unchanged bool `json:"unchanged,omitempty"`
+}
+
+// syncIdentity is the one replication equivalence rule (FB-02 M-A5,
+// ADR-POL-01 option b): the whole-object SHA-256, size, content type and
+// user metadata. An ETag is never part of it (F5-N10): a multipart ETag
+// differs from the same bytes' single-part ETag, and an ETag says nothing
+// about metadata. A missing or malformed SHA-256 leaves the identity
+// unknown, and an unknown identity is never equivalent to anything.
+type syncIdentity struct {
+	sha         [32]byte
+	known       bool
+	size        int64
+	contentType string
+	metadata    []metadataKV
+}
+
+func newSyncIdentity(objectSHA string, size int64, contentType string, metadata []metadataKV) syncIdentity {
+	id := syncIdentity{size: size, contentType: cmp.Or(contentType, "application/octet-stream"), metadata: metadata}
+	if sum, err := decodeHexSHA256(objectSHA); err == nil {
+		id.sha, id.known = sum, true
+	}
+	return id
+}
+
+func manifestIdentity(m *manifestV1) syncIdentity {
+	return newSyncIdentity(m.ObjectSHA256, m.TotalLength, m.ContentType, m.Metadata)
+}
+
+func descriptorIdentity(d syncObjectDescriptor) syncIdentity {
+	return newSyncIdentity(d.ObjectSHA256, d.Size, d.ContentType, sortedMetadataKV(d.Metadata))
+}
+
+// match reports whether both identities are known and whether they are
+// then equivalent.
+func (a syncIdentity) match(b syncIdentity) (equivalent, known bool) {
+	known = a.known && b.known
+	return known && a.sha == b.sha && a.size == b.size && a.contentType == b.contentType &&
+		slices.Equal(a.metadata, b.metadata), known
 }
 
 // writeSyncJSON/writeSyncError render this extension's JSON responses.
@@ -27094,6 +27145,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		AuthorityExport:   &authority,
 		AuthorityImport:   &authority,
 		AuthorityGzipBase: true,
+		CommitIfUnchanged: true,
 	}
 	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
 	writeSyncJSON(w, http.StatusOK, d)
@@ -27637,8 +27689,28 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 	srv.publishSyncManifest(w, req, man, false)
 }
 
-func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequest, man manifestV1, idempotent bool) {
+func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequest, man manifestV1, authority bool) {
 	s3Bucket, s3Key := req.Bucket, req.Key
+	// An authority import is always idempotent; an ordinary sync commit only
+	// when it asks (IfUnchanged), so the default rerun still publishes a new
+	// version (ADR-POL-01 is the owner's call).
+	idempotent := authority || req.IfUnchanged
+	want := manifestIdentity(&man)
+	// The equivalence check runs before anything is written (ADR-PUB-01,
+	// F6-REPL-03): an equivalent current version is returned as it is, with
+	// no manifest, fsync or journal record. Any lookup failure falls through
+	// to the ordinary path, which reports it.
+	if idempotent {
+		if cur, sm, err := srv.store.headServed(s3Bucket, s3Key); err == nil {
+			if same, _ := manifestIdentity(&sm.man).match(want); same {
+				fireTestHook(hookAfterAck)
+				writeSyncJSON(w, http.StatusOK, syncCommitResponse{
+					Bucket: s3Bucket, Key: s3Key, VersionID: cur.manifestUUID, ETag: cur.etag, Size: cur.size, Unchanged: true,
+				})
+				return
+			}
+		}
+	}
 	manUUID, manSHA, err := srv.store.publishManifest(man)
 	if err != nil {
 		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
@@ -27655,12 +27727,15 @@ func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequ
 	expectAbsent, expectedETag := req.ExpectAbsent, req.ExpectedETag
 	var equivalent *objectEntry
 	entry, err := srv.store.commitObjectRootChecked(s3Bucket, s3Key, manUUID, manSHA, man, func(cur *objectEntry, exists bool) error {
-		if idempotent && exists && cur.etag == man.ETag && cur.contentType == man.ContentType {
+		// A writer racing the check above may have published an equivalent
+		// version since; the same rule decides again under the lock. The
+		// manifest written above is then left unreferenced, for GC.
+		if idempotent && exists && cur.size == man.TotalLength && cur.contentType == want.contentType {
 			previous, err := srv.store.readVerifiedManifest(cur.manifestUUID, cur.manifestSHA256)
 			if err != nil {
 				return err
 			}
-			if previous.ObjectSHA256 == man.ObjectSHA256 && slices.Equal(previous.Metadata, man.Metadata) {
+			if same, _ := manifestIdentity(&previous).match(want); same {
 				equivalent = cur
 				return errSyncEquivalent
 			}
@@ -27676,7 +27751,8 @@ func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequ
 		}
 		return nil
 	})
-	if errors.Is(err, errSyncEquivalent) {
+	unchanged := errors.Is(err, errSyncEquivalent)
+	if unchanged {
 		entry, err = equivalent, nil
 	}
 	if err != nil {
@@ -27690,7 +27766,7 @@ func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequ
 		}
 		return
 	}
-	if !idempotent {
+	if !authority && !unchanged {
 		if srv.store.rep.q.Load() != nil {
 			srv.store.repAfterCommit(s3Bucket, s3Key, man)
 		} else {
@@ -27699,7 +27775,7 @@ func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequ
 	}
 	fireTestHook(hookAfterAck)
 	writeSyncJSON(w, http.StatusOK, syncCommitResponse{
-		Bucket: s3Bucket, Key: s3Key, VersionID: entry.manifestUUID, ETag: entry.etag, Size: entry.size,
+		Bucket: s3Bucket, Key: s3Key, VersionID: entry.manifestUUID, ETag: entry.etag, Size: entry.size, Unchanged: unchanged,
 	})
 }
 
@@ -27880,7 +27956,8 @@ func (srv *Server) handleSnapshotDescribeObject(w http.ResponseWriter, r *http.R
 	writeSyncJSON(w, http.StatusOK, syncObjectDescriptor{
 		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
 		Bucket: d.SourceBucket, Key: key, VersionID: entry.ManifestUUID,
-		Size: man.TotalLength, ETag: man.ETag, ContentType: man.ContentType,
+		ObjectSHA256: man.ObjectSHA256,
+		Size:         man.TotalLength, ETag: man.ETag, ContentType: man.ContentType,
 		Metadata: metadata, Chunks: chunks,
 	})
 }
@@ -28452,6 +28529,57 @@ func discoverZeroS3Sync(cfg syncClientConfig) (syncDiscoveryResponse, error) {
 	return d, nil
 }
 
+// syncSession caches capability discovery for one client run (FB-02 M-A5,
+// F5-RTT-02): a replicate, fork, dry-run or restore run asks each endpoint
+// once, not twice per object. It lives only as long as the run, holds one
+// answer per endpoint, credential and region, and never caches a failure.
+// A nil session discovers every time, as before.
+type syncSession struct {
+	mu   sync.Mutex
+	disc map[string]syncDiscoveryResponse
+}
+
+func newSyncSession() *syncSession { return &syncSession{disc: map[string]syncDiscoveryResponse{}} }
+
+func (ss *syncSession) discover(cfg syncClientConfig) (syncDiscoveryResponse, error) {
+	if ss == nil {
+		return discoverZeroS3Sync(cfg)
+	}
+	k := cfg.Endpoint + "\x00" + cfg.Creds.AccessKeyID + "\x00" + cfg.Region
+	ss.mu.Lock()
+	d, ok := ss.disc[k]
+	ss.mu.Unlock()
+	if ok {
+		return d, nil
+	}
+	d, err := discoverZeroS3Sync(cfg)
+	if err != nil {
+		return d, err
+	}
+	ss.mu.Lock()
+	ss.disc[k] = d
+	ss.mu.Unlock()
+	return d, nil
+}
+
+// describeSyncDestination reads the destination's current identity: its
+// ETag (for the ExpectedETag change check) and, through the same live
+// describe a source gets, its object SHA-256, size, content type and
+// metadata (FB-02 M-A5). It replaces a HEAD, so it costs no extra request.
+func describeSyncDestination(cfg syncClientConfig) (exists bool, etag string, id syncIdentity, err error) {
+	d, err := requestSyncDescriptor(cfg, false, false, "")
+	if errors.Is(err, errSyncDescriptorMissing) {
+		return false, "", syncIdentity{}, nil
+	}
+	if err != nil {
+		return false, "", syncIdentity{}, fmt.Errorf("describe destination failed: %w", err)
+	}
+	if d.Bucket != cfg.Bucket || d.Key != cfg.Key {
+		return false, "", syncIdentity{}, errors.New("describe destination: descriptor names another object")
+	}
+	return true, d.ETag, descriptorIdentity(d), nil
+}
+
 // syncObjectPath returns the request-target path for an ordinary S3
 // object request against bucket/key, correctly percent-encoded via
 // net/url. Raw string concatenation of an unescaped key is unsafe: a
@@ -28709,6 +28837,7 @@ func uploadMissingSyncChunks(cfg syncClientConfig, plan syncPlan, missing map[st
 type syncPrecondition struct {
 	expectAbsent bool
 	expectedETag string
+	ifUnchanged  bool // syncCommitRequest.IfUnchanged
 }
 
 // commitSyncObject performs A6's atomic commit: the complete ordered
@@ -28727,7 +28856,7 @@ func commitSyncObject(cfg syncClientConfig, plan syncPlan, pre syncPrecondition)
 	reqBody, err := json.Marshal(syncCommitRequest{
 		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
 		Bucket: cfg.Bucket, Key: cfg.Key, ContentType: contentType, Metadata: cfg.Metadata,
-		Chunks: chunks, ExpectAbsent: pre.expectAbsent, ExpectedETag: pre.expectedETag,
+		Chunks: chunks, ExpectAbsent: pre.expectAbsent, ExpectedETag: pre.expectedETag, IfUnchanged: pre.ifUnchanged,
 	})
 	if err != nil {
 		return syncCommitResponse{}, err
@@ -28765,6 +28894,7 @@ type syncStats struct {
 	FellBackToPlainPut   bool
 	AuthorityBytes       int64 // native commit header and closure upload
 	AuthorityProbeBytes  int64 // fetched native payload discarded in favor of CDC
+	Unchanged            int   // objects left as they were: an equivalent version was already there
 }
 
 func humanBytes(n int64) string {
@@ -28800,6 +28930,9 @@ func printSyncStats(w io.Writer, s syncStats) {
 	fmt.Fprintf(w, "Transfer avoided:    %s\n", humanBytes(s.BytesAvoided))
 	if s.LogicalBytes > 0 {
 		fmt.Fprintf(w, "Reuse:               %.1f%%\n", float64(s.BytesAvoided)/float64(s.LogicalBytes)*100)
+	}
+	if s.Unchanged > 0 {
+		fmt.Fprintln(w, "Destination:         left unchanged (already equivalent)")
 	}
 }
 
@@ -30377,6 +30510,19 @@ type replicateConfig struct {
 	// transfers. Zero (every pre-existing caller, unchanged) means
 	// "use defaultTransferWorkers" -- see resolveTransferWorkers.
 	Workers int
+
+	// IfUnchanged is the explicit idempotent mode (FB-02 M-A5, `replicate
+	// -if-unchanged`): a destination that already holds an equivalent
+	// object (syncIdentity) is left as it is, with no commit and no new
+	// version. When either identity is unknown the commit carries
+	// if_unchanged and the destination decides. Off by default: an ordinary
+	// rerun still publishes a new version until the owner settles
+	// ADR-POL-01.
+	IfUnchanged bool
+
+	// session, when set, caches capability discovery across the objects
+	// of one run.
+	session *syncSession
 }
 
 // destinationAction classifies what an actual (non-dry-run) replication
@@ -30390,6 +30536,10 @@ const (
 	destActionPublish    destinationAction = "would publish object"
 	destActionEquivalent destinationAction = "already equivalent"
 	destActionConflict   destinationAction = "CONFLICT"
+	// destActionUnverified: create-only, but one side's identity is
+	// unknown, so the destination's if_unchanged check decides between a
+	// no-op and a conflict.
+	destActionUnverified destinationAction = "destination decides (identity unknown)"
 )
 
 // replicationPlan is planReplication's complete, read-only output: every
@@ -30419,6 +30569,9 @@ type replicationPlan struct {
 	destExists bool
 	destETag   string
 	action     destinationAction
+	// skip: IfUnchanged and the destination is already equivalent, so
+	// nothing is transferred or committed.
+	skip bool
 
 	// missingOccur/wouldTransferBytes are computed once, here, from the
 	// exact same plan.ordered/plan.unique/missing values
@@ -30447,11 +30600,11 @@ type replicationPlan struct {
 // executeReplicationPlan) and `replicate -dry-run` share one planner
 // instead of two independently-maintained ideas of "what would transfer."
 func planReplication(cfg replicateConfig) (replicationPlan, error) {
-	srcDiscovery, err := discoverZeroS3Sync(cfg.Source)
+	srcDiscovery, err := cfg.session.discover(cfg.Source)
 	if err != nil {
 		return replicationPlan{}, fmt.Errorf("replicate: source capability discovery failed: %w", err)
 	}
-	destDiscovery, err := discoverZeroS3Sync(cfg.Dest)
+	destDiscovery, err := cfg.session.discover(cfg.Dest)
 	if err != nil {
 		return replicationPlan{}, fmt.Errorf("replicate: destination capability discovery failed: %w", err)
 	}
@@ -30461,47 +30614,44 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 		return replicationPlan{}, fmt.Errorf("replicate: %w", err)
 	}
 
-	exists, etag, err := headSyncDestination(cfg.Dest)
+	exists, etag, destID, err := describeSyncDestination(cfg.Dest)
 	if err != nil {
 		return replicationPlan{}, fmt.Errorf("replicate: %w", err)
 	}
 
-	// pre/action below classify the observed state exactly the way
-	// replicateObject always has (this is unchanged from before
-	// planReplication existed -- see the DestMustBeAbsent field's own
-	// doc comment for why the two modes differ); action is the new,
-	// purely additive M8G-A4/A8 label describing what that precondition
-	// implies an actual commit would do.
+	// pre/action classify the observed state. Equivalence is syncIdentity
+	// (FB-02 M-A5), never the ETag: the ETag only serves as the "unchanged
+	// since I looked" precondition. Without IfUnchanged an ordinary rerun
+	// still publishes a new version, and create-only still republishes an
+	// equivalent destination, as before (ADR-POL-01 pending).
+	equivalent, known := descriptorIdentity(desc).match(destID)
 	pre := syncPrecondition{expectAbsent: true}
 	action := destActionPublish
 	if cfg.DestMustBeAbsent {
-		// Create-only, but still resumable:
-		// a destination key that doesn't exist yet is the ordinary case
-		// (expectAbsent stays true, above). One already existing is a
-		// conflict *unless* it already holds exactly the content this
-		// call is about to publish (same ETag as the source descriptor)
-		// -- which means either this is a resumed rerun re-observing its
-		// own prior successful commit, or the destination coincidentally
-		// already had byte-identical content, either way harmless and
-		// indistinguishable from a no-op. That one case reuses the same
-		// expectedETag no-op-equivalent commit M8A/M8C's own resume
-		// already relies on (this function's own doc comment above); any
-		// other existing, differently-identified destination object
-		// falls through to expectAbsent, which the atomic commit rejects
-		// with a 412 exactly like any other pre-existing-and-different
-		// destination.
-		if exists && etag == desc.ETag {
-			pre = syncPrecondition{expectAbsent: false, expectedETag: etag}
+		// Create-only, but still resumable: an existing destination that
+		// already holds an equivalent object (a resumed rerun observing its
+		// own commit, or the same content by chance) commits as before;
+		// any other existing object is a conflict, which the expectAbsent
+		// commit rejects with a 412. When an identity is unknown only the
+		// destination can tell the two apart, so the commit asks it to
+		// keep an equivalent object and refuse anything else.
+		switch {
+		case exists && equivalent:
+			pre = syncPrecondition{expectedETag: etag, ifUnchanged: cfg.IfUnchanged}
 			action = destActionEquivalent
-		} else if exists {
+		case exists && !known:
+			pre = syncPrecondition{expectAbsent: true, ifUnchanged: true}
+			action = destActionUnverified
+		case exists:
 			action = destActionConflict
 		}
 	} else {
-		pre = syncPrecondition{expectAbsent: !exists, expectedETag: etag}
-		if exists && etag == desc.ETag {
+		pre = syncPrecondition{expectAbsent: !exists, expectedETag: etag, ifUnchanged: cfg.IfUnchanged}
+		if exists && equivalent {
 			action = destActionEquivalent
 		}
 	}
+	skip := cfg.IfUnchanged && exists && equivalent
 
 	chunks := make([]syncLocalChunk, len(desc.Chunks))
 	for i, c := range desc.Chunks {
@@ -30509,9 +30659,13 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 	}
 	plan := buildSyncPlan(chunks, desc.Size)
 
-	missing, err := negotiateSyncMissing(cfg.Dest, destDiscovery, plan.unique)
-	if err != nil {
-		return replicationPlan{}, fmt.Errorf("replicate: %w", err)
+	// A skipped object transfers nothing, so there is nothing to negotiate.
+	missing := map[string]bool{}
+	if !skip {
+		missing, err = negotiateSyncMissing(cfg.Dest, destDiscovery, plan.unique)
+		if err != nil {
+			return replicationPlan{}, fmt.Errorf("replicate: %w", err)
+		}
 	}
 
 	// wouldTransferBytes sums plan.unique (already de-duplicated to one
@@ -30534,7 +30688,7 @@ func planReplication(cfg replicateConfig) (replicationPlan, error) {
 
 	return replicationPlan{
 		cfg: cfg, desc: desc, srcDiscovery: srcDiscovery, destDiscovery: destDiscovery, plan: plan, missing: missing, pre: pre,
-		destExists: exists, destETag: etag, action: action,
+		destExists: exists, destETag: etag, action: action, skip: skip,
 		missingOccur: missingOccur, wouldTransferBytes: wouldTransferBytes,
 	}, nil
 }
@@ -30594,9 +30748,8 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 		export.KnownComponents = dst.AuthorityComponents[:min(len(dst.AuthorityComponents), maxAuthAdvertisedComponents)]
 		export.KnownBases = dst.AuthorityBases[:min(len(dst.AuthorityBases), maxAuthAdvertisedBases)]
 		if dst.Authoritative {
-			if dst.ObjectSHA256 == p.desc.ObjectSHA256 && dst.ContentType == p.desc.ContentType &&
-				slices.Equal(sortedMetadataKV(dst.Metadata), sortedMetadataKV(p.desc.Metadata)) {
-				return syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.desc.Chunks), BytesAvoided: p.desc.Size}, true, nil
+			if same, _ := descriptorIdentity(dst).match(descriptorIdentity(p.desc)); same {
+				return syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.desc.Chunks), BytesAvoided: p.desc.Size, Unchanged: 1}, true, nil
 			}
 			export.KnownBase = dst.ObjectSHA256
 		} else if canDerive && p.cfg.AuthorityBaseKey == p.cfg.Dest.Key {
@@ -30606,7 +30759,7 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 	commit := authImportRequest{Version: authXferVersion, SHA256: p.desc.ObjectSHA256, syncCommitRequest: syncCommitRequest{
 		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
 		Bucket: p.cfg.Dest.Bucket, Key: p.cfg.Dest.Key, ContentType: p.desc.ContentType, Metadata: p.desc.Metadata,
-		Chunks: p.desc.Chunks, ExpectAbsent: p.pre.expectAbsent, ExpectedETag: p.pre.expectedETag,
+		Chunks: p.desc.Chunks, ExpectAbsent: p.pre.expectAbsent, ExpectedETag: p.pre.expectedETag, IfUnchanged: p.pre.ifUnchanged,
 	}}
 	if key := p.cfg.AuthorityBaseKey; key != "" && key != p.cfg.Dest.Key {
 		base := p.cfg.Dest
@@ -30754,7 +30907,7 @@ func tryReplicateAuthority(p replicationPlan) (stats syncStats, used bool, err e
 		return stats, false, errors.New("replicate: invalid authority commit acknowledgement")
 	}
 	return syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.desc.Chunks), UploadedBytes: total,
-		BytesAvoided: p.desc.Size - total, AuthorityBytes: total}, true, nil
+		BytesAvoided: p.desc.Size - total, AuthorityBytes: total, Unchanged: btoi(committed.Unchanged)}, true, nil
 }
 
 func requestDerivedAuthBase(cfg syncClientConfig, hint syncObjectDescriptor) *authBaseIdentity {
@@ -30798,6 +30951,14 @@ func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 	if err != nil {
 		return syncStats{}, fmt.Errorf("replicate: %w", err)
 	}
+	if p.skip {
+		stats := syncStats{LogicalBytes: p.desc.Size, TotalChunks: len(p.plan.ordered), ChunksReused: len(p.plan.ordered),
+			BytesAvoided: p.desc.Size, Unchanged: 1}
+		if cfg.Out != nil {
+			printSyncStats(cfg.Out, stats)
+		}
+		return stats, nil
+	}
 	native, used, err := tryReplicateAuthority(p)
 	if err != nil {
 		return syncStats{}, err
@@ -30830,16 +30991,20 @@ func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 	destCommitCfg := cfg.Dest
 	destCommitCfg.ContentType = p.desc.ContentType
 	destCommitCfg.Metadata = p.desc.Metadata
-	_, commitErr := commitSyncObject(destCommitCfg, p.plan, p.pre)
+	committed, commitErr := commitSyncObject(destCommitCfg, p.plan, p.pre)
 	// A killed fork client may leave a server-side commit in flight. One
 	// equivalent-content recheck closes that resume race, while the retried
 	// commit still atomically rejects a later writer. Ordinary sync is unchanged.
 	if errors.Is(commitErr, errSyncRemoteConflict) && cfg.DestMustBeAbsent {
-		exists, etag, headErr := headSyncDestination(cfg.Dest)
-		if headErr != nil {
-			commitErr = headErr
-		} else if exists && etag == p.desc.ETag {
-			_, commitErr = commitSyncObject(destCommitCfg, p.plan, syncPrecondition{expectedETag: etag})
+		exists, etag, destID, descErr := describeSyncDestination(cfg.Dest)
+		equivalent, known := descriptorIdentity(p.desc).match(destID)
+		switch {
+		case descErr != nil:
+			commitErr = descErr
+		case exists && equivalent:
+			committed, commitErr = commitSyncObject(destCommitCfg, p.plan, syncPrecondition{expectedETag: etag, ifUnchanged: cfg.IfUnchanged})
+		case exists && !known && !p.pre.ifUnchanged:
+			committed, commitErr = commitSyncObject(destCommitCfg, p.plan, syncPrecondition{expectAbsent: true, ifUnchanged: true})
 		}
 	}
 	if commitErr != nil {
@@ -30856,6 +31021,7 @@ func executeReplicationPlan(p replicationPlan) (syncStats, error) {
 		BytesAvoided:         p.desc.Size - relayedBytes - native.UploadedBytes,
 		AuthorityBytes:       native.AuthorityBytes,
 		AuthorityProbeBytes:  native.AuthorityProbeBytes,
+		Unchanged:            btoi(committed.Unchanged),
 	}
 	if cfg.Out != nil {
 		printSyncStats(cfg.Out, stats)
@@ -30911,6 +31077,7 @@ func runReplicate(args []string) {
 	toSecretKey := fs.String("to-secret-key", defaultSecretAccessKey, "destination secret access key")
 	region := fs.String("region", defaultRegion, "SigV4 region (both endpoints; default: AWS_REGION)")
 	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent missing-chunk transfers per object (bounded 1..32; bulk transport runs at most 4 batches at once); accepted but irrelevant with -dry-run, which never transfers chunk payload")
+	ifUnchanged := fs.Bool("if-unchanged", false, "leave a destination object as it is when it already has the same SHA-256, size, content type and metadata, instead of publishing a new version of it")
 	fs.Parse(args)
 	// P1-A5: replicate is a two-endpoint command, so -from-access-key/
 	// -from-secret-key/-to-access-key/-to-secret-key deliberately do NOT
@@ -30963,6 +31130,7 @@ func runReplicate(args []string) {
 			Out:             os.Stdout,
 			Workers:         *workers,
 			PreferAuthority: *authority,
+			IfUnchanged:     *ifUnchanged,
 		}
 		if *dryRun {
 			result, err := planReplicationNamespace(cfg)
@@ -31021,6 +31189,7 @@ func runReplicate(args []string) {
 		Workers:          *workers,
 		PreferAuthority:  *authority,
 		AuthorityBaseKey: baseKey, DeriveAuthorityBase: *deriveBase,
+		IfUnchanged: *ifUnchanged,
 	}
 	if *dryRun {
 		p, err := planReplication(cfg)
@@ -31140,6 +31309,7 @@ func planReplicationNamespace(cfg namespaceReplicateConfig) (nsDryRunResult, err
 
 	result := nsDryRunResult{Discovered: len(objects)}
 	simulatedPresent := map[string]bool{}
+	session := newSyncSession()
 	for _, obj := range objects {
 		dstKey, err := namespaceDestKey(cfg.SourcePrefix, cfg.DestPrefix, obj.Key)
 		if err != nil {
@@ -31148,7 +31318,7 @@ func planReplicationNamespace(cfg namespaceReplicateConfig) (nsDryRunResult, err
 			continue
 		}
 
-		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent}
+		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent, IfUnchanged: cfg.IfUnchanged, session: session}
 		objCfg.Source.Key = obj.Key
 		objCfg.Dest.Key = dstKey
 
@@ -32011,6 +32181,10 @@ type namespaceReplicateConfig struct {
 	// own doc comment for why namespace-level object concurrency is
 	// explicitly out of scope for M8H.
 	Workers int
+
+	// IfUnchanged is forwarded, per object, to replicateConfig's own field
+	// of the same name (FB-02 M-A5).
+	IfUnchanged bool
 }
 
 // replicateNamespace is M8C's complete orchestration: enumerate the
@@ -32035,6 +32209,7 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 	}
 
 	result := nsReplicateResult{Discovered: len(objects)}
+	session := newSyncSession()
 	for _, obj := range objects {
 		dstKey, err := namespaceDestKey(cfg.SourcePrefix, cfg.DestPrefix, obj.Key)
 		if err != nil {
@@ -32043,7 +32218,8 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 			continue
 		}
 
-		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent, Workers: cfg.Workers, PreferAuthority: cfg.PreferAuthority}
+		objCfg := replicateConfig{Source: cfg.Source, Dest: cfg.Dest, DestMustBeAbsent: cfg.DestMustBeAbsent, Workers: cfg.Workers,
+			PreferAuthority: cfg.PreferAuthority, IfUnchanged: cfg.IfUnchanged, session: session}
 		objCfg.Source.Key = obj.Key
 		objCfg.Dest.Key = dstKey
 
@@ -32063,6 +32239,7 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 		result.Stats.BytesAvoided += stats.BytesAvoided
 		result.Stats.AuthorityBytes += stats.AuthorityBytes
 		result.Stats.AuthorityProbeBytes += stats.AuthorityProbeBytes
+		result.Stats.Unchanged += stats.Unchanged
 	}
 
 	if cfg.Out != nil {
@@ -32079,6 +32256,9 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 	fmt.Fprintf(w, "Objects discovered:      %d\n", r.Discovered)
 	fmt.Fprintf(w, "Replicated:              %d\n", r.Replicated)
+	if r.Stats.Unchanged > 0 {
+		fmt.Fprintf(w, "  left unchanged:        %d (already equivalent)\n", r.Stats.Unchanged)
+	}
 	fmt.Fprintf(w, "Failed:                  %d\n", r.Failed)
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "Logical data:            %s\n", humanBytes(r.Stats.LogicalBytes))
@@ -33265,6 +33445,7 @@ type restoreObjectConfig struct {
 	SnapshotID string
 	Key        string
 	Dest       syncClientConfig
+	session    *syncSession // capability discovery shared across one run
 }
 
 // restoreObject is M8E-B's per-object pipeline -- see section 15i's own
@@ -33272,11 +33453,11 @@ type restoreObjectConfig struct {
 // and why it is a parallel function rather than a thin wrapper around
 // replicateObject.
 func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
-	srcDiscovery, err := discoverZeroS3Sync(cfg.Snapshot)
+	srcDiscovery, err := cfg.session.discover(cfg.Snapshot)
 	if err != nil {
 		return syncStats{}, fmt.Errorf("restore: snapshot store capability discovery failed: %w", err)
 	}
-	destDiscovery, err := discoverZeroS3Sync(cfg.Dest)
+	destDiscovery, err := cfg.session.discover(cfg.Dest)
 	if err != nil {
 		return syncStats{}, fmt.Errorf("restore: destination capability discovery failed: %w", err)
 	}
@@ -33289,17 +33470,21 @@ func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
 	// B4: create-only, with the one resume-safe carve-out of a
 	// pre-existing destination object whose content already matches
 	// exactly what this restore is about to publish -- see section 15i's
-	// own doc comment.
-	exists, etag, err := headSyncDestination(cfg.Dest)
+	// own doc comment. "Matches" is syncIdentity, never the ETag (FB-02
+	// M-A5); with an identity unknown the destination decides.
+	exists, etag, destID, err := describeSyncDestination(cfg.Dest)
 	if err != nil {
 		return syncStats{}, fmt.Errorf("restore: %w", err)
 	}
+	equivalent, known := descriptorIdentity(desc).match(destID)
 	var pre syncPrecondition
 	switch {
 	case !exists:
 		pre = syncPrecondition{expectAbsent: true}
-	case etag == desc.ETag:
+	case equivalent:
 		pre = syncPrecondition{expectAbsent: false, expectedETag: etag}
+	case !known:
+		pre = syncPrecondition{expectAbsent: true, ifUnchanged: true}
 	default:
 		return syncStats{}, fmt.Errorf("restore: destination %s/%s already exists with different content (conflict)", cfg.Dest.Bucket, cfg.Dest.Key)
 	}
@@ -33332,7 +33517,8 @@ func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
 	destCommitCfg := cfg.Dest
 	destCommitCfg.ContentType = desc.ContentType
 	destCommitCfg.Metadata = desc.Metadata
-	if _, err := commitSyncObject(destCommitCfg, plan, pre); err != nil {
+	committed, err := commitSyncObject(destCommitCfg, plan, pre)
+	if err != nil {
 		return syncStats{}, fmt.Errorf("restore: %w", err)
 	}
 
@@ -33350,6 +33536,7 @@ func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
 		UniqueChunksUploaded: len(missing),
 		UploadedBytes:        relayedBytes,
 		BytesAvoided:         desc.Size - relayedBytes,
+		Unchanged:            btoi(committed.Unchanged),
 	}, nil
 }
 
@@ -33378,6 +33565,7 @@ func restoreNamespace(cfg restoreNamespaceConfig) (nsReplicateResult, error) {
 	}
 
 	result := nsReplicateResult{Discovered: len(show.Entries)}
+	session := newSyncSession()
 	for _, e := range show.Entries {
 		dstKey, err := namespaceDestKey(show.SourcePrefix, cfg.DestPrefix, e.Key)
 		if err != nil {
@@ -33386,7 +33574,7 @@ func restoreNamespace(cfg restoreNamespaceConfig) (nsReplicateResult, error) {
 			continue
 		}
 
-		objCfg := restoreObjectConfig{Snapshot: cfg.Snapshot, SnapshotID: cfg.SnapshotID, Key: e.Key, Dest: cfg.Dest}
+		objCfg := restoreObjectConfig{Snapshot: cfg.Snapshot, SnapshotID: cfg.SnapshotID, Key: e.Key, Dest: cfg.Dest, session: session}
 		objCfg.Dest.Key = dstKey
 
 		stats, err := restoreObject(objCfg)
@@ -33403,6 +33591,7 @@ func restoreNamespace(cfg restoreNamespaceConfig) (nsReplicateResult, error) {
 		result.Stats.UniqueChunksUploaded += stats.UniqueChunksUploaded
 		result.Stats.UploadedBytes += stats.UploadedBytes
 		result.Stats.BytesAvoided += stats.BytesAvoided
+		result.Stats.Unchanged += stats.Unchanged
 	}
 
 	if cfg.Out != nil {
@@ -33599,7 +33788,20 @@ func buildObjectDiff(a, b syncObjectDescriptor) objectDiffResult {
 		BPayloadReusableFromA: bReuse,
 		BOnlyPayload:          b.Size - bReuse,
 	}
-	result.ContentEqual = a.ETag == b.ETag
+	// Content equality is the object SHA-256 and size when both sides
+	// carry them, or else the same ordered chunk digests; never the ETag,
+	// which differs between multipart and single-part writes of the same
+	// bytes (FB-02 M-A5, F5-REPL-02).
+	sameChunks := len(a.Chunks) == len(b.Chunks) && a.Size == b.Size
+	for i := 0; sameChunks && i < len(a.Chunks); i++ {
+		sameChunks = a.Chunks[i] == b.Chunks[i]
+	}
+	idA, idB := descriptorIdentity(a), descriptorIdentity(b)
+	if idA.known && idB.known {
+		result.ContentEqual = idA.sha == idB.sha && idA.size == idB.size
+	} else {
+		result.ContentEqual = sameChunks
+	}
 	result.ExactMatch = result.ContentEqual
 	result.MetadataEqual = a.ContentType == b.ContentType && stringMapsEqual(a.Metadata, b.Metadata)
 

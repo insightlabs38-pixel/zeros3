@@ -298,6 +298,22 @@ destination change.
 The precondition is enforced at the same locked namespace commit boundary used
 by ordinary conditional writes.
 
+### Idempotent commit (`if_unchanged`)
+
+An optional `"if_unchanged": true` asks for the idempotent commit. When the
+destination's current version is equivalent to the one being committed, the
+server writes nothing (no manifest, fsync or journal record) and returns that
+version with `"unchanged": true`. Equivalence is the whole-object SHA-256,
+size, content type and user metadata; an ETag is never part of it, since a
+multipart ETag differs from the same bytes' single-part ETag. The check runs
+before the manifest is written and again under the commit lock, before
+`expect_absent` and `expected_etag`, so `expect_absent` with `if_unchanged`
+means "keep an equivalent object, refuse anything else".
+
+Servers that honour it advertise `"commit_if_unchanged": true` in `/info`.
+Older servers ignore the field and publish as usual. Without the field a commit
+publishes a new version, as before.
+
 ## Basic client flow
 
 For a local file:
@@ -363,6 +379,17 @@ After commit, the destination is an ordinary S3-visible object.
 Recursive namespace replication adds client-side ListObjectsV2 enumeration and
 reuses the same per-object pipeline.
 
+The client reads the destination through the same `/object` describe it reads
+the source through (in place of a HEAD), and compares the two by object
+SHA-256, size, content type and metadata, never by ETag. One run asks each
+endpoint's `/info` once. By default a rerun still publishes a new version of
+every object; `replicate -if-unchanged` leaves an equivalent destination
+object alone (no negotiation, no commit), and when either identity is unknown
+it commits with `if_unchanged` and lets the destination decide. Create-only
+runs (fork, snapshot restore) refuse a destination with other content even
+when its ETag matches; with an identity unknown they commit with
+`expect_absent` and `if_unchanged`.
+
 ### Authority closure framing
 
 The `ZS3C` version 1 closure requires the destination to support the advertised
@@ -415,7 +442,8 @@ buffers a definite small signed closure within 1 MiB and uses temporary
 staging for larger or unknown lengths.
 The destination publishes an ordinary S3 manifest through the existing
 journal commit and enforces the same destination preconditions. A retry for
-equivalent content and metadata returns the existing version.
+equivalent content and metadata returns the existing version, checked before
+the manifest is written, with `"unchanged": true`.
 
 ## Peer repair
 
@@ -611,7 +639,7 @@ Current v1 endpoints:
 | `/_zeros3/v1/snapshot/list` | GET | list snapshot summaries |
 | `/_zeros3/v1/snapshot/show` | GET | inspect one snapshot |
 | `/_zeros3/v1/snapshot/delete` | DELETE | remove one snapshot root |
-| `/_zeros3/v1/snapshot/object` | GET | describe one snapshot-captured object for restore |
+| `/_zeros3/v1/snapshot/object` | GET | describe one snapshot-captured object for restore; the descriptor carries `object_sha256` |
 
 Snapshot IDs and keys travel in bounded JSON/query values rather than being
 concatenated into filesystem paths.

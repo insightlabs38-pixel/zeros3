@@ -1,0 +1,63 @@
+# FB-02 M-A5 equivalence evidence
+# head: parent 20f13bc, go go1.27.0, 2026-11-26T10:29:28Z
+# command: go test -count=1 -v -run 'TestFB02_(ReplicateEquivalenceCases|MultipartOriginEquivalence|CreateOnlyRefuses|NamespaceRerunWritesNothing|CommitIfUnchanged|ConcurrentIfUnchanged|IfUnchangedCrashCuts|SnapshotDescribeAndRestore|AuthorityImportRetry)' .
+
+=== RUN   TestFB02_ReplicateEquivalenceCases
+=== RUN   TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=false
+--- PASS: TestFB02_ReplicateEquivalenceCases (0.48s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=true (0.05s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=false (0.04s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=true (0.03s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=false (0.03s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=true (0.03s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=false (0.03s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=true (0.04s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=false (0.03s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=true (0.05s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=false (0.05s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=true (0.04s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=false (0.05s)
+=== RUN   TestFB02_MultipartOriginEquivalence
+--- PASS: TestFB02_MultipartOriginEquivalence (0.24s)
+=== RUN   TestFB02_CreateOnlyRefusesETagEqualContentDifferent
+--- PASS: TestFB02_CreateOnlyRefusesETagEqualContentDifferent (0.04s)
+=== RUN   TestFB02_NamespaceRerunWritesNothing
+    zeros3_fb02_equivalence_test.go:362: idempotent rerun of 25 objects: source map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25 GET /src:1] destination map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25]
+    zeros3_fb02_equivalence_test.go:369: ordinary rerun of 25 objects: source map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25 GET /src:1] destination map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25 POST /_zeros3/v1/commit:25 POST /_zeros3/v2/negotiate:25]
+--- PASS: TestFB02_NamespaceRerunWritesNothing (0.36s)
+=== RUN   TestFB02_CommitIfUnchanged
+--- PASS: TestFB02_CommitIfUnchanged (0.03s)
+=== RUN   TestFB02_ConcurrentIfUnchangedCommits
+--- PASS: TestFB02_ConcurrentIfUnchangedCommits (0.02s)
+=== RUN   TestFB02_IfUnchangedCrashCuts
+=== RUN   TestFB02_IfUnchangedCrashCuts/after-manifest-published
+=== RUN   TestFB02_IfUnchangedCrashCuts/after-ack
+--- PASS: TestFB02_IfUnchangedCrashCuts (0.10s)
+    --- PASS: TestFB02_IfUnchangedCrashCuts/after-manifest-published (0.04s)
+    --- PASS: TestFB02_IfUnchangedCrashCuts/after-ack (0.07s)
+=== RUN   TestFB02_SnapshotDescribeAndRestoreEquivalence
+--- PASS: TestFB02_SnapshotDescribeAndRestoreEquivalence (0.14s)
+=== RUN   TestFB02_AuthorityImportRetryWritesNoManifest
+--- PASS: TestFB02_AuthorityImportRetryWritesNoManifest (0.26s)
+PASS
+ok  	zeros3	1.682s
+
+# Negative controls (mutation, each reverted after the run)
+# 1. pre-check in publishSyncManifest disabled (idempotent commit always publishes):
+#    FAIL TestFB02_CommitIfUnchanged (4 manifests), TestFB02_IfUnchangedCrashCuts, TestFB02_AuthorityImportRetryWritesNoManifest (1 manifests)
+# 2. planner equivalence replaced by exists && etag == desc.ETag (the ETag-as-identity bug):
+#    FAIL ReplicateEquivalenceCases/{metadata-only,content-type-only,etag-equal-content-different}, MultipartOriginEquivalence, CreateOnlyRefusesETagEqualContentDifferent
+
+# Regression subset after M-A5: go test -count=1 -run 'Replicat|DryRun|Fork|Restore|Diff|Snapshot|Authority|Sync|FB02' .
+ok  	zeros3	220.350s

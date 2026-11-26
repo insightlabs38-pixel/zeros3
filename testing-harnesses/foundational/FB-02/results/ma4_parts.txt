@@ -1,0 +1,9 @@
+# build 20f13bc; go test -count=1 -run 'TestFB02_PartRecordBoundary|TestFB02_LargePartsHTTP' -v
+=== RUN   TestFB02_PartRecordBoundary
+    zeros3_fb02_multipart_test.go:152: cap 8388608 bytes = 90198 chunks (8 widened)
+--- PASS: TestFB02_PartRecordBoundary (0.51s)
+=== RUN   TestFB02_LargePartsHTTP
+    zeros3_fb02_multipart_test.go:310: largest journal payload 8370186 of 8388608
+--- PASS: TestFB02_LargePartsHTTP (24.11s)
+PASS
+ok  	zeros3	24.640s
