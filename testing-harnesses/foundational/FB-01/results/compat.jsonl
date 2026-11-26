@@ -1,0 +1,24 @@
+{"kind":"compat","pair":"old->new zeros3-main-2ac9cab","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-main-2ac9cab","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"old->new zeros3-main-2ac9cab","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"old->new zeros3-main-2ac9cab","check":"journal opened unchanged","result":"PASS","detail":"sha256 888f302666922837 -> 888f302666922837"}
+{"kind":"compat","pair":"old->new zeros3-main-2ac9cab","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-main-2ac9cab","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-main-2ac9cab","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-main-2ac9cab","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"new->old zeros3-main-2ac9cab","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-main-2ac9cab","check":"journal opened unchanged","result":"PASS","detail":"sha256 1a934667c705f6cc -> 1a934667c705f6cc"}
+{"kind":"compat","pair":"new->old zeros3-main-2ac9cab","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-main-2ac9cab","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}
+{"kind":"compat","pair":"old->new zeros3-2337f48","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-2337f48","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"old->new zeros3-2337f48","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"old->new zeros3-2337f48","check":"journal opened unchanged","result":"PASS","detail":"sha256 645bbe7f525032c7 -> 645bbe7f525032c7"}
+{"kind":"compat","pair":"old->new zeros3-2337f48","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-2337f48","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-2337f48","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-2337f48","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"new->old zeros3-2337f48","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-2337f48","check":"journal opened unchanged","result":"PASS","detail":"sha256 ae0a368c94231dd2 -> ae0a368c94231dd2"}
+{"kind":"compat","pair":"new->old zeros3-2337f48","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-2337f48","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}

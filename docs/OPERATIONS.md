@@ -56,8 +56,10 @@ administrative stop procedure.
 
 Startup loads the namespace from `journal/namespace-v4.zck` when that derived
 checkpoint verifies against the journal (file digest, page structure and the
-journal prefix it covers) and replays only the journal after it; otherwise it
-replays the whole journal. The server publishes a fresh checkpoint in the
+journal prefix it covers) and replays only the journal after it; with no
+checkpoint it replays the whole journal. A checkpoint that is present but
+damaged, written for another store or contradicted by the journal is refused,
+not skipped (see "Journal damage" below). The server publishes a fresh checkpoint in the
 background when it starts with a replayed suffix of 16,384 rows or more and
 whenever the in-memory overlay grows past its consolidation limit; publication
 is crash-safe (sync, rename, directory sync) and shutdown abandons one in
@@ -65,6 +67,29 @@ progress. `serve -namespace-checkpoint=false` or
 `ZEROS3_NAMESPACE_CHECKPOINT=off` (any command) replays the whole journal and
 never publishes. `zeros3 namespace-checkpoint -store DIR` publishes one offline;
 its `-compact-history` flag is deprecated and has no effect.
+
+## Journal damage
+
+The journal's v1 frames carry no commit boundary, so an incomplete final frame
+may be a write that never reached its fsync or a damaged acknowledged frame.
+Startup therefore never cuts the journal or skips an unusable checkpoint: it
+refuses, names the offset, frame sequence and cause, and changes nothing.
+Read-only commands serve the valid prefix and log the tail they left out.
+
+```sh
+./zeros3 journal inspect -store /srv/zeros3          # add -json for a report
+./zeros3 journal salvage -store /srv/zeros3 -cut OFFSET -i-understand-data-loss
+```
+
+`inspect` reports the earliest invalid offset and cause, whether valid frames
+follow, whether a corrected length checks out, each checkpoint's status, and a
+classification with its confidence. `salvage` needs the store offline and a
+frame-boundary cut at or below the valid prefix. It copies the original journal
+into `journal/quarantine/salvage-*/`, verified by SHA-256, writes a
+`record.json` of the cut and hashes there, moves any checkpoint it no longer
+trusts beside them, and only then replaces the live journal. Frames past the cut leave the live store whether or
+not they were acknowledged; a cut at the end of the journal keeps every frame
+and only moves an unusable checkpoint aside, so the next start rebuilds it.
 
 ## Health checks
 

@@ -250,6 +250,14 @@ Online maintenance (`serve -maintenance`) adds no persistent format: it writes
 ordinary packs and only unlinks files. Two directory flocks coordinate processes of
 this build (writers on `chunks/`, readers on `journal/`); older binaries ignore them.
 
+An owner open refuses an incomplete or damaged journal tail and an unusable
+namespace checkpoint instead of cutting or skipping them; `zeros3 journal
+inspect` explains the refusal and `zeros3 journal salvage` is the only repair
+(explicit cut, original kept). v1 frames have no commit boundary: a crash
+mid-write is refused in 50-56% of X14 engine trials until salvaged, and a cut at a
+frame boundary above every checkpoint is not detectable
+(`testing-harnesses/foundational/FB-01/`).
+
 The implementation and tests cover deterministic crash injection broadly and
 real process termination on selected ingest/import paths. They do **not** claim
 comprehensive hardware power-loss, faulty-device, kernel-fault, or distributed

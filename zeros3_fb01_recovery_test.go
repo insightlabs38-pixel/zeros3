@@ -589,3 +589,76 @@ func TestFB01InspectReportsEvidence(t *testing.T) {
 		}
 	}
 }
+
+// TestFB01SharedOpenDuringWrites races read-only opens against a live owner.
+// A frame the owner is still writing is an incomplete tail to the reader: it
+// must neither refuse for long nor lose an acknowledged object, and the
+// owner's journal is never touched by a reader.
+func TestFB01SharedOpenDuringWrites(t *testing.T) {
+	dir := t.TempDir()
+	w, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if err := w.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	acked := map[string]string{}
+	stop := make(chan struct{})
+	done := make(chan error, 4)
+	for g := range 4 {
+		go func() {
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					done <- nil
+					return
+				default:
+				}
+				k, v := fmt.Sprintf("w%d-%05d", g, i), strings.Repeat(fmt.Sprintf("%d.", i), 1+i%300)
+				if _, err := w.PutObject("b", k, []byte(v), "text/plain", nil); err != nil {
+					done <- err
+					return
+				}
+				mu.Lock()
+				acked[k] = v
+				mu.Unlock()
+			}
+		}()
+	}
+	opens, refused := 0, 0
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); opens++ {
+		mu.Lock()
+		before := make(map[string]string, len(acked))
+		for k, v := range acked {
+			before[k] = v
+		}
+		mu.Unlock()
+		r, err := OpenStoreShared(dir)
+		if err != nil {
+			if !errors.Is(err, errJournalRefused) {
+				t.Fatal(err)
+			}
+			refused++
+			continue
+		}
+		for k, v := range before {
+			if _, got, err := r.GetObject("b", k); err != nil || string(got) != v {
+				t.Fatalf("open %d: acknowledged %s not visible to a reader: %v", opens, k, err)
+			}
+		}
+		r.Close()
+	}
+	close(stop)
+	for range 4 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Logf("%d read-only opens during %d acknowledged puts, %d refused", opens, len(acked), refused)
+	if refused > opens/10 {
+		t.Fatalf("%d of %d read-only opens refused a live writer's tail", refused, opens)
+	}
+}

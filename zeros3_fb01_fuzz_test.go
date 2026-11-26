@@ -104,12 +104,12 @@ func FuzzFB01CheckpointReaders(f *testing.F) {
 	}
 	f.Add([]byte("ZS3NSC3\nshort"), true)
 	f.Add([]byte{}, false)
+	root := f.TempDir() // one per fuzz process; its executions run one at a time
+	os.MkdirAll(filepath.Join(root, "journal"), 0o755)
 	f.Fuzz(func(t *testing.T, data []byte, legacy bool) {
 		if len(data) > 1<<20 {
 			return
 		}
-		root := t.TempDir()
-		os.MkdirAll(filepath.Join(root, "journal"), 0o755)
 		if legacy {
 			os.WriteFile(filepath.Join(root, "journal", namespaceCompactCheckpointName), data, 0o644)
 			s := &Store{root: root}
