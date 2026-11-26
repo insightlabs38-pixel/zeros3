@@ -1,0 +1,16 @@
+# Reproduce FB-07
+
+Run the focused physical fixture using Go 1.27.0. It writes
+ordinary native raw packs, keeps a separate healthy duplicate,
+and flips known bytes in the disposable fixture.
+
+```sh
+GOMAXPROCS=2 go test -v -count=1 -timeout=75s -run '^TestFB07' .
+"$BIN" scrub -store "$STORE" -max-mib 128 -workers 2
+# Continue from the previous report's last field when next is nonempty.
+"$BIN" scrub -store "$STORE" -max-mib 128 -workers 2 -after "$LAST"
+```
+
+After a scan reports issues, the command emits JSON and returns
+exit code 1. To use a cursor, preserve the same sealed pack
+inventory between invocations.

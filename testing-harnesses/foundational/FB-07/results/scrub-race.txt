@@ -1,0 +1,12 @@
+    --- PASS: TestB4CrashCutsRecover/maint-frozen-1 (0.44s)
+    --- PASS: TestB4CrashCutsRecover/maint-swapped-1 (0.48s)
+    --- PASS: TestB4CrashCutsRecover/maint-drained-1 (0.44s)
+    --- PASS: TestB4CrashCutsRecover/maint-before-file-unlink-3 (0.41s)
+    --- PASS: TestB4CrashCutsRecover/maint-before-pack-unlink-1 (0.52s)
+    --- PASS: TestB4CrashCutsRecover/maint-before-pack-unlink-2 (0.44s)
+    --- PASS: TestB4CrashCutsRecover/maint-retired-1 (0.41s)
+=== RUN   TestFB07ScrubPhysicalDamageAndResume
+    zeros3_fb07_test.go:88: scrub: 2 packs, 4 distinct anomalies; duplicate remains readable; exact byte cut and resume
+--- PASS: TestFB07ScrubPhysicalDamageAndResume (0.02s)
+PASS
+ok  	zeros3	7.503s

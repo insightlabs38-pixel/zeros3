@@ -1,0 +1,8 @@
+=== RUN   TestFB06TagLevelCollisionAndReadFailure
+    zeros3_fb06_test.go:117: verified 1000 forced equal-tag misses and reconstructed the same pack locations after truncation
+--- PASS: TestFB06TagLevelCollisionAndReadFailure (0.14s)
+=== RUN   TestFB07ScrubPhysicalDamageAndResume
+    zeros3_fb07_test.go:88: scrub: 2 packs, 4 distinct anomalies; duplicate remains readable; exact byte cut and resume
+--- PASS: TestFB07ScrubPhysicalDamageAndResume (0.03s)
+PASS
+ok  	zeros3	0.185s

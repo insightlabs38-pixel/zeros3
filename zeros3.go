@@ -3367,12 +3367,25 @@ var errPackNeedsRewrite = errors.New("pack: replacement encoding differs")
 // verifyPackFileWhile can stop a read-only physical proof when the caller
 // determines that a replacement is required.
 func verifyPackFileWhile(path string, accept func(packEntry, []byte, []byte) bool) (packInfo, []packEntry, error) {
+	return verifyPackFileReport(path, accept, nil)
+}
+
+// verifyPackFileReport uses the same complete pack verification for publication
+// and physical scrub. Scrub can continue after damage when the validated index
+// still establishes the next record boundary.
+func verifyPackFileReport(path string, accept func(packEntry, []byte, []byte) bool, damaged func(string, int, packEntry, error)) (packInfo, []packEntry, error) {
 	info, entries, err := statPackFile(path)
 	if err != nil {
+		if damaged != nil {
+			damaged("pack-layout", -1, packEntry{}, err)
+		}
 		return info, nil, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
+		if damaged != nil {
+			damaged("pack-read", -1, packEntry{}, err)
+		}
 		return info, nil, err
 	}
 	defer f.Close()
@@ -3380,21 +3393,38 @@ func verifyPackFileWhile(path string, accept func(packEntry, []byte, []byte) boo
 	dicts := fileDictFunc(f, entries)
 	r := bufio.NewReaderSize(io.TeeReader(io.LimitReader(f, info.size-packFooterSize), body), 1<<20)
 	if _, err := io.CopyN(io.Discard, r, packHeaderSize); err != nil {
+		if damaged != nil {
+			damaged("pack-read", -1, packEntry{}, err)
+		}
 		return info, nil, fmt.Errorf("pack: reading header: %w", err)
 	}
 	var want, got [packRecordHeaderSize]byte
 	payload := make([]byte, maxPackedChunkBytes)
 	var decoded []byte
+	var firstDamage error
 	for i, e := range entries {
 		putPackRecordHeader(want[:], e)
 		if _, err := io.ReadFull(r, got[:]); err != nil {
+			if damaged != nil {
+				damaged("record-read", i, e, err)
+			}
 			return info, nil, fmt.Errorf("pack: reading record %d header: %w", i, err)
 		}
 		if got != want {
-			return info, nil, fmt.Errorf("pack: record %d header disagrees with its index entry", i)
+			err := fmt.Errorf("pack: record %d header disagrees with its index entry", i)
+			if damaged == nil {
+				return info, nil, err
+			}
+			damaged("record-header", i, e, err)
+			if firstDamage == nil {
+				firstDamage = err
+			}
 		}
 		buf := payload[:e.stored]
 		if _, err := io.ReadFull(r, buf); err != nil {
+			if damaged != nil {
+				damaged("record-read", i, e, err)
+			}
 			return info, nil, fmt.Errorf("pack: record %d payload truncated: %w", i, err)
 		}
 		if e.codec != packCodecRaw && decoded == nil {
@@ -3402,19 +3432,34 @@ func verifyPackFileWhile(path string, accept func(packEntry, []byte, []byte) boo
 		}
 		logical, err := decodePackPayloadD(e.codec, buf, e.logical, e.sha, decoded, dicts, true)
 		if err != nil {
-			return info, nil, fmt.Errorf("pack: record %d: %w", i, err)
+			err = fmt.Errorf("pack: record %d: %w", i, err)
+			if damaged == nil {
+				return info, nil, err
+			}
+			damaged("record-payload", i, e, err)
+			if firstDamage == nil {
+				firstDamage = err
+			}
+			continue
 		}
 		if accept != nil && !accept(e, logical, buf) {
 			return info, nil, errPackNeedsRewrite
 		}
 	}
 	if _, err := io.Copy(io.Discard, r); err != nil {
+		if damaged != nil {
+			damaged("pack-read", -1, packEntry{}, err)
+		}
 		return info, nil, err
 	}
 	if hex.EncodeToString(body.Sum(nil)) != info.id {
-		return info, nil, errors.New("pack: body checksum mismatch")
+		err := errors.New("pack: body checksum mismatch")
+		if damaged != nil {
+			damaged("pack-body", -1, packEntry{}, err)
+		}
+		return info, nil, err
 	}
-	return info, entries, nil
+	return info, entries, firstDamage
 }
 
 // verifyPackExact gates publication of a pack this process has just written
@@ -5059,6 +5104,96 @@ type packInventoryFile struct {
 	t          tier
 	path, name string
 	base, hint int
+}
+
+type packScrubIssue struct {
+	Pack   string `json:"pack"`
+	Kind   string `json:"kind"`
+	Record *int   `json:"record,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+	Length uint32 `json:"logical_length,omitempty"`
+	Offset uint64 `json:"payload_offset,omitempty"`
+	Detail string `json:"detail"`
+}
+
+type packScrubReport struct {
+	AssignedBytes  int64            `json:"assigned_pack_bytes"`
+	Packs          int              `json:"packs"`
+	IndexedRecords int              `json:"indexed_records"`
+	IssueCount     int              `json:"issue_count"`
+	Issues         []packScrubIssue `json:"issues,omitempty"`
+	Last           string           `json:"last,omitempty"`
+	Next           string           `json:"next,omitempty"`
+	NextBytes      int64            `json:"next_pack_bytes,omitempty"`
+}
+
+func (p packInventoryFile) scrubID() string {
+	return p.t.String() + "/" + strings.TrimSuffix(p.name, packFileSuffix)
+}
+
+func scrubSealedPacks(root string, format int, maxBytes int64, workers int, after string) (packScrubReport, error) {
+	files, err := listPackInventory(root, format)
+	if err != nil {
+		return packScrubReport{}, err
+	}
+	var result packScrubReport
+	if after != "" {
+		i := slices.IndexFunc(files, func(p packInventoryFile) bool { return p.scrubID() == after })
+		if i < 0 {
+			return result, errors.New("scrub cursor is absent from the current sealed inventory")
+		}
+		result.Last = after
+		files = files[i+1:]
+	}
+	for i, p := range files {
+		fi, err := os.Stat(p.path)
+		if err != nil {
+			return result, fmt.Errorf("scrub: assigning %s: %w", p.scrubID(), err)
+		}
+		if maxBytes > 0 && fi.Size() > maxBytes-result.AssignedBytes {
+			result.Next, result.NextBytes = p.scrubID(), fi.Size()
+			files = files[:i]
+			break
+		}
+		result.AssignedBytes += fi.Size()
+		result.Last = p.scrubID()
+	}
+	const maxScrubIssues = 256
+	var mu sync.Mutex
+	result.Packs = len(files)
+	parallelFor(len(files), workers, 1, func(i int) {
+		p := files[i]
+		report := func(kind string, ordinal int, record packEntry, err error) {
+			issue := packScrubIssue{Pack: p.scrubID(), Kind: kind, Detail: err.Error()}
+			if ordinal >= 0 {
+				issue.Record, issue.SHA256 = &ordinal, hex.EncodeToString(record.sha[:])
+				issue.Offset, issue.Length = record.off, record.logical
+			}
+			mu.Lock()
+			result.IssueCount++
+			if len(result.Issues) < maxScrubIssues {
+				result.Issues = append(result.Issues, issue)
+			}
+			mu.Unlock()
+		}
+		info, _, _ := verifyPackFileReport(p.path, nil, report)
+		if info.id != "" && info.id+packFileSuffix != p.name {
+			report("pack-name", -1, packEntry{}, errors.New("published file name differs from the declared pack identity"))
+		}
+		mu.Lock()
+		result.IndexedRecords += info.records
+		mu.Unlock()
+	})
+	slices.SortFunc(result.Issues, func(a, b packScrubIssue) int {
+		if n := cmp.Compare(a.Pack, b.Pack); n != 0 {
+			return n
+		}
+		if n := cmp.Compare(a.Offset, b.Offset); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.Kind, b.Kind)
+	})
+	return result, nil
 }
 
 func listPackInventory(root string, format int) ([]packInventoryFile, error) {
@@ -35361,109 +35496,6 @@ func runRepair(args []string) {
 	}
 }
 
-// =============================================================================
-// 15f. Namespace (prefix/bucket) replication: `zeros3 replicate
-// -recursive SOURCE DEST -from SRC -to DST`
-//
-// M8C generalizes M8A's single-object primitive across a source
-// namespace -- it is orchestration over replicateObject, never a second
-// replication engine:
-//
-//	enumerate source objects (ordinary ListObjectsV2) -> map each source
-//	key to a destination key -> replicateObject(...) -> aggregate
-//
-// This is the exact same shape as M6C's directory sync (section 15c):
-// discover -> derive a destination key -> call the unmodified single-item
-// primitive -> aggregate stats/failures. Enumeration itself uses ordinary,
-// already-authenticated ListObjectsV2 requests against the source
-// endpoint (the exact wire format handleListObjectsV2/
-// parseListObjectsV2Query already implement, section 9b/10) -- never a
-// proprietary namespace-index endpoint -- so M8C discovers the source
-// namespace through ordinary S3 semantics and reserves ZeroS3's
-// proprietary delta machinery for content transfer only, exactly as this
-// milestone requires.
-//
-// CLI mode selection (source: one object vs. a prefix vs. a whole
-// bucket) is never guessed from URI shape: the new -recursive flag is the
-// sole switch. Without it, runReplicate's original M8A parsing
-// (parseS3URI, requiring a non-slash-terminated key) is completely
-// unchanged, so existing single-object invocations are byte-for-byte
-// unaffected. With it, both URIs are parsed with parseS3DirURI (M6C's
-// existing, unmodified bucket[/prefix[/]] parser) -- the same reason this
-// is unambiguous for M6C's local-directory destination applies here:
-// parseS3URI's key form and parseS3DirURI's prefix form are never
-// conflated by guessing, because the flag alone decides which parser
-// runs. (A trailing "/" was deliberately not used as the signal: an
-// object key ending in "/" is legal S3 syntax -- e.g. a zero-byte
-// "folder marker" -- so "does the URI end in /" cannot safely disambiguate
-// "single object" from "prefix/bucket" on its own.)
-//
-// Non-destructive by design (M8C-C, matching M6C's own C4): namespace
-// replication only ever copies selected source objects into the
-// destination. A destination-only object -- one with no corresponding
-// selected source key -- is never touched, listed, or deleted; there is
-// no delete mode, implicit or explicit, anywhere in this milestone.
-//
-// Partial failure: namespace replication is not one atomic transaction
-// across objects, exactly like directory sync isn't across files. One object's replicateObject failure (source
-// disappeared/changed in an incompatible way, destination conflict,
-// corrupt/unavailable source chunk) is recorded in
-// nsReplicateResult.Failures and the loop continues; objects that already
-// committed stay committed, and the overall command exits nonzero iff any
-// object failed.
-//
-// Resume needs no durable namespace-replication session state,
-// for the same structural reason M8A's own resume needs none (section
-// 15d's doc comment): commit is the one atomic step that makes anything
-// visible, so a rerun's fresh enumeration simply re-encounters every
-// selected source key, and each object's own replicateObject call
-// re-negotiates against the destination's current CAS contents --
-// already-landed chunks (and already-committed, byte-identical objects,
-// which negotiate zero missing chunks and commit as a no-op-equivalent
-// against an ExpectedETag precondition that already matches) are not
-// re-transferred. No namespace snapshot, journal record, or manifest
-// version was added anywhere to support this.
-//
-// Source mutation during a run: each object retains M8A's own
-// captured-immutable-revision guarantee (section 15d, M8A7) -- a source
-// key that changes after being listed but before its own replicateObject
-// call still replicates one specific, uncorrupted revision, never a mixed
-// one. A key that disappears between listing and its own replicateObject
-// call surfaces as that one object's ordinary failure (source descriptor
-// 404), without aborting the run. No point-in-time bucket snapshot is
-// taken or needed.
-//
-// Version scope: only the current, live-pointer object per key is
-// enumerated (ListObjectsV2's ordinary, current-version-only view,
-// section 7b) -- no historical version replication in this milestone.
-//
-// Aggregate statistics are an honest sum of each successful
-// object's own syncStats -- the exact same fields printSyncStats already
-// reports for a single replicate/sync -- so shared chunks across objects
-// are never double-counted as "avoided" or "transferred" beyond what each
-// object's own negotiation actually observed, and a failed object
-// contributes nothing (its bytes, if any partially relayed before
-// failure, were never committed and are excluded from the report by
-// construction, matching dirSyncResult's own accounting rule, section
-// 15c).
-// =============================================================================
-
-// namespaceDestKey computes M8C-A3's source-to-destination key mapping:
-// it strips the effective source list prefix (srcPrefix, already trimmed
-// of leading/trailing '/' by parseS3DirURI, turned into "" for a whole
-// bucket or "prefix/" for a sub-tree) from key, then joins the remaining
-// relative suffix onto dstPrefix using joinSyncKey -- the exact same
-// prefix+relative-path joiner M6C directory sync already uses (section
-// 15c), so a bare destination prefix can never produce a leading or
-// doubled '/' here either, and two distinct source keys sharing the same
-// listing prefix can never collide on the same destination key (the
-// stripped prefix has one fixed length for every key in one run, so
-// distinct full keys always yield distinct relative suffixes). key is
-// assumed -- and, defensively, checked -- to already carry the listing
-// prefix, which every key a ListObjectsV2 call for that prefix returns
-// always does by construction (ordinary S3 prefix semantics); this check
-// exists purely as a belt-and-suspenders guard against a malformed or
-// unexpected server response, never as a normal code path.
 func namespaceDestKey(srcPrefix, dstPrefix, key string) (string, error) {
 	listPrefix := srcPrefix
 	if listPrefix != "" {
@@ -38306,6 +38338,46 @@ func runLocatorBuild(args []string) {
 		log.Fatalf("zeros3: locator-build: %v", err)
 	}
 	fmt.Printf("locator generation: %d sealed packs\n", packs)
+}
+
+func runScrub(args []string) {
+	fs := flag.NewFlagSet("scrub", flag.ExitOnError)
+	root := fs.String("store", "./zeros3-data", "path to an existing store")
+	maxMiB := fs.Int64("max-mib", 0, "maximum physical pack MiB assigned to this scan (0 scans all sealed packs)")
+	workers := fs.Int("workers", maintWorkers(), "maximum number of concurrently verified packs")
+	after := fs.String("after", "", "resume after a previous report's last tier/pack identity")
+	fs.Parse(args)
+	if *maxMiB < 0 || *maxMiB > math.MaxInt64>>20 || *workers < 1 || *workers > 64 {
+		log.Fatal("zeros3: scrub: invalid byte or worker budget")
+	}
+	formatPath := filepath.Join(*root, "FORMAT.json")
+	if _, err := os.Stat(formatPath); err != nil {
+		log.Fatalf("zeros3: scrub: %v", err)
+	}
+	lock, err := acquireStoreLock(*root, false)
+	if err != nil {
+		log.Fatalf("zeros3: scrub: %v", err)
+	}
+	defer lock.release()
+	lease, err := flockStore(*root, readerLeaseDir, syscall.LOCK_SH, true)
+	if err != nil {
+		log.Fatalf("zeros3: scrub: reader lease: %v", err)
+	}
+	defer lease.release()
+	format, err := loadOrInitFormat(*root, formatPath)
+	if err != nil {
+		log.Fatalf("zeros3: scrub: %v", err)
+	}
+	report, err := scrubSealedPacks(*root, format.StoreFormatVersion, *maxMiB<<20, *workers, *after)
+	if err != nil {
+		log.Fatalf("zeros3: scrub: %v", err)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		log.Fatalf("zeros3: scrub: %v", err)
+	}
+	if report.IssueCount > 0 {
+		os.Exit(1)
+	}
 }
 
 func runServe(args []string) {
@@ -93358,6 +93430,8 @@ func main() {
 		runPackParity(args)
 	case "locator-build":
 		runLocatorBuild(args)
+	case "scrub":
+		runScrub(args)
 	case "tier":
 		runTier(args)
 	case "probe":
@@ -93383,7 +93457,7 @@ func main() {
 	case "authority":
 		runAuthority(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, journal, presign, versions, restore, gc, compact, repack, pack-parity, locator-build, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, journal, presign, versions, restore, gc, compact, repack, pack-parity, locator-build, scrub, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
 		os.Exit(2)
 	}
 }
