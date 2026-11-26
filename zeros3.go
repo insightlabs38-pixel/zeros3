@@ -5223,6 +5223,7 @@ func (s *Store) repairScrubPack(ctx context.Context, file packInventoryFile, req
 		}
 	}
 	changed := 0
+	var compressor *packCompressor
 	for _, ordinal := range slices.Sorted(maps.Keys(requested)) {
 		if err := ctx.Err(); err != nil {
 			return 0, err
@@ -5236,8 +5237,8 @@ func (s *Store) repairScrubPack(ctx context.Context, file packInventoryFile, req
 		if issue.SHA256 != digest || issue.Length != e.logical || issue.Offset != e.off {
 			return 0, errors.New("scrub repair record differs from the authoritative index")
 		}
-		if e.codec != packCodecRaw {
-			return 0, errors.New("targeted physical repair currently requires raw records")
+		if e.codec != packCodecRaw && e.codec != packCodecDeflate {
+			return 0, errors.New("targeted physical repair supports raw and independent DEFLATE records")
 		}
 		var want, have [packRecordHeaderSize]byte
 		putPackRecordHeader(want[:], e)
@@ -5249,7 +5250,8 @@ func (s *Store) repairScrubPack(ctx context.Context, file packInventoryFile, req
 		if _, err := stage.ReadAt(data, int64(e.off)); err != nil {
 			return 0, err
 		}
-		payloadOK := sha256.Sum256(data) == e.sha
+		_, decodeErr := decodePackPayloadD(e.codec, data, e.logical, e.sha, nil, nil, false)
+		payloadOK := decodeErr == nil
 		if payloadOK && have == want {
 			continue
 		}
@@ -5270,7 +5272,18 @@ func (s *Store) repairScrubPack(ctx context.Context, file packInventoryFile, req
 				}
 			}
 			if err := transferRecord(e.sha, e.logical, data, func(verified []byte) error {
-				_, err := stage.WriteAt(verified, int64(e.off))
+				stored := verified
+				if e.codec == packCodecDeflate {
+					if compressor == nil {
+						compressor = newBlockCompressor(true, 0)
+					}
+					var codec byte
+					stored, codec = compressor.encodeIndependent(verified)
+					if codec != e.codec || len(stored) != int(e.stored) {
+						return errors.New("record could not be recoded with its original representation")
+					}
+				}
+				_, err := stage.WriteAt(stored, int64(e.off))
 				return err
 			}); err != nil {
 				return 0, err
@@ -6419,6 +6432,10 @@ func (st *packState) readPackedH(sum [32]byte, loc packLoc, h *packHandles) ([]b
 
 // readPackedT is readPackedH reporting the read to tr.OnRecord (tests and benchmarks).
 func (st *packState) readPackedT(sum [32]byte, loc packLoc, h *packHandles, tr *packTrace) ([]byte, error) {
+	return st.readPackedRecord(sum, loc, h, tr, false)
+}
+
+func (st *packState) readPackedRecord(sum [32]byte, loc packLoc, h *packHandles, tr *packTrace, deferRawHash bool) ([]byte, error) {
 	if int(loc.pack) >= len(st.packs) {
 		return nil, fmt.Errorf("pack: locator for chunk %x is from a replaced pack set", sum)
 	}
@@ -6451,6 +6468,9 @@ func (st *packState) readPackedT(sum [32]byte, loc packLoc, h *packHandles, tr *
 	putPackRecordHeader(want[:], packEntry{sha: sum, stored: loc.stored, logical: loc.logical, codec: loc.codec})
 	if [packRecordHeaderSize]byte(buf[:packRecordHeaderSize]) != want {
 		return nil, fmt.Errorf("pack: record header for chunk %x disagrees with the index", sum)
+	}
+	if deferRawHash && loc.codec == packCodecRaw {
+		return buf[packRecordHeaderSize:], nil // only a private pack builder may consume these bytes
 	}
 	// Maintenance and verification read through handles and also prove a blocked record's table.
 	data, err := decodePackPayloadD(loc.codec, buf[packRecordHeaderSize:], loc.logical, sum, nil, st.dictFor(loc.pack), h != nil)
@@ -23777,10 +23797,10 @@ func (b *packBuilder) readRecord(i int) ([]byte, error) {
 // pack is abandoned (an error). Failures (but not simulated crashes)
 // remove the staging file.
 func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor) (string, []packEntry, error) {
-	return s.stagePackWithin(t, batch, read, skip, comp, -1, nil)
+	return s.stagePackWithin(t, batch, read, skip, comp, -1, nil, nil)
 }
 
-func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor, stageBytes int64, checkpoint func() error) (string, []packEntry, error) {
+func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor, stageBytes int64, checkpoint func() error, bodyHash *[32]byte) (string, []packEntry, error) {
 	if stageBytes >= 0 && stageBytes < packFixedBytes {
 		return "", nil, errMaintStageBudget
 	}
@@ -23860,7 +23880,11 @@ func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]
 		b.Abort()
 		return "", nil, nil
 	}
-	return b.Finish()
+	path, entries, err := b.Finish()
+	if err == nil && bodyHash != nil {
+		*bodyHash = b.sum
+	}
+	return path, entries, err
 }
 
 func choosePackPreset(batch []compactCandidate, read func([32]byte) ([]byte, error), comp *packCompressor) *packDict {
@@ -24097,6 +24121,12 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 		os.Remove(staged)
 		return info, fmt.Errorf("staged pack failed validation: %w", err)
 	}
+	return s.publishCheckedPack(t, staged, entries, info, nil)
+}
+
+// publishCheckedPack publishes a privately staged file after its caller has
+// already verified the sealed body and all expected records.
+func (s *Store) publishCheckedPack(t tier, staged string, entries []packEntry, info packInfo, proof os.FileInfo) (packInfo, error) {
 	fireTestHook(hookPackValidated)
 	need := storeFormatVersionPacked
 	for _, e := range entries {
@@ -24139,6 +24169,10 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 	final := filepath.Join(packDir, info.id+packFileSuffix)
 	s.retire.cancel(t, info.id) // an identical file is a live pack again
 	fireTestHook(hookPackBeforePublish)
+	if proof != nil && !sameSealedPack(staged, proof) {
+		os.Remove(staged)
+		return info, errors.New("verified staging file changed before publication")
+	}
 	if err := s.fds.unlinked(func() error { return os.Rename(staged, final) }, final); err != nil {
 		os.Remove(staged)
 		return info, fmt.Errorf("publishing pack: %w", err)
@@ -24153,12 +24187,20 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 	if err != nil || len(pubEntries) != len(entries) {
 		return info, fmt.Errorf("published pack is not readable (%v)", err)
 	}
+	if proof != nil && (!sameSealedPack(final, proof) || !slices.Equal(pubEntries, entries)) {
+		return info, errors.New("published pack differs from the verified sealed replacement")
+	}
 	pub.tier = t
 	if err := s.addPack(pub, pubEntries); err != nil {
 		return info, err
 	}
 	fireTestHook(hookPackPublished)
 	return pub, nil
+}
+
+func sameSealedPack(path string, prior os.FileInfo) bool {
+	now, err := os.Stat(path)
+	return err == nil && os.SameFile(prior, now) && prior.Size() == now.Size() && prior.ModTime().Equal(now.ModTime())
 }
 
 func allRawEntries(entries []packEntry) bool {
@@ -24340,6 +24382,7 @@ type packEncoding struct {
 	BlockLog      uint8 // restartable records (codec 2) of 1<<BlockLog byte blocks; 0: none
 	Prefix        []byte
 	maxStageBytes int64 // total bytes of simultaneously staged replacement packs
+	verifiedRaw   bool  // raw bytes are authenticated by the sealed replacement before publication
 	// order, when set, reorders the records carried into tier t (default: their source physical order).
 	order func(t tier, cands []compactCandidate)
 	// checkpoint runs before staging a replacement batch, outside publication locks.
@@ -24363,6 +24406,7 @@ type repackOptions struct {
 	// KeepUnchanged permits a proof before staging such a replacement.
 	Recompress    bool
 	KeepUnchanged bool
+	VerifiedRaw   bool
 	BlockLog      uint8      // restartable records in replacements (0: none)
 	Layout        packLayout // layoutRecon reorders carried records by reconstruction co-access
 	Prefix        []byte
@@ -24370,12 +24414,17 @@ type repackOptions struct {
 
 func (o repackOptions) encoding() packEncoding {
 	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog, Prefix: o.Prefix,
+		verifiedRaw:   o.VerifiedRaw,
 		keepUnchanged: o.KeepUnchanged && o.Compress && o.Recompress && o.BlockLog == 0 && len(o.Prefix) == 0}
 }
 
 // RepackResult reports one repack pass. In a dry run the write figures are
 // estimates of what an apply would do.
 type RepackResult struct {
+	RawCarryWriterSHABytes int64 `json:"raw_carry_writer_sha_bytes,omitempty"`
+	RawCarrySealSHABytes   int64 `json:"raw_carry_seal_sha_bytes,omitempty"`
+	RawCarryFallback       bool  `json:"raw_carry_fallback,omitempty"`
+
 	RecordGroups *AGReport     `json:"record_groups,omitempty"`
 	DryRun       bool          `json:"dry_run"`
 	LiveSetOK    bool          `json:"live_set_ok"`
@@ -24551,6 +24600,20 @@ type packCarry struct {
 // carry is planned again without them; a round that met such a record
 // published nothing. Each round drops at least one pack.
 func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, enc packEncoding, res *RepackResult) (*packCarry, error) {
+	if enc.verifiedRaw {
+		if enc.Compress || dest != nil {
+			return nil, errors.New("sealed raw carry requires offline, uncompressed replacements in the original tier")
+		}
+		trial := *res
+		carry, err := s.carryLivePacksOnce(doomed, live, dest, target, enc, &trial, nil)
+		if !errors.Is(err, errRawCarryProof) {
+			*res = trial
+			return carry, err
+		}
+		// No pack was published. The ordinary reader can try all verified
+		// copies of a record before the same sealed publication proof.
+		enc.verifiedRaw, res.RawCarryFallback = false, true
+	}
 	if !enc.isolate {
 		return s.carryLivePacksOnce(doomed, live, dest, target, enc, res, nil)
 	}
@@ -24578,6 +24641,23 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 			return nil, nil
 		}
 	}
+}
+
+var errRawCarryProof = errors.New("sealed raw carry could not prove an exact replacement")
+
+func (s *Store) readRawCarryCandidate(sum [32]byte) ([]byte, error) {
+	st := s.packSnap()
+	var candidates [4]packLoc
+	for _, loc := range st.appendLocs(candidates[:0], sum) {
+		if loc.codec != packCodecRaw || loc.stored != loc.logical || st.packs[loc.pack].open {
+			continue
+		}
+		data, err := st.readPackedRecord(sum, loc, nil, nil, true)
+		if err == nil {
+			return data, nil
+		}
+	}
+	return nil, errRawCarryProof
 }
 
 func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func([32]byte) tier, target int64, enc packEncoding, res *RepackResult, bad *[]carryFailure) (*packCarry, error) {
@@ -24662,6 +24742,9 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 		plans = append(plans, tierBatches{t, batches})
 	}
 	read := func(sum [32]byte) ([]byte, error) { return s.casReadExcluding(sum, nil) }
+	if enc.verifiedRaw {
+		read = s.readRawCarryCandidate
+	}
 	abort := func(c compactCandidate, err error) error {
 		if bad != nil {
 			*bad = append(*bad, carryFailure{c.sum, err})
@@ -24676,6 +24759,9 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 		path    string
 		entries []packEntry
 		dicts   int // dictionary records among entries
+		hash    [32]byte
+		checked packInfo
+		proof   os.FileInfo
 	}
 	var staged []stagedPack
 	defer func() {
@@ -24745,12 +24831,14 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 			if keep(pl.t, batch) {
 				continue
 			}
-			path, entries, err := s.stagePackWithin(pl.t, batch, read, abort, comp, stageRemaining, enc.checkpoint)
+			var hash [32]byte
+			path, entries, err := s.stagePackWithin(pl.t, batch, read, abort, comp, stageRemaining, enc.checkpoint, &hash)
 			if err != nil {
 				return nil, err
 			}
 			if path != "" {
-				staged = append(staged, stagedPack{pl.t, path, entries, len(entries) - len(comp.packChunkEntries(entries))})
+				staged = append(staged, stagedPack{t: pl.t, path: path, entries: entries,
+					dicts: len(entries) - len(comp.packChunkEntries(entries)), hash: hash})
 				if stageRemaining >= 0 {
 					last := entries[len(entries)-1]
 					stageRemaining -= int64(last.off) + int64(last.stored) + int64(len(entries))*packIndexEntrySize + packFooterSize
@@ -24761,8 +24849,36 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 	if bad != nil && len(*bad) > 0 {
 		return nil, errCarryDamaged
 	}
+	var proven map[[32]byte]bool
+	if enc.verifiedRaw {
+		proven = make(map[[32]byte]bool, len(need))
+		for i := range staged {
+			sp := &staged[i]
+			proof, err := os.Stat(sp.path)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", errRawCarryProof, err)
+			}
+			checked, err := verifyPackExact(sp.path, sp.entries, sp.hash)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", errRawCarryProof, err)
+			}
+			if !sameSealedPack(sp.path, proof) {
+				return nil, fmt.Errorf("%w: sealed file changed during verification", errRawCarryProof)
+			}
+			if _, err := os.Stat(filepath.Join(tierPackDir(s.root, sp.t), checked.id+packFileSuffix)); !os.IsNotExist(err) {
+				return nil, fmt.Errorf("%w: replacement path already exists or is unavailable", errRawCarryProof)
+			}
+			sp.checked, sp.proof = checked, proof
+		}
+	}
 	for _, sp := range staged {
-		info, err := s.publishPack(sp.t, sp.path, sp.entries)
+		var info packInfo
+		var err error
+		if enc.verifiedRaw {
+			info, err = s.publishCheckedPack(sp.t, sp.path, sp.entries, sp.checked, sp.proof)
+		} else {
+			info, err = s.publishPack(sp.t, sp.path, sp.entries)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%w; nothing was removed", err)
 		}
@@ -24774,6 +24890,13 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 		res.LogicalBytes += info.logical
 		res.StoredBytes += info.stored
 		res.BytesRead += info.logical
+		if enc.verifiedRaw {
+			res.RawCarryWriterSHABytes += info.logical
+			res.RawCarrySealSHABytes += info.logical
+			for _, entry := range sp.entries {
+				proven[entry.sha] = true
+			}
+		}
 		// A replacement identical to a doomed pack is that pack.
 		for i, u := range doomed {
 			if u.ID == info.id && u.tier == sp.t && skip[u.idx] {
@@ -24792,6 +24915,9 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 	parallelForState(len(need), maintWorkers(), 32, func() *packHandles { return &packHandles{} }, (*packHandles).close,
 		func(h *packHandles, i int) {
 			c := need[i]
+			if proven[c.sum] {
+				return // the published file is the exact sealed replacement verified above
+			}
 			if dest == nil {
 				_, needErr[i] = s.casReadH(c.sum, skip, h)
 			} else {
@@ -24841,6 +24967,9 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	}
 	if opt.MaxSourcePacks < 0 {
 		return res, errors.New("repack: source pack limit must be nonnegative")
+	}
+	if opt.VerifiedRaw && (opt.Compress || opt.BlockLog != 0 || len(opt.Prefix) != 0) {
+		return res, errors.New("repack: sealed raw carry requires -compression off and no block or preset encoding")
 	}
 	if len(opt.Prefix) > packDictMaxBytes || len(opt.Prefix) > 0 && !opt.Compress {
 		return res, errors.New("repack: preset dictionaries require compression and at most 32 KiB of context")
@@ -25010,6 +25139,7 @@ func runRepack(args []string) {
 	tierName := fs.String("tier", "all", "only repack packs in this tier: hot, warm, cold, or all (replacements always stay in their tier)")
 	recompress := fs.Bool("recompress", false, "also rewrite fully live packs that hold raw records (compresses direct-ingest packs; needs -compression auto)")
 	keepUnchanged := fs.Bool("keep-unchanged", false, "prove and retain identical replacement packs during recompress (research)")
+	verifiedRaw := fs.Bool("verified-raw-carry", false, "authenticate raw carried bytes in the sealed replacement before publication (research, needs -compression off)")
 	blocksFlag := fs.String("record-blocks", "off", "restartable compressed records in rewritten packs: off, or the block size in KiB (research)")
 	presetFile := fs.String("preset-dictionary", "", "optional file of up to 32 KiB of authorized context for compressing small pack records (research)")
 	layoutName := fs.String("layout", "locality", "record order of rewritten packs: locality (keep the physical order) or recon (also relayout authority families by reconstruction co-access; research)")
@@ -25043,7 +25173,7 @@ func runRepack(args []string) {
 		fmt.Fprintf(os.Stderr, "zeros3: repack: %v\n", err)
 		os.Exit(2)
 	}
-	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress, KeepUnchanged: *keepUnchanged, BlockLog: blockLog, Layout: layout, Prefix: prefix})
+	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress, KeepUnchanged: *keepUnchanged, VerifiedRaw: *verifiedRaw, BlockLog: blockLog, Layout: layout, Prefix: prefix})
 	if err != nil {
 		switch {
 		case errors.Is(err, errGCStoreInUse):
@@ -27126,7 +27256,7 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 		if len(by[t]) == 0 {
 			continue
 		}
-		path, entries, err := s.stagePackWithin(t, by[t], read, abort, comp, stageBytes, nil)
+		path, entries, err := s.stagePackWithin(t, by[t], read, abort, comp, stageBytes, nil, nil)
 		if err != nil {
 			return n, err
 		}
@@ -35620,7 +35750,7 @@ func runRepair(args []string) {
 	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (bounded 1..32; bulk transport runs at most 4 batches at once)")
-	scrubResult := fs.String("scrub-report", "", "repair indexed raw records in a physical scrub report while offline; use the peer only for missing local records")
+	scrubResult := fs.String("scrub-report", "", "repair indexed raw or independent DEFLATE records from a physical scrub report while offline")
 	fs.Parse(args)
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 

@@ -15,9 +15,17 @@ After a scan reports issues, the command emits JSON and returns
 exit code 1. To use a cursor, preserve the same sealed pack
 inventory between invocations.
 
-For raw physical repair, save the complete JSON report and stop
+For physical repair, save the complete JSON report and stop
 writers. Use `repair -store "$STORE" -scrub-report "$REPORT"`.
 Add `-from "$PEER"` with the authorized peer's signing configuration
 if a record has no usable local copy. The repair fixture uses a
 disposable loopback peer. The process-cut test runs this offline
 entry point in a child before letting the predecessor be replaced.
+
+For the sealed raw carry, the source must be a checked native
+raw pack with live and dead records. `TestFB07SealedRawCarry`
+exercises the actual offline repack entry point against clean
+source data, a staged-file change and a compressed-source control.
+For an offline disposable store, use
+`repack -apply -compression off -verified-raw-carry -json`
+and compare the writer and seal payload counters.

@@ -31,7 +31,7 @@ func TestFB05StageCheckpointCancelsLargePack(t *testing.T) {
 		return bodies[sum], nil
 	}
 	path, _, err := s.stagePackWithin(tierHot, batch, read, nil, newBlockCompressor(true, 0), 1<<20,
-		func() error { return context.Canceled })
+		func() error { return context.Canceled }, nil)
 	if !errors.Is(err, context.Canceled) || path != "" || reads != 8 {
 		t.Fatalf("checkpoint should cancel at 256 KiB: %q, %d reads, %v", path, reads, err)
 	}

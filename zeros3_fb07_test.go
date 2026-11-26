@@ -235,3 +235,107 @@ func TestFB07PhysicalRepairPublicationCut(t *testing.T) {
 		t.Fatalf("retry did not regain exact original pack: %+v", retry)
 	}
 }
+
+func TestFB07SealedRawCarry(t *testing.T) {
+	for _, lane := range []string{"two-hashes", "altered-after-proof", "compressed-source-fallback"} {
+		t.Run(lane, func(t *testing.T) {
+			dir := t.TempDir()
+			s := b4OpenMaint(t, dir)
+			mustOK(t, s.CreateBucket("b"))
+			live := bytes.Repeat([]byte("raw carry live! "), 512)
+			dead := b4Body(740, 45<<10)
+			var source packInfo
+			if lane == "compressed-source-fallback" {
+				b, err := s.newPackBuilder(tierHot, newBlockCompressor(true, 0), 2)
+				mustOK(t, err)
+				b.Add(sha256.Sum256(live), live)
+				b.Add(sha256.Sum256(dead), dead)
+				file, records, err := b.Finish()
+				mustOK(t, err)
+				if records[0].codec != packCodecDeflate {
+					t.Fatal("fixture did not compress the live record")
+				}
+				source, err = s.publishPack(tierHot, file, records)
+				mustOK(t, err)
+			} else {
+				source, _ = fb07AddRawPack(t, s, live, dead)
+			}
+			_, err := s.PutObject("b", "object", live, "application/octet-stream", nil)
+			mustOK(t, err)
+			mustOK(t, s.Close())
+			before, err := os.ReadFile(source.path)
+			mustOK(t, err)
+			if lane == "altered-after-proof" {
+				testHook = func(event string) {
+					if event == hookPackBeforePublish {
+						files, err := filepath.Glob(filepath.Join(tierTmpDir(dir, tierHot), "pack-*.tmp"))
+						mustOK(t, err)
+						if len(files) != 1 {
+							t.Fatalf("expected one sealed stage, got %v", files)
+						}
+						fb07FlipPackByte(t, files[0], packHeaderSize+packRecordHeaderSize)
+					}
+				}
+				defer func() { testHook = nil }()
+			}
+			rep, err := repackStore(dir, repackOptions{TargetBytes: 1 << 20, MaxLivePercent: 100, VerifiedRaw: true})
+			testHook = nil
+			if lane == "altered-after-proof" {
+				if err == nil || !strings.Contains(err.Error(), "verified staging file changed") {
+					t.Fatalf("unexpected result after a staged change: %+v %v", rep, err)
+				}
+				after, err := os.ReadFile(source.path)
+				mustOK(t, err)
+				if !bytes.Equal(before, after) {
+					t.Fatal("failed proof altered a source pack")
+				}
+			} else {
+				mustOK(t, err)
+				if _, err := os.Stat(source.path); !os.IsNotExist(err) {
+					t.Fatal("expected old pack to retire")
+				}
+				if lane == "two-hashes" && (rep.RawCarryWriterSHABytes != int64(len(live)) ||
+					rep.RawCarrySealSHABytes != int64(len(live)) || rep.RawCarryFallback) {
+					t.Fatalf("raw carry hash accounting: %+v", rep)
+				}
+				if lane == "compressed-source-fallback" && !rep.RawCarryFallback {
+					t.Fatalf("compressed source did not use verified fallback: %+v", rep)
+				}
+			}
+			b4Verify(t, dir, map[string][]byte{"object": live})
+			t.Logf("%s writer_SHA=%d sealed_SHA=%d fallback=%v", lane, rep.RawCarryWriterSHABytes,
+				rep.RawCarrySealSHABytes, rep.RawCarryFallback)
+		})
+	}
+}
+
+func TestFB07PhysicalRepairRecode(t *testing.T) {
+	dir := t.TempDir()
+	s := b4OpenMaint(t, dir)
+	defer s.Close()
+	plain := bytes.Repeat([]byte("deterministic DEFLATE record\n"), 512)
+	b, err := s.newPackBuilder(tierHot, newBlockCompressor(true, 0), 1)
+	mustOK(t, err)
+	b.Add(sha256.Sum256(plain), plain)
+	path, records, err := b.Finish()
+	mustOK(t, err)
+	if records[0].codec != packCodecDeflate {
+		t.Fatal("expected independent DEFLATE fixture")
+	}
+	p, err := s.publishPack(tierHot, path, records)
+	mustOK(t, err)
+	fb07AddRawPack(t, s, plain)
+	good, err := os.ReadFile(p.path)
+	mustOK(t, err)
+	fb07FlipPackByte(t, p.path, int64(records[0].off)+int64(records[0].stored)/2)
+	plan, err := scrubSealedPacks(dir, s.formatSnapshot().StoreFormatVersion, 0, 2, "")
+	mustOK(t, err)
+	rep, err := s.repairScrubReport(t.Context(), plan, nil)
+	mustOK(t, err)
+	got, err := os.ReadFile(p.path)
+	mustOK(t, err)
+	if len(rep.Unresolved) != 0 || rep.RecordsRepaired != 1 || rep.PeerRecords != 0 || !bytes.Equal(got, good) {
+		t.Fatalf("DEFLATE recode failed to restore the exact file: %+v", rep)
+	}
+	t.Logf("DEFLATE recode: %d exact logical bytes from a raw local copy, %d physical bytes restored", len(plain), p.size)
+}
