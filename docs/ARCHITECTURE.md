@@ -106,8 +106,10 @@ through a sparse page directory and a bounded page cache) plus sorted overlays
 for what changed since, merged in key order by reads and listings. A generation
 published as `journal/namespace-v4.zck` is derived state bound to a journal
 prefix by per-block SHA-256; every open (ordinary, shared and server) loads it
-and replays only the journal suffix, and a missing, stale, damaged or
-structurally invalid one falls back to full replay. A damaged page found later
+and replays only the journal suffix. A missing one falls back to full replay,
+and so does one whose body is damaged but whose checked trailer binds it to
+this store and journal; a foreign, contradicted or unreadable one refuses the
+open (see "Journal damage" in OPERATIONS.md). A damaged page found later
 fails reads explicitly instead of answering from a partial view, and maintenance
 that acts on the whole root set (authority revert, migration, repair) fails
 rather than proceed from an incomplete enumeration.
@@ -152,7 +154,10 @@ publishers (a caller returns only after an fsync that began after its own
 rename), and shard directories are created once and trusted only after their
 parent's fsync. Object-root journal frames of concurrent requests are written
 and fsynced together (group commit); each request is acknowledged only after
-the fsync covering its frame, in journal order. See
+the fsync covering its frame, in journal order, and, unless the watermark is
+off, after the owner has written the new acknowledged end to
+`journal/visibility.ack` (also fsynced in sync mode). That watermark lets
+recovery tell an interrupted write from damaged acknowledged history. See
 `testing-harnesses/z4/p1b/DURABILITY_MODEL.md`.
 
 ### Direct pack ingest
