@@ -80,26 +80,11 @@ func fb02PartPayloadLen(t *testing.T, uploadID string, part int, size int64, chu
 	return len(b)
 }
 
-// TestFB02_PartRecordBoundary drives commitPart with synthetic chunk lists
-// whose encoded record is exactly maxJournalPayload and one byte over it.
-func TestFB02_PartRecordBoundary(t *testing.T) {
-	dir := t.TempDir()
-	s, err := OpenStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateBucket("b"); err != nil {
-		t.Fatal(err)
-	}
-	id, err := s.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	at := time.Date(2026, 11, 26, 9, 0, 0, 123456789, time.UTC) // nine fraction digits
-	prev := multipartNow
-	multipartNow = func() time.Time { return at }
-	defer func() { multipartNow = prev }()
-
+// fb02CapChunks builds two synthetic chunk lists for part 1 of upload id at
+// clock at: one whose UploadPart record is exactly maxJournalPayload bytes,
+// and one a byte over it.
+func fb02CapChunks(t *testing.T, id string, at time.Time) (atCap []chunkRef, atCapSize int64, over []chunkRef, overSize int64, n int) {
+	t.Helper()
 	digest := strings.Repeat("ab", 32)
 	// Find n chunks of 5-digit length that fit, then widen r of them to
 	// six digits so the record is exactly the cap.
@@ -116,7 +101,7 @@ func TestFB02_PartRecordBoundary(t *testing.T) {
 		}
 		return out, size
 	}
-	n := maxJournalPayload / 93
+	n = maxJournalPayload / 93
 	for {
 		c, size := chunks(n+1, 0)
 		if fb02PartPayloadLen(t, id, 1, size, c, at) > maxJournalPayload {
@@ -144,12 +129,36 @@ func TestFB02_PartRecordBoundary(t *testing.T) {
 		}
 		wide++
 	}
-	atCap, atCapSize := chunks(n, wide)
-	over, overSize := chunks(n, wide+1)
+	atCap, atCapSize = chunks(n, wide)
+	over, overSize = chunks(n, wide+1)
 	if l := fb02PartPayloadLen(t, id, 1, overSize, over, at); l != maxJournalPayload+1 {
 		t.Fatalf("one-over record is %d bytes", l)
 	}
-	t.Logf("cap %d bytes = %d chunks (%d widened)", maxJournalPayload, n, wide)
+	return atCap, atCapSize, over, overSize, n
+}
+
+// TestFB02_PartRecordBoundary drives commitPart with synthetic chunk lists
+// whose encoded record is exactly maxJournalPayload and one byte over it.
+func TestFB02_PartRecordBoundary(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucket("b"); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.CreateMultipartUpload("b", "k", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 26, 9, 0, 0, 123456789, time.UTC) // nine fraction digits
+	prev := multipartNow
+	multipartNow = func() time.Time { return at }
+	defer func() { multipartNow = prev }()
+
+	atCap, atCapSize, over, overSize, n := fb02CapChunks(t, id, at)
+	t.Logf("cap %d bytes = %d chunks", maxJournalPayload, n)
 
 	if _, err := s.commitPart("b", "k", id, 1, ingestResult{chunks: atCap, size: atCapSize}); err != nil {
 		t.Fatalf("a record of exactly maxJournalPayload bytes was refused: %v", err)

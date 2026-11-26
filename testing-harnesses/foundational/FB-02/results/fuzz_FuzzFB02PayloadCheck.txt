@@ -1,6 +1,6 @@
-fuzz: elapsed: 54s, execs: 239202 (0/sec), new interesting: 87 (total: 93)
-fuzz: elapsed: 57s, execs: 239202 (0/sec), new interesting: 87 (total: 93)
-fuzz: elapsed: 1m0s, execs: 312478 (24422/sec), new interesting: 96 (total: 102)
-fuzz: elapsed: 1m1s, execs: 312478 (0/sec), new interesting: 96 (total: 102)
+# FB-02 G-FUZZ at b926678+working tree; go test -run '^$' -fuzz '^FuzzFB02PayloadCheck$' -fuzztime 60s .
+fuzz: elapsed: 57s, execs: 789175 (13281/sec), new interesting: 90 (total: 192)
+fuzz: elapsed: 1m0s, execs: 831922 (14248/sec), new interesting: 91 (total: 193)
+fuzz: elapsed: 1m0s, execs: 831922 (0/sec), new interesting: 91 (total: 193)
 PASS
-ok  	zeros3	61.020s
+ok  	zeros3	60.084s

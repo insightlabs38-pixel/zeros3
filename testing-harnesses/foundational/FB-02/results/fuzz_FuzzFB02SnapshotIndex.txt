@@ -1,0 +1,6 @@
+# FB-02 G-FUZZ at b926678+working tree; go test -run '^$' -fuzz '^FuzzFB02SnapshotIndex$' -fuzztime 60s .
+fuzz: elapsed: 57s, execs: 832400 (2772/sec), new interesting: 55 (total: 58)
+fuzz: elapsed: 1m0s, execs: 835534 (1044/sec), new interesting: 58 (total: 61)
+fuzz: elapsed: 1m1s, execs: 835534 (0/sec), new interesting: 58 (total: 61)
+PASS
+ok  	zeros3	61.026s

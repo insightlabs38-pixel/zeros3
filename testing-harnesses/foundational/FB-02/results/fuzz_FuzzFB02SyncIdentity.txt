@@ -1,0 +1,6 @@
+# FB-02 G-FUZZ at b926678+working tree; go test -run '^$' -fuzz '^FuzzFB02SyncIdentity$' -fuzztime 60s .
+fuzz: elapsed: 57s, execs: 786419 (13762/sec), new interesting: 10 (total: 12)
+fuzz: elapsed: 1m0s, execs: 829185 (14253/sec), new interesting: 10 (total: 12)
+fuzz: elapsed: 1m0s, execs: 829185 (0/sec), new interesting: 10 (total: 12)
+PASS
+ok  	zeros3	60.091s

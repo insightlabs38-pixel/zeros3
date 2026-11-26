@@ -1,0 +1,46 @@
+# FB-02 G-FAULT: crash at every hook point, ENOSPC short write and EIO fsync on the journal; go go1.27.0
+# go test -count=1 -v -run 'TestFB02_Fault' .
+=== RUN   TestFB02_FaultIfUnchangedCommit
+    zeros3_fb02_fault_test.go:140: writing idempotent commit reaches [seg-before-write seg-after-write seg-before-sync seg-after-sync seg-published after-manifest-published after-journal-write-before-sync after-journal-sync after-apply-before-response after-ack]
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=seg-before-write
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=seg-after-write
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=seg-before-sync
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=seg-after-sync
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=seg-published
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=after-manifest-published
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=after-journal-write-before-sync
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=after-journal-sync
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=after-apply-before-response
+=== RUN   TestFB02_FaultIfUnchangedCommit/crash=after-ack
+=== NAME  TestFB02_FaultIfUnchangedCommit
+    zeros3_fb02_fault_test.go:159: crash cuts: 6 left the old state, 4 the new
+=== RUN   TestFB02_FaultIfUnchangedCommit/ENOSPC_short_journal_write
+=== RUN   TestFB02_FaultIfUnchangedCommit/EIO_journal_fsync
+--- PASS: TestFB02_FaultIfUnchangedCommit (0.39s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=seg-before-write (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=seg-after-write (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=seg-before-sync (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=seg-after-sync (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=seg-published (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=after-manifest-published (0.04s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=after-journal-write-before-sync (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=after-journal-sync (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=after-apply-before-response (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/crash=after-ack (0.03s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/ENOSPC_short_journal_write (0.02s)
+    --- PASS: TestFB02_FaultIfUnchangedCommit/EIO_journal_fsync (0.03s)
+=== RUN   TestFB02_FaultPartRecordAtCap
+    zeros3_fb02_fault_test.go:235: at-cap part record (90198 chunks) reaches [after-journal-write-before-sync after-journal-sync after-apply-before-response]
+=== RUN   TestFB02_FaultPartRecordAtCap/crash=after-apply-before-response
+=== RUN   TestFB02_FaultPartRecordAtCap/crash=after-journal-sync
+=== RUN   TestFB02_FaultPartRecordAtCap/crash=after-journal-write-before-sync
+=== RUN   TestFB02_FaultPartRecordAtCap/ENOSPC_short_journal_write
+=== RUN   TestFB02_FaultPartRecordAtCap/EIO_journal_fsync
+--- PASS: TestFB02_FaultPartRecordAtCap (1.47s)
+    --- PASS: TestFB02_FaultPartRecordAtCap/crash=after-apply-before-response (0.20s)
+    --- PASS: TestFB02_FaultPartRecordAtCap/crash=after-journal-sync (0.18s)
+    --- PASS: TestFB02_FaultPartRecordAtCap/crash=after-journal-write-before-sync (0.17s)
+    --- PASS: TestFB02_FaultPartRecordAtCap/ENOSPC_short_journal_write (0.17s)
+    --- PASS: TestFB02_FaultPartRecordAtCap/EIO_journal_fsync (0.15s)
+PASS
+ok  	zeros3	1.869s

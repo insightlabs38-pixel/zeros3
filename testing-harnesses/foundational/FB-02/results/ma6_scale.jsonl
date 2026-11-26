@@ -1,0 +1,4 @@
+FB02PROFILE {"case":"ok","elapsed_ms":119690.586,"failed":0,"mode":"session","n":100000,"payload_bytes":26300196,"replicated":100000,"rss_base_kib":21016,"rss_peak_kib":171032,"snapshot_decodes":2}
+FB02PROFILE {"case":"heap","elapsed_ms":1321.043,"index_cost_estimate":134900000,"index_retained_bytes":91389176,"mode":"session","n":950000,"payload_bytes":249850196,"retained_over_payload":0.36577588276136475,"rss_base_kib":26384,"rss_peak_kib":665440,"snapshot_decodes":1}
+FB02PROFILE {"case":"describe","describes":20,"elapsed_ms":4.693,"mode":"session","n":950000,"payload_bytes":249850196,"rss_base_kib":28460,"rss_peak_kib":942732,"snapshot_decodes":0}
+FB02PROFILE {"case":"describe","describes":20,"elapsed_ms":21793.855,"mode":"fresh","n":950000,"payload_bytes":249850195,"rss_base_kib":27004,"rss_peak_kib":1355036,"snapshot_decodes":20}

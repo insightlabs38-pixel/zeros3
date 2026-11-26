@@ -8,14 +8,21 @@ package main
 //     length, and reaches EOF only with the declared length decoded and a
 //     well-formed trailer value handed to the claim;
 //   - FuzzFB02PayloadCheck: checksum header parsing on arbitrary names and
-//     values. Whatever it accepts is internally consistent and verifiable.
+//     values. Whatever it accepts is internally consistent and verifiable;
+//   - FuzzFB02SnapshotIndex (M-A6): the restore session index against the
+//     fresh lookup, on arbitrary descriptor bytes;
+//   - FuzzFB02SyncIdentity (M-A5): the equivalence rule's algebra.
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +166,104 @@ func FuzzFB02PayloadCheck(f *testing.F) {
 		body, object := c.objectClaim()
 		if object.algo != checksumNone && (body.algo != checksumNone || object.algo != c.algo || object.trailer != nil) {
 			t.Fatalf("objectClaim split %+v into %+v and %+v", c, body, object)
+		}
+	})
+}
+
+// FuzzFB02SnapshotIndex (M-A6): the session index agrees with the fresh
+// path's sort.Search over the decoded entries, for every entry key and an
+// arbitrary probe, holds each entry's manifest UUID and SHA-256, and stays
+// within twice the descriptor's size. It runs on the raw descriptor bytes
+// and, since the CRC rejects nearly every mutated frame, also on a
+// well-formed descriptor built from an arbitrary newline-separated key set.
+func FuzzFB02SnapshotIndex(f *testing.F) {
+	d := sampleSnapshotDescriptor()
+	if b, err := encodeSnapshotDescriptor(d); err == nil {
+		f.Add(b, "a.txt\nb.txt", "a.txt")
+		f.Add(b, "", "a")
+		f.Add(b, "x\ny\x00\nz/\u00e9", "c")
+	}
+	check := func(t *testing.T, data []byte, probe string) {
+		d, err := decodeSnapshotDescriptor(data)
+		if err != nil {
+			return
+		}
+		ix, err := newSnapshotIndex(d.SnapshotID, d, nil)
+		if err != nil {
+			return
+		}
+		if ix.cost > 2*int64(len(data)) {
+			t.Fatalf("index cost %d for a %d-byte descriptor", ix.cost, len(data))
+		}
+		keys := []string{probe}
+		for _, e := range d.Entries {
+			keys = append(keys, e.Key, e.Key+"\x00", e.Key[:len(e.Key)/2])
+		}
+		for _, k := range keys {
+			i, found := ix.find(k)
+			j := sort.Search(len(d.Entries), func(j int) bool { return d.Entries[j].Key >= k })
+			want := j < len(d.Entries) && d.Entries[j].Key == k
+			if found != want || found && i != j {
+				t.Fatalf("key %q: index (%d, %v), fresh (%d, %v)", k, i, found, j, want)
+			}
+			if found {
+				sum, _ := decodeHexSHA256(d.Entries[j].ManifestSHA256)
+				if ix.mans[i] != d.Entries[j].ManifestUUID || ix.sums[i] != sum {
+					t.Fatalf("key %q: index holds another entry's manifest", k)
+				}
+			}
+		}
+	}
+	f.Fuzz(func(t *testing.T, data []byte, keyBlob, probe string) {
+		check(t, data, probe)
+		keys := strings.Split(keyBlob, "\n")
+		sort.Strings(keys)
+		keys = slices.Compact(keys)
+		d := sampleSnapshotDescriptor()
+		d.Entries = d.Entries[:0]
+		for i, k := range keys {
+			sum := sha256.Sum256([]byte(k))
+			d.Entries = append(d.Entries, snapshotEntryV1{Key: k, ManifestUUID: newUUIDv7(), ManifestSHA256: hex.EncodeToString(sum[:]),
+				Size: int64(i), ETag: "e", ContentType: "text/plain"})
+		}
+		if b, err := encodeSnapshotDescriptor(d); err == nil {
+			check(t, b, probe)
+		}
+	})
+}
+
+// FuzzFB02SyncIdentity (M-A5): equivalence is an equivalence relation that
+// never holds across a different object digest, size, content type or
+// metadata, and never holds when either identity is unknown.
+func FuzzFB02SyncIdentity(f *testing.F) {
+	f.Add("aa", int64(5), "text/plain", "k", "v", "aa", int64(5), "", "k", "v")
+	f.Add("", int64(0), "", "", "", "", int64(0), "", "", "")
+	f.Fuzz(func(t *testing.T, sa string, za int64, ca, ka, va, sb string, zb int64, cb, kb, vb string) {
+		hexOf := func(s string) string {
+			if s == "" {
+				return ""
+			}
+			sum := sha256.Sum256([]byte(s))
+			return hex.EncodeToString(sum[:])
+		}
+		a := newSyncIdentity(hexOf(sa), za, ca, []metadataKV{{Key: ka, Value: va}})
+		b := newSyncIdentity(hexOf(sb), zb, cb, []metadataKV{{Key: kb, Value: vb}})
+		eqAB, knownAB := a.match(b)
+		eqBA, knownBA := b.match(a)
+		if eqAB != eqBA || knownAB != knownBA {
+			t.Fatalf("match is not symmetric")
+		}
+		if eqAB && !knownAB {
+			t.Fatalf("equivalent with an identity unknown")
+		}
+		if knownAB != (sa != "" && sb != "") {
+			t.Fatalf("known %v for digests %q %q", knownAB, sa, sb)
+		}
+		if eqAB && (sa != sb || za != zb || a.contentType != b.contentType || ka != kb || va != vb) {
+			t.Fatalf("equivalent across different identities")
+		}
+		if self, known := a.match(a); known && !self {
+			t.Fatalf("an identity is not equivalent to itself")
 		}
 	})
 }
