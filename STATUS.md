@@ -250,13 +250,21 @@ Online maintenance (`serve -maintenance`) adds no persistent format: it writes
 ordinary packs and only unlinks files. Two directory flocks coordinate processes of
 this build (writers on `chunks/`, readers on `journal/`); older binaries ignore them.
 
-An owner open refuses an incomplete or damaged journal tail and an unusable
-namespace checkpoint instead of cutting or skipping them; `zeros3 journal
-inspect` explains the refusal and `zeros3 journal salvage` is the only repair
-(explicit cut, original kept). v1 frames have no commit boundary: a crash
-mid-write is refused in 50-56% of X14 engine trials until salvaged, and a cut at a
-frame boundary above every checkpoint is not detectable
-(`testing-harnesses/foundational/FB-01/`).
+An owner open never cuts acknowledged history or skips an unusable namespace
+checkpoint. The ack watermark (`journal/visibility.ack`) records the
+acknowledged end of the journal before each acknowledgement, so an interrupted
+write past it is moved to `journal/quarantine/` and the store opens: in the
+boot that wrote the watermark, and after a host restart only with
+`ZEROS3_JOURNAL_WATERMARK=sync` (one extra fsync per group commit). Damage at or
+below the watermark, a frame-boundary cut included, refuses; so does damage
+the watermark cannot prove unacknowledged, which includes an interrupted write
+found after a host restart in the default lazy mode. `zeros3 journal inspect`
+explains a refusal and `zeros3 journal salvage` is the only repair (explicit
+cut, original kept). FB-01's 50-56% refusal figure is the share of X14 trials
+with an injected torn final group that refused: it is conditional on that
+injected fault, not a probability for real crashes. Recovery depends on the watermark:
+after an older build has written to the store it lags until this build opens
+the store again (`testing-harnesses/foundational/FB-01/`, `FB-01R/`).
 
 The implementation and tests cover deterministic crash injection broadly and
 real process termination on selected ingest/import paths. They do **not** claim

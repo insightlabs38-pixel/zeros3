@@ -35,6 +35,7 @@ import (
 	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -355,6 +356,9 @@ func (b *v2Base) withSeal(body []byte, g int, synced bool) []byte {
 // the one before (the lag). Outcomes are tallied as for the engine.
 func TestFB01RDesignBMatrix(t *testing.T) {
 	trials := 40
+	if v, err := strconv.Atoi(os.Getenv("FB01_X14_TRIALS")); err == nil && v > 0 {
+		trials = v
+	}
 	var bases []*v2Base
 	for i := range 6 {
 		bases = append(bases, v2Build(t, uint64(2000+i)))

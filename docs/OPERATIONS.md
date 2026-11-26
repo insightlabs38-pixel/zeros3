@@ -70,11 +70,43 @@ its `-compact-history` flag is deprecated and has no effect.
 
 ## Journal damage
 
-The journal's v1 frames carry no commit boundary, so an incomplete final frame
-may be a write that never reached its fsync or a damaged acknowledged frame.
-Startup therefore never cuts the journal or skips an unusable checkpoint: it
-refuses, names the offset, frame sequence and cause, and changes nothing.
-Read-only commands serve the valid prefix and log the tail they left out.
+The journal's v1 frames carry no commit boundary, so the frames alone cannot
+tell a write that never reached its fsync from a damaged acknowledged frame.
+The ack watermark, `journal/visibility.ack`, supplies that boundary: after each
+group's fsync, and before the group is acknowledged, the owner records the
+journal's acknowledged end there (two 512-byte slots, the newer valid one
+counts). An owner open then decides:
+
+- **Damage past the watermark, in the boot that wrote it** (the process
+  crashed, was killed or ran out of memory, the host kept running), when the
+  tail has the shape an interrupted write leaves: the bytes past the valid
+  prefix were never acknowledged, so the open moves them to
+  `journal/quarantine/tail-*/` (`tail.bin` and a `record.json` with the offset,
+  SHA-256, damage and proof), cuts the journal there, logs `recovered
+  automatically` and opens.
+- **Damage past the watermark after a host restart:** recovered the same way
+  in sync mode (below); in the default lazy mode the newest slot may not have
+  reached the disk, so the open refuses as before.
+- **Damage at or below the watermark, or a journal shorter than it,** a
+  frame-boundary cut included: acknowledged history is damaged, so the open
+  refuses with cause `watermark-below`. Only `journal salvage` cuts it.
+- **Other damage past the watermark in the same boot** (not a torn shape) is
+  refused as an anomaly, and so is anything when the watermark is missing,
+  unreadable, written for another store or switched off.
+
+A refused open names the offset, frame sequence and cause, and changes
+nothing. `ZEROS3_JOURNAL_WATERMARK` selects the mode for every command:
+
+| Mode | What it does | Cost per group commit |
+|---|---|---|
+| `lazy` (default) | slot written after the fsync, synced on open and close | one 512-byte pwrite, no extra fsync |
+| `sync` | slot also fsynced before the acknowledgement; recovery also after a host restart | one extra fsync |
+| `off` | no watermark; the file is removed, every damaged tail refuses (FB-01 behaviour) | none |
+
+Older builds ignore the file. After one of them has written to the store the
+watermark lags behind the journal until this build opens it again, and damage
+in the frames the older build added would be taken for an interrupted write
+in that window: let this build open the store before relying on it.
 
 ```sh
 ./zeros3 journal inspect -store /srv/zeros3          # add -json for a report
@@ -82,14 +114,24 @@ Read-only commands serve the valid prefix and log the tail they left out.
 ```
 
 `inspect` reports the earliest invalid offset and cause, whether valid frames
-follow, whether a corrected length checks out, each checkpoint's status, and a
-classification with its confidence. `salvage` needs the store offline and a
-frame-boundary cut at or below the valid prefix. It copies the original journal
-into `journal/quarantine/salvage-*/`, verified by SHA-256, writes a
-`record.json` of the cut and hashes there, moves any checkpoint it no longer
-trusts beside them, and only then replaces the live journal. Frames past the cut leave the live store whether or
-not they were acknowledged; a cut at the end of the journal keeps every frame
-and only moves an unusable checkpoint aside, so the next start rebuilds it.
+follow, whether a corrected length checks out, each checkpoint's status, the
+watermark (offset, mode, whether it was written in this boot) and whether an
+owner open would recover the tail automatically, and a classification with its
+confidence. It exits 1 when the journal is damaged and an open would not
+recover it, or when it proposes a salvage. `salvage` needs the store offline
+and a frame-boundary cut at or below the valid prefix. It copies the original
+journal into `journal/quarantine/salvage-*/`, verified by SHA-256, writes a
+`record.json` of the cut and hashes there, moves the watermark and any
+checkpoint it no longer trusts beside them, and only then replaces the live
+journal; the next owner open writes a fresh watermark. Frames past the cut leave the live store whether or not they
+were acknowledged; a cut at the end of the journal keeps every frame and only
+moves an unusable checkpoint aside, so the next start rebuilds it.
+
+Read-only commands never write the journal. Over a damaged tail, `verify`,
+`repair`, `export` and `namespace-checkpoint` refuse, because they would report
+on or publish a namespace that may be missing acknowledged mutations;
+`stats`, `versions`, `tier status` and `doctor` serve the valid prefix and
+print a `WARNING` that their report covers only that prefix.
 
 ## Health checks
 

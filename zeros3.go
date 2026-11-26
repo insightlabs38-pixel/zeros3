@@ -8035,6 +8035,13 @@ func (w *journalWatermark) sameBoot() bool {
 
 func (w *journalWatermark) encode() []byte {
 	b := make([]byte, journalWatermarkSlot)
+	w.encodeTo(b)
+	return b
+}
+
+// encodeTo writes the slot into b, which has journalWatermarkSlot bytes.
+func (w *journalWatermark) encodeTo(b []byte) {
+	clear(b)
 	copy(b[0:4], journalWatermarkMagic)
 	binary.BigEndian.PutUint16(b[4:6], 1)
 	binary.BigEndian.PutUint16(b[6:8], w.Flags)
@@ -8048,7 +8055,6 @@ func (w *journalWatermark) encode() []byte {
 	binary.BigEndian.PutUint32(b[76:80], w.PID)
 	binary.BigEndian.PutUint64(b[80:88], uint64(w.Unix))
 	binary.BigEndian.PutUint32(b[journalWatermarkSlot-4:], crc32.Checksum(b[:journalWatermarkSlot-4], castagnoliTable))
-	return b
 }
 
 func decodeJournalWatermark(b []byte) (*journalWatermark, bool) {
@@ -8136,6 +8142,7 @@ type watermarkWriter struct {
 	path string
 	last journalWatermark
 	sync bool
+	buf  [journalWatermarkSlot]byte // reused for every slot: no allocation per group
 }
 
 // openWatermarkWriter writes base as the next generation after prev and syncs
@@ -8201,7 +8208,8 @@ func (ww *watermarkWriter) write(offset, frameOff int64, seq uint64, crc uint32,
 	if err := injectJournalFault(faultWatermarkWrite); err != nil {
 		return err
 	}
-	if _, err := ww.f.WriteAt(w.encode(), int64(w.Gen%2)*journalWatermarkPage); err != nil {
+	w.encodeTo(ww.buf[:])
+	if _, err := ww.f.WriteAt(ww.buf[:], int64(w.Gen%2)*journalWatermarkPage); err != nil {
 		return err
 	}
 	if durable || ww.sync {
