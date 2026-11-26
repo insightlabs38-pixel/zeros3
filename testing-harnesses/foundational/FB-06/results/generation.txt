@@ -1,0 +1,9 @@
+=== RUN   TestFB06GenerationRoundTripAndFallback
+2026/11/26 15:44:50 zeros3: ignoring locator generation: locator generation: page checksum mismatch
+2026/11/26 15:44:50 zeros3: ignoring locator generation: locator generation: invalid header or length
+2026/11/26 15:44:50 zeros3: ignoring locator generation: locator generation: invalid header or length
+--- PASS: TestFB06GenerationRoundTripAndFallback (0.28s)
+=== RUN   TestFB06GenerationPublishCut
+--- PASS: TestFB06GenerationPublishCut (0.03s)
+PASS
+ok  	zeros3	0.314s

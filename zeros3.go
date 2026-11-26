@@ -3047,53 +3047,70 @@ func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
 // set, is called with the record count before the first entry. br, when set,
 // is reused to read the index. Every structural rule of the pack format is
 // here, so a lean open and a full load agree on which packs are valid.
-func scanPackLayout(f io.ReaderAt, size int64, br *bufio.Reader, start func(n uint64), visit func(i uint64, e *packEntry) error) ([32]byte, error) {
-	var bodySHA [32]byte
+type packIndexIdentity struct {
+	bodySHA               [32]byte
+	indexCRC              uint32
+	count, offset, length uint64
+}
+
+func readPackIndexIdentity(f io.ReaderAt, size int64) (packIndexIdentity, error) {
+	var identity packIndexIdentity
 	if size < packHeaderSize+packFooterSize {
-		return bodySHA, fmt.Errorf("pack: file is %d bytes, smaller than header+footer", size)
+		return identity, fmt.Errorf("pack: file is %d bytes, smaller than header+footer", size)
 	}
 	var hdr [packHeaderSize]byte
 	if _, err := f.ReadAt(hdr[:], 0); err != nil {
-		return bodySHA, fmt.Errorf("pack: reading header: %w", err)
+		return identity, fmt.Errorf("pack: reading header: %w", err)
 	}
 	if string(hdr[0:4]) != packMagic {
-		return bodySHA, errors.New("pack: bad header magic")
+		return identity, errors.New("pack: bad header magic")
 	}
 	if v := binary.LittleEndian.Uint16(hdr[4:6]); v != packFormatVersion {
-		return bodySHA, fmt.Errorf("pack: unsupported format version %d", v)
+		return identity, fmt.Errorf("pack: unsupported format version %d", v)
 	}
 	if !allZero(hdr[6:]) {
-		return bodySHA, errors.New("pack: nonzero reserved header bytes")
+		return identity, errors.New("pack: nonzero reserved header bytes")
 	}
 	var ft [packFooterSize]byte
 	if _, err := f.ReadAt(ft[:], size-packFooterSize); err != nil {
-		return bodySHA, fmt.Errorf("pack: reading footer: %w", err)
+		return identity, fmt.Errorf("pack: reading footer: %w", err)
 	}
 	if string(ft[0:4]) != packFooterMagic {
-		return bodySHA, errors.New("pack: bad footer magic (truncated or unfinished pack)")
+		return identity, errors.New("pack: bad footer magic (truncated or unfinished pack)")
 	}
 	if crc32.Checksum(ft[:60], packCRC) != binary.LittleEndian.Uint32(ft[60:64]) {
-		return bodySHA, errors.New("pack: footer checksum mismatch")
+		return identity, errors.New("pack: footer checksum mismatch")
 	}
 	if v := binary.LittleEndian.Uint16(ft[4:6]); v != packFormatVersion {
-		return bodySHA, fmt.Errorf("pack: unsupported footer version %d", v)
+		return identity, fmt.Errorf("pack: unsupported footer version %d", v)
 	}
 	if binary.LittleEndian.Uint16(ft[6:8]) != 0 {
-		return bodySHA, errors.New("pack: nonzero footer flags")
+		return identity, errors.New("pack: nonzero footer flags")
 	}
 	count := binary.LittleEndian.Uint64(ft[8:16])
 	indexOff := binary.LittleEndian.Uint64(ft[16:24])
-	copy(bodySHA[:], ft[24:56])
-	indexCRC := binary.LittleEndian.Uint32(ft[56:60])
+	copy(identity.bodySHA[:], ft[24:56])
+	identity.indexCRC = binary.LittleEndian.Uint32(ft[56:60])
 
 	indexEnd := uint64(size) - packFooterSize
 	if indexOff < packHeaderSize || indexOff > indexEnd {
-		return bodySHA, errors.New("pack: index offset out of range")
+		return identity, errors.New("pack: index offset out of range")
 	}
 	indexLen := indexEnd - indexOff
 	if indexLen%packIndexEntrySize != 0 || count != indexLen/packIndexEntrySize {
-		return bodySHA, errors.New("pack: record count does not match index length")
+		return identity, errors.New("pack: record count does not match index length")
 	}
+	identity.count, identity.offset, identity.length = count, indexOff, indexLen
+	return identity, nil
+}
+
+func scanPackLayout(f io.ReaderAt, size int64, br *bufio.Reader, start func(n uint64), visit func(i uint64, e *packEntry) error) ([32]byte, error) {
+	identity, err := readPackIndexIdentity(f, size)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	bodySHA, indexCRC := identity.bodySHA, identity.indexCRC
+	count, indexOff, indexLen := identity.count, identity.offset, identity.length
 	if start != nil {
 		start(count)
 	}
@@ -5012,13 +5029,14 @@ func packRecordHint(path string) int {
 // store stays readable and verify reports it. Packs are numbered tier by tier
 // (hot, warm, cold), in name order within a tier, which fixes the order of
 // primary selection and fallbacks.
-func loadPackState(root string, format int) (*packState, error) {
-	type found struct {
-		t          tier
-		path, name string
-		base, hint int
-	}
-	var files []found
+type packInventoryFile struct {
+	t          tier
+	path, name string
+	base, hint int
+}
+
+func listPackInventory(root string, format int) ([]packInventoryFile, error) {
+	var files []packInventoryFile
 	for t := tierHot; t < numTiers; t++ {
 		if t != tierHot && format < storeFormatVersionTiers {
 			break
@@ -5033,10 +5051,327 @@ func loadPackState(root string, format int) (*packState, error) {
 		}
 		for _, e := range ents {
 			if !e.IsDir() && isPackFileName(e.Name()) {
-				files = append(files, found{t: t, path: filepath.Join(dir, e.Name()), name: e.Name()})
+				files = append(files, packInventoryFile{t: t, path: filepath.Join(dir, e.Name()), name: e.Name()})
 			}
 		}
 	}
+	return files, nil
+}
+
+func loadPackState(root string, format int) (*packState, error) {
+	files, err := listPackInventory(root, format)
+	if err != nil {
+		return nil, err
+	}
+	return loadPackInventory(files)
+}
+
+const (
+	locatorGenerationName   = "locator-generation-v1"
+	locatorGenerationMagic  = "ZSLGEN01"
+	locatorGenerationHeader = 64
+	locatorGenerationPack   = 32
+	locatorGenerationPage   = 1024
+)
+
+const hookLocatorBeforePublish = "locator-generation-before-publish"
+
+type locatorPackBinding struct {
+	info        packInfo
+	indexOffset uint64
+	indexCRC    uint32
+	stamp       int64
+}
+
+// locatorInventory derives the generation key from the real immutable pack
+// headers and footers. The namespace checkpoint may change independently.
+func locatorInventory(files []packInventoryFile, storeID string) ([]locatorPackBinding, [32]byte, error) {
+	bindings := make([]locatorPackBinding, len(files))
+	errs := make([]error, len(files))
+	parallelFor(len(files), maintWorkers(), 16, func(i int) {
+		p := files[i]
+		f, err := os.Open(p.path)
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		index, err := readPackIndexIdentity(f, info.Size())
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		id := hex.EncodeToString(index.bodySHA[:])
+		if p.name != id+packFileSuffix || index.count >= math.MaxUint32 {
+			errs[i] = errors.New("locator generation: invalid pack identity")
+			return
+		}
+		bindings[i] = locatorPackBinding{
+			info:        packInfo{id: id, tier: p.t, path: p.path, size: info.Size(), records: int(index.count)},
+			indexOffset: index.offset, indexCRC: index.indexCRC, stamp: info.ModTime().UnixNano(),
+		}
+	})
+	h := sha256.New()
+	io.WriteString(h, storeID)
+	for i, b := range bindings {
+		if errs[i] != nil {
+			return nil, [32]byte{}, errs[i]
+		}
+		io.WriteString(h, b.info.id)
+		var fields [37]byte
+		fields[0] = byte(b.info.tier)
+		binary.LittleEndian.PutUint64(fields[1:], uint64(b.info.size))
+		binary.LittleEndian.PutUint64(fields[9:], uint64(b.stamp))
+		binary.LittleEndian.PutUint64(fields[17:], b.indexOffset)
+		binary.LittleEndian.PutUint64(fields[25:], uint64(b.info.records))
+		binary.LittleEndian.PutUint32(fields[33:], b.indexCRC)
+		h.Write(fields[:])
+	}
+	var key [32]byte
+	h.Sum(key[:0])
+	return bindings, key, nil
+}
+
+func writeLocatorPage(w io.Writer, page []byte) error {
+	if _, err := w.Write(page); err != nil {
+		return err
+	}
+	var crc [4]byte
+	binary.LittleEndian.PutUint32(crc[:], crc32.Checksum(page, packCRC))
+	_, err := w.Write(crc[:])
+	return err
+}
+
+func readLocatorPage(r io.Reader, page []byte) error {
+	if _, err := io.ReadFull(r, page); err != nil {
+		return err
+	}
+	var crc [4]byte
+	if _, err := io.ReadFull(r, crc[:]); err != nil {
+		return err
+	}
+	if binary.LittleEndian.Uint32(crc[:]) != crc32.Checksum(page, packCRC) {
+		return errors.New("locator generation: page checksum mismatch")
+	}
+	return nil
+}
+
+func locatorSectionBytes(count, width uint64) uint64 {
+	return count*width + 4*((count+locatorGenerationPage-1)/locatorGenerationPage)
+}
+
+func locatorPageRange(count int) iter.Seq2[int, int] {
+	return func(yield func(int, int) bool) {
+		for lo := 0; lo < count; lo += locatorGenerationPage {
+			if !yield(lo, min(lo+locatorGenerationPage, count)) {
+				return
+			}
+		}
+	}
+}
+
+func writeLocatorGeneration(root string, st *packState, key [32]byte) error {
+	var ix locIndex
+	if len(st.levels) == 1 {
+		ix = *st.levels[0]
+	}
+	if len(st.levels) > 1 || len(st.gone) != 0 || len(st.bad) != 0 || len(st.clash) != 0 {
+		return errors.New("locator generation: requires a clean, fully indexed sealed inventory")
+	}
+	f, err := os.CreateTemp(root, ".locator-generation-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	w := bufio.NewWriterSize(f, 256<<10)
+	var hdr [locatorGenerationHeader]byte
+	copy(hdr[:8], locatorGenerationMagic)
+	copy(hdr[8:40], key[:])
+	binary.LittleEndian.PutUint64(hdr[40:], uint64(len(st.packs)))
+	binary.LittleEndian.PutUint64(hdr[48:], uint64(len(ix.recs)))
+	binary.LittleEndian.PutUint64(hdr[56:], uint64(len(ix.dups)))
+	if err := writeLocatorPage(w, hdr[:]); err != nil {
+		return err
+	}
+	buf := make([]byte, locatorGenerationPage*packIndexEntrySize)
+	for lo, hi := range locatorPageRange(len(st.packs)) {
+		for i, p := range st.packs[lo:hi] {
+			row := buf[i*locatorGenerationPack : (i+1)*locatorGenerationPack]
+			binary.LittleEndian.PutUint64(row, uint64(p.stored))
+			binary.LittleEndian.PutUint64(row[8:], uint64(p.logical))
+			binary.LittleEndian.PutUint64(row[16:], uint64(p.dictBytes))
+			binary.LittleEndian.PutUint32(row[24:], uint32(p.deflated))
+			binary.LittleEndian.PutUint32(row[28:], uint32(p.dicts)<<1|uint32(btoi(p.presetDict)))
+		}
+		if err := writeLocatorPage(w, buf[:(hi-lo)*locatorGenerationPack]); err != nil {
+			return err
+		}
+	}
+	for _, run := range [][]locRec{ix.recs, ix.dups} {
+		for lo, hi := range locatorPageRange(len(run)) {
+			for i, record := range run[lo:hi] {
+				row := buf[i*packIndexEntrySize : (i+1)*packIndexEntrySize]
+				copy(row[:32], record.sum[:])
+				binary.LittleEndian.PutUint32(row[32:], record.pack)
+				binary.LittleEndian.PutUint32(row[36:], record.stored)
+				binary.LittleEndian.PutUint32(row[40:], record.lc)
+				binary.LittleEndian.PutUint32(row[44:], record.offLo)
+				binary.LittleEndian.PutUint32(row[48:], record.offHi)
+			}
+			if err := writeLocatorPage(w, buf[:(hi-lo)*packIndexEntrySize]); err != nil {
+				return err
+			}
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fireTestHook(hookLocatorBeforePublish)
+	if err := os.Rename(f.Name(), filepath.Join(root, locatorGenerationName)); err != nil {
+		return err
+	}
+	return syncDir(root)
+}
+
+func loadLocatorGeneration(root, storeID string, files []packInventoryFile) (*packState, error) {
+	f, err := os.Open(filepath.Join(root, locatorGenerationName))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	file, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	r := bufio.NewReaderSize(f, 256<<10)
+	var hdr [locatorGenerationHeader]byte
+	if err := readLocatorPage(r, hdr[:]); err != nil {
+		return nil, err
+	}
+	np := binary.LittleEndian.Uint64(hdr[40:])
+	n := binary.LittleEndian.Uint64(hdr[48:])
+	nd := binary.LittleEndian.Uint64(hdr[56:])
+	if string(hdr[:8]) != locatorGenerationMagic || np != uint64(len(files)) || np > packIdxMask ||
+		n >= math.MaxUint32 || nd >= math.MaxUint32 || n+nd >= math.MaxUint32 ||
+		uint64(file.Size()) != locatorGenerationHeader+4+locatorSectionBytes(np, locatorGenerationPack)+
+			locatorSectionBytes(n, packIndexEntrySize)+locatorSectionBytes(nd, packIndexEntrySize) {
+		return nil, errors.New("locator generation: invalid header or length")
+	}
+	bindings, key, err := locatorInventory(files, storeID)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(hdr[8:40], key[:]) {
+		return nil, errors.New("locator generation: pack inventory changed")
+	}
+	packs := make([]packInfo, len(files))
+	buf := make([]byte, locatorGenerationPage*packIndexEntrySize)
+	var counted uint64
+	for lo, hi := range locatorPageRange(len(files)) {
+		if err := readLocatorPage(r, buf[:(hi-lo)*locatorGenerationPack]); err != nil {
+			return nil, err
+		}
+		for j := lo; j < hi; j++ {
+			p := bindings[j].info
+			at := (j - lo) * locatorGenerationPack
+			row := buf[at : at+locatorGenerationPack]
+			p.stored = int64(binary.LittleEndian.Uint64(row))
+			p.logical = int64(binary.LittleEndian.Uint64(row[8:]))
+			p.dictBytes = int64(binary.LittleEndian.Uint64(row[16:]))
+			p.deflated = int(binary.LittleEndian.Uint32(row[24:]))
+			dict := binary.LittleEndian.Uint32(row[28:])
+			p.dicts, p.presetDict = int(dict>>1), dict&1 == 1
+			if p.dicts+p.deflated > p.records || p.stored < 0 || p.stored > p.size ||
+				p.logical < 0 || p.dictBytes < 0 || p.dictBytes > p.stored || p.presetDict && p.dicts != 2 {
+				return nil, errors.New("locator generation: invalid pack totals")
+			}
+			counted += uint64(p.records)
+			if p.presetDict {
+				counted -= 2
+			}
+			packs[j] = p
+		}
+	}
+	if counted != n+nd {
+		return nil, errors.New("locator generation: record totals do not match pack footers")
+	}
+	ix := &locIndex{recs: make([]locRec, int(n)), dups: make([]locRec, int(nd))}
+	for group, run := range [][]locRec{ix.recs, ix.dups} {
+		for lo, hi := range locatorPageRange(len(run)) {
+			if err := readLocatorPage(r, buf[:(hi-lo)*packIndexEntrySize]); err != nil {
+				return nil, err
+			}
+			for j := lo; j < hi; j++ {
+				at := (j - lo) * packIndexEntrySize
+				row := buf[at : at+packIndexEntrySize]
+				rec := &run[j]
+				copy(rec.sum[:], row[:32])
+				rec.pack = binary.LittleEndian.Uint32(row[32:])
+				rec.stored = binary.LittleEndian.Uint32(row[36:])
+				rec.lc = binary.LittleEndian.Uint32(row[40:])
+				rec.offLo = binary.LittleEndian.Uint32(row[44:])
+				rec.offHi = binary.LittleEndian.Uint32(row[48:])
+				loc := rec.loc()
+				if uint32(loc.pack) >= uint32(np) || loc.tier != packs[loc.pack].tier ||
+					loc.off < packHeaderSize+packRecordHeaderSize || loc.off > bindings[loc.pack].indexOffset ||
+					uint64(loc.stored) > bindings[loc.pack].indexOffset-loc.off ||
+					checkPackLengths(loc.codec, loc.stored, loc.logical) != nil ||
+					(j > 0 && (cmpLocRec(&run[j-1], rec) >= 0 || group == 0 && run[j-1].sum == rec.sum)) {
+					return nil, errors.New("locator generation: invalid or unordered record")
+				}
+			}
+		}
+	}
+	st := &packState{packs: packs}
+	if ix.size() > 0 {
+		st.levels = []*locIndex{finishLocIndex(ix, true)}
+	}
+	return st, nil
+}
+
+func buildLocatorGeneration(root string, format storeFormat) (int, error) {
+	files, err := listPackInventory(root, format.StoreFormatVersion)
+	if err != nil {
+		return 0, err
+	}
+	_, key, err := locatorInventory(files, format.StoreID)
+	if err != nil {
+		return 0, err
+	}
+	st, err := loadPackInventory(files)
+	if err != nil {
+		return 0, err
+	}
+	files, err = listPackInventory(root, format.StoreFormatVersion)
+	if err != nil {
+		return 0, err
+	}
+	_, after, err := locatorInventory(files, format.StoreID)
+	if err != nil {
+		return 0, err
+	}
+	if key != after {
+		return 0, errors.New("locator generation: pack inventory changed while building")
+	}
+	if err := writeLocatorGeneration(root, st, key); err != nil {
+		return 0, err
+	}
+	return len(st.packs), nil
+}
+
+func loadPackInventory(files []packInventoryFile) (*packState, error) {
 	// Lean open (section 4c): one footer read per pack sizes one record array;
 	// each pack's index is then parsed straight into its slice of it, with no
 	// per-pack entry list or digest map, and the failed packs' slices and the
@@ -5246,6 +5581,7 @@ func (s *Store) reloadPacks() error {
 		return err
 	}
 	s.packSt.Store(s.retire.hide(st))
+	s.locatorFromGeneration.Store(false)
 	return nil
 }
 
@@ -10815,6 +11151,8 @@ type multipartUpload struct {
 }
 
 type Store struct {
+	locatorFromGeneration atomic.Bool // a destructive pass first reloads authoritative pack indexes
+
 	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
 	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
 	root     string
@@ -11016,6 +11354,10 @@ func openStore(root string, ownSegments, useCheckpoint bool) (*Store, error) {
 // openStoreWith is openStore that, with maintain, also makes the store the only
 // writer process so it may run online maintenance (section 13d2).
 func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Store, error) {
+	return openStoreWithLocator(root, ownSegments, useCheckpoint, maintain, false)
+}
+
+func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, locatorCache bool) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("store: failed to create the store directory: %w", err)
 	}
@@ -11040,7 +11382,7 @@ func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Sto
 	if err != nil {
 		return nil, fmt.Errorf("store: taking the writer lock: %w", err)
 	}
-	s, err := openStoreLocked(root, ownSegments, useCheckpoint)
+	s, err := openStoreLocked(root, ownSegments, useCheckpoint, locatorCache)
 	if err != nil {
 		if lock != nil {
 			lock.release()
@@ -11055,7 +11397,7 @@ func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Sto
 	return s, nil
 }
 
-func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, error) {
+func openStoreLocked(root string, ownSegments, useCheckpoint, locatorCache bool) (*Store, error) {
 	for _, sub := range []string{"", "journal", "chunks", "manifests", "tmp", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("store: failed to create %s: %w", sub, err)
@@ -11114,9 +11456,24 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 		}
 		return s.finishOpen()
 	}
-	if err := s.reloadPacks(); err != nil {
-		j.close()
-		return nil, fmt.Errorf("store: loading packs: %w", err)
+	if locatorCache {
+		files, err := listPackInventory(root, format.StoreFormatVersion)
+		if err != nil {
+			j.close()
+			return nil, fmt.Errorf("store: listing packs: %w", err)
+		}
+		if st, err := loadLocatorGeneration(root, format.StoreID, files); err == nil {
+			s.packSt.Store(st)
+			s.locatorFromGeneration.Store(true)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("zeros3: ignoring locator generation: %v", err)
+		}
+	}
+	if !s.locatorFromGeneration.Load() {
+		if err := s.reloadPacks(); err != nil {
+			j.close()
+			return nil, fmt.Errorf("store: loading packs: %w", err)
+		}
 	}
 	s.segs = newSegMgr(s)
 	if err := s.openSegments(); err != nil {
@@ -25599,6 +25956,11 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		return rep, errMaintBusy
 	}
 	defer s.maintMu.Unlock()
+	if s.locatorFromGeneration.Load() {
+		if err := s.reloadPacks(); err != nil {
+			return rep, fmt.Errorf("maintenance: reloading authoritative pack indexes: %w", err)
+		}
+	}
 	rep.Started = time.Now().UTC()
 	var idle *maintIdleKey
 	defer func() {
@@ -37651,6 +38013,35 @@ func runNamespaceCheckpoint(args []string) {
 	}
 }
 
+func runLocatorBuild(args []string) {
+	fs := flag.NewFlagSet("locator-build", flag.ExitOnError)
+	root := fs.String("store", "./zeros3-data", "path to an existing offline store")
+	fs.Parse(args)
+	formatPath := filepath.Join(*root, "FORMAT.json")
+	if _, err := os.Stat(formatPath); err != nil {
+		log.Fatalf("zeros3: locator-build: %v", err)
+	}
+	lock, err := acquireStoreLock(*root, true)
+	if err != nil {
+		log.Fatalf("zeros3: locator-build: %v", err)
+	}
+	defer lock.release()
+	writer, err := flockStore(*root, writerLockDir, syscall.LOCK_EX, false)
+	if err != nil {
+		log.Fatalf("zeros3: locator-build needs the only writer: %v", err)
+	}
+	defer writer.release()
+	format, err := loadOrInitFormat(*root, formatPath)
+	if err != nil {
+		log.Fatalf("zeros3: locator-build: %v", err)
+	}
+	packs, err := buildLocatorGeneration(*root, format)
+	if err != nil {
+		log.Fatalf("zeros3: locator-build: %v", err)
+	}
+	fmt.Printf("locator generation: %d sealed packs\n", packs)
+}
+
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
@@ -37684,6 +38075,7 @@ func runServe(args []string) {
 	maintBlocks := fs.String("maintenance-record-blocks", "off", "online repack: restartable compressed records in rewritten packs, off or the block size in KiB (research)")
 	maintLayout := fs.String("maintenance-layout", "locality", "online repack: locality, or recon to also relayout authority families by reconstruction co-access (research)")
 	bgYield := fs.String("background-yield", "off", "online maintenance and import proofs: off, adaptive to S3 activity, or fixed delay (research control)")
+	locatorCache := fs.Bool("locator-generation", false, "use a matching sealed-pack locator generation at startup; fall back to pack indexes")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -37768,7 +38160,7 @@ func runServe(args []string) {
 	}
 	defer lock.release()
 
-	store, err := openStoreWith(*storeDir, true, *checkpoint, *maintMode != "off")
+	store, err := openStoreWithLocator(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache)
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -92697,6 +93089,8 @@ func main() {
 		runRepack(args)
 	case "pack-parity":
 		runPackParity(args)
+	case "locator-build":
+		runLocatorBuild(args)
 	case "tier":
 		runTier(args)
 	case "probe":
@@ -92722,7 +93116,7 @@ func main() {
 	case "authority":
 		runAuthority(args)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, journal, presign, versions, restore, gc, compact, repack, pack-parity, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
+		fmt.Fprintf(os.Stderr, "zeros3: unknown command %q (want serve, stats, verify, journal, presign, versions, restore, gc, compact, repack, pack-parity, locator-build, tier, probe, doctor, sync, replicate, repair, fork, snapshot, bundle, diff, inspect, or authority)\n", cmd)
 		os.Exit(2)
 	}
 }
