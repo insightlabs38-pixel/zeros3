@@ -5127,6 +5127,185 @@ type packScrubReport struct {
 	NextBytes      int64            `json:"next_pack_bytes,omitempty"`
 }
 
+type packScrubRepairReport struct {
+	PacksRepaired    int      `json:"packs_repaired"`
+	RecordsRepaired  int      `json:"records_repaired"`
+	PeerRecords      int      `json:"peer_records"`
+	PeerPayloadBytes int64    `json:"peer_payload_bytes"`
+	Unresolved       []string `json:"unresolved,omitempty"`
+}
+
+const hookScrubRepairBeforePublish = "scrub-repair-before-publish"
+
+// transferRecord checks logical identity and length before handing bytes to
+// a record sink. The sink may preserve or deterministically recode the payload
+// and must complete its own publication proof.
+func transferRecord(sum [32]byte, length uint32, data []byte, sink func([]byte) error) error {
+	if uint64(len(data)) != uint64(length) || sha256.Sum256(data) != sum {
+		return errors.New("record bytes do not match the expected digest and length")
+	}
+	return sink(data)
+}
+
+func (s *Store) repairScrubReport(ctx context.Context, report packScrubReport, peer func(context.Context, string) ([]byte, error)) (packScrubRepairReport, error) {
+	var result packScrubRepairReport
+	if len(report.Issues) != report.IssueCount || len(report.Issues) > 256 {
+		return result, errors.New("scrub repair requires every diagnostic, rescan a smaller pack range")
+	}
+	files, err := listPackInventory(s.root, s.formatSnapshot().StoreFormatVersion)
+	if err != nil {
+		return result, err
+	}
+	byPack := make(map[string]packInventoryFile, len(files))
+	for _, p := range files {
+		byPack[p.scrubID()] = p
+	}
+	requested := map[string]map[int]packScrubIssue{}
+	for _, issue := range report.Issues {
+		requested[issue.Pack] = nil
+	}
+	for _, issue := range report.Issues {
+		if issue.Record == nil {
+			continue
+		}
+		if requested[issue.Pack] == nil {
+			requested[issue.Pack] = map[int]packScrubIssue{}
+		}
+		requested[issue.Pack][*issue.Record] = issue
+	}
+	cache := map[[32]byte][]byte{}
+	for _, id := range slices.Sorted(maps.Keys(requested)) {
+		p, ok := byPack[id]
+		if !ok || len(requested[id]) == 0 {
+			result.Unresolved = append(result.Unresolved, id+": no active pack with indexed damaged records")
+			continue
+		}
+		n, err := s.repairScrubPack(ctx, p, requested[id], peer, cache, &result)
+		if err != nil {
+			result.Unresolved = append(result.Unresolved, id+": "+err.Error())
+		}
+		if n > 0 {
+			result.PacksRepaired++
+			result.RecordsRepaired += n
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) repairScrubPack(ctx context.Context, file packInventoryFile, requested map[int]packScrubIssue,
+	peer func(context.Context, string) ([]byte, error), cache map[[32]byte][]byte, result *packScrubRepairReport) (int, error) {
+	info, entries, err := loadPackFile(file.path)
+	if err != nil {
+		return 0, err
+	}
+	src, err := os.Open(file.path)
+	if err != nil {
+		return 0, err
+	}
+	defer src.Close()
+	if err := s.prepareTier(file.t); err != nil {
+		return 0, err
+	}
+	stage, err := os.CreateTemp(tierTmpDir(s.root, file.t), "scrub-repair-*.tmp")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(stage.Name())
+	defer stage.Close()
+	if _, err := io.CopyN(stage, src, info.size); err != nil {
+		return 0, err
+	}
+	var skip map[int32]bool
+	for i, p := range s.packSnap().packs {
+		if p.path == file.path {
+			skip = map[int32]bool{int32(i): true}
+			break
+		}
+	}
+	changed := 0
+	for _, ordinal := range slices.Sorted(maps.Keys(requested)) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		issue := requested[ordinal]
+		if ordinal < 0 || ordinal >= len(entries) {
+			return 0, errors.New("scrub repair record ordinal is outside the authoritative index")
+		}
+		e := entries[ordinal]
+		digest := hex.EncodeToString(e.sha[:])
+		if issue.SHA256 != digest || issue.Length != e.logical || issue.Offset != e.off {
+			return 0, errors.New("scrub repair record differs from the authoritative index")
+		}
+		if e.codec != packCodecRaw {
+			return 0, errors.New("targeted physical repair currently requires raw records")
+		}
+		var want, have [packRecordHeaderSize]byte
+		putPackRecordHeader(want[:], e)
+		offset := int64(e.off) - packRecordHeaderSize
+		if _, err := stage.ReadAt(have[:], offset); err != nil {
+			return 0, err
+		}
+		data := make([]byte, int(e.stored))
+		if _, err := stage.ReadAt(data, int64(e.off)); err != nil {
+			return 0, err
+		}
+		payloadOK := sha256.Sum256(data) == e.sha
+		if payloadOK && have == want {
+			continue
+		}
+		if !payloadOK {
+			data = cache[e.sha]
+			if data == nil {
+				data, err = s.casReadExcluding(e.sha, skip)
+				if err != nil {
+					if peer == nil {
+						return 0, fmt.Errorf("record %s is unavailable locally: %w", digest, err)
+					}
+					data, err = peer(ctx, digest)
+					if err != nil {
+						return 0, err
+					}
+					result.PeerRecords++
+					result.PeerPayloadBytes += int64(len(data))
+				}
+			}
+			if err := transferRecord(e.sha, e.logical, data, func(verified []byte) error {
+				_, err := stage.WriteAt(verified, int64(e.off))
+				return err
+			}); err != nil {
+				return 0, err
+			}
+			cache[e.sha] = data
+		}
+		if _, err := stage.WriteAt(want[:], offset); err != nil {
+			return 0, err
+		}
+		changed++
+	}
+	if changed == 0 {
+		_, _, err := verifyPackFile(file.path)
+		return 0, err
+	}
+	if err := stage.Sync(); err != nil {
+		return 0, err
+	}
+	if err := stage.Close(); err != nil {
+		return 0, err
+	}
+	verified, _, err := verifyPackFile(stage.Name())
+	if err != nil {
+		return 0, fmt.Errorf("staged physical repair: %w", err)
+	}
+	if verified.id != info.id {
+		return 0, errors.New("staged repair differs from the original pack identity")
+	}
+	fireTestHook(hookScrubRepairBeforePublish)
+	if err := s.fds.unlinked(func() error { return os.Rename(stage.Name(), file.path) }, file.path); err != nil {
+		return 0, err
+	}
+	return changed, syncDir(filepath.Dir(file.path))
+}
+
 func (p packInventoryFile) scrubID() string {
 	return p.t.String() + "/" + strings.TrimSuffix(p.name, packFileSuffix)
 }
@@ -27128,7 +27307,7 @@ func (s *Store) maintRetireGrouped(part []doomedFile, keys [][32]byte, rep *Main
 // are older than its epoch by a margin (every operation that could own one has
 // finished, G1), or older than the maintainer's open (a crashed process left
 // them). Namespace checkpoint staging belongs to the consolidator.
-var maintStagingPrefixes = []string{"cas-", "zs3-", "pack-", "rep-", "auth-"}
+var maintStagingPrefixes = []string{"cas-", "zs3-", "pack-", "rep-", "auth-", "scrub-repair-"}
 
 func (s *Store) maintSweepTmp(t0 time.Time) int {
 	n := 0
@@ -35441,9 +35620,24 @@ func runRepair(args []string) {
 	region := fs.String("region", defaultRegion, "SigV4 region (default: AWS_REGION)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	workers := fs.Int("workers", defaultTransferWorkers, "maximum concurrent chunk transfers from the peer (bounded 1..32; bulk transport runs at most 4 batches at once)")
+	scrubResult := fs.String("scrub-report", "", "repair indexed raw records in a physical scrub report while offline; use the peer only for missing local records")
 	fs.Parse(args)
 	applyCredentialEnvFallback(fs, accessKey, secretKey, region)
 
+	if *scrubResult != "" {
+		result, err := runScrubRepair(*storeDir, *scrubResult, syncClientConfig{Endpoint: *from,
+			Creds: Credentials{AccessKeyID: *accessKey, SecretAccessKey: *secretKey}, Region: *region})
+		if err != nil {
+			log.Fatalf("zeros3: scrub repair: %v", err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+			log.Fatalf("zeros3: scrub repair: %v", err)
+		}
+		if len(result.Unresolved) != 0 {
+			os.Exit(1)
+		}
+		return
+	}
 	if *from == "" {
 		fmt.Fprintln(os.Stderr, "zeros3: repair requires -from PEER_ENDPOINT")
 		os.Exit(2)
@@ -35496,6 +35690,149 @@ func runRepair(args []string) {
 	}
 }
 
+func runScrubRepair(root, reportPath string, config syncClientConfig) (packScrubRepairReport, error) {
+	var empty packScrubRepairReport
+	in, err := os.Open(reportPath)
+	if err != nil {
+		return empty, err
+	}
+	defer in.Close()
+	body, err := io.ReadAll(io.LimitReader(in, (1<<20)+1))
+	if err != nil {
+		return empty, err
+	}
+	if len(body) > 1<<20 {
+		return empty, errors.New("scrub report exceeds 1 MiB")
+	}
+	var report packScrubReport
+	if err := json.Unmarshal(body, &report); err != nil {
+		return empty, err
+	}
+	if _, err := os.Stat(filepath.Join(root, "FORMAT.json")); err != nil {
+		return empty, err
+	}
+	lock, err := acquireStoreLock(root, true)
+	if err != nil {
+		return empty, err
+	}
+	defer lock.release()
+	s, err := openStoreWith(root, true, true, true)
+	if err != nil {
+		return empty, err
+	}
+	defer s.Close()
+	var peer func(context.Context, string) ([]byte, error)
+	if config.Endpoint != "" {
+		peer = func(ctx context.Context, digest string) ([]byte, error) {
+			return fetchRepairChunk(ctx, config, digest)
+		}
+	}
+	return s.repairScrubReport(context.Background(), report, peer)
+}
+
+// =============================================================================
+// 15f. Namespace (prefix/bucket) replication: `zeros3 replicate
+// -recursive SOURCE DEST -from SRC -to DST`
+//
+// M8C generalizes M8A's single-object primitive across a source
+// namespace -- it is orchestration over replicateObject, never a second
+// replication engine:
+//
+//	enumerate source objects (ordinary ListObjectsV2) -> map each source
+//	key to a destination key -> replicateObject(...) -> aggregate
+//
+// This is the exact same shape as M6C's directory sync (section 15c):
+// discover -> derive a destination key -> call the unmodified single-item
+// primitive -> aggregate stats/failures. Enumeration itself uses ordinary,
+// already-authenticated ListObjectsV2 requests against the source
+// endpoint (the exact wire format handleListObjectsV2/
+// parseListObjectsV2Query already implement, section 9b/10) -- never a
+// proprietary namespace-index endpoint -- so M8C discovers the source
+// namespace through ordinary S3 semantics and reserves ZeroS3's
+// proprietary delta machinery for content transfer only, exactly as this
+// milestone requires.
+//
+// CLI mode selection (source: one object vs. a prefix vs. a whole
+// bucket) is never guessed from URI shape: the new -recursive flag is the
+// sole switch. Without it, runReplicate's original M8A parsing
+// (parseS3URI, requiring a non-slash-terminated key) is completely
+// unchanged, so existing single-object invocations are byte-for-byte
+// unaffected. With it, both URIs are parsed with parseS3DirURI (M6C's
+// existing, unmodified bucket[/prefix[/]] parser) -- the same reason this
+// is unambiguous for M6C's local-directory destination applies here:
+// parseS3URI's key form and parseS3DirURI's prefix form are never
+// conflated by guessing, because the flag alone decides which parser
+// runs. (A trailing "/" was deliberately not used as the signal: an
+// object key ending in "/" is legal S3 syntax -- e.g. a zero-byte
+// "folder marker" -- so "does the URI end in /" cannot safely disambiguate
+// "single object" from "prefix/bucket" on its own.)
+//
+// Non-destructive by design (M8C-C, matching M6C's own C4): namespace
+// replication only ever copies selected source objects into the
+// destination. A destination-only object -- one with no corresponding
+// selected source key -- is never touched, listed, or deleted; there is
+// no delete mode, implicit or explicit, anywhere in this milestone.
+//
+// Partial failure: namespace replication is not one atomic transaction
+// across objects, exactly like directory sync isn't across files. One object's replicateObject failure (source
+// disappeared/changed in an incompatible way, destination conflict,
+// corrupt/unavailable source chunk) is recorded in
+// nsReplicateResult.Failures and the loop continues; objects that already
+// committed stay committed, and the overall command exits nonzero iff any
+// object failed.
+//
+// Resume needs no durable namespace-replication session state,
+// for the same structural reason M8A's own resume needs none (section
+// 15d's doc comment): commit is the one atomic step that makes anything
+// visible, so a rerun's fresh enumeration simply re-encounters every
+// selected source key, and each object's own replicateObject call
+// re-negotiates against the destination's current CAS contents --
+// already-landed chunks (and already-committed, byte-identical objects,
+// which negotiate zero missing chunks and commit as a no-op-equivalent
+// against an ExpectedETag precondition that already matches) are not
+// re-transferred. No namespace snapshot, journal record, or manifest
+// version was added anywhere to support this.
+//
+// Source mutation during a run: each object retains M8A's own
+// captured-immutable-revision guarantee (section 15d, M8A7) -- a source
+// key that changes after being listed but before its own replicateObject
+// call still replicates one specific, uncorrupted revision, never a mixed
+// one. A key that disappears between listing and its own replicateObject
+// call surfaces as that one object's ordinary failure (source descriptor
+// 404), without aborting the run. No point-in-time bucket snapshot is
+// taken or needed.
+//
+// Version scope: only the current, live-pointer object per key is
+// enumerated (ListObjectsV2's ordinary, current-version-only view,
+// section 7b) -- no historical version replication in this milestone.
+//
+// Aggregate statistics are an honest sum of each successful
+// object's own syncStats -- the exact same fields printSyncStats already
+// reports for a single replicate/sync -- so shared chunks across objects
+// are never double-counted as "avoided" or "transferred" beyond what each
+// object's own negotiation actually observed, and a failed object
+// contributes nothing (its bytes, if any partially relayed before
+// failure, were never committed and are excluded from the report by
+// construction, matching dirSyncResult's own accounting rule, section
+// 15c).
+// =============================================================================
+
+// namespaceDestKey computes M8C-A3's source-to-destination key mapping:
+// it strips the effective source list prefix (srcPrefix, already trimmed
+// of leading/trailing '/' by parseS3DirURI, turned into "" for a whole
+// bucket or "prefix/" for a sub-tree) from key, then joins the remaining
+// relative suffix onto dstPrefix using joinSyncKey -- the exact same
+// prefix+relative-path joiner M6C directory sync already uses (section
+// 15c), so a bare destination prefix can never produce a leading or
+// doubled '/' here either, and two distinct source keys sharing the same
+// listing prefix can never collide on the same destination key (the
+// stripped prefix has one fixed length for every key in one run, so
+// distinct full keys always yield distinct relative suffixes). key is
+// assumed -- and, defensively, checked -- to already carry the listing
+// prefix, which every key a ListObjectsV2 call for that prefix returns
+// always does by construction (ordinary S3 prefix semantics); this check
+// exists purely as a belt-and-suspenders guard against a malformed or
+// unexpected server response, never as a normal code path.
 func namespaceDestKey(srcPrefix, dstPrefix, key string) (string, error) {
 	listPrefix := srcPrefix
 	if listPrefix != "" {

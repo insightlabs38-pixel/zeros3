@@ -1,0 +1,12 @@
+=== RUN   TestFB07ScrubPhysicalDamageAndResume
+    zeros3_fb07_test.go:98: scrub: 2 packs, 4 distinct anomalies; duplicate remains readable; exact byte cut and resume
+--- PASS: TestFB07ScrubPhysicalDamageAndResume (0.03s)
+=== RUN   TestFB07TargetedPhysicalRepair
+    zeros3_fb07_test.go:188: repaired three records in the original pack; one signed peer request, 9216 payload bytes; exact reopen
+--- PASS: TestFB07TargetedPhysicalRepair (0.03s)
+=== RUN   TestFB07PhysicalRepairPublicationCut
+--- PASS: TestFB07PhysicalRepairPublicationCut (0.03s)
+=== RUN   TestPack_RepairReplacesCorruptPackedChunkFromPeer
+--- PASS: TestPack_RepairReplacesCorruptPackedChunkFromPeer (0.10s)
+PASS
+ok  	zeros3	1.215s

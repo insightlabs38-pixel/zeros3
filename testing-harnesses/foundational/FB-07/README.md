@@ -18,6 +18,18 @@ unreferenced header and payload, and the pack body mismatch.
 It also rejected a damaged footer and preserved exact coverage
 across a one-pack budget and resume.
 
-Targeted peer repair and carry hash accounting are in progress.
+Offline `repair -scrub-report` restores indexed raw records.
+It rechecks that each finding matches the active pack index,
+reuses a healthy local copy where available and requests only
+unavailable record digests from a configured signed peer. The
+sealed replacement must match the original pack SHA-256 exactly.
+The pack identity, journal and object metadata remain intact.
+
+The loopback fixture repaired three damaged records using a
+local duplicate, a header reconstructed from its index and one
+signed peer GET of 9,216 bytes. A process cut before rename left
+the damaged predecessor byte-identical and the next run rebuilt
+the original file. Compressed physical recoding and carry hash
+accounting remain in progress.
 
 [Reproduction](REPRODUCE.md) · [Evidence](results/)

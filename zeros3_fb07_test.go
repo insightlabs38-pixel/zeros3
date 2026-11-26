@@ -2,9 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -98,4 +108,130 @@ func TestFB07ScrubPhysicalDamageAndResume(t *testing.T) {
 		}
 	}
 	t.Fatal("footer corruption lacked a layout classification")
+}
+
+func TestFB07TargetedPhysicalRepair(t *testing.T) {
+	dir := t.TempDir()
+	s := b4OpenMaint(t, dir)
+	defer s.Close()
+	mustOK(t, s.CreateBucket("b"))
+	local, remote, header := b4Body(721, 8<<10), b4Body(722, 9<<10), b4Body(723, 10<<10)
+	p, records := fb07AddRawPack(t, s, local, remote, header)
+	fb07AddRawPack(t, s, local, b4Body(724, 11<<10))
+	put, err := s.PutObject("b", "object", remote, "application/octet-stream", map[string]string{"quality": "exact"})
+	mustOK(t, err)
+	manifest := mustManifestFor(t, s, put)
+	if len(manifest.Chunks) != 1 || manifest.Chunks[0].SHA256 != hex.EncodeToString(records[1].sha[:]) {
+		t.Fatal("fixture object does not reference the peer-only record")
+	}
+	original, err := os.ReadFile(p.path)
+	mustOK(t, err)
+	fb07FlipPackByte(t, p.path, int64(records[0].off)+4)
+	fb07FlipPackByte(t, p.path, int64(records[1].off)+4)
+	fb07FlipPackByte(t, p.path, int64(records[2].off)-packRecordHeaderSize)
+	plan, err := scrubSealedPacks(dir, s.formatSnapshot().StoreFormatVersion, 0, 2, "")
+	mustOK(t, err)
+	if plan.IssueCount != 4 {
+		t.Fatalf("expected three damaged records and a body mismatch: %+v", plan)
+	}
+	_, srv, creds, region := newSyncTestServer(t)
+	_, err = srv.store.casWrite(remote)
+	mustOK(t, err)
+	var mu sync.Mutex
+	var requested []string
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if digest, ok := strings.CutPrefix(r.URL.Path, zeros3SyncChunksPrefix); ok {
+			mu.Lock()
+			requested = append(requested, digest)
+			mu.Unlock()
+		}
+		srv.ServeHTTP(w, r)
+	}))
+	defer peer.Close()
+	cfg := mustPeerConfig(peer, creds, region)
+	report, err := s.repairScrubReport(t.Context(), plan, func(ctx context.Context, digest string) ([]byte, error) {
+		return fetchRepairChunk(ctx, cfg, digest)
+	})
+	mustOK(t, err)
+	if len(report.Unresolved) != 0 || report.PacksRepaired != 1 || report.RecordsRepaired != 3 ||
+		report.PeerRecords != 1 || report.PeerPayloadBytes != int64(len(remote)) {
+		t.Fatalf("repair transferred extra data or missed a record: %+v", report)
+	}
+	mu.Lock()
+	if len(requested) != 1 || requested[0] != manifest.Chunks[0].SHA256 {
+		t.Errorf("peer requests: %v", requested)
+	}
+	mu.Unlock()
+	restored, err := os.ReadFile(p.path)
+	mustOK(t, err)
+	if !bytes.Equal(restored, original) {
+		t.Fatal("physical pack did not regain its original bytes")
+	}
+	retry, err := s.repairScrubReport(t.Context(), plan, nil)
+	mustOK(t, err)
+	if len(retry.Unresolved) != 0 || retry.RecordsRepaired != 0 || retry.PeerRecords != 0 {
+		t.Fatalf("stale plan changed a healthy pack: %+v", retry)
+	}
+	mustOK(t, s.Close())
+	s = b4OpenMaint(t, dir)
+	defer s.Close()
+	entry, object, err := s.GetObject("b", "object")
+	mustOK(t, err)
+	if !bytes.Equal(object, remote) || !reflect.DeepEqual(mustManifestFor(t, s, entry), manifest) {
+		t.Fatal("reopen changed the live object's bytes or manifest")
+	}
+	verified, err := s.Verify(true)
+	mustOK(t, err)
+	if !verified.OK() {
+		t.Fatalf("deep verification: %+v", verified)
+	}
+	t.Logf("repaired three records in the original pack; one signed peer request, %d payload bytes; exact reopen", len(remote))
+}
+
+func TestFB07PhysicalRepairPublicationCut(t *testing.T) {
+	if root := os.Getenv("ZEROS3_FB07_REPAIR_ROOT"); root != "" {
+		testHook = func(point string) {
+			if point == hookScrubRepairBeforePublish {
+				os.Exit(74)
+			}
+		}
+		_, err := runScrubRepair(root, os.Getenv("ZEROS3_FB07_REPAIR_REPORT"), syncClientConfig{})
+		t.Fatalf("repair process did not reach its publication cut: %v", err)
+	}
+	dir := t.TempDir()
+	s := b4OpenMaint(t, dir)
+	payload := b4Body(730, 8<<10)
+	p, records := fb07AddRawPack(t, s, payload)
+	fb07AddRawPack(t, s, payload, b4Body(731, 9<<10))
+	original, err := os.ReadFile(p.path)
+	mustOK(t, err)
+	fb07FlipPackByte(t, p.path, int64(records[0].off)+5)
+	damaged, err := os.ReadFile(p.path)
+	mustOK(t, err)
+	plan, err := scrubSealedPacks(dir, s.formatSnapshot().StoreFormatVersion, 0, 2, "")
+	mustOK(t, err)
+	mustOK(t, s.Close())
+	planPath := filepath.Join(t.TempDir(), "scrub.json")
+	body, err := json.Marshal(plan)
+	mustOK(t, err)
+	mustOK(t, os.WriteFile(planPath, body, 0o600))
+	child := exec.Command(os.Args[0], "-test.run", "^TestFB07PhysicalRepairPublicationCut$")
+	child.Env = append(os.Environ(), "ZEROS3_FB07_REPAIR_ROOT="+dir, "ZEROS3_FB07_REPAIR_REPORT="+planPath)
+	out, err := child.CombinedOutput()
+	var status *exec.ExitError
+	if !errors.As(err, &status) || status.ExitCode() != 74 {
+		t.Fatalf("repair cut: %v %s", err, out)
+	}
+	current, err := os.ReadFile(p.path)
+	mustOK(t, err)
+	if !bytes.Equal(current, damaged) {
+		t.Fatal("interrupted repair modified the published file")
+	}
+	retry, err := runScrubRepair(dir, planPath, syncClientConfig{})
+	mustOK(t, err)
+	current, err = os.ReadFile(p.path)
+	mustOK(t, err)
+	if retry.RecordsRepaired != 1 || len(retry.Unresolved) != 0 || !bytes.Equal(current, original) {
+		t.Fatalf("retry did not regain exact original pack: %+v", retry)
+	}
 }

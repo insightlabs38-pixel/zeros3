@@ -14,3 +14,10 @@ GOMAXPROCS=2 go test -v -count=1 -timeout=75s -run '^TestFB07' .
 After a scan reports issues, the command emits JSON and returns
 exit code 1. To use a cursor, preserve the same sealed pack
 inventory between invocations.
+
+For raw physical repair, save the complete JSON report and stop
+writers. Use `repair -store "$STORE" -scrub-report "$REPORT"`.
+Add `-from "$PEER"` with the authorized peer's signing configuration
+if a record has no usable local copy. The repair fixture uses a
+disposable loopback peer. The process-cut test runs this offline
+entry point in a child before letting the predecessor be replaced.
