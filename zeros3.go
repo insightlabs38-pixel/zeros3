@@ -4373,6 +4373,81 @@ func (st *packState) best(sum *[32]byte) *locRec {
 	return best
 }
 
+// locBatch is the width of an interleaved lookup.
+const locBatch = 8
+
+// findN is find for each of up to locBatch digests (out[k] = find(sums[k])),
+// run in lockstep: the filter probes, table reads and binary-search steps of
+// different digests are independent, so their cache misses overlap
+// (F3-LOC-07). Every answer is still an exact digest comparison.
+func (ix *locIndex) findN(sums []*[32]byte, out []*locRec) {
+	var lo, hi [locBatch]uint32
+	n := len(sums)
+	for k := 0; k < n; k++ {
+		out[k] = nil
+		if ix.filter != nil && !ix.filter.has(sums[k]) {
+			lo[k], hi[k] = 0, 0
+			continue
+		}
+		b := binary.BigEndian.Uint32(sums[k][:4]) >> ix.shift
+		lo[k], hi[k] = ix.tbl[b], ix.tbl[b+1]
+	}
+	for active := true; active; {
+		active = false
+		for k := 0; k < n; k++ {
+			if lo[k] >= hi[k] {
+				continue
+			}
+			active = true
+			m := (lo[k] + hi[k]) >> 1
+			switch c := bytes.Compare(ix.recs[m].sum[:], sums[k][:]); {
+			case c < 0:
+				lo[k] = m + 1
+			case c > 0:
+				hi[k] = m
+			default:
+				out[k] = &ix.recs[m]
+				lo[k] = hi[k]
+			}
+		}
+	}
+}
+
+// bestMany sets out[i] = best(&sums[i]) for every i, locBatch digests at a
+// time (len(out) >= len(sums)).
+func (st *packState) bestMany(sums [][32]byte, out []*locRec) {
+	var keys [locBatch]*[32]byte
+	var which [locBatch]int
+	var got [locBatch]*locRec
+	for base := 0; base < len(sums); base += locBatch {
+		n := min(locBatch, len(sums)-base)
+		best := out[base : base+n]
+		clear(best)
+		for _, ix := range st.levels {
+			m := 0
+			for k := range n {
+				if best[k] == nil || best[k].tier() != tierHot {
+					keys[m], which[m] = &sums[base+k], k
+					m++
+				}
+			}
+			if m == 0 {
+				break
+			}
+			ix.findN(keys[:m], got[:m])
+			for q := range m {
+				r := got[q]
+				if r != nil && !st.recLive(r) {
+					r = st.find(ix, keys[q]) // a retired primary: its surviving copy, if any
+				}
+				if k := which[q]; r != nil && (best[k] == nil || r.tier() < best[k].tier()) {
+					best[k] = r
+				}
+			}
+		}
+	}
+}
+
 func (st *packState) lookup(sum [32]byte) (packLoc, bool) {
 	if r := st.best(&sum); r != nil {
 		return r.loc(), true
@@ -6653,15 +6728,33 @@ func (m *segMgr) runBatch(batch []*segReq) error {
 	if len(batch) > 1 || len(batch[0].recs) > 1 {
 		pend = make(map[[32]byte]struct{}, 8)
 	}
-	off := uint64(seg.size)
+	// One interleaved locator pass over the batch's digests (F3-LOC-07).
+	var sumBuf [64][32]byte
+	var heldBuf [64]*locRec
+	sums := sumBuf[:0]
 	for _, r := range batch {
 		for _, rec := range r.recs {
+			sums = append(sums, rec.sum)
+		}
+	}
+	held := heldBuf[:0]
+	if len(sums) > len(heldBuf) {
+		held = make([]*locRec, len(sums))
+	} else {
+		held = heldBuf[:len(sums)]
+	}
+	m.s.packSnap().bestMany(sums, held)
+	off := uint64(seg.size)
+	i := -1
+	for _, r := range batch {
+		for _, rec := range r.recs {
+			i++
 			if pend != nil {
 				if _, dup := pend[rec.sum]; dup {
 					continue
 				}
 			}
-			if _, ok := m.s.packLookup(rec.sum); ok {
+			if held[i] != nil {
 				// already durable in a published pack or segment. A loose copy
 				// published since the sink checked is not looked for here: that
 				// race only costs a second copy, and a stat per new record

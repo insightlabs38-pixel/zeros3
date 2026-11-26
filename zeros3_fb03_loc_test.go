@@ -407,14 +407,29 @@ func (m *fb03Model) check(t *testing.T, st *packState, probes [][32]byte, strict
 		}
 	}
 	n := 0
+	var all [][32]byte
 	for sum := range m.copies {
 		probe(sum)
 		if len(m.live(sum)) > 0 {
 			n++
 		}
+		all = append(all, sum)
 	}
 	for _, sum := range probes {
 		probe(sum)
+	}
+	// The interleaved path answers exactly as best does, whatever the batch
+	// boundaries (a short tail included).
+	all = append(all, probes...)
+	for _, cut := range []int{len(all), len(all) - 3, 5} {
+		cut = max(0, min(cut, len(all)))
+		got := make([]*locRec, cut)
+		st.bestMany(all[:cut], got)
+		for i, r := range got {
+			if r != st.best(&all[i]) {
+				t.Fatalf("bestMany %x: %v want %v", all[i], r, st.best(&all[i]))
+			}
+		}
 	}
 	seen := map[[32]byte]bool{}
 	for sum, loc := range st.primaries() {
