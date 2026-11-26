@@ -1,0 +1,145 @@
+# FB-03 ingest at the batch head (working tree on a808140, engine as pushed) vs FB-02 head 7ea1686; 12 rounds x 100 PUTs, order alternated (odd rounds new first)
+## round 1 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    728711 ns/op	  22.48 MB/s	    359000 cpu-ns/op	   53655 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1986584 ns/op	 100.68 MB/s	   1468140 cpu-ns/op	  160686 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40333954 ns/op	 207.98 MB/s	  38976670 cpu-ns/op	 1260184 B/op	     626 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1493789 ns/op	 133.89 MB/s	   1184930 cpu-ns/op	   24774 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37982979 ns/op	 220.85 MB/s	  37237580 cpu-ns/op	   75599 B/op	     488 allocs/op
+## round 1 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    690071 ns/op	  23.74 MB/s	    329080 cpu-ns/op	   54448 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2142898 ns/op	  93.33 MB/s	   1411020 cpu-ns/op	  169988 B/op	     226 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  41463599 ns/op	 202.31 MB/s	  40171460 cpu-ns/op	 1353497 B/op	    1387 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1653909 ns/op	 120.93 MB/s	   1253640 cpu-ns/op	   32366 B/op	     211 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38835604 ns/op	 216.00 MB/s	  38118670 cpu-ns/op	  157955 B/op	    1262 allocs/op
+## round 2 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    699764 ns/op	  23.41 MB/s	    303470 cpu-ns/op	   37948 B/op	     217 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1967442 ns/op	 101.65 MB/s	   1450420 cpu-ns/op	  163836 B/op	     226 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  42129982 ns/op	 199.11 MB/s	  40377250 cpu-ns/op	 1350119 B/op	    1388 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1617557 ns/op	 123.64 MB/s	   1232010 cpu-ns/op	   25076 B/op	     211 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  39867982 ns/op	 210.41 MB/s	  39246960 cpu-ns/op	  151423 B/op	    1262 allocs/op
+## round 2 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    573193 ns/op	  28.58 MB/s	    280470 cpu-ns/op	   47703 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2006960 ns/op	  99.65 MB/s	   1500090 cpu-ns/op	  155414 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40879115 ns/op	 205.21 MB/s	  39537510 cpu-ns/op	 1268051 B/op	     627 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1545039 ns/op	 129.45 MB/s	   1105010 cpu-ns/op	   24774 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38518552 ns/op	 217.78 MB/s	  37852960 cpu-ns/op	   63810 B/op	     487 allocs/op
+## round 3 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    821806 ns/op	  19.94 MB/s	    419390 cpu-ns/op	   49075 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2025912 ns/op	  98.72 MB/s	   1562030 cpu-ns/op	  162711 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40706156 ns/op	 206.08 MB/s	  39234910 cpu-ns/op	 1260805 B/op	     626 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1640113 ns/op	 121.94 MB/s	   1199440 cpu-ns/op	   18838 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  39033982 ns/op	 214.91 MB/s	  38350890 cpu-ns/op	   66394 B/op	     488 allocs/op
+## round 3 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    752932 ns/op	  21.76 MB/s	    345610 cpu-ns/op	   42542 B/op	     217 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2247249 ns/op	  89.00 MB/s	   1477190 cpu-ns/op	  153390 B/op	     224 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  41319515 ns/op	 203.02 MB/s	  39943430 cpu-ns/op	 1357375 B/op	    1387 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1514937 ns/op	 132.02 MB/s	   1087790 cpu-ns/op	   19120 B/op	     210 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  39415080 ns/op	 212.83 MB/s	  38636380 cpu-ns/op	  140913 B/op	    1262 allocs/op
+## round 4 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    819381 ns/op	  20.00 MB/s	    399620 cpu-ns/op	   54506 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2040373 ns/op	  98.02 MB/s	   1473100 cpu-ns/op	  156424 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  41584043 ns/op	 201.73 MB/s	  40145270 cpu-ns/op	 1338393 B/op	    1385 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1558285 ns/op	 128.35 MB/s	   1174060 cpu-ns/op	   25069 B/op	     210 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38217564 ns/op	 219.50 MB/s	  37626820 cpu-ns/op	  146806 B/op	    1262 allocs/op
+## round 4 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    747973 ns/op	  21.90 MB/s	    385970 cpu-ns/op	   65559 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2169722 ns/op	  92.18 MB/s	   1479540 cpu-ns/op	  167905 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  41237126 ns/op	 203.42 MB/s	  39854640 cpu-ns/op	 1274765 B/op	     625 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1481688 ns/op	 134.98 MB/s	   1159570 cpu-ns/op	   30045 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  39432176 ns/op	 212.74 MB/s	  38883540 cpu-ns/op	   75572 B/op	     488 allocs/op
+## round 5 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    665609 ns/op	  24.62 MB/s	    294060 cpu-ns/op	   53632 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1962384 ns/op	 101.92 MB/s	   1346710 cpu-ns/op	  164966 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40575309 ns/op	 206.74 MB/s	  39427540 cpu-ns/op	 1272602 B/op	     627 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1401723 ns/op	 142.68 MB/s	   1109600 cpu-ns/op	   18852 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38978617 ns/op	 215.21 MB/s	  38209550 cpu-ns/op	   63147 B/op	     487 allocs/op
+## round 5 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    783265 ns/op	  20.92 MB/s	    356160 cpu-ns/op	   47899 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2070095 ns/op	  96.61 MB/s	   1372750 cpu-ns/op	  154362 B/op	     224 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  41493330 ns/op	 202.17 MB/s	  40322020 cpu-ns/op	 1359815 B/op	    1389 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1593442 ns/op	 125.51 MB/s	   1163990 cpu-ns/op	   25722 B/op	     210 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  39327798 ns/op	 213.30 MB/s	  38487320 cpu-ns/op	  140913 B/op	    1262 allocs/op
+## round 6 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    738359 ns/op	  22.19 MB/s	    393270 cpu-ns/op	   49153 B/op	     217 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2168317 ns/op	  92.24 MB/s	   1452700 cpu-ns/op	  156455 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  42292895 ns/op	 198.35 MB/s	  40986900 cpu-ns/op	 1365935 B/op	    1388 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1373434 ns/op	 145.62 MB/s	   1064410 cpu-ns/op	   19805 B/op	     210 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38281094 ns/op	 219.13 MB/s	  37668210 cpu-ns/op	  146164 B/op	    1262 allocs/op
+## round 6 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    608897 ns/op	  26.91 MB/s	    300950 cpu-ns/op	   43201 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2283842 ns/op	  87.57 MB/s	   1570680 cpu-ns/op	  160635 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  42635452 ns/op	 196.75 MB/s	  40259250 cpu-ns/op	 1264071 B/op	     626 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1516840 ns/op	 131.85 MB/s	   1247060 cpu-ns/op	   18845 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38608566 ns/op	 217.27 MB/s	  37653620 cpu-ns/op	   74289 B/op	     487 allocs/op
+## round 7 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    755138 ns/op	  21.70 MB/s	    346310 cpu-ns/op	   53034 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2429333 ns/op	  82.33 MB/s	   1517800 cpu-ns/op	  155351 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40446768 ns/op	 207.40 MB/s	  39255720 cpu-ns/op	 1260201 B/op	     626 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1542069 ns/op	 129.70 MB/s	   1208290 cpu-ns/op	   24761 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  40208226 ns/op	 208.63 MB/s	  39300420 cpu-ns/op	   74307 B/op	     488 allocs/op
+## round 7 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    667529 ns/op	  24.54 MB/s	    322470 cpu-ns/op	   54418 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1963390 ns/op	 101.86 MB/s	   1418540 cpu-ns/op	  160757 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40534227 ns/op	 206.95 MB/s	  39451030 cpu-ns/op	 1369641 B/op	    1390 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1364457 ns/op	 146.58 MB/s	   1172860 cpu-ns/op	   25762 B/op	     211 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37551843 ns/op	 223.39 MB/s	  36910960 cpu-ns/op	  146164 B/op	    1262 allocs/op
+## round 8 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    646391 ns/op	  25.35 MB/s	    286710 cpu-ns/op	   54503 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1933539 ns/op	 103.44 MB/s	   1311350 cpu-ns/op	  150165 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  41570034 ns/op	 201.79 MB/s	  40357790 cpu-ns/op	 1363252 B/op	    1388 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1415439 ns/op	 141.30 MB/s	   1033920 cpu-ns/op	   25069 B/op	     211 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37725420 ns/op	 222.36 MB/s	  36991230 cpu-ns/op	  159909 B/op	    1262 allocs/op
+## round 8 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    649329 ns/op	  25.23 MB/s	    356570 cpu-ns/op	   58845 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1997545 ns/op	 100.12 MB/s	   1344290 cpu-ns/op	  159677 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40885204 ns/op	 205.17 MB/s	  39201370 cpu-ns/op	 1256283 B/op	     625 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1679985 ns/op	 119.05 MB/s	   1251640 cpu-ns/op	   25465 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  39388269 ns/op	 212.97 MB/s	  38642990 cpu-ns/op	   62514 B/op	     487 allocs/op
+## round 9 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    902004 ns/op	  18.16 MB/s	    374800 cpu-ns/op	   53632 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2089512 ns/op	  95.72 MB/s	   1422310 cpu-ns/op	  156377 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40678151 ns/op	 206.22 MB/s	  39513710 cpu-ns/op	 1272679 B/op	     626 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1552475 ns/op	 128.83 MB/s	   1203220 cpu-ns/op	   30037 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38594277 ns/op	 217.35 MB/s	  37740930 cpu-ns/op	   81468 B/op	     488 allocs/op
+## round 9 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    664298 ns/op	  24.66 MB/s	    313320 cpu-ns/op	   53107 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2089754 ns/op	  95.71 MB/s	   1405820 cpu-ns/op	  149134 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  42351204 ns/op	 198.07 MB/s	  40666930 cpu-ns/op	 1362003 B/op	    1388 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1379074 ns/op	 145.02 MB/s	   1064010 cpu-ns/op	   30342 B/op	     211 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38422976 ns/op	 218.32 MB/s	  37708120 cpu-ns/op	  145508 B/op	    1262 allocs/op
+## round 10 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    723935 ns/op	  22.63 MB/s	    321260 cpu-ns/op	   53763 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2071469 ns/op	  96.55 MB/s	   1476360 cpu-ns/op	  163963 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40122924 ns/op	 209.07 MB/s	  38852520 cpu-ns/op	 1360606 B/op	    1387 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1606055 ns/op	 124.53 MB/s	   1153190 cpu-ns/op	   19806 B/op	     210 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  38101670 ns/op	 220.16 MB/s	  37472730 cpu-ns/op	  146149 B/op	    1262 allocs/op
+## round 10 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    757434 ns/op	  21.63 MB/s	    376620 cpu-ns/op	   52985 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1935116 ns/op	 103.35 MB/s	   1363140 cpu-ns/op	  164944 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40781341 ns/op	 205.70 MB/s	  39453440 cpu-ns/op	 1282459 B/op	     627 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1520766 ns/op	 131.51 MB/s	   1161480 cpu-ns/op	   35306 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37169148 ns/op	 225.69 MB/s	  36745850 cpu-ns/op	   55974 B/op	     487 allocs/op
+## round 11 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    640956 ns/op	  25.56 MB/s	    324020 cpu-ns/op	   42437 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1853268 ns/op	 107.92 MB/s	   1349150 cpu-ns/op	  165591 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  39708735 ns/op	 211.25 MB/s	  38654820 cpu-ns/op	 1287026 B/op	     627 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1390670 ns/op	 143.82 MB/s	   1108450 cpu-ns/op	   36704 B/op	     207 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37518468 ns/op	 223.59 MB/s	  37037020 cpu-ns/op	   62516 B/op	     487 allocs/op
+## round 11 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    829858 ns/op	  19.74 MB/s	    434850 cpu-ns/op	   49217 B/op	     218 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1967312 ns/op	 101.66 MB/s	   1421090 cpu-ns/op	  161716 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  42196516 ns/op	 198.80 MB/s	  40445660 cpu-ns/op	 1375032 B/op	    1387 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1534110 ns/op	 130.37 MB/s	   1235640 cpu-ns/op	   19826 B/op	     210 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37068991 ns/op	 226.30 MB/s	  36559870 cpu-ns/op	  150118 B/op	    1262 allocs/op
+## round 12 base
+BenchmarkFB03IngestNew16KiB-4     	     100	    830303 ns/op	  19.73 MB/s	    335660 cpu-ns/op	   53740 B/op	     217 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   2180247 ns/op	  91.73 MB/s	   1496480 cpu-ns/op	  159760 B/op	     225 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  40202921 ns/op	 208.66 MB/s	  38951310 cpu-ns/op	 1353456 B/op	    1388 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1422389 ns/op	 140.61 MB/s	   1068260 cpu-ns/op	   25049 B/op	     210 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37087456 ns/op	 226.18 MB/s	  36544760 cpu-ns/op	  148093 B/op	    1262 allocs/op
+## round 12 new
+BenchmarkFB03IngestNew16KiB-4     	     100	    670303 ns/op	  24.44 MB/s	    313430 cpu-ns/op	   49121 B/op	     212 allocs/op
+BenchmarkFB03IngestNew200KB-4     	     100	   1956563 ns/op	 102.22 MB/s	   1350970 cpu-ns/op	  167870 B/op	     220 allocs/op
+BenchmarkFB03IngestNew8MiB-4      	     100	  39580972 ns/op	 211.94 MB/s	  37982130 cpu-ns/op	 1287125 B/op	     625 allocs/op
+BenchmarkFB03IngestDedup200KB-4   	     100	   1195326 ns/op	 167.32 MB/s	    995890 cpu-ns/op	   24777 B/op	     206 allocs/op
+BenchmarkFB03IngestDedup8MiB-4    	     100	  37600121 ns/op	 223.10 MB/s	  36666120 cpu-ns/op	   69045 B/op	     487 allocs/op

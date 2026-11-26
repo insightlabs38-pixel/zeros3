@@ -33,4 +33,5 @@ g 16000000 64 9000000
 for n in 4000000 16000000; do
   FB03_OUT="$out/ma8_retire.jsonl" FB03_RETIRE=$n FB03_CYCLES=10 FB03_FRAC=0.1 t '^TestFB03Scale_Retire$'
 done
+FB03_OUT="$out/ma8_get.jsonl" FB03_GET=2000 t '^TestFB03Scale_Get$'
 rm -f "$bin"

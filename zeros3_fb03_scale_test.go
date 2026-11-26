@@ -10,10 +10,12 @@ package main
 //	    [FB03_LOADER=lean|ref] [FB03_GOGC=400]
 //	FB03_GROWTH=n [FB03_M=n FB03_K=2 FB03_SEG=8192]  segment commits on a Store
 //	FB03_RETIRE=n [FB03_CYCLES=10 FB03_FRAC=0.1]     online retirement on a Store
+//	FB03_GET=n [FB03_SIZE=8000]                       GETs with and without the descriptor cache
 //
 // testing-harnesses/foundational/FB-03/ma8_scale.sh runs the set.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -811,4 +813,55 @@ func TestFB03Scale_MergeCost(t *testing.T) {
 		runtime.GC()
 	}
 	fb03Emit(t, map[string]any{"test": "merge-cost", "n": n, "ratio": ratio, "ns_per_record": ns})
+}
+
+// TestFB03Scale_Get serves GETs of n packed objects through the server with
+// the pack descriptor cache on (the default bound) and off
+// (ZEROS3_PACK_FDS=0), each GET timed alone: cold (every read cache purged
+// before it) and warm descriptors (manifest and chunk caches purged, open
+// pack files kept), in shuffled key order.
+func TestFB03Scale_Get(t *testing.T) {
+	n := fb03Env("FB03_GET", 0)
+	if n == 0 {
+		t.Skip("set FB03_GET")
+	}
+	size := fb03Env("FB03_SIZE", 8000)
+	useProductionLayout(t)
+	setSegTarget(t, 1<<20, 256<<10)
+	for _, fds := range []string{"256", "0"} {
+		t.Run("fds="+fds, func(t *testing.T) {
+			t.Setenv("ZEROS3_PACK_FDS", fds)
+			s, _ := p1cOpen(t)
+			want := p1cPutN(t, s, "g", n, size)
+			s.sealSegments()
+			creds := Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}
+			srv := NewServer(s, creds, "us-east-1")
+			keys := slices.Sorted(func(yield func(string) bool) {
+				for k := range want {
+					if !yield(k) {
+						return
+					}
+				}
+			})
+			rand.New(rand.NewSource(9)).Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
+			measure := func(purge func()) []time.Duration {
+				out := make([]time.Duration, 0, len(keys))
+				for _, k := range keys {
+					purge()
+					t0 := time.Now()
+					got := fb03Get(t, srv, creds, "b", k)
+					out = append(out, time.Since(t0))
+					if !bytes.Equal(got, want[k]) {
+						t.Fatalf("%s differs", k)
+					}
+				}
+				return out
+			}
+			cold := measure(s.purgeReadCaches)
+			warm := measure(func() { s.mcache.purge(); s.ccache.purge() })
+			fb03Emit(t, map[string]any{"test": "get", "pack_fds": fds, "objects": n, "size": size, "packs": len(s.packSnap().packs),
+				"cold_us_p50": fb03Pct(cold, 0.5), "cold_us_p99": fb03Pct(cold, 0.99),
+				"warm_fd_us_p50": fb03Pct(warm, 0.5), "warm_fd_us_p99": fb03Pct(warm, 0.99), "fds_cached": s.fds.size()})
+		})
+	}
 }

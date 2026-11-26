@@ -1,0 +1,28 @@
+# FB-03 M-A8 tests at the batch head: go test -count=1 -v -run 'TestFB03_(Loc|PackFD)|TestLocator' .
+--- PASS: TestFB03_PackFDCacheUnit (0.00s)
+--- PASS: TestFB03_PackFDCacheConcurrent (0.08s)
+--- PASS: TestFB03_PackFDCacheRetirement (0.09s)
+--- PASS: TestFB03_PackFDCacheSealAndMove (0.06s)
+--- PASS: TestFB03_LocOpenEquivalence (0.11s)
+    zeros3_fb03_loc_test.go:623: seed 1: 170 packs, 118545 records in 2 levels, 93 settles, 5 levels with retired records rewritten
+    zeros3_fb03_loc_test.go:623: seed 2: 190 packs, 140640 records in 3 levels, 70 settles, 8 levels with retired records rewritten
+    zeros3_fb03_loc_test.go:623: seed 3: 172 packs, 162895 records in 4 levels, 77 settles, 6 levels with retired records rewritten
+    zeros3_fb03_loc_test.go:623: seed 4: 197 packs, 119855 records in 1 levels, 60 settles, 3 levels with retired records rewritten
+--- PASS: TestFB03_LocMergeModel (11.84s)
+--- PASS: TestFB03_LocMergeSegments (0.26s)
+--- PASS: TestFB03_LocMergeLinear (0.12s)
+--- PASS: TestFB03_LocForcedCollision (0.00s)
+--- PASS: TestFB03_LocPlanQuietPurge (0.05s)
+    zeros3_fb03_loc_test.go:986: 300000 records: 3 levels at the end, at most 4 seen (4 recorded); 4 merges, max merge 18.8 ms, max swap 4.8 us; 2705536 reads
+--- PASS: TestFB03_LocBackgroundMerge (0.98s)
+    zeros3_fb03_loc_test.go:1109: 40000 records: 670 allocations, 89.0 bytes per record
+--- PASS: TestFB03_LocOpenAllocs (0.01s)
+--- PASS: TestLocator_DifferentialAgainstReferenceMap (0.11s)
+--- PASS: TestLocator_TableCases (0.00s)
+--- PASS: TestLocator_PublishedLevelsStayBounded (0.02s)
+--- PASS: TestLocator_ReloadNeverExposesPartialIndex (0.05s)
+--- PASS: TestLocator_PackedOnlyChunksDeduplicateAfterRestart (0.06s)
+    zeros3_test.go:34073: set ZEROS3_LOCATOR_SCALE to a comma-separated list of record counts
+--- SKIP: TestLocatorScale (0.00s)
+PASS
+ok  	zeros3	13.876s

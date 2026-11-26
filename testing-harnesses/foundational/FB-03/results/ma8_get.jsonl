@@ -1,0 +1,2 @@
+{"cold_us_p50":44.468,"cold_us_p99":120.473,"fds_cached":17,"go":"go1.27.0","gomaxprocs":4,"max_levels_cfg":4,"objects":2000,"pack_fds":"256","packs":17,"size":8000,"test":"get","warm_fd_us_p50":36.307,"warm_fd_us_p99":101.536}
+{"cold_us_p50":58.635,"cold_us_p99":130.759,"fds_cached":0,"go":"go1.27.0","gomaxprocs":4,"max_levels_cfg":4,"objects":2000,"pack_fds":"0","packs":17,"size":8000,"test":"get","warm_fd_us_p50":60.174,"warm_fd_us_p99":129.513}

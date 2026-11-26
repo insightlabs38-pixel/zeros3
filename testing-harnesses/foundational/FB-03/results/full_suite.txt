@@ -1,0 +1,6 @@
+# full suite at a808140, 2026-11-26: go test -count=1 -timeout 110m .
+ok  	zeros3	1690.873s
+
+real	28m11.790s
+user	32m48.090s
+sys	6m42.104s
