@@ -1,0 +1,18 @@
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"piggyback","outcomes":{"recover":300},"scenario":"S0 process kill: final group cut at any byte","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"piggyback","outcomes":{"ok":138,"recover":162},"scenario":"S1 crash: torn final group","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"piggyback","outcomes":{"ok":149,"recover":151},"scenario":"S2 crash: torn final group, garbage sectors","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"piggyback","outcomes":{"ok":144,"recover":156},"scenario":"S8 crash: torn final group, stale sectors","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":128,"loss_in_window":128,"mode":"piggyback","outcomes":{"recover":128,"refuse-below":172},"scenario":"S3 media: acknowledged final group damaged","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"piggyback","outcomes":{"refuse-below":300},"scenario":"S4 media: acknowledged earlier group damaged","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":106,"loss_in_window":106,"mode":"piggyback","outcomes":{"recover":106,"refuse-below":179,"refuse-later":15},"scenario":"S5 double: crash in final group + damage to the previous","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":30,"loss_in_window":30,"mode":"piggyback","outcomes":{"ok":30,"refuse-below":270},"scenario":"S6 truncation at a group boundary below the acknowledged end","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":21,"loss_in_window":21,"mode":"piggyback","outcomes":{"recover":21,"refuse-below":279},"scenario":"S7 truncation mid-group below the acknowledged end","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"ok":1,"recover":299},"scenario":"S0 process kill: final group cut at any byte","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"ok":135,"recover":165},"scenario":"S1 crash: torn final group","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"ok":153,"recover":147},"scenario":"S2 crash: torn final group, garbage sectors","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"ok":149,"recover":151},"scenario":"S8 crash: torn final group, stale sectors","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"refuse-below":300},"scenario":"S3 media: acknowledged final group damaged","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"refuse-below":300},"scenario":"S4 media: acknowledged earlier group damaged","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"refuse-below":300},"scenario":"S5 double: crash in final group + damage to the previous","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"refuse-below":300},"scenario":"S6 truncation at a group boundary below the acknowledged end","trials":300}
+{"build":"609374b","kind":"design-b-summary","loss":0,"loss_in_window":0,"mode":"sync","outcomes":{"refuse-below":300},"scenario":"S7 truncation mid-group below the acknowledged end","trials":300}

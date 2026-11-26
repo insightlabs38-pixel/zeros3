@@ -1,0 +1,36 @@
+{"kind":"compat","pair":"old->new zeros3-2ac9cab","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-2ac9cab","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"old->new zeros3-2ac9cab","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"old->new zeros3-2ac9cab","check":"journal opened unchanged","result":"PASS","detail":"sha256 536a15e5b939a55a -> 536a15e5b939a55a"}
+{"kind":"compat","pair":"old->new zeros3-2ac9cab","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-2ac9cab","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-2ac9cab","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-2ac9cab","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"new->old zeros3-2ac9cab","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-2ac9cab","check":"journal opened unchanged","result":"PASS","detail":"sha256 1ae5f2f1f4de4e3c -> 1ae5f2f1f4de4e3c"}
+{"kind":"compat","pair":"new->old zeros3-2ac9cab","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-2ac9cab","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}
+{"kind":"compat","pair":"stale watermark zeros3-2ac9cab","check":"new build writes","result":"PASS","detail":"12 puts"}
+{"kind":"compat","pair":"stale watermark zeros3-2ac9cab","check":"watermark at the end after a clean stop","result":"PASS","detail":"watermark 4250, journal 4250"}
+{"kind":"compat","pair":"stale watermark zeros3-2ac9cab","check":"older build extends the store","result":"PASS","detail":"8 puts"}
+{"kind":"compat","pair":"stale watermark zeros3-2ac9cab","check":"new build inspects the stale watermark","result":"PASS","detail":"watermark 4250 behind journal 7025; clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"stale watermark zeros3-2ac9cab","check":"new build reads every object","result":"PASS","detail":"20 objects, 0 wrong"}
+{"kind":"compat","pair":"stale watermark zeros3-2ac9cab","check":"new build moves the watermark to the end","result":"PASS","detail":"watermark 8412, journal 8412"}
+{"kind":"compat","pair":"old->new zeros3-4b66f16","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-4b66f16","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"old->new zeros3-4b66f16","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"old->new zeros3-4b66f16","check":"journal opened unchanged","result":"PASS","detail":"sha256 01b7fa30dcd3b480 -> 01b7fa30dcd3b480"}
+{"kind":"compat","pair":"old->new zeros3-4b66f16","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"old->new zeros3-4b66f16","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-4b66f16","check":"writer acknowledged","result":"PASS","detail":"bucket b, 24 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-4b66f16","check":"new build inspects clean","result":"PASS","detail":"verdict: clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"new->old zeros3-4b66f16","check":"reader reads every object","result":"PASS","detail":"22 live objects, 2 deleted, 0 wrong"}
+{"kind":"compat","pair":"new->old zeros3-4b66f16","check":"journal opened unchanged","result":"PASS","detail":"sha256 19f225d373b4b1a5 -> 19f225d373b4b1a5"}
+{"kind":"compat","pair":"new->old zeros3-4b66f16","check":"reader extends the store","result":"PASS","detail":"8 puts, 2 overwrites, 2 deletes"}
+{"kind":"compat","pair":"new->old zeros3-4b66f16","check":"writer reads the other build's frames","result":"PASS","detail":"28 live objects, 4 deleted, 0 wrong"}
+{"kind":"compat","pair":"stale watermark zeros3-4b66f16","check":"new build writes","result":"PASS","detail":"12 puts"}
+{"kind":"compat","pair":"stale watermark zeros3-4b66f16","check":"watermark at the end after a clean stop","result":"PASS","detail":"watermark 4250, journal 4250"}
+{"kind":"compat","pair":"stale watermark zeros3-4b66f16","check":"older build extends the store","result":"PASS","detail":"8 puts"}
+{"kind":"compat","pair":"stale watermark zeros3-4b66f16","check":"new build inspects the stale watermark","result":"PASS","detail":"watermark 4250 behind journal 7025; clean: an owner open accepts this journal unchanged"}
+{"kind":"compat","pair":"stale watermark zeros3-4b66f16","check":"new build reads every object","result":"PASS","detail":"20 objects, 0 wrong"}
+{"kind":"compat","pair":"stale watermark zeros3-4b66f16","check":"new build moves the watermark to the end","result":"PASS","detail":"watermark 8412, journal 8412"}

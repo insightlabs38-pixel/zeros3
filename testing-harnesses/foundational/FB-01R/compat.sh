@@ -71,13 +71,13 @@ mkdir -p "$W/want"
 ok=0; serve "$NEW" "$store" && s3 -f -o /dev/null -X PUT "$URL/b" && writes a 12 && ok=1
 note "new build writes" $ok "12 puts"
 stop
-s1=$(wm "$store" "r['watermark']['Offset']")
+s1=$(wm "$store" "r['watermark']['offset']")
 e1=$(wm "$store" "r['valid_end']")
 note "watermark at the end after a clean stop" $([ "$s1" = "$e1" ] && echo 1 || echo 0) "watermark $s1, journal $e1"
 ok=0; serve "$OLD" "$store" && writes c 8 && ok=1
 note "older build extends the store" $ok "8 puts"
 stop
-s2=$(wm "$store" "r['watermark']['Offset']")
+s2=$(wm "$store" "r['watermark']['offset']")
 e2=$(wm "$store" "r['valid_end']")
 v2=$(wm "$store" "r['verdict']")
 note "new build inspects the stale watermark" $([ "$s2" = "$s1" ] && [ "$e2" -gt "$s2" ] && [[ "$v2" == clean* ]] && echo 1 || echo 0) \
@@ -87,7 +87,7 @@ readback
 note "new build reads every object" $READ_OK "$READ_DETAIL"
 ok=0; writes d 4 && ok=1
 stop
-s3v=$(wm "$store" "r['watermark']['Offset']")
+s3v=$(wm "$store" "r['watermark']['offset']")
 e3=$(wm "$store" "r['valid_end']")
 note "new build moves the watermark to the end" $([ "$ok" = 1 ] && [ "$s3v" = "$e3" ] && echo 1 || echo 0) "watermark $s3v, journal $e3"
 [ "$FAILS" = 0 ] && echo "compat (watermark): all checks passed" || echo "compat (watermark): $FAILS checks failed"

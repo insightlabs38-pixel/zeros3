@@ -47,7 +47,10 @@ func TestFB01RKillHelper(t *testing.T) {
 		testJournalFault = func(p string, size int) (int, error) {
 			switch {
 			case p == faultJournalWrite && n.Add(1) == int64(occ):
-				return size / 2, syscall.EIO // half the group reaches the file
+				// All but the last byte reaches the file: the tear is always
+				// inside the group's last frame (half could fall on a frame
+				// boundary, which leaves no damage to recover).
+				return size - 1, syscall.EIO
 			case p == faultJournalRollback:
 				kill() // before the rollback can remove it
 			}

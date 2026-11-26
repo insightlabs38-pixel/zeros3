@@ -1,0 +1,33 @@
+{"ack_p50_us":173,"ack_p99_us":692,"allocs_per_group":1,"design":"v1","frames_per_group":1,"groups":3000,"groups_per_s":4884.961835502916,"groups_per_s_max":6379.723978264876,"groups_per_s_min":4083.073867032236,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":170,"ack_p99_us":521,"allocs_per_group":1,"design":"A-lazy","frames_per_group":1,"groups":3000,"groups_per_s":5344.279081959026,"groups_per_s_max":6733.050882596925,"groups_per_s_min":3874.078276875067,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":299,"ack_p99_us":1009,"allocs_per_group":1,"design":"A-sync","frames_per_group":1,"groups":3000,"groups_per_s":2809.8137521978892,"groups_per_s_max":3088.2411799420133,"groups_per_s_min":2764.8494951412467,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":183,"ack_p99_us":895,"allocs_per_group":5,"design":"B-piggyback","frames_per_group":1,"groups":3000,"groups_per_s":4558.023952582998,"groups_per_s_max":5600.0792971228475,"groups_per_s_min":3417.5434065748013,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":278,"ack_p99_us":1146,"allocs_per_group":5,"design":"B-sync","frames_per_group":1,"groups":3000,"groups_per_s":2989.987160895465,"groups_per_s_max":3370.942678614201,"groups_per_s_min":2792.708164510246,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":234,"ack_p99_us":835,"allocs_per_group":2,"design":"v1","frames_per_group":8,"groups":3000,"groups_per_s":3770.6556990526065,"groups_per_s_max":3941.355908544121,"groups_per_s_min":3498.7703367556533,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":242,"ack_p99_us":1719,"allocs_per_group":2,"design":"A-lazy","frames_per_group":8,"groups":3000,"groups_per_s":3369.212375404561,"groups_per_s_max":3783.567789783662,"groups_per_s_min":2745.6772766256768,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":360,"ack_p99_us":1839,"allocs_per_group":2,"design":"A-sync","frames_per_group":8,"groups":3000,"groups_per_s":2146.337467387967,"groups_per_s_max":2791.804345661225,"groups_per_s_min":1973.502492494178,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":296,"ack_p99_us":1158,"allocs_per_group":15,"design":"B-piggyback","frames_per_group":8,"groups":3000,"groups_per_s":2638.2769887876084,"groups_per_s_max":3532.824722763935,"groups_per_s_min":2487.526670639081,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"ack_p50_us":428,"ack_p99_us":1728,"allocs_per_group":15,"design":"B-sync","frames_per_group":8,"groups":3000,"groups_per_s":2132.8636104105644,"groups_per_s_max":2328.4468560547984,"groups_per_s_min":1498.9032187894893,"kind":"fb01r-measure-journal","payload_bytes":300}
+{"design":"v1","fsync_per_group":1,"kind":"fb01r-measure-syscalls","open_close_fsyncs":0,"pwrite_per_group":1,"write_per_group":0}
+{"design":"A-lazy","fsync_per_group":1,"kind":"fb01r-measure-syscalls","open_close_fsyncs":4,"pwrite_per_group":2,"write_per_group":0}
+{"design":"A-sync","fsync_per_group":2,"kind":"fb01r-measure-syscalls","open_close_fsyncs":4,"pwrite_per_group":2,"write_per_group":0}
+{"design":"B-piggyback","fsync_per_group":1,"kind":"fb01r-measure-syscalls","open_close_fsyncs":2,"pwrite_per_group":2,"write_per_group":0}
+{"design":"B-sync","fsync_per_group":2,"kind":"fb01r-measure-syscalls","open_close_fsyncs":2,"pwrite_per_group":2,"write_per_group":0}
+{"ack_p50_us":430,"ack_p99_us":1701,"allocs_per_put":74,"kind":"fb01r-measure-engine","mode":"off","puts":11975,"puts_per_s":1976.090400921923,"puts_per_s_max":2054.0748867795296,"puts_per_s_min":1955.4051286071804,"rounds":3,"writers":1}
+{"ack_p50_us":1337,"ack_p99_us":4115,"kind":"fb01r-measure-engine","mode":"off","puts":33000,"puts_per_s":5565.149950454877,"puts_per_s_max":5658.282446618109,"puts_per_s_min":5262.568922924815,"rounds":3,"writers":8}
+{"ack_p50_us":1901,"ack_p99_us":6599,"kind":"fb01r-measure-engine","mode":"off","puts":87662,"puts_per_s":13234.129710945523,"puts_per_s_max":17534.84976572047,"puts_per_s_min":13023.068667015541,"rounds":3,"writers":32}
+{"ack_p50_us":431,"ack_p99_us":1374,"allocs_per_put":72,"kind":"fb01r-measure-engine","mode":"lazy","puts":12182,"puts_per_s":2025.7763674565792,"puts_per_s_max":2140.3081053260466,"puts_per_s_min":1922.6818831710452,"rounds":3,"writers":1}
+{"ack_p50_us":1220,"ack_p99_us":3464,"kind":"fb01r-measure-engine","mode":"lazy","puts":36272,"puts_per_s":5961.265059562798,"puts_per_s_max":6201.488339507222,"puts_per_s_min":5961.022419479252,"rounds":3,"writers":8}
+{"ack_p50_us":1867,"ack_p99_us":6398,"kind":"fb01r-measure-engine","mode":"lazy","puts":92249,"puts_per_s":15272.985481165562,"puts_per_s_max":15892.716075832419,"puts_per_s_min":14906.485556597105,"rounds":3,"writers":32}
+{"ack_p50_us":581,"ack_p99_us":2390,"allocs_per_put":76,"kind":"fb01r-measure-engine","mode":"sync","puts":8809,"puts_per_s":1451.0566955748213,"puts_per_s_max":1568.8425666484368,"puts_per_s_min":1382.7383312895558,"rounds":3,"writers":1}
+{"ack_p50_us":1611,"ack_p99_us":6347,"kind":"fb01r-measure-engine","mode":"sync","puts":25593,"puts_per_s":4161.113933498503,"puts_per_s_max":4890.816765348613,"puts_per_s_min":3718.958126702466,"rounds":3,"writers":8}
+{"ack_p50_us":2211,"ack_p99_us":12216,"kind":"fb01r-measure-engine","mode":"sync","puts":72062,"puts_per_s":11699.824586928627,"puts_per_s_max":12045.665606456068,"puts_per_s_min":11637.545689634184,"rounds":3,"writers":32}
+{"case":"clean reopen","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"off","open_ms_median":45.478,"reps":5}
+{"case":"clean reopen","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"lazy","open_ms_median":60.067,"reps":5}
+{"case":"clean reopen","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"sync","open_ms_median":41.657,"reps":5}
+{"case":"torn tail: automatic recovery","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"lazy","open_ms_median":59.507,"reps":5}
+{"case":"torn tail: refusal","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"off","open_ms_median":22.619,"reps":5}
+{"case":"torn tail: salvage, then open","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"off","open_ms_median":99.993,"reps":5}
+{"case":"scan only: v1 frames","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"-","open_ms_median":2.877,"reps":5}
+{"case":"scan only: v2 groups with commit records","frames":20001,"journal_bytes":6280084,"kind":"fb01r-measure-restart","mode":"-","open_ms_median":7.383,"reps":5}
+{"groups":20001,"kind":"fb01r-measure-bytes","v1_journal_bytes":6280084,"v2_journal_bytes":7248324}
