@@ -1,0 +1,29 @@
+File: j2.test
+Build ID: d61ed2c276cb51e02175a6287b1acec63dfe2f76
+Type: cpu
+Time: 2026-11-26 13:58:40 EST
+Duration: 22.94s, Total samples = 28.44s (124.00%)
+Showing nodes accounting for 17.03s, 59.88% of 28.44s total
+Dropped 949 nodes (cum <= 0.14s)
+Showing top 20 nodes out of 295
+      flat  flat%   sum%        cum   cum%
+     7.54s 26.51% 26.51%      7.54s 26.51%  internal/runtime/syscall/linux.Syscall6
+     2.35s  8.26% 34.77%      2.35s  8.26%  crypto/internal/fips140/sha256.blockSHANI
+     1.91s  6.72% 41.49%      1.91s  6.72%  runtime.memclrNoHeapPointers
+     0.98s  3.45% 44.94%      0.98s  3.45%  crypto/md5.block
+     0.76s  2.67% 47.61%      0.76s  2.67%  runtime.memmove
+     0.54s  1.90% 49.51%      0.54s  1.90%  runtime.madvise
+     0.46s  1.62% 51.13%      0.46s  1.62%  runtime.futex
+     0.42s  1.48% 52.60%      0.67s  2.36%  runtime.tryDeferToSpanScan
+     0.29s  1.02% 53.62%      0.38s  1.34%  runtime.typePointers.next
+     0.28s  0.98% 54.61%      0.55s  1.93%  runtime.scanblock
+     0.20s   0.7% 55.31%      2.70s  9.49%  runtime.mallocgc
+     0.18s  0.63% 55.94%      0.19s  0.67%  runtime.heapArenaOf (inline)
+     0.18s  0.63% 56.58%      0.19s  0.67%  runtime.step
+     0.17s   0.6% 57.17%      0.44s  1.55%  runtime.pcvalue
+     0.16s  0.56% 57.74%      0.16s  0.56%  memeqbody
+     0.16s  0.56% 58.30%      0.84s  2.95%  runtime.scanObject
+     0.13s  0.46% 58.76%      0.17s   0.6%  strings.ToLower
+     0.12s  0.42% 59.18%      0.42s  1.48%  crypto/internal/fips140/hmac.New[go.shape.interface { BlockSize int; Reset; Size int; Sum []uint8; Write  }]
+     0.11s  0.39% 59.56%      0.54s  1.90%  runtime.selectgo
+     0.09s  0.32% 59.88%      0.32s  1.13%  runtime.(*unwinder).resolveInternal

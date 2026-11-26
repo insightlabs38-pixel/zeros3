@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -267,6 +268,14 @@ func fb01rSnapshotGroup(t testing.TB) fb01rSnapshot {
 	}
 	snap.image = fb01rRead(t, fb01Journal(snap.dir))
 	snap.end = int64(len(snap.image))
+	if journalIsGrouped(bytes.NewReader(snap.image)) {
+		h := snap.image[snap.start : snap.start+journalGroupBegin]
+		if int64(binary.BigEndian.Uint32(h[4:])) != snap.end-snap.start ||
+			int(binary.BigEndian.Uint32(h[24:])) != len(kv) {
+			t.Fatal("snapshot did not capture the full unacknowledged group")
+		}
+		return snap
+	}
 	for _, f := range fb01Frames(snap.image) {
 		if f.off >= snap.start {
 			snap.frames = append(snap.frames, f)

@@ -1,6 +1,6 @@
 # FB-J2 · Single-flush transactional journal
 
-**In progress.** Preflight starts at cd9c0d5. The legacy sidecar is only
+**PARTIAL · opt-in research.** Preflight starts at cd9c0d5. The legacy sidecar is only
 authoritative for automatic tail discard when both slots form a
 coherent pair. An older readable slot can still prove that history at
 or below its boundary is missing.
@@ -15,11 +15,6 @@ control reopens and checks the acknowledged object.
 The proof boundary covers uncertain damaged tails with a degraded
 sidecar. Clean-boundary truncation and coherent rollback remain
 separate cases. See [invariants](INVARIANTS.md).
-
-Next experiment compares a compact append-only marker, full
-self-contained groups, and those same groups with two alternating
-in-file witness slots written before the same flush. Current store
-defaults stay under the existing owner gates.
 
 ## Prototype checkpoint
 
@@ -51,5 +46,40 @@ Coherent log and witness rollback remained undetectable.
 The initial B/C scanner created a 1 MiB reader per group. Validating
 the already bounded frame slice removed that cost. Tmpfs measurements
 are separately labeled and the overlay table uses the optimized
-reader. That scan is in memory. Engine throughput, signed reads,
-cold open, real process fault gates and format selection remain open.
+reader. That scan is in memory.
+
+## Integrated research path
+
+B is implemented in the engine for new opt-in stores. It retains the
+existing namespace and CAS publication path, uses one journal sync per
+group, and supports checkpoint adoption and deep verification. Its
+proof boundary and rollback limits are in [FORMAT.md](FORMAT.md).
+C remains a prototype because an ahead witness costs host-crash
+availability. A offers fewer bytes per group and weaker evidence.
+
+The optimized signed overlay test compared equal 1 KiB and 32 KiB
+work at 1, 8 and 32 writers, plus a PUT/HEAD/DELETE mix. Relative to
+v1 lazy, median throughput ranged from −22% to +35% across the
+nine points. Three points missed the −5% threshold. The 32 KiB,
+8-writer PUT cell moved from −15% initially to +6% after bounded
+buffer reuse. A five-round focused check at that point measured
+1,643 → 1,886 ops/s and 4 KiB GET p99 2.28 → 2.01 ms.
+The mixed 32-writer GET p99 rose 9.56 → 11.98 ms in the wider run.
+A separate profiling pass of the initial build changed several
+relative results. The data do not establish a general throughput
+or foreground tail pass. In the focused CPU profile appendFrames
+accounted for 2.7% inclusive, primarily file write and sync.
+Cold device qualification remains open. Reopen times use ambient
+page cache.
+
+The process-kill run covered 13 SIGKILLs with eight concurrent
+writers and 1,608 externally recorded acknowledgements. All
+survived, and three torn tails recovered. Also exercised grouped
+checkpoint adoption, checksum failures, fail-stop on EIO, exact
+replay, golden format, and old-reader refusal. The recovery proof
+assumes conventional sync semantics. Correlated media loss and
+hardware interruption remain open.
+
+Continue FB-04 with both journal backends. Revisit the foreground
+tail, larger publication groups and independent witness options
+under the FB-10 integration gate.

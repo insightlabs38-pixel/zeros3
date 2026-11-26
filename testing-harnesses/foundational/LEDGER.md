@@ -20,7 +20,7 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 
 | Sequence | Status | Milestone group |
 | --- | --- | --- |
-| J2 | IN PROGRESS | [Durability preflight and one-flush experiment](FB-J2/README.md) |
+| J2 | PARTIAL | [Opt-in single-flush groups, real recovery gates and mixed performance evidence](FB-J2/README.md). General throughput and read tails carry into FB-04/FB-10. |
 | FB-04 | pending | M-B1 unified commit queue |
 | FB-05 | pending | M-B3, M-B4, M-E3 maintenance |
 | FB-06 | pending | M-B2 exact locator generation |

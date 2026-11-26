@@ -1,0 +1,86 @@
+Total: 8.48s
+ROUTINE ======================== zeros3.(*Journal).appendFrames in /workspace/work/c19-landing/zeros3.go
+         0      230ms (flat, cum)  2.71% of Total
+         .          .   9397:func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
+         .          .   9398:	total := 0
+         .          .   9399:	for _, r := range recs {
+         .          .   9400:		if len(r.payload) > maxJournalPayload {
+         .          .   9401:			return 0, fmt.Errorf("journal: payload of %d bytes exceeds max %d", len(r.payload), maxJournalPayload)
+         .          .   9402:		}
+         .          .   9403:		total += journalHeaderSize + len(r.payload) + 4
+         .          .   9404:	}
+         .          .   9405:	j.mu.Lock()
+         .          .   9406:	defer j.mu.Unlock()
+         .          .   9407:
+         .          .   9408:	if j.poisoned != nil {
+         .          .   9409:		return 0, fmt.Errorf("journal: poisoned by a prior durability failure, refusing further mutations until the store is reopened: %w", j.poisoned)
+         .          .   9410:	}
+         .          .   9411:
+         .          .   9412:	first := j.nextSeq
+         .          .   9413:	head, foot := 0, 0
+         .          .   9414:	if j.group != nil {
+         .          .   9415:		head, foot = journalGroupBegin, journalGroupFooter
+         .          .   9416:		if len(recs) == 0 || len(recs) > maxJournalGroupN || total > maxJournalGroup-head-foot ||
+         .          .   9417:			j.group.number == math.MaxUint64 || j.group.sequence >= math.MaxUint64-uint64(len(recs)) {
+         .          .   9418:			return 0, errors.New("journal: grouped append exceeds its bounds")
+         .          .   9419:		}
+         .          .   9420:	}
+         .          .   9421:	var frames []byte
+         .          .   9422:	if j.group != nil && cap(j.groupBuffer) >= total+head+foot {
+         .          .   9423:		frames = j.groupBuffer[:head]
+         .          .   9424:	} else {
+         .          .   9425:		frames = make([]byte, head, total+head+foot)
+         .          .   9426:	}
+         .          .   9427:	lastStart, lastCRC := 0, uint32(0)
+         .          .   9428:	for i, r := range recs {
+         .          .   9429:		start := len(frames)
+         .          .   9430:		lastStart = start
+         .          .   9431:		var header [journalHeaderSize]byte
+         .          .   9432:		copy(header[0:4], journalMagic)
+         .          .   9433:		binary.BigEndian.PutUint16(header[4:6], journalFrameVersion)
+         .          .   9434:		header[6] = r.recType
+         .          .   9435:		header[7] = 0
+         .          .   9436:		binary.BigEndian.PutUint64(header[8:16], first+uint64(i))
+         .          .   9437:		binary.BigEndian.PutUint32(header[16:20], uint32(len(r.payload)))
+         .          .   9438:		frames = append(frames, header[:]...)
+         .          .   9439:		frames = append(frames, r.payload...)
+         .          .   9440:		crc := crc32.Checksum(frames[start:], castagnoliTable)
+         .          .   9441:		frames = binary.BigEndian.AppendUint32(frames, crc)
+         .          .   9442:		lastCRC = crc
+         .          .   9443:	}
+         .          .   9444:
+         .          .   9445:	var next journalGroupPos
+         .          .   9446:	if j.group != nil {
+         .          .   9447:		frames, next = journalSealGroup(frames, *j.group, len(recs))
+         .          .   9448:		if cap(frames) <= 256<<10 {
+         .          .   9449:			j.groupBuffer = frames[:0]
+         .          .   9450:		}
+         .          .   9451:	}
+         .       60ms   9452:	if n, err := j.writeFrames(frames); err != nil {
+         .          .   9453:		// The caller gets the rollback's outcome too: whether the journal on
+         .          .   9454:		// disk still ends at the last acknowledged frame decides what the next
+         .          .   9455:		// open finds.
+         .          .   9456:		j.poisoned = j.rollback(fmt.Errorf("journal: write failed: %w", err), n)
+         .          .   9457:		return 0, j.poisoned
+         .          .   9458:	}
+         .          .   9459:	fireTestHook(hookAfterJournalWriteBeforeSync)
+         .      160ms   9460:	if err := j.syncFile(); err != nil {
+         .          .   9461:		j.poisoned = j.rollback(fmt.Errorf("journal: sync failed: %w", err), len(frames))
+         .          .   9462:		return 0, j.poisoned
+         .          .   9463:	}
+         .          .   9464:	// The frames are durable: advance the cursor before anything else can run
+         .          .   9465:	// (a panic in the hook below must not leave the cursor behind durable
+         .          .   9466:	// bytes, or the next append would overwrite them).
+         .          .   9467:	j.lastFrameOff = j.writeOffset + int64(lastStart)
+         .          .   9468:	j.writeOffset += int64(len(frames))
+         .          .   9469:	j.nextSeq = first + uint64(len(recs))
+         .          .   9470:	j.lastCRC = lastCRC
+         .          .   9471:	if j.group != nil {
+         .          .   9472:		*j.group = next
+         .          .   9473:	}
+         .       10ms   9474:	if err := j.advanceWatermark(); err != nil {
+         .          .   9475:		return 0, err
+         .          .   9476:	}
+         .          .   9477:	fireTestHook(hookAfterJournalSync)
+         .          .   9478:	return first, nil
+         .          .   9479:}

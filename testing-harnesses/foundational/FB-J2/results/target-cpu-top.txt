@@ -1,0 +1,29 @@
+File: j2-optimized.test
+Build ID: fcdefa19b42419c2f1c02706adb6d627abccbdd1
+Type: cpu
+Time: 2026-11-26 13:59:54 EST
+Duration: 6.62s, Total samples = 8.48s (128.11%)
+Showing nodes accounting for 5.14s, 60.61% of 8.48s total
+Dropped 509 nodes (cum <= 0.04s)
+Showing top 20 nodes out of 287
+      flat  flat%   sum%        cum   cum%
+     1.92s 22.64% 22.64%      1.92s 22.64%  internal/runtime/syscall/linux.Syscall6
+     1.09s 12.85% 35.50%      1.09s 12.85%  crypto/internal/fips140/sha256.blockSHANI
+     0.48s  5.66% 41.16%      0.48s  5.66%  crypto/md5.block
+     0.29s  3.42% 44.58%      0.29s  3.42%  runtime.memmove
+     0.27s  3.18% 47.76%      0.27s  3.18%  runtime.memclrNoHeapPointers
+     0.15s  1.77% 49.53%      0.24s  2.83%  runtime.tryDeferToSpanScan
+     0.10s  1.18% 50.71%      0.15s  1.77%  runtime.selectgo
+     0.09s  1.06% 51.77%      0.26s  3.07%  runtime.scanObject
+     0.09s  1.06% 52.83%      0.19s  2.24%  runtime.scanblock
+     0.08s  0.94% 53.77%      0.08s  0.94%  zeros3.cdcScan
+     0.06s  0.71% 54.48%      0.11s  1.30%  crypto/internal/fips140/hmac.New[go.shape.interface { BlockSize int; Reset; Size int; Sum []uint8; Write  }]
+     0.06s  0.71% 55.19%      0.06s  0.71%  internal/runtime/atomic.(*UnsafePointer).Load
+     0.06s  0.71% 55.90%      0.06s  0.71%  internal/runtime/maps.memHashAES
+     0.06s  0.71% 56.60%      0.06s  0.71%  runtime.madvise
+     0.06s  0.71% 57.31%      0.06s  0.71%  runtime.nextFreeFast
+     0.06s  0.71% 58.02%      0.12s  1.42%  runtime.pcvalue
+     0.06s  0.71% 58.73%      0.06s  0.71%  runtime.spanClass.sizeclass (inline)
+     0.06s  0.71% 59.43%      0.07s  0.83%  runtime.step
+     0.05s  0.59% 60.02%      0.05s  0.59%  memeqbody
+     0.05s  0.59% 60.61%      0.05s  0.59%  net/textproto.validHeaderValueByte

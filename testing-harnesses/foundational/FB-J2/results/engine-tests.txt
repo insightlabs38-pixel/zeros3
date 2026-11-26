@@ -1,0 +1,7 @@
+--- PASS: TestFB01RInterruptedGroupMatrix (0.12s)
+--- PASS: TestFBJ2GroupedReplay (0.02s)
+--- PASS: TestFBJ2GroupedDamageRefuses (0.00s)
+--- PASS: TestFBJ2GroupedSyncFailure (0.00s)
+--- PASS: TestFBJ2GroupedFeatureGate (0.00s)
+PASS
+ok  	zeros3	0.150s

@@ -1,0 +1,15 @@
+=== RUN   TestNamespaceCheckpointPublicationCuts
+=== RUN   TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-synced
+=== RUN   TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-renamed
+--- PASS: TestNamespaceCheckpointPublicationCuts (0.08s)
+    --- PASS: TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-synced (0.02s)
+    --- PASS: TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-renamed (0.05s)
+=== RUN   TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion
+--- PASS: TestConcurrency_SameKeyPutPutSerializesToOneCompleteVersion (0.02s)
+=== RUN   TestCopyObject_SameBucketZeroNewCASChunkBytes
+--- PASS: TestCopyObject_SameBucketZeroNewCASChunkBytes (0.08s)
+=== RUN   TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy
+--- PASS: TestMultipart_HappyPath_TwoParts_GetHeadRangeCopy (0.21s)
+=== RUN   TestSnapshotRestore_MetadataAndContentTypePreserved
+--- PASS: TestSnapshotRestore_MetadataAndContentTypePreserved (0.00s)
+PASS

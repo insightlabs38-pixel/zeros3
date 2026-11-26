@@ -9031,6 +9031,8 @@ type Journal struct {
 	// prefix. lastFrameOff and lastCRC describe the frame ending at
 	// writeOffset (lastFrameOff -1 when unknown).
 	wm           *watermarkWriter
+	group        *journalGroupPos
+	groupBuffer  []byte // bounded writer-owned encoding scratch
 	verdict      tailVerdict
 	recovered    *tailRecovery
 	tailProven   bool
@@ -9075,6 +9077,318 @@ type journalFrameIn struct {
 	payload []byte
 }
 
+// The opt-in journal groups v1 frames under a begin record and a chained
+// footer. The footer is constructed before the only append sync.
+const (
+	journalGroupFeature = "journalgroup"
+	journalGroupMagic   = "ZSG2"
+	journalGroupFile    = 48
+	journalGroupBegin   = 64
+	journalGroupFooter  = 64
+	maxJournalGroup     = 32 << 20
+	maxJournalGroupN    = 4096
+)
+
+type journalGroupPos struct {
+	end      int64
+	number   uint64
+	sequence uint64
+	digest   [32]byte
+}
+
+func journalGroupFileHeader(id string) []byte {
+	b := make([]byte, journalGroupFile)
+	copy(b, journalGroupMagic)
+	binary.BigEndian.PutUint16(b[4:6], 2)
+	copy(b[8:44], id)
+	binary.BigEndian.PutUint32(b[44:], crc32.Checksum(b[:44], castagnoliTable))
+	return b
+}
+
+func journalGroupHeader(r io.ReaderAt) (string, journalGroupPos, error) {
+	var b [journalGroupFile]byte
+	if _, err := r.ReadAt(b[:], 0); err != nil {
+		return "", journalGroupPos{}, fmt.Errorf("journal: reading grouped log header: %w", err)
+	}
+	id := string(b[8:44])
+	if string(b[:4]) != journalGroupMagic || binary.BigEndian.Uint16(b[4:6]) != 2 || b[6] != 0 || b[7] != 0 ||
+		!validSnapshotID(id) || binary.BigEndian.Uint32(b[44:]) != crc32.Checksum(b[:44], castagnoliTable) {
+		return "", journalGroupPos{}, errors.New("journal: invalid grouped log header")
+	}
+	return id, journalGroupPos{end: journalGroupFile, digest: sha256.Sum256(b[:])}, nil
+}
+
+func journalIsGrouped(r io.ReaderAt) bool {
+	var magic [4]byte
+	_, err := r.ReadAt(magic[:], 0)
+	return err == nil && string(magic[:]) == journalGroupMagic
+}
+
+func journalSealGroup(b []byte, pos journalGroupPos, count int) ([]byte, journalGroupPos) {
+	h := b[:journalGroupBegin]
+	copy(h, "J2BG")
+	binary.BigEndian.PutUint32(h[4:], uint32(len(b)+journalGroupFooter))
+	binary.BigEndian.PutUint64(h[8:], pos.number+1)
+	binary.BigEndian.PutUint64(h[16:], pos.sequence+1)
+	binary.BigEndian.PutUint32(h[24:], uint32(count))
+	copy(h[28:60], pos.digest[:])
+	binary.BigEndian.PutUint32(h[60:], crc32.Checksum(h[:60], castagnoliTable))
+	var f [32]byte
+	copy(f[:], "J2FT")
+	binary.BigEndian.PutUint32(f[4:], uint32(count))
+	binary.BigEndian.PutUint64(f[8:], uint64(pos.end))
+	binary.BigEndian.PutUint64(f[16:], pos.number+1)
+	binary.BigEndian.PutUint64(f[24:], pos.sequence+uint64(count))
+	b = append(b, f[:]...)
+	digest := sha256.Sum256(b)
+	b = append(b, digest[:]...)
+	return b, journalGroupPos{end: pos.end + int64(len(b)), number: pos.number + 1,
+		sequence: pos.sequence + uint64(count), digest: digest}
+}
+
+func journalGroupGeometry(h []byte, pos journalGroupPos) (int, int, bool) {
+	size, count := int(binary.BigEndian.Uint32(h[4:])), int(binary.BigEndian.Uint32(h[24:]))
+	ok := string(h[:4]) == "J2BG" && size >= journalGroupBegin+journalGroupFooter && size <= maxJournalGroup &&
+		count > 0 && count <= maxJournalGroupN && pos.number != math.MaxUint64 && pos.sequence < math.MaxUint64-uint64(count) &&
+		binary.BigEndian.Uint64(h[8:]) == pos.number+1 && binary.BigEndian.Uint64(h[16:]) == pos.sequence+1 &&
+		bytes.Equal(h[28:60], pos.digest[:]) && binary.BigEndian.Uint32(h[60:]) == crc32.Checksum(h[:60], castagnoliTable)
+	return size, count, ok
+}
+
+// journalGroupFrames either validates every frame without side effects or
+// visits it after the containing group has already validated.
+func journalGroupFrames(body []byte, first uint64, count int, visit func(journalRecord)) bool {
+	for i := range count {
+		if len(body) < journalHeaderSize+4 {
+			return false
+		}
+		n := int64(binary.BigEndian.Uint32(body[16:20]))
+		end := n + journalHeaderSize + 4
+		seq, typ := binary.BigEndian.Uint64(body[8:16]), body[6]
+		if n > maxJournalPayload || end > int64(len(body)) || seq != first+uint64(i) || string(body[:4]) != journalMagic ||
+			binary.BigEndian.Uint16(body[4:6]) != journalFrameVersion || body[7] != 0 || !journalKnownType(typ) ||
+			(visit == nil && binary.BigEndian.Uint32(body[end-4:end]) != crc32.Checksum(body[:end-4], castagnoliTable)) {
+			return false
+		}
+		if visit != nil {
+			visit(journalRecord{seq: seq, recType: typ, payload: body[journalHeaderSize : end-4]})
+		}
+		body = body[end:]
+	}
+	return len(body) == 0
+}
+
+func journalCheckGroup(b []byte, pos journalGroupPos, count int) (journalGroupPos, bool) {
+	end := len(b)
+	f := b[end-journalGroupFooter:]
+	digest := sha256.Sum256(b[:end-32])
+	if string(f[:4]) != "J2FT" || binary.BigEndian.Uint32(f[4:]) != uint32(count) ||
+		binary.BigEndian.Uint64(f[8:]) != uint64(pos.end) || binary.BigEndian.Uint64(f[16:]) != pos.number+1 ||
+		binary.BigEndian.Uint64(f[24:]) != pos.sequence+uint64(count) || !bytes.Equal(f[32:], digest[:]) ||
+		!journalGroupFrames(b[journalGroupBegin:end-journalGroupFooter], pos.sequence+1, count, nil) {
+		return journalGroupPos{}, false
+	}
+	return journalGroupPos{end: pos.end + int64(end), number: pos.number + 1, sequence: pos.sequence + uint64(count), digest: digest}, true
+}
+
+// A verified checkpoint binds the complete preceding bytes. Its final
+// group's footer gives the hash chain cursor for the following group.
+func journalGroupStart(f io.ReaderAt, offset int64, seq uint64) (journalGroupPos, error) {
+	_, genesis, err := journalGroupHeader(f)
+	if err != nil || offset == 0 || offset == genesis.end {
+		if err == nil && seq != 0 {
+			err = errors.New("journal: unexpected sequence at group genesis")
+		}
+		return genesis, err
+	}
+	var b [journalGroupFooter]byte
+	if offset < genesis.end+journalGroupBegin+journalGroupFooter {
+		return journalGroupPos{}, errors.New("journal: invalid group boundary")
+	}
+	if _, err := f.ReadAt(b[:], offset-journalGroupFooter); err != nil {
+		return journalGroupPos{}, err
+	}
+	pos := journalGroupPos{end: offset, number: binary.BigEndian.Uint64(b[16:]), sequence: binary.BigEndian.Uint64(b[24:])}
+	copy(pos.digest[:], b[32:])
+	if string(b[:4]) != "J2FT" || pos.sequence != seq || pos.number == 0 || pos.number > seq {
+		return journalGroupPos{}, errors.New("journal: invalid group cursor")
+	}
+	return pos, nil
+}
+
+// An intervening verified group is evidence against the interrupted-final-
+// group interpretation. Read at most one possible interrupted group. A larger
+// damaged suffix itself contradicts the configured group bound.
+func journalGroupDamage(f io.ReaderAt, pos journalGroupPos, end int64) (*journalDamage, error) {
+	damage := &journalDamage{Offset: pos.end, Size: end, Seq: pos.sequence + 1, CorrectLen: -1, LaterValid: -1,
+		Cause: "invalid-group", Detail: fmt.Sprintf("journal: invalid group beginning at %d", pos.end), Probe: "complete"}
+	if end-pos.end > maxJournalGroup {
+		damage.Probe = "budget-exhausted"
+		return damage, nil
+	}
+	suffix := make([]byte, end-pos.end)
+	if _, err := f.ReadAt(suffix, pos.end); err != nil {
+		return nil, err
+	}
+	hashBudget := maxJournalGroup
+	for at := 1; at <= len(suffix)-journalGroupBegin; {
+		rel := bytes.Index(suffix[at:], []byte("J2BG"))
+		if rel < 0 || at+rel > len(suffix)-journalGroupBegin {
+			break
+		}
+		at += rel
+		h := suffix[at : at+journalGroupBegin]
+		number, first := binary.BigEndian.Uint64(h[8:]), binary.BigEndian.Uint64(h[16:])
+		if number > pos.number+1 && first > pos.sequence {
+			parent := journalGroupPos{end: pos.end + int64(at), number: number - 1, sequence: first - 1}
+			copy(parent.digest[:], h[28:60])
+			if size, count, ok := journalGroupGeometry(h, parent); ok && size <= len(suffix)-at {
+				if size > hashBudget {
+					damage.Probe = "budget-exhausted"
+					return damage, nil
+				}
+				hashBudget -= size
+				if _, ok := journalCheckGroup(suffix[at:at+size], parent, count); ok {
+					damage.LaterValid, damage.LaterSeq = parent.end, first
+					return damage, nil
+				}
+			}
+		}
+		at++
+	}
+	damage.Incomplete = true // a single incomplete transaction under the configured crash model
+	return damage, nil
+}
+
+func scanJournalGroups(f io.ReaderAt, start, end int64, seq uint64, keep bool, apply func(journalRecord) error) (journalScan, journalGroupPos, error, error) {
+	pos, err := journalGroupStart(f, start, seq)
+	sc := journalScan{Size: end, LastStart: -1}
+	if err != nil || pos.end > end {
+		return sc, pos, nil, cmp.Or(err, errors.New("journal: grouped range ends before its start"))
+	}
+	var applyErr error
+	var group []byte
+	r := bufio.NewReaderSize(io.NewSectionReader(f, pos.end, end-pos.end), journalReadBuffer)
+	for pos.end < end {
+		h, err := r.Peek(journalGroupBegin)
+		if err != nil && err != io.EOF {
+			return sc, pos, applyErr, err
+		}
+		if len(h) < journalGroupBegin {
+			break
+		}
+		size, count, ok := journalGroupGeometry(h, pos)
+		if !ok || int64(size) > end-pos.end {
+			break
+		}
+		if cap(group) < size {
+			group = make([]byte, 0, size)
+		}
+		group = group[:size]
+		if _, err := io.ReadFull(r, group); err != nil {
+			return sc, pos, applyErr, err
+		}
+		next, ok := journalCheckGroup(group, pos, count)
+		if !ok {
+			break
+		}
+		if apply != nil && applyErr == nil {
+			journalGroupFrames(group[journalGroupBegin:size-journalGroupFooter], pos.sequence+1, count, func(rec journalRecord) {
+				if applyErr == nil {
+					if keep {
+						rec.payload = bytes.Clone(rec.payload)
+					}
+					applyErr = apply(rec)
+				}
+			})
+		}
+		sc.Frames += count
+		sc.LastStart = pos.end
+		pos = next
+	}
+	sc.ValidEnd, sc.LastSeq = pos.end, pos.sequence
+	if pos.end < end {
+		sc.Damage, err = journalGroupDamage(f, pos, end)
+	}
+	return sc, pos, applyErr, err
+}
+
+func openGroupedJournal(f *os.File, path string, o journalOpenOpts) (*Journal, error, error) {
+	fail := func(err error) (*Journal, error, error) {
+		f.Close()
+		return nil, nil, err
+	}
+	id, _, err := journalGroupHeader(f)
+	if err != nil {
+		return fail(err)
+	}
+	if id != o.storeID {
+		return fail(errors.New("journal: grouped log belongs to another store"))
+	}
+	var offset int64
+	var seq uint64
+	var damagedCheckpoint error
+	adopted := false
+	if o.checkpoint != nil {
+		offset, seq, err = o.checkpoint(f)
+		switch {
+		case err == nil:
+			adopted = true
+		case errors.Is(err, os.ErrNotExist):
+			offset, seq = 0, 0
+		case checkpointKind(err) == checkpointBodyDamaged:
+			damagedCheckpoint = err
+			offset, seq = 0, 0
+		default:
+			return fail(err)
+		}
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return fail(err)
+	}
+	sc, pos, applyErr, err := scanJournalGroups(f, offset, st.Size(), seq, false, o.apply)
+	if err != nil {
+		return fail(err)
+	}
+	if applyErr != nil {
+		f.Close()
+		return nil, applyErr, nil
+	}
+	if !adopted && o.witness != nil {
+		if err := o.witness(f, sc.ValidEnd); err != nil {
+			return fail(err)
+		}
+	}
+	j := &Journal{f: f, writeOffset: sc.ValidEnd, nextSeq: sc.LastSeq + 1, group: &pos,
+		checkpointFallback: damagedCheckpoint, lastFrameOff: -1}
+	if d := sc.Damage; d != nil {
+		if !d.ambiguousTail() {
+			return fail(&journalRefusal{Damage: d, Proof: "the grouped log has evidence beyond the interrupted final transaction model"})
+		}
+		j.verdict = tailVerdict{Discard: true, Proof: "single incomplete final group under the opt-in crash model"}
+		if o.readOnly {
+			j.tail, j.tailProven = d, true
+		} else {
+			j.recovered, err = discardJournalTail(f, path, d, j.verdict)
+			if err != nil {
+				return fail(err)
+			}
+		}
+	}
+	if o.readOnly {
+		j.poisoned = errJournalReadOnly
+	} else if j.recovered == nil {
+		// A complete group visible after a process exit may have missed its
+		// sync. Persist what this owner is about to expose on reopen.
+		if err := f.Sync(); err != nil {
+			return fail(err)
+		}
+	}
+	fireTestHook(hookJournalReplayed)
+	return j, nil, nil
+}
+
 // appendFrames durably appends frames as consecutive records with a single
 // write and a single fsync (group commit) and returns the first sequence
 // number; frame i has sequence first+i. All-or-poison: a write or sync
@@ -9096,7 +9410,20 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 	}
 
 	first := j.nextSeq
-	frames := make([]byte, 0, total)
+	head, foot := 0, 0
+	if j.group != nil {
+		head, foot = journalGroupBegin, journalGroupFooter
+		if len(recs) == 0 || len(recs) > maxJournalGroupN || total > maxJournalGroup-head-foot ||
+			j.group.number == math.MaxUint64 || j.group.sequence >= math.MaxUint64-uint64(len(recs)) {
+			return 0, errors.New("journal: grouped append exceeds its bounds")
+		}
+	}
+	var frames []byte
+	if j.group != nil && cap(j.groupBuffer) >= total+head+foot {
+		frames = j.groupBuffer[:head]
+	} else {
+		frames = make([]byte, head, total+head+foot)
+	}
 	lastStart, lastCRC := 0, uint32(0)
 	for i, r := range recs {
 		start := len(frames)
@@ -9115,6 +9442,13 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 		lastCRC = crc
 	}
 
+	var next journalGroupPos
+	if j.group != nil {
+		frames, next = journalSealGroup(frames, *j.group, len(recs))
+		if cap(frames) <= 256<<10 {
+			j.groupBuffer = frames[:0]
+		}
+	}
 	if n, err := j.writeFrames(frames); err != nil {
 		// The caller gets the rollback's outcome too: whether the journal on
 		// disk still ends at the last acknowledged frame decides what the next
@@ -9134,6 +9468,9 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 	j.writeOffset += int64(len(frames))
 	j.nextSeq = first + uint64(len(recs))
 	j.lastCRC = lastCRC
+	if j.group != nil {
+		*j.group = next
+	}
 	if err := j.advanceWatermark(); err != nil {
 		return 0, err
 	}
@@ -9755,11 +10092,17 @@ func replayJournalTail(f *os.File, offset int64, lastSeq uint64, keep bool, appl
 // prefix. Every other anomaly is an error. Opening a store does not use this
 // contract: it goes through scanJournalRange and refuses any damage.
 func replayJournalRange(f io.ReaderAt, start, end int64, previous uint64, keep bool, apply func(journalRecord) error) (validEnd int64, lastSeq uint64, n int, applyErr, err error) {
-	sc, applyErr, err := scanJournalRange(f, start, end, previous, keep, apply)
+	var sc journalScan
+	grouped := journalIsGrouped(f)
+	if grouped {
+		sc, _, applyErr, err = scanJournalGroups(f, start, end, previous, keep, apply)
+	} else {
+		sc, applyErr, err = scanJournalRange(f, start, end, previous, keep, apply)
+	}
 	if err != nil {
 		return 0, 0, 0, nil, err
 	}
-	if d := sc.Damage; d != nil && !d.ambiguousTail() {
+	if d := sc.Damage; d != nil && (grouped || !d.ambiguousTail()) {
 		return 0, 0, 0, nil, d
 	}
 	return sc.ValidEnd, sc.LastSeq, sc.Frames, applyErr, nil
@@ -10064,6 +10407,7 @@ func openJournalWithCheckpoint(path string, readOnly bool, apply func(journalRec
 // used when no checkpoint is adopted, checks that a published one does not
 // cover more journal than the replay found.
 type journalOpenOpts struct {
+	grouped    bool
 	readOnly   bool
 	storeID    string // binds the ack watermark; "" opens without one (FB-01 behaviour)
 	apply      func(journalRecord) error
@@ -10162,11 +10506,14 @@ var journalTailRetries, journalTailRetryWait = 10, 20 * time.Millisecond
 
 func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err error) {
 	flags := os.O_RDWR | os.O_CREATE
+	if o.grouped {
+		flags = os.O_RDWR // the format initializer durably creates the grouped log
+	}
 	if o.readOnly {
 		flags = os.O_RDONLY // a shared opener never writes the journal
 	}
 	f, err := os.OpenFile(path, flags, 0o644)
-	if o.readOnly && errors.Is(err, os.ErrNotExist) {
+	if !o.grouped && o.readOnly && errors.Is(err, os.ErrNotExist) {
 		f, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644) // a store with no journal yet
 	}
 	if err != nil {
@@ -10178,6 +10525,12 @@ func openJournalOpts(path string, o journalOpenOpts) (j *Journal, applyErr, err 
 	}
 	if err := injectJournalFault(faultJournalOpen); err != nil {
 		return fail(err)
+	}
+	if o.grouped {
+		return openGroupedJournal(f, path, o)
+	}
+	if journalIsGrouped(f) {
+		return fail(errors.New("journal: grouped log requires the grouped store feature"))
 	}
 	policy := currentJournalPolicy()
 	// The ack watermark is read before the journal: a live writer's later
@@ -10729,7 +11082,8 @@ func openStoreLocked(root string, ownSegments, useCheckpoint bool) (*Store, erro
 	defer debug.SetGCPercent(debug.SetGCPercent(openGCPercent))
 	// The namespace is folded in while the journal is read: no record list is kept.
 	s.replayIn = &strIntern{m: map[string]string{}}
-	opts := journalOpenOpts{readOnly: !ownSegments, apply: s.applyRecord, witness: s.checkpointWitness, storeID: format.StoreID}
+	opts := journalOpenOpts{readOnly: !ownSegments, apply: s.applyRecord, witness: s.checkpointWitness,
+		storeID: format.StoreID, grouped: slices.Contains(format.Features, journalGroupFeature)}
 	if useCheckpoint {
 		opts.checkpoint = s.loadNamespaceCheckpoint
 	}
@@ -13519,6 +13873,36 @@ func levelHasAuthority(l int) bool {
 	return l == storeFormatVersionAuthority || l >= storeFormatVersionSegAuth
 }
 
+// initializeGroupedJournal publishes the empty log before FORMAT.json. Only an
+// empty grouped log left during initialization may be adopted on a retry.
+func initializeGroupedJournal(root, id string) (string, error) {
+	dir := filepath.Join(root, "journal")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "visibility.log")
+	f, err := os.Open(path)
+	if err == nil {
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			return "", err
+		}
+		if st.Size() != journalGroupFile {
+			return "", errors.New("journal: cannot initialize the grouped format over an existing log")
+		}
+		existing, _, err := journalGroupHeader(f)
+		return existing, err
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := writeFileDurable(filepath.Join(root, "tmp"), path, journalGroupFileHeader(id)); err != nil {
+		return "", err
+	}
+	return id, syncDir(dir)
+}
+
 func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 	data, err := os.ReadFile(formatPath)
 	if err == nil {
@@ -13549,6 +13933,20 @@ func loadOrInitFormat(root, formatPath string) (storeFormat, error) {
 		CDCFormatVersion:   cdcFormatVersion,
 		HashAlgorithm:      "sha256",
 		StoreID:            newUUIDv7(),
+	}
+	if os.Getenv("ZEROS3_JOURNAL_FORMAT") == "j2" {
+		id, err := initializeGroupedJournal(root, format.StoreID)
+		if err != nil {
+			return storeFormat{}, err
+		}
+		format.StoreID = id
+		format.Features = []string{journalGroupFeature}
+	} else if jf, err := os.Open(filepath.Join(root, "journal", "visibility.log")); err == nil {
+		isGrouped := journalIsGrouped(jf)
+		jf.Close()
+		if isGrouped {
+			return storeFormat{}, errors.New("journal: unfinished grouped initialization requires ZEROS3_JOURNAL_FORMAT=j2")
+		}
 	}
 	data, err = json.MarshalIndent(format, "", "  ")
 	if err != nil {
@@ -36436,7 +36834,20 @@ func inspectJournal(root string) (*journalReport, error) {
 		return nil, err
 	}
 	rep.SHA256 = hex.EncodeToString(h.Sum(nil))
-	sc, _, err := scanJournalRange(f, 0, st.Size(), 0, false, nil)
+	grouped := slices.Contains(format.Features, journalGroupFeature)
+	var sc journalScan
+	if grouped {
+		id, _, headerErr := journalGroupHeader(f)
+		if headerErr != nil {
+			return nil, headerErr
+		}
+		if id != format.StoreID {
+			return nil, errors.New("journal: grouped log belongs to another store")
+		}
+		sc, _, _, err = scanJournalGroups(f, 0, st.Size(), 0, false, nil)
+	} else {
+		sc, _, err = scanJournalRange(f, 0, st.Size(), 0, false, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -36487,7 +36898,13 @@ func inspectJournal(root string) (*journalReport, error) {
 	}
 	var below *watermarkProblem
 	rep.WatermarkStatus = "absent"
-	if journalWatermarkMode() == "off" {
+	if grouped {
+		rep.WatermarkStatus = "grouped"
+		rep.Recoverable = sc.Damage != nil && sc.Damage.ambiguousTail() && bad == 0
+		if rep.Recoverable {
+			rep.TailProof = "single incomplete final group under the opt-in crash model"
+		}
+	} else if journalWatermarkMode() == "off" {
 		rep.WatermarkStatus = "off"
 	} else {
 		w, werr := readJournalWatermark(filepath.Join(root, "journal", journalWatermarkName))
@@ -36679,7 +37096,12 @@ func salvageJournal(root string, cut int64, ack bool) (*salvageRecord, error) {
 		return nil, err
 	}
 	defer src.Close()
-	kept, _, err := scanJournalRange(src, 0, cut, 0, false, nil)
+	var kept journalScan
+	if journalIsGrouped(src) {
+		kept, _, _, err = scanJournalGroups(src, 0, cut, 0, false, nil)
+	} else {
+		kept, _, err = scanJournalRange(src, 0, cut, 0, false, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -85356,7 +85778,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != agFeature && x != authExeFeature && x != spliceFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature {
 			return x
 		}
 	}

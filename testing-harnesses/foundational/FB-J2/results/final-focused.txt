@@ -1,0 +1,12 @@
+--- PASS: TestNamespaceCheckpointPublicationCuts (0.04s)
+--- PASS: TestFB01RInterruptedGroupMatrix (0.46s)
+--- PASS: TestFBJ2GroupedReplay (0.05s)
+--- PASS: TestFBJ2GroupedDamageRefuses (0.01s)
+--- PASS: TestFBJ2GroupedSyncFailure (0.01s)
+--- PASS: TestFBJ2GroupedFeatureGate (0.01s)
+--- PASS: TestFBJ2GroupedGolden (0.00s)
+--- PASS: TestFBJ2GroupedCheckpointAheadRefuses (0.01s)
+--- PASS: TestFBJ2PrototypeRecovery (0.01s)
+--- PASS: TestFBJ2IncompleteWatermarkEvidence (0.04s)
+PASS
+ok  	zeros3	0.649s

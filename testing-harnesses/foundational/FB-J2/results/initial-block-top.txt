@@ -1,0 +1,23 @@
+File: j2.test
+Build ID: d61ed2c276cb51e02175a6287b1acec63dfe2f76
+Type: delay
+Time: 2026-11-26 13:59:03 EST
+Showing nodes accounting for 572.34s, 100% of 572.35s total
+Dropped 113 nodes (cum <= 2.86s)
+Showing top 15 nodes out of 45
+      flat  flat%   sum%        cum   cum%
+   509.43s 89.01% 89.01%    509.43s 89.01%  runtime.selectgo
+    23.35s  4.08% 93.09%     23.35s  4.08%  runtime.chanrecv1
+    20.44s  3.57% 96.66%     20.44s  3.57%  sync.(*WaitGroup).Wait
+    16.19s  2.83% 99.49%     16.19s  2.83%  sync.(*Mutex).Lock
+     2.92s  0.51%   100%      2.92s  0.51%  sync.(*Cond).Wait
+         0     0%   100%     22.94s  4.01%  main.main
+         0     0%   100%    219.29s 38.31%  net/http.(*Client).Do
+         0     0%   100%    219.29s 38.31%  net/http.(*Client).do
+         0     0%   100%    219.29s 38.31%  net/http.(*Client).send
+         0     0%   100%     83.50s 14.59%  net/http.(*Server).Serve.gowrap3
+         0     0%   100%    219.29s 38.31%  net/http.(*Transport).RoundTrip
+         0     0%   100%    223.92s 39.12%  net/http.(*Transport).dialConn.gowrap3
+         0     0%   100%    219.29s 38.31%  net/http.(*Transport).roundTrip
+         0     0%   100%     83.50s 14.59%  net/http.(*conn).serve
+         0     0%   100%      2.92s  0.51%  net/http.(*connReader).abortPendingRead
