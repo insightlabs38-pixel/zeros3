@@ -675,6 +675,13 @@ func TestFB03Scale_Growth(t *testing.T) {
 	}
 	sizes, filtered := fb03Sizes(st)
 	_, fb := fb03Bytes(st)
+	// X2's baseline: the same records as one level without a filter (the
+	// locator an open built before FB-03), and with one (what an open builds
+	// now), timed in this process right after the settled state.
+	one := mergeLevels(st.levels, nil, false, fb03NoClash)
+	negOne := fb03NegNs(&packState{packs: st.packs, levels: []*locIndex{one}}, n+m, 1<<18, 3)
+	oneF := finishLocIndex(&locIndex{recs: one.recs, dups: one.dups}, true)
+	negOneF := fb03NegNs(&packState{packs: st.packs, levels: []*locIndex{oneF}}, n+m, 1<<18, 3)
 	var sum time.Duration
 	for _, d := range durs {
 		sum += d
@@ -687,7 +694,9 @@ func TestFB03Scale_Growth(t *testing.T) {
 		"filter_bytes_per_rec": float64(fb) / float64(n+m),
 		"alloc_per_new_record": float64(m1.TotalAlloc-m0.TotalAlloc) / float64(m), "num_gc": m1.NumGC - m0.NumGC,
 		"base_heap": baseHeap, "peak_heap_objects": pk.heap, "steady_heap": steady, "steady_per_rec": float64(steady) / float64(n+m),
-		"neg_ns_base": negBase, "neg_ns_at_end_of_ingest": negLive, "neg_ns_settled": negEnd}
+		"neg_ns_base": negBase, "neg_ns_at_end_of_ingest": negLive, "neg_ns_settled": negEnd,
+		"neg_ns_one_level": negOne, "neg_ns_one_level_filtered": negOneF,
+		"neg_settled_over_one_level": negEnd / negOne, "neg_end_of_ingest_over_one_level": negLive / negOne}
 	for k, v := range fb03LocStats(s) {
 		row[k] = v
 	}
