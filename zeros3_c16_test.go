@@ -208,7 +208,7 @@ func TestC16NamedBaseDecodedBudget(t *testing.T) {
 
 func TestC16DerivedBaseImportCuts(t *testing.T) {
 	fx := c16Fixture(t)
-	for _, cut := range []string{hookAuthImportChunks, hookAfterManifestPublished, hookAfterJournalSync} {
+	for _, cut := range []string{hookPackBeforePublish, hookAuthImportChunks, hookAfterManifestPublished, hookAfterJournalSync} {
 		t.Run(cut, func(t *testing.T) {
 			dst := newAuthLab(t)
 			dst.put("related", fx.gzip)
@@ -216,7 +216,11 @@ func TestC16DerivedBaseImportCuts(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "derived.bin")
 			mustOK(t, os.WriteFile(file, wire, 0o600))
 			dst.close()
-			if killed, trace := runHelper(t, "import-request", dst.dir, cut, 1, "ZS3_AUTH_FILE="+file); !killed {
+			env := []string{"ZS3_AUTH_FILE=" + file}
+			if cut == hookPackBeforePublish {
+				env = append(env, "ZEROS3_SEGMENT_MAX_KIB=1", "ZEROS3_DIRECT_PACK_FLUSH_KIB=1")
+			}
+			if killed, trace := runHelper(t, "import-request", dst.dir, cut, 1, env...); !killed {
 				t.Fatalf("child missed its publication cut: %s", trace)
 			}
 			dst.open()
