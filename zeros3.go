@@ -4993,15 +4993,15 @@ func packRecordHint(path string) int {
 		return 0
 	}
 	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil || fi.Size() < packHeaderSize+packFooterSize {
+	size, err := f.Seek(0, io.SeekEnd) // the size without a FileInfo: an open reads every pack's footer
+	if err != nil || size < packHeaderSize+packFooterSize {
 		return 0
 	}
 	var b [8]byte
-	if _, err := f.ReadAt(b[:], fi.Size()-packFooterSize+8); err != nil {
+	if _, err := f.ReadAt(b[:], size-packFooterSize+8); err != nil {
 		return 0
 	}
-	return int(min(binary.LittleEndian.Uint64(b[:]), uint64(fi.Size())/packRecordBytes))
+	return int(min(binary.LittleEndian.Uint64(b[:]), uint64(size)/packRecordBytes))
 }
 
 // loadPackState discovers published packs and builds the locator from their
@@ -5051,8 +5051,10 @@ func loadPackState(root string, format int) (*packState, error) {
 		return nil, errors.New("pack locator is full: too many packed records")
 	}
 	recs := make([]locRec, hint)
+	// Pack infos are written in place and squeezed like the records, so a
+	// store of many small packs allocates them once.
+	infos := make([]packInfo, len(files))
 	type loaded struct {
-		info   packInfo
 		lo, hi int // the locator records within the pack's slice
 		err    error
 	}
@@ -5060,10 +5062,10 @@ func loadPackState(root string, format int) (*packState, error) {
 	parallelForState(len(files), maintWorkers(), 4, func() *packIndexWorker { return &packIndexWorker{} }, func(*packIndexWorker) {}, func(w *packIndexWorker, i int) {
 		f := &files[i]
 		l := &out[i]
-		l.info, l.lo, l.hi, l.err = w.load(f.path, recs[f.base:f.base+f.hint], uint32(i), f.t)
+		infos[i], l.lo, l.hi, l.err = w.load(f.path, recs[f.base:f.base+f.hint], uint32(i), f.t)
 	})
 	st := &packState{}
-	w := 0
+	w, np := 0, 0
 	for fi, f := range files {
 		l := &out[fi]
 		if l.err != nil {
@@ -5074,11 +5076,12 @@ func loadPackState(root string, format int) (*packState, error) {
 			st.bad = append(st.bad, packProblem{name: name, err: l.err})
 			continue
 		}
-		if len(st.packs) >= packIdxMask {
+		if np >= packIdxMask {
 			return nil, errors.New("pack locator is full: too many packs")
 		}
-		idx := uint32(len(st.packs))
-		st.packs = append(st.packs, l.info)
+		idx := uint32(np)
+		infos[np] = infos[fi]
+		np++
 		src := recs[f.base+l.lo : f.base+l.hi]
 		if idx != uint32(fi) {
 			for j := range src {
@@ -5087,6 +5090,8 @@ func loadPackState(root string, format int) (*packState, error) {
 		}
 		w += copy(recs[w:], src)
 	}
+	clear(infos[np:])
+	st.packs = infos[:np]
 	st.index(recs[:w])
 	return st, nil
 }
@@ -5108,16 +5113,16 @@ func (w *packIndexWorker) load(path string, dst []locRec, idx uint32, t tier) (p
 		return packInfo{}, 0, 0, err
 	}
 	defer f.Close()
-	fi, err := f.Stat()
+	size, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
 		return packInfo{}, 0, 0, err
 	}
 	if w.br == nil {
 		w.br = bufio.NewReaderSize(nil, 256<<10)
 	}
-	info := packInfo{path: path, size: fi.Size(), tier: t}
+	info := packInfo{path: path, size: size, tier: t}
 	out := dst
-	bodySHA, err := scanPackLayout(f, fi.Size(), w.br, func(n uint64) {
+	bodySHA, err := scanPackLayout(f, size, w.br, func(n uint64) {
 		info.records = int(n)
 		if n > uint64(len(dst)) {
 			w.tmp = slices.Grow(w.tmp[:0], int(min(n, 1<<24)))[:0]
@@ -5162,10 +5167,15 @@ func (w *packIndexWorker) load(path string, dst []locRec, idx uint32, t tier) (p
 	if err != nil {
 		return packInfo{}, 0, 0, err
 	}
-	info.id = hex.EncodeToString(bodySHA[:])
-	if filepath.Base(path) != info.id+packFileSuffix {
-		return packInfo{}, 0, 0, fmt.Errorf("pack: file name does not match footer id %s", info.id)
+	// The id is the file name's own text once it matches the footer, so a
+	// pack costs no second copy of it.
+	var id [64]byte
+	hex.Encode(id[:], bodySHA[:])
+	name, ok := strings.CutSuffix(filepath.Base(path), packFileSuffix)
+	if !ok || name != string(id[:]) {
+		return packInfo{}, 0, 0, fmt.Errorf("pack: file name does not match footer id %s", id[:])
 	}
+	info.id = name
 	if out == nil {
 		return packInfo{}, 0, 0, fmt.Errorf("pack: index of %d records changed while the store opened", info.records)
 	}
