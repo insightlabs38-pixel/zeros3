@@ -1,0 +1,36 @@
+=== RUN   TestC13PresetPackAdmissionAndReopen
+--- PASS: TestC13PresetPackAdmissionAndReopen (0.03s)
+=== RUN   TestC18PackDictionaryRepair
+=== RUN   TestC18PackDictionaryRepair/primary
+=== RUN   TestC18PackDictionaryRepair/backup
+=== RUN   TestC18PackDictionaryRepair/both
+=== RUN   TestC18PackDictionaryRepair/unrelated-member
+--- PASS: TestC18PackDictionaryRepair (0.58s)
+    --- PASS: TestC18PackDictionaryRepair/primary (0.13s)
+    --- PASS: TestC18PackDictionaryRepair/backup (0.13s)
+    --- PASS: TestC18PackDictionaryRepair/both (0.10s)
+    --- PASS: TestC18PackDictionaryRepair/unrelated-member (0.23s)
+=== RUN   TestC18PackDictionaryRepairCuts
+=== RUN   TestC18PackDictionaryRepairCuts/pack-dictionary-before-rename
+=== RUN   TestC18PackDictionaryRepairCuts/pack-dictionary-after-rename
+--- PASS: TestC18PackDictionaryRepairCuts (0.32s)
+    --- PASS: TestC18PackDictionaryRepairCuts/pack-dictionary-before-rename (0.17s)
+    --- PASS: TestC18PackDictionaryRepairCuts/pack-dictionary-after-rename (0.15s)
+=== RUN   TestAuthoritySimilarityPublicationRecovery
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-sync
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-rename
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-rename
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-sync
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-before-current-publish
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-current-publish
+=== RUN   TestAuthoritySimilarityPublicationRecovery/similarity-after-current-sync
+--- PASS: TestAuthoritySimilarityPublicationRecovery (0.22s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-sync (0.03s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-before-generation-rename (0.03s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-rename (0.04s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-generation-sync (0.04s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-before-current-publish (0.03s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-current-publish (0.03s)
+    --- PASS: TestAuthoritySimilarityPublicationRecovery/similarity-after-current-sync (0.03s)
+PASS
+ok  	zeros3	2.191s

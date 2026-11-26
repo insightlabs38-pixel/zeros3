@@ -90,52 +90,52 @@ import (
 //      575    Content-defined chunking (CDC)
 //      762    Content-addressed chunk storage (CAS)
 //     2577    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5473    Small-object segments (inline manifests, store level 11)
-//     6723    Manifests (immutable, JSON)
-//     7521    Visibility journal (append-only, checksummed)
-//     9116    Store: format, namespace, and object CRUD
-//     9719    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    13575    Version history/restore, history pruning, ListObjectsV2
-//    14181    SigV4 authentication (header and presigned-URL)
-//    15248    Request payload checksums and S3-shaped XML error/response types
-//    15707    HTTP routing and S3 operation handlers
-//    16145    Conditional operations (PUT/GET/HEAD preconditions)
-//    16840    CopyObject
-//    17145    Multipart upload
-//    18148    Stats and reachability scanning
-//    19736    Verify
-//    19952    Store locking and safe offline GC
-//    20262    Offline compaction (`zeros3 compact`)
-//    21499    Pack reclamation and repacking (`zeros3 repack`)
-//    22193    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    22653    Online maintenance: epochs, pins, live GC and repack (B4)
-//    24017    Physical tiers: status and pack movement (`zeros3 tier`)
-//    24530    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    25596    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    26447    Delta sync client, credentials, and parallel transfer
-//    28999    Bulk logical-chunk transport (v2)
-//    29911    Recursive directory sync
-//    30216    Remote replication (`zeros3 replicate`)
-//    31263    Peer-assisted corruption repair (`zeros3 repair`)
-//    31835    Namespace (prefix/bucket) replication
-//    32151    Copy-on-write namespace fork (`zeros3 fork`)
-//    32359    Snapshots and restore
-//    33523    Structural diff and inspect (introspection)
-//    35375    Portable snapshot bundles (`zeros3 bundle`)
-//    36572    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    37207    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    55937    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    64452    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    68372    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    68932    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    69897    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    71052    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    71996    Verified decoded-window cache (B9)
-//    72277    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    73567    Windowed and estimated similarity deltas (extracted dcore)
-//    75404    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    83260    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    89532    CLI dispatch, HTTP server/startup, and main
+//     5600    Small-object segments (inline manifests, store level 11)
+//     6850    Manifests (immutable, JSON)
+//     7648    Visibility journal (append-only, checksummed)
+//     9243    Store: format, namespace, and object CRUD
+//     9846    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    13702    Version history/restore, history pruning, ListObjectsV2
+//    14308    SigV4 authentication (header and presigned-URL)
+//    15375    Request payload checksums and S3-shaped XML error/response types
+//    15834    HTTP routing and S3 operation handlers
+//    16272    Conditional operations (PUT/GET/HEAD preconditions)
+//    16967    CopyObject
+//    17272    Multipart upload
+//    18275    Stats and reachability scanning
+//    19863    Verify
+//    20079    Store locking and safe offline GC
+//    20389    Offline compaction (`zeros3 compact`)
+//    21626    Pack reclamation and repacking (`zeros3 repack`)
+//    22320    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    22780    Online maintenance: epochs, pins, live GC and repack (B4)
+//    24144    Physical tiers: status and pack movement (`zeros3 tier`)
+//    24657    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    25723    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    26574    Delta sync client, credentials, and parallel transfer
+//    29126    Bulk logical-chunk transport (v2)
+//    30038    Recursive directory sync
+//    30343    Remote replication (`zeros3 replicate`)
+//    31390    Peer-assisted corruption repair (`zeros3 repair`)
+//    31962    Namespace (prefix/bucket) replication
+//    32278    Copy-on-write namespace fork (`zeros3 fork`)
+//    32486    Snapshots and restore
+//    33650    Structural diff and inspect (introspection)
+//    35518    Portable snapshot bundles (`zeros3 bundle`)
+//    36715    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    37350    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    56080    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    64595    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    68515    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    69075    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    70040    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    71195    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    72139    Verified decoded-window cache (B9)
+//    72420    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    73710    Windowed and estimated similarity deltas (extracted dcore)
+//    75547    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    83403    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    89675    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -3141,6 +3141,126 @@ func verifyPackFile(path string) (packInfo, []packEntry, error) {
 	return verifyPackFileWhile(path, nil)
 }
 
+type packDictionaryRepair struct {
+	Pack           string `json:"pack"`
+	Tier           string `json:"tier"`
+	RestoredBytes  int64  `json:"restored_bytes"`
+	RewrittenBytes int64  `json:"rewritten_bytes"`
+}
+
+const hookPackDictionaryBeforeRename = "pack-dictionary-before-rename"
+const hookPackDictionaryAfterRename = "pack-dictionary-after-rename"
+
+// repairPackDictionary reconstructs one damaged preset copy and verifies
+// that the staged file has its original physical identity before rename.
+func repairPackDictionary(path, tmp string) (restored, rewritten int64, err error) {
+	info, entries, err := loadPackFile(path)
+	if err != nil || !info.presetDict {
+		return 0, 0, err
+	}
+	src, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer src.Close()
+	primary, backup := entries[0], entries[len(entries)-1]
+	dictionary, err := fileDictFunc(src, entries)(primary.sha)
+	if err != nil {
+		return 0, 0, err
+	}
+	backupPayload := append([]byte(packDictCopyMagic), dictionary...)
+	if len(dictionary) != int(primary.logical) || len(backupPayload) != int(backup.logical) || sha256.Sum256(backupPayload) != backup.sha {
+		return 0, 0, errors.New("pack: preset copies disagree with the index")
+	}
+	var replacement []byte
+	var offset int64
+	for _, record := range []struct {
+		entry packEntry
+		data  []byte
+	}{{primary, dictionary}, {backup, backupPayload}} {
+		pos := int64(record.entry.off) - packRecordHeaderSize
+		wanted := make([]byte, packRecordHeaderSize, packRecordHeaderSize+len(record.data))
+		putPackRecordHeader(wanted, record.entry)
+		wanted = append(wanted, record.data...)
+		stored := make([]byte, len(wanted))
+		if _, err := src.ReadAt(stored, pos); err != nil {
+			return 0, 0, err
+		}
+		if bytes.Equal(wanted, stored) {
+			continue
+		}
+		if replacement != nil {
+			return 0, 0, errors.New("pack: both preset records require repair")
+		}
+		replacement, offset = wanted, pos
+	}
+	if replacement == nil {
+		return 0, 0, nil
+	}
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return 0, 0, err
+	}
+	staged, err := os.CreateTemp(tmp, "pack-*.tmp")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { staged.Close(); os.Remove(staged.Name()) }()
+	file, err := src.Stat()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := staged.Chmod(file.Mode().Perm()); err != nil {
+		return 0, 0, err
+	}
+	if _, err := io.CopyN(staged, src, offset); err != nil {
+		return 0, 0, err
+	}
+	if n, err := staged.Write(replacement); err != nil || n != len(replacement) {
+		return 0, 0, cmp.Or(err, io.ErrShortWrite)
+	}
+	end := offset + int64(len(replacement))
+	if _, err := io.CopyN(staged, io.NewSectionReader(src, end, info.size-end), info.size-end); err != nil {
+		return 0, 0, err
+	}
+	if err := staged.Sync(); err != nil {
+		return 0, 0, err
+	}
+	if err := staged.Close(); err != nil {
+		return 0, 0, err
+	}
+	verified, _, err := verifyPackFile(staged.Name())
+	if err != nil || verified.id != info.id || verified.size != info.size {
+		return 0, 0, fmt.Errorf("pack: repaired file does not verify against the original: %v", err)
+	}
+	fireTestHook(hookPackDictionaryBeforeRename)
+	if err := os.Rename(staged.Name(), path); err != nil {
+		return 0, 0, err
+	}
+	fireTestHook(hookPackDictionaryAfterRename)
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return 0, 0, err
+	}
+	return int64(len(replacement)), info.size, nil
+}
+
+// repairPackDictionaries requires an exclusive store lock.
+func (s *Store) repairPackDictionaries() ([]packDictionaryRepair, error) {
+	var result []packDictionaryRepair
+	var failures error
+	for _, pack := range s.packSnap().packs {
+		if !pack.presetDict {
+			continue
+		}
+		restored, rewritten, err := repairPackDictionary(pack.path, tierTmpDir(s.root, pack.tier))
+		if err != nil {
+			failures = errors.Join(failures, fmt.Errorf("%s: %w", pack.label(), err))
+		} else if restored > 0 {
+			result = append(result, packDictionaryRepair{pack.id, pack.tier.String(), restored, rewritten})
+		}
+	}
+	return result, failures
+}
+
 var errPackNeedsRewrite = errors.New("pack: replacement encoding differs")
 
 // verifyPackFileWhile can stop a read-only physical proof when the caller
@@ -3323,9 +3443,8 @@ func verifyPackExact(path string, entries []packEntry, bodySHA [32]byte) (packIn
 }
 
 // checkPackRecords confirms every record header in a published pack still
-// repeats its index entry, reading headers only. Payload integrity is
-// proven per chunk by casRead, so a damaged record nobody references
-// cannot fail verify -- the same rule loose chunks follow.
+// repeats its index entry. casRead proves referenced chunk payloads;
+// the two preset copies are checked here because neither is indexed by CAS.
 func checkPackRecords(path string) error {
 	_, entries, err := loadPackFile(path)
 	if err != nil {
@@ -3356,6 +3475,14 @@ func checkPackRecords(path string) error {
 	}
 	for k, oi := range order {
 		e := entries[oi]
+		if e.codec == packCodecPresetDict {
+			data := make([]byte, e.stored)
+			if _, err := f.ReadAt(data, int64(e.off)); err != nil {
+				fail(oi, fmt.Errorf("pack: reading preset context %d: %w", oi, err))
+			} else if sha256.Sum256(data) != e.sha {
+				fail(oi, fmt.Errorf("pack: preset context %d digest differs", oi))
+			}
+		}
 		putPackRecordHeader(want[:], e)
 		hdr := int64(e.off) - packRecordHeaderSize
 		if hdr < wlo || hdr+packRecordHeaderSize > whi {
@@ -35312,19 +35439,20 @@ func runDoctor(args []string) {
 	deep := fs.Bool("deep", false, "re-hash every reachable chunk's actual bytes")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	retire := fs.Bool("retire-bad-representations", false, "remove the optional representation roots of live objects that cannot be trusted (needs exclusive store access; the objects, manifests and CDC chunks are untouched)")
+	repairDict := fs.Bool("repair-pack-dictionaries", false, "repair a damaged preset copy from its verified twin (requires exclusive access)")
 	fs.Parse(args)
 
-	if *retire {
+	if *retire || *repairDict {
 		lock, err := acquireStoreLock(*storeDir, true)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "zeros3: doctor: -retire-bad-representations needs exclusive access to the store: %v\n", err)
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: repair or retirement needs exclusive access to the store: %v\n", err)
 			os.Exit(1)
 		}
 		defer lock.release()
 	}
 	// Retiring acts on what the view references: only a complete view may.
 	open := OpenStoreSharedPrefix
-	if *retire {
+	if *retire || *repairDict {
 		open = OpenStoreShared
 	}
 	store, err := open(*storeDir)
@@ -35333,6 +35461,18 @@ func runDoctor(args []string) {
 	}
 	defer store.Close()
 	warnDegraded("doctor", store)
+	var repairs []packDictionaryRepair
+	if *repairDict {
+		var err error
+		repairs, err = store.repairPackDictionaries()
+		for _, repair := range repairs {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: repaired %d dictionary record bytes in %s pack %s\n", repair.RestoredBytes, repair.Tier, repair.Pack)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zeros3: doctor: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	if *retire {
 		store.sealSegments() // maintenance sees sealed packs only (section 4d)
@@ -35360,7 +35500,10 @@ func runDoctor(args []string) {
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(res); err != nil {
+		if err := enc.Encode(struct {
+			VerifyResult
+			PackDictionaryRepairs []packDictionaryRepair `json:"pack_dictionary_repairs,omitempty"`
+		}{res, repairs}); err != nil {
 			log.Fatalf("zeros3: %v", err)
 		}
 	} else {
