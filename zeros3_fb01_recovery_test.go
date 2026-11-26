@@ -443,19 +443,21 @@ func TestFB01WriterRollback(t *testing.T) {
 		name         string
 		fault        func(point string, size int) (int, error)
 		reopenRefuse bool
+		errs         []error // the put's error matches each
+		report       string  // ...and names the rollback outcome
 	}{
 		{"ENOSPC short write", func(p string, n int) (int, error) {
 			if p == faultJournalWrite {
 				return n / 2, syscall.ENOSPC
 			}
 			return 0, nil
-		}, false},
+		}, false, []error{syscall.ENOSPC}, "rolled back to offset"},
 		{"EIO on fsync", func(p string, n int) (int, error) {
 			if p == faultJournalSync {
 				return 0, syscall.EIO
 			}
 			return 0, nil
-		}, false},
+		}, false, []error{syscall.EIO}, "rolled back to offset"},
 		{"short write and failed rollback", func(p string, n int) (int, error) {
 			switch p {
 			case faultJournalWrite:
@@ -464,7 +466,7 @@ func TestFB01WriterRollback(t *testing.T) {
 				return 0, syscall.EIO
 			}
 			return 0, nil
-		}, true},
+		}, true, []error{syscall.ENOSPC, syscall.EIO}, "also failed, so they may remain on disk"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -479,8 +481,20 @@ func TestFB01WriterRollback(t *testing.T) {
 			if perr == nil {
 				t.Fatal("the faulted put was acknowledged")
 			}
-			if _, err := s.PutObject("b", "after", []byte("x"), "text/plain", nil); err == nil {
+			for _, want := range c.errs {
+				if !errors.Is(perr, want) {
+					t.Fatalf("the put's error %q does not match %v", perr, want)
+				}
+			}
+			if !strings.Contains(perr.Error(), c.report) {
+				t.Fatalf("the put's error %q does not report %q", perr, c.report)
+			}
+			_, err = s.PutObject("b", "after", []byte("x"), "text/plain", nil)
+			if err == nil {
 				t.Fatal("a poisoned journal accepted a later put")
+			}
+			if !strings.Contains(err.Error(), c.report) {
+				t.Fatalf("a later put's error %q does not carry the rollback outcome %q", err, c.report)
 			}
 			s.Close()
 			s2, err := OpenStore(dir)

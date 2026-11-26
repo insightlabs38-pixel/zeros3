@@ -7817,15 +7817,16 @@ func (j *Journal) appendFrames(recs []journalFrameIn) (uint64, error) {
 	}
 
 	if n, err := j.writeFrames(frames); err != nil {
-		wrapped := fmt.Errorf("journal: write failed: %w", err)
-		j.poisoned = j.rollback(wrapped, n)
-		return 0, wrapped
+		// The caller gets the rollback's outcome too: whether the journal on
+		// disk still ends at the last acknowledged frame decides what the next
+		// open finds.
+		j.poisoned = j.rollback(fmt.Errorf("journal: write failed: %w", err), n)
+		return 0, j.poisoned
 	}
 	fireTestHook(hookAfterJournalWriteBeforeSync)
 	if err := j.syncFile(); err != nil {
-		wrapped := fmt.Errorf("journal: sync failed: %w", err)
-		j.poisoned = j.rollback(wrapped, len(frames))
-		return 0, wrapped
+		j.poisoned = j.rollback(fmt.Errorf("journal: sync failed: %w", err), len(frames))
+		return 0, j.poisoned
 	}
 	// The frames are durable: advance the cursor before anything else can run
 	// (a panic in the hook below must not leave the cursor behind durable
@@ -7856,8 +7857,9 @@ func (j *Journal) syncFile() error {
 // rollback cuts whatever a failed append left past writeOffset, so the journal
 // on disk ends at the last acknowledged frame and the next open finds it
 // clean: none of the failed group was acknowledged. The journal stays poisoned
-// either way; if the cut fails too, the next open refuses the incomplete tail
-// until an operator salvages it.
+// either way. The result names the outcome: a completed rollback, or a failed
+// one (both causes stay matchable with errors.Is), after which the next open
+// finds the failed group's bytes past the last acknowledged frame.
 func (j *Journal) rollback(cause error, written int) error {
 	err := injectJournalFault(faultJournalRollback)
 	if err == nil {
@@ -7867,9 +7869,9 @@ func (j *Journal) rollback(cause error, written int) error {
 		err = j.f.Sync()
 	}
 	if err != nil {
-		return fmt.Errorf("%w (rolling back %d bytes past offset %d also failed: %v)", cause, written, j.writeOffset, err)
+		return fmt.Errorf("%w; rolling back up to %d bytes written past offset %d also failed, so they may remain on disk: %w", cause, written, j.writeOffset, err)
 	}
-	return cause
+	return fmt.Errorf("%w; rolled back to offset %d, the end of the last acknowledged frame", cause, j.writeOffset)
 }
 
 // poison makes every further append fail until the store is reopened. It is
