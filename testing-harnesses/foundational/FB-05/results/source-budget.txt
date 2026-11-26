@@ -1,0 +1,7 @@
+--- PASS: TestB4OnlineReclaimsDeadData (0.08s)
+--- PASS: TestB4CancelledPass (0.10s)
+--- PASS: TestFB03_MaintIsolatesCorruptRecord (0.08s)
+    zeros3_fb05_test.go:62: source budget 49807: dead=49808 deferred=99616; budget 49808: rewritten source=49808 deferred=49808 physical output=41520
+--- PASS: TestFB05RewriteBudgetRetiresDeadSeparately (0.01s)
+PASS
+ok  	zeros3	0.281s

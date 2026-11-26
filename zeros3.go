@@ -25354,16 +25354,17 @@ const (
 
 // MaintOptions bounds one online pass.
 type MaintOptions struct {
-	GC             bool          `json:"gc"`     // loose files, orphan roots and packs with no live record
-	Repack         bool          `json:"repack"` // also rewrite mostly dead packs
-	MaxSourcePacks int           `json:"max_source_packs"`
-	MaxLivePercent int           `json:"max_live_percent"`
-	TargetBytes    int64         `json:"target_bytes"`
-	Compress       bool          `json:"compress"`
-	MaxDeletes     int           `json:"max_deletes"`                // loose files and roots condemned per pass
-	Wait           time.Duration `json:"wait"`                       // bound on each grace period
-	BlockLog       uint8         `json:"record_block_log,omitempty"` // restartable records in replacement packs
-	Layout         packLayout    `json:"-"`                          // layoutRecon: also relayout packs by reconstruction co-access
+	GC              bool          `json:"gc"`     // loose files, orphan roots and packs with no live record
+	Repack          bool          `json:"repack"` // also rewrite mostly dead packs
+	MaxSourcePacks  int           `json:"max_source_packs"`
+	MaxRewriteBytes int64         `json:"max_rewrite_source_bytes,omitempty"` // input pack bytes; dead packs consume none
+	MaxLivePercent  int           `json:"max_live_percent"`
+	TargetBytes     int64         `json:"target_bytes"`
+	Compress        bool          `json:"compress"`
+	MaxDeletes      int           `json:"max_deletes"`                // loose files and roots condemned per pass
+	Wait            time.Duration `json:"wait"`                       // bound on each grace period
+	BlockLog        uint8         `json:"record_block_log,omitempty"` // restartable records in replacement packs
+	Layout          packLayout    `json:"-"`                          // layoutRecon: also relayout packs by reconstruction co-access
 }
 
 func (o MaintOptions) encoding() packEncoding {
@@ -25403,14 +25404,17 @@ type MaintReport struct {
 	ScanMS       int64 `json:"scan_ms"`
 	YieldMicros  int64 `json:"yield_us,omitempty"`
 
-	CandidatePacks int   `json:"candidate_packs"`
-	PacksDeferred  int   `json:"packs_deferred,omitempty"`
-	PacksWritten   int   `json:"packs_written"`
-	RecordsCopied  int   `json:"records_copied"`
-	BytesWritten   int64 `json:"bytes_written"`
-	LateRecords    int   `json:"late_records"`    // pinned before condemnation, carried
-	RevivedRecords int   `json:"revived_records"` // pinned while condemned, carried before the swap
-	PacksRetired   int   `json:"packs_retired"`
+	CandidatePacks      int   `json:"candidate_packs"`
+	RewriteSourceBytes  int64 `json:"rewrite_source_bytes,omitempty"`
+	DeferredSourceBytes int64 `json:"deferred_source_bytes,omitempty"`
+	DeadSourceBytes     int64 `json:"dead_source_bytes,omitempty"`
+	PacksDeferred       int   `json:"packs_deferred,omitempty"`
+	PacksWritten        int   `json:"packs_written"`
+	RecordsCopied       int   `json:"records_copied"`
+	BytesWritten        int64 `json:"bytes_written"`
+	LateRecords         int   `json:"late_records"`    // pinned before condemnation, carried
+	RevivedRecords      int   `json:"revived_records"` // pinned while condemned, carried before the swap
+	PacksRetired        int   `json:"packs_retired"`
 
 	ChunksDeleted     int `json:"chunks_deleted"`
 	ManifestsDeleted  int `json:"manifests_deleted"`
@@ -25783,12 +25787,46 @@ func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, held map[[2]stri
 		}
 	}
 	rep.CandidatePacks = len(sel)
+	if opt.MaxRewriteBytes > 0 {
+		return selectMaintRewriteBytes(sel, opt.MaxRewriteBytes, rep)
+	}
 	if opt.MaxSourcePacks > 0 && len(sel) > opt.MaxSourcePacks {
 		slices.SortStableFunc(sel, func(a, b packUsage) int { return cmp.Compare(b.Reclaimable, a.Reclaimable) })
 		rep.PacksDeferred = len(sel) - opt.MaxSourcePacks
 		sel = sel[:opt.MaxSourcePacks]
 	}
 	return sel
+}
+
+// The byte mode prices the whole source for each rewrite. A dead source
+// needs no initial carry, but still goes through pinning and retirement.
+func selectMaintRewriteBytes(packs []packUsage, budget int64, rep *MaintReport) []packUsage {
+	slices.SortStableFunc(packs, func(a, b packUsage) int {
+		if n := cmp.Compare(btoi(b.fullyDead()), btoi(a.fullyDead())); n != 0 {
+			return n
+		}
+		ax := float64(a.Reclaimable) / float64(max(1, a.Size))
+		bx := float64(b.Reclaimable) / float64(max(1, b.Size))
+		if n := cmp.Compare(bx, ax); n != 0 {
+			return n
+		}
+		return cmp.Compare(b.Reclaimable, a.Reclaimable)
+	})
+	selected := packs[:0]
+	for _, p := range packs {
+		if p.fullyDead() {
+			rep.DeadSourceBytes += p.Size
+		} else {
+			if p.Size > budget-rep.RewriteSourceBytes {
+				rep.PacksDeferred++
+				rep.DeferredSourceBytes += p.Size
+				continue
+			}
+			rep.RewriteSourceBytes += p.Size
+		}
+		selected = append(selected, p)
+	}
+	return selected
 }
 
 // maintRelayout adds the packs of families the planner would relay out (within the pass budget) and
@@ -25817,7 +25855,18 @@ func (s *Store) maintRelayout(ep *maintEpoch, live *liveSet, held map[[2]string]
 		}
 		add = append(add, u)
 	}
-	if opt.MaxSourcePacks > 0 && len(doomed)+len(add) > opt.MaxSourcePacks {
+	if opt.MaxRewriteBytes > 0 {
+		var bytes int64
+		for _, p := range add {
+			bytes += p.Size
+		}
+		if bytes > opt.MaxRewriteBytes-rep.RewriteSourceBytes {
+			rep.PacksDeferred += len(add)
+			rep.DeferredSourceBytes += bytes
+			return doomed, nil
+		}
+		rep.RewriteSourceBytes += bytes
+	} else if opt.MaxSourcePacks > 0 && len(doomed)+len(add) > opt.MaxSourcePacks {
 		rep.PacksDeferred += len(add)
 		return doomed, nil
 	}
@@ -37347,6 +37396,7 @@ func runServe(args []string) {
 	maintMode := fs.String("maintenance", "off", "online maintenance while serving: off (default), gc (unreachable files, orphan roots, dead packs), or all (gc plus repacking mostly dead packs); needs to be the only writing process")
 	maintEvery := fs.Duration("maintenance-interval", time.Hour, "time between online maintenance passes (0: only when requested via POST /_zeros3/v1/maintenance)")
 	maintPacks := fs.Int("maintenance-max-source-packs", 8, "online maintenance: most packs retired or rewritten per pass")
+	maintRewriteMiB := fs.Int64("maintenance-max-rewrite-mib", 0, "online maintenance: source MiB budget for rewrites (0 uses the pack-count policy); fully dead sources are outside this budget")
 	maintLive := fs.Int("maintenance-max-live-percent", defaultRepackMaxLivePercent, "online repack: rewrite packs whose live share is below this percentage")
 	maintDeletes := fs.Int("maintenance-max-deletes", 1<<18, "online gc: most loose files and roots removed per pass")
 	maintWait := fs.Duration("maintenance-wait", 10*time.Minute, "online maintenance: longest wait for in-flight requests at each grace period before a pass defers")
@@ -37381,6 +37431,11 @@ func runServe(args []string) {
 		os.Exit(2)
 	}
 	maintOpt.MaxSourcePacks, maintOpt.MaxLivePercent, maintOpt.MaxDeletes, maintOpt.Wait = *maintPacks, *maintLive, *maintDeletes, *maintWait
+	if *maintRewriteMiB < 0 || *maintRewriteMiB > math.MaxInt64>>20 {
+		fmt.Fprintln(os.Stderr, "zeros3: serve: invalid -maintenance-max-rewrite-mib")
+		os.Exit(2)
+	}
+	maintOpt.MaxRewriteBytes = *maintRewriteMiB << 20
 	repSel, err := parseRepMode(*repFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: serve: -representations: %v\n", err)
