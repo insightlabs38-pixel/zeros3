@@ -5336,7 +5336,10 @@ func (s *Store) packUsages(referenced map[string]bool) []packUsage {
 
 // packUsagesLive is packUsages against a binary live set.
 func (s *Store) packUsagesLive(live *liveSet) []packUsage {
-	st := s.packSnap()
+	return packUsagesForState(s.packSnap(), live)
+}
+
+func packUsagesForState(st *packState, live *liveSet) []packUsage {
 	us := make([]packUsage, len(st.packs))
 	for i, p := range st.packs {
 		us[i] = packUsage{idx: int32(i), tier: p.tier, Tier: p.tier.String(), ID: p.id, Size: p.size, Records: p.records - p.dicts, CompressedRecs: p.deflated, LogicalBytes: p.logical - p.dictBytes,
@@ -10910,16 +10913,17 @@ type Store struct {
 	// Online maintenance (section 13d2): the operation gate, the active epoch
 	// (nil between passes), the pass coordinator, the packs a pass retired but
 	// could not unlink yet, and the inter-process leases.
-	ops        opGate // every request and job (G2)
-	wops       opGate // those that may create roots (G1)
-	maint      atomic.Pointer[maintEpoch]
-	maintMu    sync.Mutex
-	maintOwner bool
-	openedAt   time.Time // a maintainer is the only writer: older staging files are orphans
-	retire     retireSet
-	writerLock *storeLock
-	readerLock *storeLock
-	maintRun   *maintRunner
+	ops              opGate // every request and job (G2)
+	wops             opGate // those that may create roots (G1)
+	maint            atomic.Pointer[maintEpoch]
+	maintMu          sync.Mutex
+	maintRawDeclines map[[2]string]uint8 // protected by maintMu; immutable pack samples
+	maintOwner       bool
+	openedAt         time.Time // a maintainer is the only writer: older staging files are orphans
+	retire           retireSet
+	writerLock       *storeLock
+	readerLock       *storeLock
+	maintRun         *maintRunner
 	// Damage isolation and the dirty gate (section 13d3): copies maintenance
 	// keeps in place, events outside the journal that can make garbage, and the
 	// mark of the last pass that found nothing to do.
@@ -25357,6 +25361,7 @@ type MaintOptions struct {
 	GC              bool          `json:"gc"`     // loose files, orphan roots and packs with no live record
 	Repack          bool          `json:"repack"` // also rewrite mostly dead packs
 	MaxSourcePacks  int           `json:"max_source_packs"`
+	RecompressRaw   bool          `json:"recompress_raw,omitempty"`
 	MaxRewriteBytes int64         `json:"max_rewrite_source_bytes,omitempty"` // input pack bytes; dead packs consume none
 	MaxLivePercent  int           `json:"max_live_percent"`
 	TargetBytes     int64         `json:"target_bytes"`
@@ -25408,6 +25413,9 @@ type MaintReport struct {
 	RewriteSourceBytes  int64 `json:"rewrite_source_bytes,omitempty"`
 	DeferredSourceBytes int64 `json:"deferred_source_bytes,omitempty"`
 	DeadSourceBytes     int64 `json:"dead_source_bytes,omitempty"`
+	RawCandidateBytes   int64 `json:"raw_candidate_source_bytes,omitempty"`
+	RawProbeBytes       int64 `json:"raw_probe_bytes,omitempty"`
+	RawDeclined         int   `json:"raw_declined,omitempty"`
 	PacksDeferred       int   `json:"packs_deferred,omitempty"`
 	PacksWritten        int   `json:"packs_written"`
 	RecordsCopied       int   `json:"records_copied"`
@@ -25458,6 +25466,9 @@ const (
 func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep MaintReport, err error) {
 	if !s.maintOwner {
 		return rep, errMaintNotOwner
+	}
+	if opt.RecompressRaw && (!opt.Repack || !opt.Compress || opt.MaxRewriteBytes <= 0) {
+		return rep, errors.New("maintenance: raw recompression requires repack, compression and a source-byte budget")
 	}
 	if !s.maintMu.TryLock() {
 		return rep, errMaintBusy
@@ -25774,21 +25785,42 @@ func (s *Store) maintDeadFiles(ep *maintEpoch, rr *reachabilityResult, live *liv
 // A held pack (section 13d3) is left out unless it holds no live record.
 func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, held map[[2]string]bool, opt MaintOptions, rep *MaintReport) []packUsage {
 	var sel []packUsage
-	for _, u := range s.packUsagesLive(live) {
-		if !ep.packs0[[2]string{u.Tier, u.ID}] || s.packSnap().packs[u.idx].open {
+	var rawOnly map[int32]bool
+	if opt.RecompressRaw {
+		rawOnly = make(map[int32]bool)
+	}
+	st := s.packSnap()
+	for _, u := range packUsagesForState(st, live) {
+		id := [2]string{u.Tier, u.ID}
+		if !ep.packs0[id] || st.packs[u.idx].open {
 			continue
 		}
-		if opt.GC && u.fullyDead() || opt.Repack && u.partiallyDead() && u.Utilization*100 < float64(opt.MaxLivePercent) {
-			if held[[2]string{u.Tier, u.ID}] && !u.fullyDead() {
-				rep.HeldPacks++
+		reclaim := opt.GC && u.fullyDead() || opt.Repack && u.partiallyDead() && u.Utilization*100 < float64(opt.MaxLivePercent)
+		probe := opt.RecompressRaw && !reclaim && u.LiveRecords > 0 && u.CompressedRecs < u.Records
+		if !reclaim && !probe {
+			continue
+		}
+		if held[id] && !u.fullyDead() {
+			rep.HeldPacks++
+			continue
+		}
+		if probe {
+			rep.RawCandidateBytes += u.Size
+			if s.maintRawDeclines[id] == opt.BlockLog+1 {
+				rep.RawDeclined++
 				continue
 			}
-			sel = append(sel, u)
+			rawOnly[u.idx] = true
 		}
+		sel = append(sel, u)
 	}
 	rep.CandidatePacks = len(sel)
 	if opt.MaxRewriteBytes > 0 {
-		return selectMaintRewriteBytes(sel, opt.MaxRewriteBytes, rep)
+		sel = selectMaintRewriteBytes(sel, opt.MaxRewriteBytes, rep)
+		if opt.RecompressRaw {
+			sel = s.maintScreenRaw(st, sel, rawOnly, opt.BlockLog, rep)
+		}
+		return sel
 	}
 	if opt.MaxSourcePacks > 0 && len(sel) > opt.MaxSourcePacks {
 		slices.SortStableFunc(sel, func(a, b packUsage) int { return cmp.Compare(b.Reclaimable, a.Reclaimable) })
@@ -25796,6 +25828,80 @@ func (s *Store) maintSelectPacks(ep *maintEpoch, live *liveSet, held map[[2]stri
 		sel = sel[:opt.MaxSourcePacks]
 	}
 	return sel
+}
+
+// Full or mostly live raw packs are screened with a small exact sample.
+// This is an admission estimate only; the ordinary carry verifies every
+// record. Remember a negative decision for that immutable pack and codec.
+func (s *Store) maintScreenRaw(st *packState, packs []packUsage, rawOnly map[int32]bool, blockLog uint8, rep *MaintReport) []packUsage {
+	const probeBudget = 2 << 20
+	const probeRecordMax = 512 << 10
+	keep := packs[:0]
+	var handles packHandles
+	defer handles.close()
+	comp := newBlockCompressor(true, blockLog)
+	for _, u := range packs {
+		if !rawOnly[u.idx] {
+			keep = append(keep, u)
+			continue
+		}
+		if rep.RawProbeBytes >= probeBudget {
+			rep.PacksDeferred++
+			rep.DeferredSourceBytes += u.Size
+			rep.RewriteSourceBytes -= u.Size
+			continue
+		}
+		_, es, err := loadPackFile(st.packs[u.idx].path)
+		pays, sampled, capped := false, 0, false
+		for _, e := range es {
+			if err != nil || sampled == 3 {
+				break
+			}
+			if e.codec != packCodecRaw || e.logical > probeRecordMax || e.logical == 0 {
+				continue
+			}
+			if int64(e.logical) > probeBudget-rep.RawProbeBytes {
+				capped = true
+				continue
+			}
+			loc := packLoc{pack: u.idx, tier: u.tier, codec: e.codec, logical: e.logical, stored: e.stored, off: e.off}
+			rep.RawProbeBytes += int64(e.logical)
+			var data []byte
+			data, err = st.readPackedH(e.sha, loc, &handles)
+			if err != nil {
+				break
+			}
+			sampled++
+			encoded, _ := comp.encode(data)
+			if len(data)-len(encoded) >= max(1, len(data)/16) {
+				pays = true
+				break
+			}
+		}
+		if pays && err == nil {
+			keep = append(keep, u)
+			continue
+		}
+		rep.RewriteSourceBytes -= u.Size
+		if err == nil && capped && sampled < 3 {
+			rep.PacksDeferred++
+			rep.DeferredSourceBytes += u.Size
+			continue
+		}
+		rep.CandidatePacks--
+		if err != nil {
+			rep.HeldPacks++
+			continue
+		}
+		rep.RawDeclined++
+		if s.maintRawDeclines == nil {
+			s.maintRawDeclines = make(map[[2]string]uint8)
+		}
+		if len(s.maintRawDeclines) < 4096 {
+			s.maintRawDeclines[[2]string{u.Tier, u.ID}] = blockLog + 1
+		}
+	}
+	return keep
 }
 
 // The byte mode prices the whole source for each rewrite. A dead source
@@ -37396,6 +37502,7 @@ func runServe(args []string) {
 	maintMode := fs.String("maintenance", "off", "online maintenance while serving: off (default), gc (unreachable files, orphan roots, dead packs), or all (gc plus repacking mostly dead packs); needs to be the only writing process")
 	maintEvery := fs.Duration("maintenance-interval", time.Hour, "time between online maintenance passes (0: only when requested via POST /_zeros3/v1/maintenance)")
 	maintPacks := fs.Int("maintenance-max-source-packs", 8, "online maintenance: most packs retired or rewritten per pass")
+	maintRaw := fs.Bool("maintenance-recompress-raw", false, "screen and compress verified raw packs within the online rewrite budget")
 	maintRewriteMiB := fs.Int64("maintenance-max-rewrite-mib", 0, "online maintenance: source MiB budget for rewrites (0 uses the pack-count policy); fully dead sources are outside this budget")
 	maintLive := fs.Int("maintenance-max-live-percent", defaultRepackMaxLivePercent, "online repack: rewrite packs whose live share is below this percentage")
 	maintDeletes := fs.Int("maintenance-max-deletes", 1<<18, "online gc: most loose files and roots removed per pass")
@@ -37435,7 +37542,11 @@ func runServe(args []string) {
 		fmt.Fprintln(os.Stderr, "zeros3: serve: invalid -maintenance-max-rewrite-mib")
 		os.Exit(2)
 	}
-	maintOpt.MaxRewriteBytes = *maintRewriteMiB << 20
+	maintOpt.MaxRewriteBytes, maintOpt.RecompressRaw = *maintRewriteMiB<<20, *maintRaw
+	if *maintRaw && (*maintMode != "all" || maintOpt.MaxRewriteBytes <= 0) {
+		fmt.Fprintln(os.Stderr, "zeros3: serve: -maintenance-recompress-raw requires -maintenance all and a positive rewrite budget")
+		os.Exit(2)
+	}
 	repSel, err := parseRepMode(*repFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: serve: -representations: %v\n", err)

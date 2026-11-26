@@ -1,0 +1,9 @@
+--- PASS: TestB4OnlineReclaimsDeadData (0.08s)
+--- PASS: TestFB03_MaintIsolatesCorruptRecord (0.07s)
+--- PASS: TestFB03_IdleStoreRunsNoMark (1.12s)
+--- PASS: TestFB05RewriteBudgetRetiresDeadSeparately (0.02s)
+    zeros3_fb05_test.go:122: compressible: source=93392 probe=7680 admitted=93392 written=1866 retired=1 declined=0 next_source=0 next_probe=0
+    zeros3_fb05_test.go:122: entropy: source=99536 probe=24576 admitted=0 written=0 retired=0 declined=1 next_source=99536 next_probe=0
+--- PASS: TestFB05RawCompressionAdmission (0.02s)
+PASS
+ok  	zeros3	1.324s

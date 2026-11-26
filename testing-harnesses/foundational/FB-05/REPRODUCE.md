@@ -10,3 +10,8 @@ and an exactly fitting budget.
 GOMAXPROCS=2 go test -count=1 -timeout=90s -v \
   -run '^(TestFB05RewriteBudgetRetiresDeadSeparately|TestFB03_MaintIsolatesCorruptRecord|TestB4OnlineReclaimsDeadData|TestB4CancelledPass)$' .
 ```
+
+To check screened compression, run `TestFB05RawCompressionAdmission`
+with the same compiler. The positive source uses distinct numbered
+text, the control uses deterministic random bytes, and both start
+with all-raw packs. Run both passes and verify from a fresh process.

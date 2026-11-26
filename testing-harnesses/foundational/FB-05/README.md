@@ -19,3 +19,17 @@ Source admission is distinct from temporary output, CPU use and
 late or revived records. Compression debt, scratch budgets, restart
 cuts for each job, X9 comparisons and explicit lifecycle scope remain
 open. [Reproduction](REPRODUCE.md) · [Evidence](results/)
+
+The optional `-maintenance-recompress-raw` mode requires the source
+byte budget and `-maintenance all`. It screens up to three exact
+records per admitted source and 2 MiB of record payload per pass.
+Negative results are cached for immutable packs and the selected
+block codec. A sample estimates benefit. The ordinary carry path
+still verifies every relocated record and its final replacement.
+
+A generated 93,392-byte fully live source was replaced by 1,866
+bytes, using a 7,680-byte exact sample. The 99,536-byte entropy
+source sampled 24,576 bytes and wrote nothing. The second pass
+read no sample payload in either case. Reopened data and deep
+verification matched. Real-series debt and foreground tests are
+still pending.
