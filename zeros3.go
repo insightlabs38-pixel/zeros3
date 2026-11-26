@@ -1549,23 +1549,51 @@ func (s *Store) casWrite(data []byte) ([32]byte, error) {
 }
 
 // casStat reports a chunk's logical length from whichever physical
-// representation holds it, loose first. Like os.Stat on the loose path, a
+// representation holds it, packed first. Like os.Stat on the loose path, a
 // chunk present in neither yields an os.IsNotExist error. It checks
-// presence and recorded length only; content is verified by casRead. It
-// waits out any in-flight publication (see the barrier above).
+// presence and recorded length only; content is verified by casRead.
+//
+// Presence is a function of published state only (M-A2). A locator entry is
+// inserted after its pack or segment is durable and removed before the file
+// is unlinked, so a locator hit needs no wait. A loose file counts only once
+// no publication of that digest is in flight: the file is stat'ed again
+// while this caller holds the digest's publication claim, so a publisher
+// that renamed the file and then failed (it removes the file before it
+// releases the claim) is never reported as present.
 func (s *Store) casStat(sum [32]byte) (int64, error) {
+	if s.chunkRetired(sum) {
+		return 0, &fs.PathError{Op: "stat", Path: s.chunkPath(sum), Err: fs.ErrNotExist}
+	}
 	for {
-		n, err := s.casStatLocked(sum)
-		if err != nil {
-			return n, err
+		if loc, ok := s.packLookup(sum); ok {
+			return int64(loc.logical), nil
 		}
-		// Present. The claim is checked after the file was seen: a publisher
-		// claims before its first rename, so a renamed file always has one.
-		c := s.pub.inFlight(sum)
-		if c == nil {
-			return n, nil
+		p := s.chunkPath(sum)
+		if _, err := os.Stat(p); err != nil {
+			if !os.IsNotExist(err) {
+				return 0, err
+			}
+			// compact publishes the pack before it removes the loose copy, so a
+			// chunk packed between the lookup and the stat is found here.
+			if loc, ok := s.packLookup(sum); ok {
+				return int64(loc.logical), nil
+			}
+			return 0, err
 		}
-		<-c.done
+		c, mine := s.pub.tryClaim(sum)
+		if !mine {
+			<-c.done
+			continue
+		}
+		info, err := os.Stat(p)
+		s.pub.release(sum, c)
+		if err == nil {
+			return info.Size(), nil
+		}
+		if !os.IsNotExist(err) {
+			return 0, err
+		}
+		// the publication we saw failed and removed its file: look again
 	}
 }
 
@@ -1601,9 +1629,14 @@ func (s *Store) chunkRevive(sum [32]byte) {
 	}
 }
 
+// casStatLocked is the presence check of a publisher that already holds the
+// digest's claim: packed first, then the loose path, with no claim taken.
 func (s *Store) casStatLocked(sum [32]byte) (int64, error) {
 	if s.chunkRetired(sum) {
 		return 0, &fs.PathError{Op: "stat", Path: s.chunkPath(sum), Err: fs.ErrNotExist}
+	}
+	if loc, ok := s.packLookup(sum); ok {
+		return int64(loc.logical), nil
 	}
 	info, err := os.Stat(s.chunkPath(sum))
 	if err == nil {
@@ -5992,7 +6025,11 @@ func (m *segMgr) runBatch(batch []*segReq) error {
 				}
 			}
 			if _, ok := m.s.packLookup(rec.sum); ok {
-				continue // already durable somewhere readable
+				// already durable in a published pack or segment. A loose copy
+				// published since the sink checked is not looked for here: that
+				// race only costs a second copy, and a stat per new record
+				// would sit inside every group commit (F2-CAS-01 risk note).
+				continue
 			}
 			if len(rec.data) > maxPackedChunkBytes {
 				return fmt.Errorf("segments: record of %d bytes exceeds the pack record limit", len(rec.data))
@@ -6816,8 +6853,12 @@ func (k *segSink) Put(sum [32]byte, chunk []byte) error {
 		return nil
 	}
 	k.s.mpin(sum)
-	if _, ok := k.s.packLookup(sum); ok && !k.s.chunkRetired(sum) {
+	// the same published-state check as the loose and direct-pack sinks
+	// (F2-CAS-01): a chunk durable as a loose file is not written again
+	if _, err := k.s.casStat(sum); err == nil {
 		return nil
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	k.s.chunkRevive(sum)
 	if k.bytes+len(chunk) > segSinkMaxBytes {

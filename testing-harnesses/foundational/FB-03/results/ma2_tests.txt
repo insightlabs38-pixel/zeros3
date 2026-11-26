@@ -1,0 +1,48 @@
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-loose
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-loose/first
+=== NAME  TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-loose
+    zeros3_fb03_cas_test.go:122: small-200KB-segment-sink/first-copy-loose: growth 32509 B (0.00406x logical), loose files 139 -> 139
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-production
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-production/first
+=== NAME  TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-production
+    zeros3_fb03_cas_test.go:122: small-200KB-segment-sink/first-copy-production: growth 32494 B (0.00406x logical), loose files 0 -> 0
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-loose
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-loose/first
+=== NAME  TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-loose
+    zeros3_fb03_cas_test.go:122: medium-1.5MB-direct-pack-sink/first-copy-loose: growth 19967 B (0.00166x logical), loose files 172 -> 172
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-production
+=== RUN   TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-production/first
+=== NAME  TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-production
+    zeros3_fb03_cas_test.go:122: medium-1.5MB-direct-pack-sink/first-copy-production: growth 19951 B (0.00166x logical), loose files 0 -> 0
+--- PASS: TestFB03_SegmentDedupAgainstLooseChunks (1.07s)
+    --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-loose (0.29s)
+        --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-loose/first (0.15s)
+    --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-production (0.20s)
+        --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-production/first (0.09s)
+    --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-loose (0.34s)
+        --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-loose/first (0.16s)
+    --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-production (0.24s)
+        --- PASS: TestFB03_SegmentDedupAgainstLooseChunks/medium-1.5MB-direct-pack-sink/first-copy-production/first (0.12s)
+=== RUN   TestFB03_CasStatCost
+    zeros3_fb03_cas_test.go:183: FB03_CASSTAT chunks=747 loose=0 casStat_present_packed_ns=37 casStat_absent_ns=1858 packLookup_present_ns=35 os_stat_missing_loose_ns=1141 sink=5
+--- PASS: TestFB03_CasStatCost (0.71s)
+=== RUN   TestFB03_PresenceWaitsForPublication
+=== RUN   TestFB03_PresenceWaitsForPublication/direct-pack
+=== RUN   TestFB03_PresenceWaitsForPublication/segment
+=== RUN   TestFB03_PresenceWaitsForPublication/loose/publisher-fails=false
+=== RUN   TestFB03_PresenceWaitsForPublication/loose/publisher-fails=true
+--- PASS: TestFB03_PresenceWaitsForPublication (0.27s)
+    --- PASS: TestFB03_PresenceWaitsForPublication/direct-pack (0.04s)
+    --- PASS: TestFB03_PresenceWaitsForPublication/segment (0.01s)
+    --- PASS: TestFB03_PresenceWaitsForPublication/loose/publisher-fails=false (0.11s)
+    --- PASS: TestFB03_PresenceWaitsForPublication/loose/publisher-fails=true (0.11s)
+=== RUN   TestFB03_RetiredPackIsAbsent
+--- PASS: TestFB03_RetiredPackIsAbsent (0.08s)
+=== RUN   TestFB03_ConcurrentSinksLinearizable
+=== RUN   TestFB03_ConcurrentSinksLinearizable/seed-loose
+=== NAME  TestFB03_ConcurrentSinksLinearizable
+    zeros3_fb03_cas_test.go:542: FB03_LINEAR ops=280 passes=10 retired=25 reclaimed=8646740 late_revived_pinned=0
+--- PASS: TestFB03_ConcurrentSinksLinearizable (0.34s)
+    --- PASS: TestFB03_ConcurrentSinksLinearizable/seed-loose (0.07s)
+ok  	zeros3	2.465s

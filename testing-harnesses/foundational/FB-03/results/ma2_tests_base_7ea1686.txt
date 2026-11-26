@@ -1,0 +1,11 @@
+# FB-03 M-A2 tests on the unfixed FB-02 head 7ea1686
+--- FAIL: TestFB03_SegmentDedupAgainstLooseChunks (0.63s)
+    --- FAIL: TestFB03_SegmentDedupAgainstLooseChunks/small-200KB-segment-sink/first-copy-loose (0.34s)
+        zeros3_fb03_cas_test.go:122: small-200KB-segment-sink/first-copy-loose: growth 8038625 B (1.00483x logical), loose files 139 -> 139
+    zeros3_fb03_cas_test.go:132: small-200KB-segment-sink: first-copy-loose growth 1.00483 against control 0.00406
+--- FAIL: TestFB03_CasStatCost (0.85s)
+    zeros3_fb03_cas_test.go:183: FB03_CASSTAT chunks=747 loose=0 casStat_present_packed_ns=1433 casStat_absent_ns=1511 packLookup_present_ns=37 os_stat_missing_loose_ns=1116 sink=5
+    zeros3_fb03_cas_test.go:191: casStat of a packed chunk costs 1433 ns, more than half a failed stat (1116 ns): the loose path is still stat'ed first
+FAIL
+FAIL	zeros3	2.216s
+FAIL
