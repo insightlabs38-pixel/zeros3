@@ -1,0 +1,109 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"slices"
+	"testing"
+	"time"
+)
+
+type c15ReadCounts struct {
+	f            *os.File
+	calls, bytes int64
+}
+
+func (r *c15ReadCounts) ReadAt(p []byte, offset int64) (int, error) {
+	r.calls++
+	n, err := r.f.ReadAt(p, offset)
+	r.bytes += int64(n)
+	return n, err
+}
+
+func TestC15PostingRunPanel(t *testing.T) {
+	if os.Getenv("ZEROS3_C15_RUNS") != "1" {
+		t.Skip("use the C15 isolated run panel")
+	}
+	const hot = 0xc9b78426d9a531fd
+	for _, count := range []int{16, 1024, 16384, 65536, 262144} {
+		entries := make([]authSimilarityEntry, count)
+		legacy := make([]similarityFixturePosting, count)
+		want := make(map[uint64][]uint32, count)
+		for i := range entries {
+			f := uint64(i) * 0x9e3779b97f4a7c15
+			if i%5 == 0 {
+				f = hot
+			}
+			id := uint32(i + 1)
+			entries[i] = authSimilarityEntry{feature: f, id: id}
+			legacy[i] = similarityFixturePosting{feature: f, id: id}
+			want[f] = append(want[f], id)
+		}
+		slices.SortFunc(legacy, func(a, b similarityFixturePosting) int {
+			if a.feature == b.feature {
+				return int(a.id) - int(b.id)
+			}
+			if a.feature < b.feature {
+				return -1
+			}
+			return 1
+		})
+		queries := make([]uint64, 768)
+		for k := range queries {
+			f := entries[k*139%count].feature
+			if k%3 == 0 {
+				f ^= 7
+			}
+			queries[k] = f
+		}
+		for repeat := 0; repeat < 3; repeat++ {
+			for slot := 0; slot < 2; slot++ {
+				compact := (slot+repeat)%2 == 1
+				lane := "fixed"
+				file, err := os.CreateTemp(t.TempDir(), "runs-")
+				mustOK(t, err)
+				begin := time.Now()
+				if compact {
+					lane = "adaptive"
+					mustOK(t, writeAuthSimilarityRun(file, 11, slices.Clone(entries)))
+				} else {
+					buf := similarityFixtureRun(legacy)
+					_, err := file.Write(buf)
+					mustOK(t, err)
+				}
+				mustOK(t, file.Sync())
+				writeNS := time.Since(begin).Nanoseconds()
+				stat, err := file.Stat()
+				mustOK(t, err)
+				reads := &c15ReadCounts{f: file}
+				begin = time.Now()
+				parsed, err := openAuthSimilarityRun(reads, stat.Size())
+				mustOK(t, err)
+				openNS := time.Since(begin).Nanoseconds()
+				opened := reads.bytes
+				var times []int64
+				before := reads.calls
+				for _, f := range queries {
+					begin = time.Now()
+					got, err := parsed.lookup(f, 64)
+					times = append(times, time.Since(begin).Nanoseconds())
+					mustOK(t, err)
+					expected := want[f]
+					if !slices.Equal(got, expected[max(0, len(expected)-64):]) {
+						t.Fatalf("run %s did not preserve posting order for %x", lane, f)
+					}
+				}
+				slices.Sort(times)
+				observed := map[string]any{"count": count, "repeat": repeat, "lane": lane, "radix_bits": parsed.prefix,
+					"bytes": stat.Size(), "verified_open_bytes": opened, "open_ns": openNS, "write_ns": writeNS,
+					"query_read_bytes": reads.bytes - opened, "query_read_calls": reads.calls - before,
+					"samples": len(times), "p50_ns": times[len(times)/2], "p95_ns": times[len(times)*95/100]}
+				line, err := json.Marshal(observed)
+				mustOK(t, err)
+				fmt.Printf("C15RUN %s\n", line)
+				mustOK(t, file.Close())
+			}
+		}
+	}
+}

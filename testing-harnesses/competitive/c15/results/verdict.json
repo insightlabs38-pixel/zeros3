@@ -1,0 +1,12 @@
+{
+  "verdict": "C15_INDEX_EFFECTIVE",
+  "baseline": "29cb2d5",
+  "old_and_new_selected_plans_equal": true,
+  "index_allocated_64": [294912, 36864],
+  "index_allocated_1024": [495616, 249856],
+  "index_allocated_32_revisions": [6696960, 409600],
+  "lookup_p95_ns_16384": [2644, 4117],
+  "shared_status_exact_and_stale_refusal": true,
+  "cross_format_index_recall": "zero candidates in both versions",
+  "compatibility": "new reads both layouts; old falls back safely"
+}
