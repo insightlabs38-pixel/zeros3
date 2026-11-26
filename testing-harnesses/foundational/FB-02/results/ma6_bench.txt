@@ -1,0 +1,52 @@
+# FB-02 M-A6 describe and session-open benchmarks; go go1.27.0, 4 vCPU; synthetic snapshots, one 4 KiB object named N times
+# go test -run '^$' -bench '^BenchmarkFB02Snapshot' -benchtime 20x -count 5 .
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: Intel(R) Xeon(R) Processor @ 2.30GHz
+BenchmarkFB02SnapshotDescribeFresh1k-4       	      20	   1112304 ns/op	    263196 payload-B	  649768 B/op	    2161 allocs/op
+BenchmarkFB02SnapshotDescribeFresh1k-4       	      20	   1059773 ns/op	    263196 payload-B	  649910 B/op	    2164 allocs/op
+BenchmarkFB02SnapshotDescribeFresh1k-4       	      20	   1493293 ns/op	    263196 payload-B	  649684 B/op	    2161 allocs/op
+BenchmarkFB02SnapshotDescribeFresh1k-4       	      20	   1049558 ns/op	    263196 payload-B	  649816 B/op	    2159 allocs/op
+BenchmarkFB02SnapshotDescribeFresh1k-4       	      20	   1080961 ns/op	    263196 payload-B	  650021 B/op	    2163 allocs/op
+BenchmarkFB02SnapshotDescribeSession1k-4     	      20	     26012 ns/op	    263196 payload-B	   11752 B/op	     151 allocs/op
+BenchmarkFB02SnapshotDescribeSession1k-4     	      20	     24666 ns/op	    263196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession1k-4     	      20	     25128 ns/op	    263196 payload-B	   11566 B/op	     152 allocs/op
+BenchmarkFB02SnapshotDescribeSession1k-4     	      20	     24891 ns/op	    263196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession1k-4     	      20	     27815 ns/op	    263196 payload-B	   11752 B/op	     151 allocs/op
+BenchmarkFB02SnapshotDescribeFresh10k-4      	      20	  11893949 ns/op	   2630196 payload-B	 6880603 B/op	   20347 allocs/op
+BenchmarkFB02SnapshotDescribeFresh10k-4      	      20	  12587757 ns/op	   2630196 payload-B	 6880399 B/op	   20347 allocs/op
+BenchmarkFB02SnapshotDescribeFresh10k-4      	      20	  11925854 ns/op	   2630196 payload-B	 6880308 B/op	   20342 allocs/op
+BenchmarkFB02SnapshotDescribeFresh10k-4      	      20	  12268388 ns/op	   2630196 payload-B	 6880472 B/op	   20343 allocs/op
+BenchmarkFB02SnapshotDescribeFresh10k-4      	      20	  12815730 ns/op	   2630196 payload-B	 6880692 B/op	   20353 allocs/op
+BenchmarkFB02SnapshotDescribeSession10k-4    	      20	     40803 ns/op	   2630195 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession10k-4    	      20	     28142 ns/op	   2630196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession10k-4    	      20	     32015 ns/op	   2630196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession10k-4    	      20	     29217 ns/op	   2630196 payload-B	   11484 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession10k-4    	      20	     39423 ns/op	   2630196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeFresh100k-4     	      20	 112407266 ns/op	  26300193 payload-B	76161056 B/op	  201762 allocs/op
+BenchmarkFB02SnapshotDescribeFresh100k-4     	      20	 115137890 ns/op	  26300196 payload-B	76158417 B/op	  201768 allocs/op
+BenchmarkFB02SnapshotDescribeFresh100k-4     	      20	 113558455 ns/op	  26300195 payload-B	76162494 B/op	  201740 allocs/op
+BenchmarkFB02SnapshotDescribeFresh100k-4     	      20	 107578117 ns/op	  26300196 payload-B	76165308 B/op	  201798 allocs/op
+BenchmarkFB02SnapshotDescribeFresh100k-4     	      20	 111530368 ns/op	  26300196 payload-B	76159602 B/op	  201751 allocs/op
+BenchmarkFB02SnapshotDescribeSession100k-4   	      20	     32387 ns/op	  26300195 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession100k-4   	      20	     33628 ns/op	  26300196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession100k-4   	      20	     31053 ns/op	  26300196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotDescribeSession100k-4   	      20	     31632 ns/op	  26300196 payload-B	   11752 B/op	     151 allocs/op
+BenchmarkFB02SnapshotDescribeSession100k-4   	      20	     33161 ns/op	  26300196 payload-B	   11457 B/op	     150 allocs/op
+BenchmarkFB02SnapshotSessionOpen1k-4         	      20	   1175255 ns/op	    263196 payload-B	  736682 B/op	    3030 allocs/op
+BenchmarkFB02SnapshotSessionOpen1k-4         	      20	   1148925 ns/op	    263196 payload-B	  737758 B/op	    3037 allocs/op
+BenchmarkFB02SnapshotSessionOpen1k-4         	      20	   1335947 ns/op	    263196 payload-B	  737202 B/op	    3031 allocs/op
+BenchmarkFB02SnapshotSessionOpen1k-4         	      20	   1073955 ns/op	    263196 payload-B	  736763 B/op	    3032 allocs/op
+BenchmarkFB02SnapshotSessionOpen1k-4         	      20	   1221081 ns/op	    263196 payload-B	  736944 B/op	    3030 allocs/op
+BenchmarkFB02SnapshotSessionOpen10k-4        	      20	  12926215 ns/op	   2630196 payload-B	 7844144 B/op	   30198 allocs/op
+BenchmarkFB02SnapshotSessionOpen10k-4        	      20	  14197501 ns/op	   2630196 payload-B	 7844006 B/op	   30198 allocs/op
+BenchmarkFB02SnapshotSessionOpen10k-4        	      20	  14525931 ns/op	   2630195 payload-B	 7843436 B/op	   30188 allocs/op
+BenchmarkFB02SnapshotSessionOpen10k-4        	      20	  14011568 ns/op	   2630196 payload-B	 7844594 B/op	   30212 allocs/op
+BenchmarkFB02SnapshotSessionOpen10k-4        	      20	  13787095 ns/op	   2630196 payload-B	 7844160 B/op	   30201 allocs/op
+BenchmarkFB02SnapshotSessionOpen100k-4       	      20	 110065517 ns/op	  26300196 payload-B	85761339 B/op	  301588 allocs/op
+BenchmarkFB02SnapshotSessionOpen100k-4       	      20	 109574942 ns/op	  26300196 payload-B	85760371 B/op	  301577 allocs/op
+BenchmarkFB02SnapshotSessionOpen100k-4       	      20	 111744446 ns/op	  26300196 payload-B	85761917 B/op	  301607 allocs/op
+BenchmarkFB02SnapshotSessionOpen100k-4       	      20	 113513514 ns/op	  26300196 payload-B	85770156 B/op	  301718 allocs/op
+BenchmarkFB02SnapshotSessionOpen100k-4       	      20	 111010990 ns/op	  26300196 payload-B	85752994 B/op	  301447 allocs/op
+PASS

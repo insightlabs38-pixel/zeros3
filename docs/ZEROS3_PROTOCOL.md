@@ -639,10 +639,31 @@ Current v1 endpoints:
 | `/_zeros3/v1/snapshot/list` | GET | list snapshot summaries |
 | `/_zeros3/v1/snapshot/show` | GET | inspect one snapshot |
 | `/_zeros3/v1/snapshot/delete` | DELETE | remove one snapshot root |
-| `/_zeros3/v1/snapshot/object` | GET | describe one snapshot-captured object for restore; the descriptor carries `object_sha256` |
+| `/_zeros3/v1/snapshot/object` | GET | describe one snapshot-captured object for restore; the descriptor carries `object_sha256`; optional `session=` |
+| `/_zeros3/v1/snapshot/session` | POST, DELETE | open (`?id=`) or close (`?session=`) a restore session |
 
 Snapshot IDs and keys travel in bounded JSON/query values rather than being
 concatenated into filesystem paths.
+
+### Restore sessions
+
+`POST /_zeros3/v1/snapshot/session?id=<ID>` reads and validates the snapshot
+once, as every describe otherwise does, and keeps a compact index of its
+entries: the sorted keys with each entry's manifest UUID and SHA-256. It
+returns `{"session": "<token>", "entries": N}`. A describe that adds
+`session=<token>` binary-searches that index instead of reading the snapshot
+again; the manifest itself is still read and checked against the recorded
+SHA-256 each time. The format of the snapshot is unchanged.
+
+The index is per session, never shared, and is dropped when the client closes
+it (`DELETE ?session=`), after 15 minutes idle, when the snapshot is deleted,
+or when the snapshot file's size or modification time no longer matches what
+was read. A describe whose session is gone or unknown reads the snapshot in
+full, so a lost session costs time and never changes an answer; a deleted
+snapshot reports `NoSuchSnapshot` and a damaged one `SnapshotCorrupt`, as
+before. The server keeps at most 4 sessions and at most 256 MiB of index;
+past either it answers 503 and the client restores without a session. Servers
+without the endpoint answer it with an error and are used the same way.
 
 The built-in `snapshot restore` uses the same chunk negotiation/fetch/commit
 primitives as replication.

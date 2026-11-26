@@ -499,6 +499,7 @@ const (
 	hookCASAfterDirSync             = "cas-after-dir-sync"
 	hookCASAfterFlush               = "cas-after-flush"
 	hookAfterManifestPublished      = "after-manifest-published"
+	hookSnapshotDecoded             = "snapshot-decoded" // FB-02 M-A6: each full snapshot read and validation
 	hookAfterJournalWriteBeforeSync = "after-journal-write-before-sync"
 	hookAfterJournalSync            = "after-journal-sync"
 	hookAfterApplyBeforeResponse    = "after-apply-before-response"
@@ -15851,6 +15852,9 @@ type Server struct {
 	store  *Store
 	creds  Credentials
 	region string
+	// snapSessions holds the decoded snapshot indexes of open restore
+	// sessions (FB-02 M-A6); nil disables them.
+	snapSessions *snapshotSessionTable
 	// vhostBase is the configured base domain for virtual-hosted-style
 	// addressing ("bucket.<vhostBase>"); empty (the default) disables it
 	// entirely and every request is parsed path-style, exactly as before
@@ -15860,7 +15864,7 @@ type Server struct {
 }
 
 func NewServer(store *Store, creds Credentials, region string) *Server {
-	return &Server{store: store, creds: creds, region: region}
+	return &Server{store: store, creds: creds, region: region, snapSessions: newSnapshotSessionTable()}
 }
 
 // SetVirtualHostBase enables virtual-hosted-style addressing
@@ -26670,6 +26674,9 @@ const (
 	zeros3SnapshotShowPath   = "/_zeros3/v1/snapshot/show"
 	zeros3SnapshotDeletePath = "/_zeros3/v1/snapshot/delete"
 	zeros3SnapshotObjectPath = "/_zeros3/v1/snapshot/object" // M8E-B (section 15i): per-key descriptor for restore
+	// FB-02 M-A6: POST opens and DELETE closes one restore session's
+	// decoded snapshot index (snapshotSessionTable).
+	zeros3SnapshotSessionPath = "/_zeros3/v1/snapshot/session"
 
 	// M8G-C (section 15k): the one new server extension `inspect` needs
 	// beyond the existing M8A object descriptor -- store-wide chunk
@@ -26935,6 +26942,11 @@ func (srv *Server) handleZeroS3Sync(w http.ResponseWriter, r *http.Request, rawP
 		srv.handleSnapshotDelete(w, r)
 	case rawPath == zeros3SnapshotObjectPath && r.Method == http.MethodGet:
 		srv.handleSnapshotDescribeObject(w, r)
+	case rawPath == zeros3SnapshotSessionPath && r.Method == http.MethodPost:
+		srv.handleSnapshotSessionOpen(w, r)
+	case rawPath == zeros3SnapshotSessionPath && r.Method == http.MethodDelete:
+		srv.snapSessions.close(r.URL.Query().Get("session"))
+		writeSyncJSON(w, http.StatusOK, struct{}{})
 	case rawPath == zeros3MaintenancePath && r.Method == http.MethodGet:
 		writeSyncJSON(w, http.StatusOK, srv.store.maintenanceStatus())
 	case rawPath == zeros3MaintenancePath && r.Method == http.MethodPost:
@@ -28063,6 +28075,7 @@ func (srv *Server) handleSnapshotDelete(w http.ResponseWriter, r *http.Request) 
 		writeSnapshotLookupError(w, err)
 		return
 	}
+	srv.snapSessions.dropSnapshot(id)
 	writeSyncJSON(w, http.StatusOK, struct{}{})
 }
 
@@ -28086,27 +28099,47 @@ func (srv *Server) handleSnapshotDescribeObject(w http.ResponseWriter, r *http.R
 		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", "key query parameter is required")
 		return
 	}
-	d, err := srv.store.readSnapshot(id)
+	// A restore session's index (FB-02 M-A6) answers in O(log n) without
+	// reading the snapshot again; without one, or once it is gone, the
+	// snapshot is read and validated in full, as before.
+	var bucket, manUUID string
+	var sum [32]byte
+	ix, err := srv.snapSessions.lookup(srv.store, r.URL.Query().Get("session"), id)
 	if err != nil {
 		writeSnapshotLookupError(w, err)
 		return
 	}
-	// Entries are strictly ascending by Key (decodeSnapshotDescriptor
-	// already proved this), so an ordinary sort.Search binary lookup
-	// finds the entry in O(log n) without a linear scan or a second,
-	// map-shaped copy of the descriptor.
-	i := sort.Search(len(d.Entries), func(i int) bool { return d.Entries[i].Key >= key })
-	if i >= len(d.Entries) || d.Entries[i].Key != key {
-		writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the specified key is not present in this snapshot")
-		return
+	if ix != nil {
+		i, ok := ix.find(key)
+		if !ok {
+			writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the specified key is not present in this snapshot")
+			return
+		}
+		bucket, manUUID, sum = ix.bucket, ix.mans[i], ix.sums[i]
+	} else {
+		d, err := srv.store.readSnapshot(id)
+		if err != nil {
+			writeSnapshotLookupError(w, err)
+			return
+		}
+		// Entries are strictly ascending by Key (decodeSnapshotDescriptor
+		// already proved this), so an ordinary sort.Search binary lookup
+		// finds the entry in O(log n) without a linear scan or a second,
+		// map-shaped copy of the descriptor.
+		i := sort.Search(len(d.Entries), func(i int) bool { return d.Entries[i].Key >= key })
+		if i >= len(d.Entries) || d.Entries[i].Key != key {
+			writeSyncError(w, http.StatusNotFound, "NoSuchKey", "the specified key is not present in this snapshot")
+			return
+		}
+		entry := d.Entries[i]
+		sum, err = decodeHexSHA256(entry.ManifestSHA256)
+		if err != nil {
+			writeSyncError(w, http.StatusInternalServerError, "SnapshotCorrupt", "snapshot entry has a malformed manifest_sha256")
+			return
+		}
+		bucket, manUUID = d.SourceBucket, entry.ManifestUUID
 	}
-	entry := d.Entries[i]
-	sum, err := decodeHexSHA256(entry.ManifestSHA256)
-	if err != nil {
-		writeSyncError(w, http.StatusInternalServerError, "SnapshotCorrupt", "snapshot entry has a malformed manifest_sha256")
-		return
-	}
-	man, err := srv.store.readVerifiedManifest(entry.ManifestUUID, sum)
+	man, err := srv.store.readVerifiedManifest(manUUID, sum)
 	if err != nil {
 		writeSyncError(w, http.StatusConflict, "SnapshotContentUnavailable", fmt.Sprintf("snapshot-referenced manifest is unavailable or corrupt: %v", err))
 		return
@@ -28121,11 +28154,205 @@ func (srv *Server) handleSnapshotDescribeObject(w http.ResponseWriter, r *http.R
 	}
 	writeSyncJSON(w, http.StatusOK, syncObjectDescriptor{
 		Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat, Hash: zeros3SyncHashAlgorithm,
-		Bucket: d.SourceBucket, Key: key, VersionID: entry.ManifestUUID,
+		Bucket: bucket, Key: key, VersionID: manUUID,
 		ObjectSHA256: man.ObjectSHA256,
 		Size:         man.TotalLength, ETag: man.ETag, ContentType: man.ContentType,
 		Metadata: metadata, Chunks: chunks,
 	})
+}
+
+// snapshotSessionTable is FB-02 M-A6's per-restore-session descriptor
+// lookup (F5-SNAP-01). A restore opens a session, which reads and validates
+// the snapshot once (readSnapshot, the same full check every describe used to
+// repeat) and keeps a compact index of its entries: the keys, in the order
+// decodeSnapshotDescriptor proved strictly ascending, with each entry's
+// manifest UUID and SHA-256. Describes that name the session then
+// binary-search it, so a restore of N entries decodes the snapshot once, not
+// N times. It is not a store-wide memo: an index exists only while the
+// session that asked for it is open, is never shared between sessions, and is
+// dropped when the restore closes it, when it sits idle, when the snapshot is
+// deleted, or when the snapshot file no longer matches what was read. A
+// describe whose session is gone falls back to reading the snapshot in full,
+// so a lost session costs time, never correctness. The table is bounded in
+// sessions and in index bytes; a session that would exceed either is refused
+// and the restore falls back.
+type snapshotSessionTable struct {
+	mu       sync.Mutex
+	sessions map[string]*snapshotIndex
+	bytes    int64
+}
+
+type snapshotIndex struct {
+	id, bucket string
+	keys       []string   // ascending
+	mans       []string   // manifest UUID per key
+	sums       [][32]byte // manifest SHA-256 per key
+	file       os.FileInfo
+	cost       int64
+	used       time.Time
+}
+
+const (
+	maxSnapshotSessions     = 4
+	maxSnapshotSessionBytes = maxSnapshotPayload
+	snapshotSessionIdle     = 15 * time.Minute
+)
+
+var errSnapshotSessionsBusy = errors.New("too many open snapshot sessions")
+
+func newSnapshotSessionTable() *snapshotSessionTable {
+	return &snapshotSessionTable{sessions: map[string]*snapshotIndex{}}
+}
+
+// newSnapshotIndex builds the index of a descriptor decodeSnapshotDescriptor
+// accepted, whose entries it proved strictly ascending.
+func newSnapshotIndex(id string, d snapshotDescriptorV1, fi os.FileInfo) (*snapshotIndex, error) {
+	ix := &snapshotIndex{id: id, bucket: d.SourceBucket, keys: make([]string, len(d.Entries)),
+		mans: make([]string, len(d.Entries)), sums: make([][32]byte, len(d.Entries)), file: fi}
+	// Two string headers, one digest and one 36-byte UUID (a 48-byte
+	// allocation) per entry, plus the key bytes.
+	ix.cost = int64(len(d.Entries)) * (16 + 16 + 32 + 48)
+	for i, e := range d.Entries {
+		sum, err := decodeHexSHA256(e.ManifestSHA256)
+		if err != nil {
+			return nil, fmt.Errorf("%w: entry %q has a malformed manifest_sha256", errSnapshotCorrupt, e.Key)
+		}
+		ix.keys[i], ix.mans[i], ix.sums[i] = e.Key, e.ManifestUUID, sum
+		ix.cost += int64(len(e.Key))
+	}
+	return ix, nil
+}
+
+func (ix *snapshotIndex) find(key string) (int, bool) {
+	i := sort.SearchStrings(ix.keys, key)
+	return i, i < len(ix.keys) && ix.keys[i] == key
+}
+
+// open validates snapshot id in full and registers its index under a new
+// session token.
+func (t *snapshotSessionTable) open(s *Store, id string) (string, *snapshotIndex, error) {
+	if t == nil {
+		return "", nil, errSnapshotSessionsBusy
+	}
+	d, fi, err := s.readSnapshotStat(id)
+	if err != nil {
+		return "", nil, err
+	}
+	ix, err := newSnapshotIndex(id, d, fi)
+	if err != nil {
+		return "", nil, err
+	}
+	token := newUUIDv7()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneLocked(time.Now())
+	if len(t.sessions) >= maxSnapshotSessions || t.bytes+ix.cost > maxSnapshotSessionBytes {
+		return "", nil, errSnapshotSessionsBusy
+	}
+	ix.used = time.Now()
+	t.sessions[token] = ix
+	t.bytes += ix.cost
+	return token, ix, nil
+}
+
+// lookup returns the open session's index for snapshot id, or nil when
+// there is no such session: the caller then reads the snapshot in full. A
+// session whose snapshot is gone reports errNoSuchSnapshot; one whose file
+// changed since it was read is dropped, and the full read decides.
+func (t *snapshotSessionTable) lookup(s *Store, token, id string) (*snapshotIndex, error) {
+	if t == nil || token == "" {
+		return nil, nil
+	}
+	now := time.Now()
+	t.mu.Lock()
+	t.pruneLocked(now)
+	ix := t.sessions[token]
+	if ix != nil && ix.id == id {
+		ix.used = now
+	}
+	t.mu.Unlock()
+	if ix == nil || ix.id != id {
+		return nil, nil
+	}
+	fi, err := s.snapshotStat(id)
+	if err == nil && fi.Size() == ix.file.Size() && fi.ModTime().Equal(ix.file.ModTime()) && os.SameFile(fi, ix.file) {
+		return ix, nil
+	}
+	t.close(token)
+	if errors.Is(err, errNoSuchSnapshot) {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (t *snapshotSessionTable) close(token string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if ix := t.sessions[token]; ix != nil {
+		delete(t.sessions, token)
+		t.bytes -= ix.cost
+	}
+}
+
+func (t *snapshotSessionTable) dropSnapshot(id string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for token, ix := range t.sessions {
+		if ix.id == id {
+			delete(t.sessions, token)
+			t.bytes -= ix.cost
+		}
+	}
+}
+
+func (t *snapshotSessionTable) pruneLocked(now time.Time) {
+	for token, ix := range t.sessions {
+		if now.Sub(ix.used) > snapshotSessionIdle {
+			delete(t.sessions, token)
+			t.bytes -= ix.cost
+		}
+	}
+}
+
+// snapshotStat stats one snapshot's file under the snapshot lock, so a
+// concurrent delete is either fully before or fully after it.
+func (s *Store) snapshotStat(id string) (os.FileInfo, error) {
+	if !validSnapshotID(id) {
+		return nil, fmt.Errorf("%w: %q", errInvalidSnapshot, id)
+	}
+	s.snapshotMu.RLock()
+	defer s.snapshotMu.RUnlock()
+	fi, err := os.Stat(s.snapshotPath(id))
+	if os.IsNotExist(err) {
+		return nil, errNoSuchSnapshot
+	}
+	return fi, err
+}
+
+type snapshotSessionResponse struct {
+	Session string `json:"session"`
+	Entries int    `json:"entries"`
+}
+
+// handleSnapshotSessionOpen answers POST snapshot/session?id=: it opens a
+// restore session (snapshotSessionTable) and returns its token.
+func (srv *Server) handleSnapshotSessionOpen(w http.ResponseWriter, r *http.Request) {
+	token, ix, err := srv.snapSessions.open(srv.store, r.URL.Query().Get("id"))
+	if errors.Is(err, errSnapshotSessionsBusy) {
+		writeSyncError(w, http.StatusServiceUnavailable, "SnapshotSessionsBusy", err.Error())
+		return
+	}
+	if err != nil {
+		writeSnapshotLookupError(w, err)
+		return
+	}
+	writeSyncJSON(w, http.StatusOK, snapshotSessionResponse{Session: token, Entries: len(ix.keys)})
 }
 
 // writeSnapshotLookupError maps the shared snapshot lookup error
@@ -33149,33 +33376,52 @@ func (s *Store) listSnapshots() ([]snapshotDescriptorV1, error) {
 // decodeSnapshotDescriptor. Used by show, the restore per-object
 // descriptor endpoint (section 15i), and delete's existence check.
 func (s *Store) readSnapshot(id string) (snapshotDescriptorV1, error) {
-	d, _, err := s.readSnapshotFrame(id)
+	d, _, _, err := s.readSnapshotFrameStat(id)
 	return d, err
+}
+
+// readSnapshotStat is readSnapshot that also returns the file's metadata,
+// taken under the same lock as the read, so it describes exactly the bytes
+// that were validated (FB-02 M-A6's restore sessions compare it later).
+func (s *Store) readSnapshotStat(id string) (snapshotDescriptorV1, os.FileInfo, error) {
+	d, _, fi, err := s.readSnapshotFrameStat(id)
+	return d, fi, err
 }
 
 // readSnapshotFrame is readSnapshot that also returns the descriptor's exact
 // stored frame bytes (what a portable bundle carries verbatim).
 func (s *Store) readSnapshotFrame(id string) (snapshotDescriptorV1, []byte, error) {
+	d, data, _, err := s.readSnapshotFrameStat(id)
+	return d, data, err
+}
+
+func (s *Store) readSnapshotFrameStat(id string) (snapshotDescriptorV1, []byte, os.FileInfo, error) {
 	if !validSnapshotID(id) {
-		return snapshotDescriptorV1{}, nil, fmt.Errorf("%w: %q", errInvalidSnapshot, id)
+		return snapshotDescriptorV1{}, nil, nil, fmt.Errorf("%w: %q", errInvalidSnapshot, id)
 	}
 	s.snapshotMu.RLock()
 	defer s.snapshotMu.RUnlock()
-	data, err := os.ReadFile(s.snapshotPath(id))
+	path := s.snapshotPath(id)
+	fi, err := os.Stat(path)
+	var data []byte
+	if err == nil {
+		data, err = os.ReadFile(path)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
-			return snapshotDescriptorV1{}, nil, errNoSuchSnapshot
+			return snapshotDescriptorV1{}, nil, nil, errNoSuchSnapshot
 		}
-		return snapshotDescriptorV1{}, nil, err
+		return snapshotDescriptorV1{}, nil, nil, err
 	}
 	d, err := decodeSnapshotDescriptor(data)
 	if err != nil {
-		return snapshotDescriptorV1{}, nil, err
+		return snapshotDescriptorV1{}, nil, nil, err
 	}
 	if d.SnapshotID != id {
-		return snapshotDescriptorV1{}, nil, fmt.Errorf("%w: descriptor's snapshot_id does not match its own file name", errSnapshotCorrupt)
+		return snapshotDescriptorV1{}, nil, nil, fmt.Errorf("%w: descriptor's snapshot_id does not match its own file name", errSnapshotCorrupt)
 	}
-	return d, data, nil
+	fireTestHook(hookSnapshotDecoded)
+	return d, data, fi, nil
 }
 
 // deleteSnapshot durably removes one snapshot's descriptor file (A10):
@@ -33583,7 +33829,17 @@ func runSnapshotDelete(args []string) {
 // The response is the exact same syncObjectDescriptor shape
 // fetchSourceDescriptor already returns for a live object.
 func fetchSnapshotObjectDescriptor(cfg syncClientConfig, snapshotID, key string) (syncObjectDescriptor, error) {
+	return fetchSnapshotObjectDescriptorIn(cfg, snapshotID, key, "")
+}
+
+// fetchSnapshotObjectDescriptorIn is fetchSnapshotObjectDescriptor inside an
+// open restore session (FB-02 M-A6); an empty session, or one the server no
+// longer has, gets the full per-request read.
+func fetchSnapshotObjectDescriptorIn(cfg syncClientConfig, snapshotID, key, session string) (syncObjectDescriptor, error) {
 	q := url.Values{"id": {snapshotID}, "key": {key}}
+	if session != "" {
+		q.Set("session", session)
+	}
 	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SnapshotObjectPath+"?"+q.Encode(), nil, nil)
 	if err != nil {
 		return syncObjectDescriptor{}, fmt.Errorf("snapshot object descriptor request failed: %w", err)
@@ -33601,6 +33857,31 @@ func fetchSnapshotObjectDescriptor(cfg syncClientConfig, snapshotID, key string)
 	return d, nil
 }
 
+// openSnapshotSession asks the snapshot store to decode snapshotID once for
+// this restore (FB-02 M-A6). It is best effort: any failure, including a
+// server that predates sessions or one whose session table is full, returns
+// "" and the restore reads per describe as before.
+func openSnapshotSession(cfg syncClientConfig, snapshotID string) string {
+	q := url.Values{"id": {snapshotID}}
+	resp, body, err := cfg.signAndDo(context.Background(), http.MethodPost, zeros3SnapshotSessionPath+"?"+q.Encode(), nil, nil)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var r snapshotSessionResponse
+	if json.Unmarshal(body, &r) != nil {
+		return ""
+	}
+	return r.Session
+}
+
+func closeSnapshotSession(cfg syncClientConfig, session string) {
+	if session == "" {
+		return
+	}
+	q := url.Values{"session": {session}}
+	_, _, _ = cfg.signAndDo(context.Background(), http.MethodDelete, zeros3SnapshotSessionPath+"?"+q.Encode(), nil, nil)
+}
+
 // restoreObjectConfig configures restoring one snapshot-captured entry
 // into an explicit destination bucket/key. Snapshot carries only
 // endpoint/credentials (a snapshot has no bucket/key of its own to set --
@@ -33612,6 +33893,7 @@ type restoreObjectConfig struct {
 	Key        string
 	Dest       syncClientConfig
 	session    *syncSession // capability discovery shared across one run
+	snapshot   string       // open restore session token, or ""
 }
 
 // restoreObject is M8E-B's per-object pipeline -- see section 15i's own
@@ -33628,7 +33910,7 @@ func restoreObject(cfg restoreObjectConfig) (syncStats, error) {
 		return syncStats{}, fmt.Errorf("restore: destination capability discovery failed: %w", err)
 	}
 
-	desc, err := fetchSnapshotObjectDescriptor(cfg.Snapshot, cfg.SnapshotID, cfg.Key)
+	desc, err := fetchSnapshotObjectDescriptorIn(cfg.Snapshot, cfg.SnapshotID, cfg.Key, cfg.snapshot)
 	if err != nil {
 		return syncStats{}, fmt.Errorf("restore: %w", err)
 	}
@@ -33732,6 +34014,11 @@ func restoreNamespace(cfg restoreNamespaceConfig) (nsReplicateResult, error) {
 
 	result := nsReplicateResult{Discovered: len(show.Entries)}
 	session := newSyncSession()
+	snapSession := ""
+	if len(show.Entries) > 0 {
+		snapSession = openSnapshotSession(cfg.Snapshot, cfg.SnapshotID)
+		defer closeSnapshotSession(cfg.Snapshot, snapSession)
+	}
 	for _, e := range show.Entries {
 		dstKey, err := namespaceDestKey(show.SourcePrefix, cfg.DestPrefix, e.Key)
 		if err != nil {
@@ -33740,7 +34027,7 @@ func restoreNamespace(cfg restoreNamespaceConfig) (nsReplicateResult, error) {
 			continue
 		}
 
-		objCfg := restoreObjectConfig{Snapshot: cfg.Snapshot, SnapshotID: cfg.SnapshotID, Key: e.Key, Dest: cfg.Dest, session: session}
+		objCfg := restoreObjectConfig{Snapshot: cfg.Snapshot, SnapshotID: cfg.SnapshotID, Key: e.Key, Dest: cfg.Dest, session: session, snapshot: snapSession}
 		objCfg.Dest.Key = dstKey
 
 		stats, err := restoreObject(objCfg)
