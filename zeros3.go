@@ -89,52 +89,52 @@ import (
 //      549    Content-defined chunking (CDC)
 //      736    Content-addressed chunk storage (CAS)
 //     2531    Packed CAS (immutable packs, DEFLATE and restartable records, locator index, coalesced reads)
-//     5331    Small-object segments (inline manifests, store level 11)
-//     6581    Manifests (immutable, JSON)
-//     7379    Visibility journal (append-only, checksummed)
-//     7901    Store: format, namespace, and object CRUD
-//     8419    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
-//    12071    Version history/restore, history pruning, ListObjectsV2
-//    12677    SigV4 authentication (header and presigned-URL)
-//    13654    Request payload checksums and S3-shaped XML error/response types
-//    13871    HTTP routing and S3 operation handlers
-//    14304    Conditional operations (PUT/GET/HEAD preconditions)
-//    14999    CopyObject
-//    15304    Multipart upload
-//    16248    Stats and reachability scanning
-//    17836    Verify
-//    18052    Store locking and safe offline GC
-//    18362    Offline compaction (`zeros3 compact`)
-//    19545    Pack reclamation and repacking (`zeros3 repack`)
-//    20216    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
-//    20676    Online maintenance: epochs, pins, live GC and repack (B4)
-//    22040    Physical tiers: status and pack movement (`zeros3 tier`)
-//    22553    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
-//    23618    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
-//    24469    Delta sync client, credentials, and parallel transfer
-//    26832    Bulk logical-chunk transport (v2)
-//    27743    Recursive directory sync
-//    28048    Remote replication (`zeros3 replicate`)
-//    29044    Peer-assisted corruption repair (`zeros3 repair`)
-//    29616    Namespace (prefix/bucket) replication
-//    29932    Copy-on-write namespace fork (`zeros3 fork`)
-//    30140    Snapshots and restore
-//    31302    Structural diff and inspect (introspection)
-//    32724    Portable snapshot bundles (`zeros3 bundle`)
-//    33921    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
-//    34556    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
-//    53286    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
-//    61544    Global representation-graph optimization: closure cost, search, transitions (B6)
-//    65355    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
-//    65914    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
-//    66821    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
-//    67976    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
-//    68920    Verified decoded-window cache (B9)
-//    69201    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
-//    70491    Windowed and estimated similarity deltas (extracted dcore)
-//    72328    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
-//    80184    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
-//    86456    CLI dispatch, HTTP server/startup, and main
+//     5427    Small-object segments (inline manifests, store level 11)
+//     6677    Manifests (immutable, JSON)
+//     7475    Visibility journal (append-only, checksummed)
+//     7997    Store: format, namespace, and object CRUD
+//     8515    Compact namespace generations: paged tables, sorted overlays, consolidation (B3)
+//    12167    Version history/restore, history pruning, ListObjectsV2
+//    12773    SigV4 authentication (header and presigned-URL)
+//    13750    Request payload checksums and S3-shaped XML error/response types
+//    13967    HTTP routing and S3 operation handlers
+//    14400    Conditional operations (PUT/GET/HEAD preconditions)
+//    15095    CopyObject
+//    15400    Multipart upload
+//    16344    Stats and reachability scanning
+//    17932    Verify
+//    18148    Store locking and safe offline GC
+//    18458    Offline compaction (`zeros3 compact`)
+//    19695    Pack reclamation and repacking (`zeros3 repack`)
+//    20389    Reconstruction-ordered pack layout: co-access probes, anchors, estimator (B5)
+//    20849    Online maintenance: epochs, pins, live GC and repack (B4)
+//    22213    Physical tiers: status and pack movement (`zeros3 tier`)
+//    22726    Content-aware tier policy and rebalance (`zeros3 tier policy|rebalance`)
+//    23791    Streaming object reads (full and ranged GET), verified chunk cache, pipelining
+//    24642    Delta sync client, credentials, and parallel transfer
+//    27005    Bulk logical-chunk transport (v2)
+//    27916    Recursive directory sync
+//    28221    Remote replication (`zeros3 replicate`)
+//    29217    Peer-assisted corruption repair (`zeros3 repair`)
+//    29789    Namespace (prefix/bucket) replication
+//    30105    Copy-on-write namespace fork (`zeros3 fork`)
+//    30313    Snapshots and restore
+//    31475    Structural diff and inspect (introspection)
+//    32897    Portable snapshot bundles (`zeros3 bundle`)
+//    34094    Delta (thin) snapshot bundles (`zeros3 bundle export -base-snapshot`)
+//    34729    Structured representations: optional tar/SQLite/CAR/Merkle storage (Z3-I0)
+//    53459    Representation-authoritative bodies: pin/representation/delta, closure, revert (Z4-C1)
+//    61717    Global representation-graph optimization: closure cost, search, transitions (B6)
+//    65528    Region-aware similarity discovery: positional fingerprints, posting index, complementary bases (B7)
+//    66087    Cross-format canonical streams: body references, ZIP replay, canonical graph nodes (B8)
+//    66994    Grouped authority records: group log, tombs, seal indexes, compaction (B9)
+//    68149    Reversible executable normalization: ELF/PE parse, Go units, x86 slots, kind 15 (B9)
+//    69093    Verified decoded-window cache (B9)
+//    69374    Deep canonical streams: nested containers, page and block splices, kind 16 (B10)
+//    70664    Windowed and estimated similarity deltas (extracted dcore)
+//    72501    ZN7 model container and ggml quantizers (extracted numcore/qcore) and ZN7 authoritative bodies
+//    80357    Exact Brotli and LZ4 replay (extracted brotliz3/lz4z3): Parquet pages and SST blocks of the hard codecs
+//    86629    CLI dispatch, HTTP server/startup, and main
 // =============================================================================
 
 // =============================================================================
@@ -2605,6 +2605,8 @@ const (
 	packCodecDeflate     = byte(1)
 	packCodecBlocked     = byte(2)
 	packCodecDict        = byte(3)
+	packCodecPreset      = byte(4)
+	packCodecPresetDict  = byte(5) // local preset context, absent from the logical CAS locator
 	packFileSuffix       = ".pack"
 	// maxPackedChunkBytes bounds one record's logical length; it matches
 	// the largest chunk CDC v1 can emit, so no valid record is rejected.
@@ -2808,12 +2810,13 @@ type packInfo struct {
 	size     int64
 	records  int
 	deflated int // chunk records with a non-raw codec
-	// dicts are dictionary records (codec 3, dictBytes of payload): counted in records,
+	// dicts are dictionary records (dictBytes of payload): counted in records,
 	// stored and logical, but pack overhead to usage and maintenance, never chunks.
-	dicts     int
-	dictBytes int64
-	logical   int64 // sum of record logical lengths
-	stored    int64 // sum of record stored (payload) lengths
+	dicts      int
+	dictBytes  int64
+	presetDict bool
+	logical    int64 // sum of record logical lengths
+	stored     int64 // sum of record stored (payload) lengths
 	// open marks a small-object segment still being appended to (section 4d):
 	// not yet a pack-v1 file, so size/records are not tracked here and no pack
 	// maintenance may treat it as one.
@@ -2823,9 +2826,10 @@ type packInfo struct {
 func newPackInfo(id, path string, size int64, entries []packEntry) packInfo {
 	info := packInfo{id: id, path: path, size: size, records: len(entries)}
 	for _, e := range entries {
-		if e.codec == packCodecDict {
+		if isPackDict(e.codec) {
 			info.dicts++
 			info.dictBytes += int64(e.stored)
+			info.presetDict = info.presetDict || e.codec == packCodecPresetDict
 		} else if e.codec != packCodecRaw {
 			info.deflated++
 		}
@@ -2835,6 +2839,10 @@ func newPackInfo(id, path string, size int64, entries []packEntry) packInfo {
 	return info
 }
 
+func isPackDict(codec byte) bool {
+	return codec == packCodecDict || codec == packCodecPresetDict
+}
+
 // checkPackLengths is the per-codec length rule shared by the index parser
 // and the payload decoder, applied before any payload is read or allocated.
 func checkPackLengths(codec byte, stored, logical uint32) error {
@@ -2842,10 +2850,12 @@ func checkPackLengths(codec byte, stored, logical uint32) error {
 	switch codec {
 	case packCodecRaw:
 		ok = stored == logical
-	case packCodecDict:
+	case packCodecDict, packCodecPresetDict:
 		ok = stored == logical && logical <= packDictMaxBytes+uint32(len(packDictCopyMagic))
 	case packCodecDeflate, packCodecBlocked:
 		ok = stored > 0 && stored < logical
+	case packCodecPreset:
+		ok = stored > 0 && stored < logical && logical <= packPresetMaxRecord
 	default:
 		return fmt.Errorf("unsupported codec %d", codec)
 	}
@@ -2978,6 +2988,7 @@ func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
 	var buf [packIndexEntrySize]byte
 	crc := uint32(0)
 	next := uint64(packHeaderSize)
+	presetMembers, presetCopies := 0, 0
 	for i := uint64(0); i < count; i++ {
 		if _, err := io.ReadFull(br, buf[:]); err != nil {
 			return nil, bodySHA, fmt.Errorf("pack: reading index entry %d: %w", i, err)
@@ -2989,6 +3000,12 @@ func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
 		e.stored = binary.LittleEndian.Uint32(buf[40:44])
 		e.logical = binary.LittleEndian.Uint32(buf[44:48])
 		e.codec = buf[48]
+		if e.codec == packCodecPreset {
+			presetMembers++
+		}
+		if e.codec == packCodecPresetDict {
+			presetCopies++
+		}
 		if !allZero(buf[49:52]) {
 			return nil, bodySHA, fmt.Errorf("pack: index entry %d has nonzero reserved bytes", i)
 		}
@@ -3013,6 +3030,13 @@ func readPackLayout(f io.ReaderAt, size int64) ([]packEntry, [32]byte, error) {
 	}
 	if crc != indexCRC {
 		return nil, bodySHA, errors.New("pack: index checksum mismatch")
+	}
+	if presetMembers > 0 || presetCopies > 0 {
+		if presetMembers == 0 || presetCopies != 2 || len(entries) < 3 ||
+			entries[0].codec != packCodecPresetDict || entries[len(entries)-1].codec != packCodecPresetDict ||
+			entries[0].logical > packDictMaxBytes || entries[len(entries)-1].logical != entries[0].logical+uint32(len(packDictCopyMagic)) {
+			return nil, bodySHA, errors.New("pack: invalid pack-local preset layout")
+		}
 	}
 	return entries, bodySHA, nil
 }
@@ -3972,6 +3996,9 @@ func (st *packState) addRecords(next *packState, idx uint32, t tier, entries []p
 		return nil, errors.New("pack locator is full: too many packed records")
 	}
 	for i := range entries {
+		if entries[i].codec == packCodecPresetDict {
+			continue
+		}
 		r := mkLocRec(&entries[i], idx, t)
 		if prev := st.best(&r.sum); prev != nil && prev.logical() != r.logical() {
 			onClash(prev, &r)
@@ -4078,6 +4105,9 @@ func loadPackState(root string, format int) (*packState, error) {
 		idx := uint32(len(st.packs))
 		st.packs = append(st.packs, info)
 		for i := range entries {
+			if entries[i].codec == packCodecPresetDict {
+				continue
+			}
 			recs = append(recs, mkLocRec(&entries[i], idx, f.t))
 		}
 		if len(recs) >= math.MaxUint32 {
@@ -4487,13 +4517,27 @@ func decodePackPayloadD(codec byte, stored []byte, logical uint32, sum [32]byte,
 		if err := decodeBlockedPayload(stored, logical, data, dict, checkBlocks); err != nil {
 			return nil, fmt.Errorf("chunk %x: %w", sum, err)
 		}
-	} else if codec == packCodecDeflate {
+	} else if codec == packCodecDeflate || codec == packCodecPreset {
 		if cap(dst) < int(logical) {
 			dst = make([]byte, logical)
 		}
 		data = dst[:logical]
+		var prefix []byte
+		if codec == packCodecPreset {
+			if dict == nil {
+				return nil, fmt.Errorf("chunk %x: preset dictionary is unavailable (%w)", sum, errChunkCorrupt)
+			}
+			var err error
+			prefix, err = dict([32]byte{}) // preset records use the owning pack's context
+			if err != nil {
+				return nil, err
+			}
+			if len(prefix) == 0 || len(prefix) > packDictMaxBytes {
+				return nil, fmt.Errorf("chunk %x: invalid preset dictionary size (%w)", sum, errChunkCorrupt)
+			}
+		}
 		br := bytes.NewReader(stored)
-		fr := getInflater(br)
+		fr := getInflaterDict(br, prefix)
 		defer putInflater(fr)
 		if _, err := io.ReadFull(fr, data); err != nil {
 			return nil, fmt.Errorf("chunk %x: deflate payload is truncated or malformed: %v (%w)", sum, err, errChunkCorrupt)
@@ -4532,7 +4576,9 @@ const (
 	packDictRecords  = 64       // records a pack dictionary samples
 	// packBlockedFeature is the store feature a pack holding a blocked record needs:
 	// builds without it refuse the store instead of reading its chunks as missing.
-	packBlockedFeature = "packblk"
+	packBlockedFeature  = "packblk"
+	packPresetFeature   = "packlocaldict"
+	packPresetMaxRecord = 4 << 10
 )
 
 // packBlocks is the validated table of a blocked payload.
@@ -4682,34 +4728,42 @@ func (st *packState) dictFor(i int32) packDictFunc {
 		if ok {
 			return d, nil
 		}
-		var locs [4]packLoc
-		for _, loc := range st.appendLocs(locs[:0], sha) {
-			if loc.pack != i || loc.codec != packCodecDict || loc.logical > packDictMaxBytes {
-				continue
-			}
-			d, err := st.readPackedT(sha, loc, nil, nil)
-			if err != nil {
-				if d, err = packDictCopy(st.packs[i].path, sha); err != nil {
-					return nil, err
+		var err error
+		if st.packs[i].presetDict {
+			d, err = packDictCopy(st.packs[i].path, sha)
+		} else {
+			var locs [4]packLoc
+			for _, loc := range st.appendLocs(locs[:0], sha) {
+				if loc.pack != i || loc.codec != packCodecDict || loc.logical > packDictMaxBytes {
+					continue
 				}
-			}
-			packDicts.Lock()
-			if _, ok := packDicts.m[k]; !ok {
-				if len(packDicts.order) >= packDictCacheEntries {
-					delete(packDicts.m, packDicts.order[0])
-					packDicts.order = packDicts.order[1:]
+				if d, err = st.readPackedT(sha, loc, nil, nil); err != nil {
+					d, err = packDictCopy(st.packs[i].path, sha)
 				}
-				packDicts.m[k], packDicts.order = d, append(packDicts.order, k)
+				break
 			}
-			packDicts.Unlock()
-			return d, nil
 		}
-		return nil, fmt.Errorf("pack: dictionary %x is not a record of %s (%w)", sha[:6], st.packs[i].label(), errChunkCorrupt)
+		if err != nil {
+			return nil, err
+		}
+		if d == nil {
+			return nil, fmt.Errorf("pack: dictionary %x is not a record of %s (%w)", sha[:6], st.packs[i].label(), errChunkCorrupt)
+		}
+		packDicts.Lock()
+		if _, ok := packDicts.m[k]; !ok {
+			if len(packDicts.order) >= packDictCacheEntries {
+				delete(packDicts.m, packDicts.order[0])
+				packDicts.order = packDicts.order[1:]
+			}
+			packDicts.m[k], packDicts.order = d, append(packDicts.order, k)
+		}
+		packDicts.Unlock()
+		return d, nil
 	}
 }
 
-// packDictCopy finds the second copy of dictionary sha in the pack at path (a rare
-// path: the first copy failed its digest), scanning the pack's index.
+// packDictCopy resolves either verified copy of dictionary sha by reading
+// the pack's own index, without exposing local contexts through CAS.
 func packDictCopy(path string, sha [32]byte) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -4731,12 +4785,15 @@ func packDictCopy(path string, sha [32]byte) ([]byte, error) {
 func fileDictFunc(f io.ReaderAt, entries []packEntry) packDictFunc {
 	cache := map[[32]byte][]byte{}
 	return func(sha [32]byte) ([]byte, error) {
+		if sha == ([32]byte{}) && len(entries) > 0 && entries[0].codec == packCodecPresetDict {
+			sha = entries[0].sha
+		}
 		if d, ok := cache[sha]; ok {
 			return d, nil
 		}
 		// The cited copy is named by sha; the other is any raw record holding the magic and those bytes.
 		for _, e := range entries {
-			if e.codec != packCodecDict {
+			if !isPackDict(e.codec) {
 				continue
 			}
 			if e.sha != sha && e.logical <= uint32(len(packDictCopyMagic)) {
@@ -5133,6 +5190,9 @@ type packCompressor struct {
 	// primed with blk, the dictionary of the pack being staged (nil: none).
 	blockLog uint8
 	blk      *packDict
+	prefix   []byte // caller-selected context for a preset trial
+	preset   bool   // the selected pack has paid for the preset
+	pbuf     packCompressorBuf
 	dfw      *flate.Writer // primed with dfor's dictionary
 	dfor     *packDict
 	bbuf     []byte
@@ -5183,6 +5243,16 @@ func (c *packCompressor) encode(data []byte) ([]byte, byte) {
 			return out, packCodecBlocked
 		}
 	}
+	data0, codec := c.encodeIndependent(data)
+	if c.preset && len(data) <= packPresetMaxRecord {
+		if candidate := c.encodePreset(data, len(data0)); candidate != nil {
+			return candidate, packCodecPreset
+		}
+	}
+	return data0, codec
+}
+
+func (c *packCompressor) encodeIndependent(data []byte) ([]byte, byte) {
 	c.out.b, c.out.limit = c.out.b[:0], len(data)-max(1, len(data)/16)
 	c.fw.Reset(&c.out)
 	if _, err := c.fw.Write(data); err != nil {
@@ -5192,6 +5262,32 @@ func (c *packCompressor) encode(data []byte) ([]byte, byte) {
 		return data, packCodecRaw
 	}
 	return c.out.b, packCodecDeflate
+}
+
+// encodePreset must beat the independent record. The caller prices the two
+// durable copies of the context used by this pack's preset records.
+func (c *packCompressor) encodePreset(data []byte, incumbent int) []byte {
+	limit := min(incumbent-1, len(data)-max(1, len(data)/16))
+	if limit <= 0 {
+		return nil
+	}
+	if c.dfw == nil || c.dfor != c.blk {
+		var err error
+		c.dfw, err = flate.NewWriterDict(io.Discard, packDeflateLevel, c.blk.data)
+		if err != nil {
+			return nil
+		}
+		c.dfor = c.blk
+	}
+	c.pbuf.b, c.pbuf.limit = c.pbuf.b[:0], limit
+	c.dfw.Reset(&c.pbuf)
+	if _, err := c.dfw.Write(data); err != nil {
+		return nil
+	}
+	if err := c.dfw.Close(); err != nil {
+		return nil
+	}
+	return c.pbuf.b
 }
 
 // encodeBlocked writes data as a restartable record under the compressor rule:
@@ -8060,10 +8156,10 @@ type Store struct {
 
 	// rep is the optional structured-representation state (section 16d):
 	// runtime mode, derived catalog and counters. Nothing in it is authoritative.
-	rep repState
-	win atomic.Pointer[winCache] // B9 decoded-window cache (nil: off)
-	fg  fgGate                   // requests in flight; deferred construction yields to them
-	backgroundYield string      // optional startup policy for online maintenance and import proofs
+	rep             repState
+	win             atomic.Pointer[winCache] // B9 decoded-window cache (nil: off)
+	fg              fgGate                   // requests in flight; deferred construction yields to them
+	backgroundYield string                   // optional startup policy for online maintenance and import proofs
 
 	// mcache holds verified, immutable served manifests for the read path
 	// (section 5b). It is per Store, bounded, and never authoritative.
@@ -19125,8 +19221,18 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 	if err != nil {
 		return "", nil, err
 	}
-	if comp != nil && comp.blockLog > 0 {
-		comp.blk = stagePackDict(b, batch, read)
+	if comp != nil {
+		comp.blk, comp.preset = nil, false
+		if len(comp.prefix) > 0 {
+			comp.blk = choosePackPreset(batch, read, comp)
+			if comp.blk != nil {
+				comp.preset = true
+				b.addEncoded(comp.blk.sha, len(comp.blk.data), comp.blk.data, packCodecPresetDict)
+			}
+		}
+		if comp.blk == nil && comp.blockLog > 0 {
+			comp.blk = stagePackDict(b, batch, read)
+		}
 	}
 	if workers := maintWorkers(); workers > 1 && len(batch) >= 2*stageWindowRecords {
 		if err := s.stageRecordsParallel(b, batch, read, skip, comp, workers); err != nil {
@@ -19151,13 +19257,51 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 			b.Abort() // nothing but the dictionary
 			return "", nil, nil
 		}
-		b.addDictCopy(comp.blk)
+		codec := packCodecDict
+		if comp.preset {
+			codec = packCodecPresetDict
+		}
+		b.addDictCopy(comp.blk, codec)
 	}
 	if b.Records() == 0 {
 		b.Abort()
 		return "", nil, nil
 	}
 	return b.Finish()
+}
+
+func choosePackPreset(batch []compactCandidate, read func([32]byte) ([]byte, error), comp *packCompressor) *packDict {
+	data := comp.prefix
+	copied := append([]byte(packDictCopyMagic), data...)
+	d := &packDict{sha: sha256.Sum256(data), copySHA: sha256.Sum256(copied), data: data}
+	if slices.ContainsFunc(batch, func(c compactCandidate) bool { return c.sum == d.sha || c.sum == d.copySHA }) {
+		return nil
+	}
+	comp.blk = d
+	// Savings of the verified qualifying records are a lower bound on
+	// total savings. Each subsequent writer independently beats its
+	// ordinary encoding. The two copies are the only context overhead.
+	cost := len(data) + len(copied) + 2*packRecordBytes
+	saved := 0
+	n := min(1024, len(batch))
+	for i := range n {
+		candidate := batch[i*len(batch)/n]
+		if candidate.size > packPresetMaxRecord {
+			continue
+		}
+		plain, err := read(candidate.sum)
+		if err != nil {
+			continue
+		}
+		incumbent, _ := comp.encodeIndependent(plain)
+		if offered := comp.encodePreset(plain, len(incumbent)); offered != nil {
+			saved += len(incumbent) - len(offered)
+			if saved > cost {
+				return d
+			}
+		}
+	}
+	return nil
 }
 
 // stagePackDict trains the dictionary of the pack about to hold batch from records spread over it and
@@ -19197,18 +19341,18 @@ func stagePackDict(b *packBuilder, batch []compactCandidate, read func([32]byte)
 }
 
 // addDictCopy appends the second dictionary copy as the pack's last record.
-func (b *packBuilder) addDictCopy(d *packDict) {
+func (b *packBuilder) addDictCopy(d *packDict, codec byte) {
 	cp := append([]byte(packDictCopyMagic), d.data...)
-	b.addEncoded(d.copySHA, len(cp), cp, packCodecDict)
+	b.addEncoded(d.copySHA, len(cp), cp, codec)
 }
 
 // packChunkEntries is entries without the pack's dictionary records, which are
 // not chunks any root names (only the pack's blocked records use them).
 func (c *packCompressor) packChunkEntries(entries []packEntry) []packEntry {
-	if !slices.ContainsFunc(entries, func(e packEntry) bool { return e.codec == packCodecDict }) {
+	if !slices.ContainsFunc(entries, func(e packEntry) bool { return isPackDict(e.codec) }) {
 		return entries
 	}
-	return slices.DeleteFunc(slices.Clone(entries), func(e packEntry) bool { return e.codec == packCodecDict })
+	return slices.DeleteFunc(slices.Clone(entries), func(e packEntry) bool { return isPackDict(e.codec) })
 }
 
 // stageCompressors recycles DEFLATE encoders (about a megabyte of state each)
@@ -19252,11 +19396,11 @@ func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, r
 			if !ok {
 				c = newPackCompressor()
 			}
-			c.blockLog, c.blk = tmpl.blockLog, tmpl.blk
+			c.blockLog, c.blk, c.preset = tmpl.blockLog, tmpl.blk, tmpl.preset
 			return c
 		}, func(c *packCompressor) {
 			if c != nil {
-				c.blk, c.dfor = nil, nil
+				c.blk, c.dfor, c.preset = nil, nil, false
 				stageCompressors.Put(c)
 			}
 		}, func(comp *packCompressor, k int) {
@@ -19364,6 +19508,12 @@ func (s *Store) publishPackExact(t tier, staged string, entries []packEntry, bod
 		if err := s.ensureFeature(packBlockedFeature); err != nil {
 			os.Remove(staged)
 			return info, fmt.Errorf("recording store feature %s: %w", packBlockedFeature, err)
+		}
+	}
+	if slices.ContainsFunc(entries, func(e packEntry) bool { return e.codec == packCodecPreset || e.codec == packCodecPresetDict }) {
+		if err := s.ensureFeature(packPresetFeature); err != nil {
+			os.Remove(staged)
+			return info, fmt.Errorf("recording store feature %s: %w", packPresetFeature, err)
 		}
 	}
 
@@ -19580,6 +19730,7 @@ type packEncoding struct {
 	Compress      bool
 	keepUnchanged bool
 	BlockLog      uint8 // restartable records (codec 2) of 1<<BlockLog byte blocks; 0: none
+	Prefix        []byte
 	// order, when set, reorders the records carried into tier t (default: their source physical order).
 	order func(t tier, cands []compactCandidate)
 	// checkpoint runs before staging a replacement batch, outside publication locks.
@@ -19602,11 +19753,12 @@ type repackOptions struct {
 	KeepUnchanged bool
 	BlockLog      uint8      // restartable records in replacements (0: none)
 	Layout        packLayout // layoutRecon reorders carried records by reconstruction co-access
+	Prefix        []byte
 }
 
 func (o repackOptions) encoding() packEncoding {
-	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog,
-		keepUnchanged: o.KeepUnchanged && o.Compress && o.Recompress && o.BlockLog == 0}
+	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog, Prefix: o.Prefix,
+		keepUnchanged: o.KeepUnchanged && o.Compress && o.Recompress && o.BlockLog == 0 && len(o.Prefix) == 0}
 }
 
 // RepackResult reports one repack pass. In a dry run the write figures are
@@ -19877,6 +20029,9 @@ func (s *Store) carryLivePacks(doomed []packUsage, live *liveSet, dest func([32]
 		}
 	}()
 	comp := newBlockCompressor(enc.Compress, enc.BlockLog)
+	if comp != nil {
+		comp.prefix = enc.Prefix
+	}
 	if dest != nil {
 		fireTestHook(hookRebalanceBeforeStage)
 	}
@@ -20019,6 +20174,9 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	if opt.MaxSourcePacks < 0 {
 		return res, errors.New("repack: source pack limit must be nonnegative")
 	}
+	if len(opt.Prefix) > packDictMaxBytes || len(opt.Prefix) > 0 && !opt.Compress {
+		return res, errors.New("repack: preset dictionaries require compression and at most 32 KiB of context")
+	}
 	if !opt.DryRun {
 		ag, err := s.agCompact(true)
 		if err != nil {
@@ -20031,7 +20189,9 @@ func (s *Store) repack(rr reachabilityResult, opt repackOptions) (RepackResult, 
 	sum := summarizePacks(us)
 	res.PackCount, res.PackedChunkCount, res.PackFileBytes = sum.PackCount, sum.PackedChunkCount, sum.PackFileBytes
 	sel := selectRepackPacks(us, opt.MaxLivePercent, opt.Compress && opt.Recompress)
-	if opt.Compress && opt.Recompress && opt.BlockLog > 0 {
+	if opt.Recompress && len(opt.Prefix) > 0 {
+		sel = slices.Clone(us)
+	} else if opt.Compress && opt.Recompress && opt.BlockLog > 0 {
 		sel = s.selectReblockable(us, sel, live, opt.BlockLog)
 	}
 	enc := opt.encoding()
@@ -20170,6 +20330,7 @@ func runRepack(args []string) {
 	recompress := fs.Bool("recompress", false, "also rewrite fully live packs that hold raw records (compresses direct-ingest packs; needs -compression auto)")
 	keepUnchanged := fs.Bool("keep-unchanged", false, "prove and retain identical replacement packs during recompress (research)")
 	blocksFlag := fs.String("record-blocks", "off", "restartable compressed records in rewritten packs: off, or the block size in KiB (research)")
+	presetFile := fs.String("preset-dictionary", "", "optional file of up to 32 KiB of authorized context for compressing small pack records (research)")
 	layoutName := fs.String("layout", "locality", "record order of rewritten packs: locality (keep the physical order) or recon (also relayout authority families by reconstruction co-access; research)")
 	fs.Parse(args)
 
@@ -20185,11 +20346,23 @@ func runRepack(args []string) {
 	if err == nil {
 		layout, err = parseLayoutFlag(*layoutName)
 	}
+	var prefix []byte
+	if err == nil && *presetFile != "" {
+		var input *os.File
+		input, err = os.Open(*presetFile)
+		if err == nil {
+			prefix, err = readAllLimited(input, packDictMaxBytes)
+			input.Close()
+			if err == nil && len(prefix) == 0 {
+				err = errors.New("the preset dictionary file is empty")
+			}
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: repack: %v\n", err)
 		os.Exit(2)
 	}
-	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress, KeepUnchanged: *keepUnchanged, BlockLog: blockLog, Layout: layout})
+	res, err := repackStore(*storeDir, repackOptions{Tier: *tierName, TargetBytes: *sizeMiB << 20, MaxLivePercent: *maxLive, MaxSourcePacks: *maxSourcePacks, DryRun: !*apply, Compress: compress, Recompress: *recompress, KeepUnchanged: *keepUnchanged, BlockLog: blockLog, Layout: layout, Prefix: prefix})
 	if err != nil {
 		switch {
 		case errors.Is(err, errGCStoreInUse):
@@ -54332,7 +54505,7 @@ type authCtx struct {
 	path   map[[32]byte]bool
 	budget int64
 	// overlay resolves a not-yet-published candidate record (proof, probes).
-	overlay map[[32]byte]*authRecord
+	overlay    map[[32]byte]*authRecord
 	gzipReplay *repIRStreamDecodeOptions
 	// fetched counts logical CAS bytes read, the unit of read amplification.
 	fetched int64
@@ -58519,7 +58692,7 @@ func (s *Store) authLowerFloor() (int, error) {
 	s.auth.mayHave.Store(false)
 	f := s.format
 	// Pack features describe pack records, not bodies: they stay while such packs may exist.
-	keep := slices.DeleteFunc(slices.Clone(f.Features), func(x string) bool { return x != packBlockedFeature })
+	keep := slices.DeleteFunc(slices.Clone(f.Features), func(x string) bool { return x != packBlockedFeature && x != packPresetFeature })
 	f.StoreFormatVersion, f.RequiredLevel, f.Features = max(f.RequiredLevel, storeFormatVersion), 0, keep
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
@@ -61773,12 +61946,12 @@ type rgGraph struct {
 	vops      map[int32]map[int32][]dwDcoreOp // plain programs discovery verified (target -> base), reused by the encoder
 	plans     map[[32]byte][]byte             // bounded native envelopes for this optimizer invocation
 	planBytes int
-	bestPlan  map[[32]byte][32]byte           // smallest retained envelope of each target
+	bestPlan  map[[32]byte][32]byte // smallest retained envelope of each target
 	planTight bool
-	chunkRefs map[[32]byte]int32              // eligible contents holding each CDC chunk (B7 share discount)
-	canonSt   CanonStats                      // B8 canonical analysis
-	splSt     SpliceStats                     // B10 deep-stream analysis
-	splShared map[[32]byte]bool               // B10: nested containers several objects hold byte for byte
+	chunkRefs map[[32]byte]int32 // eligible contents holding each CDC chunk (B7 share discount)
+	canonSt   CanonStats         // B8 canonical analysis
+	splSt     SpliceStats        // B10 deep-stream analysis
+	splShared map[[32]byte]bool  // B10: nested containers several objects hold byte for byte
 }
 
 // rgCandSet is what discovery hands the encoders for one target: single bases, best first, and
@@ -80062,7 +80235,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != agFeature && x != authExeFeature && x != spliceFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != agFeature && x != authExeFeature && x != spliceFeature {
 			return x
 		}
 	}

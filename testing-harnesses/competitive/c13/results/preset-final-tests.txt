@@ -1,0 +1,27 @@
+=== RUN   TestAuthorityBundleExportToOldBinary
+    zeros3_authority_test.go:1159: bundle 3787006 bytes for 4 objects
+--- PASS: TestAuthorityBundleExportToOldBinary (5.16s)
+=== RUN   TestB5DictionaryCopy
+--- PASS: TestB5DictionaryCopy (0.12s)
+=== RUN   TestC13PresetPackAdmissionAndReopen
+--- PASS: TestC13PresetPackAdmissionAndReopen (0.00s)
+=== RUN   TestC13PresetPackPublication
+=== RUN   TestC13PresetPackPublication/pack-before-publish
+=== RUN   TestC13PresetPackPublication/pack-after-rename
+--- PASS: TestC13PresetPackPublication (0.22s)
+    --- PASS: TestC13PresetPackPublication/pack-before-publish (0.16s)
+    --- PASS: TestC13PresetPackPublication/pack-after-rename (0.06s)
+=== RUN   TestC13PresetPackRejectsUnpaidContext
+--- PASS: TestC13PresetPackRejectsUnpaidContext (0.00s)
+=== RUN   TestBundle_ExportIndependentOfPhysicalRepresentation
+=== RUN   TestBundle_ExportIndependentOfPhysicalRepresentation/packed_raw_hot
+=== RUN   TestBundle_ExportIndependentOfPhysicalRepresentation/packed_compressed_warm
+=== RUN   TestBundle_ExportIndependentOfPhysicalRepresentation/packed_compressed_cold
+=== RUN   TestBundle_ExportIndependentOfPhysicalRepresentation/mixed_packed_hot+cold_plus_loose
+--- PASS: TestBundle_ExportIndependentOfPhysicalRepresentation (0.06s)
+    --- PASS: TestBundle_ExportIndependentOfPhysicalRepresentation/packed_raw_hot (0.01s)
+    --- PASS: TestBundle_ExportIndependentOfPhysicalRepresentation/packed_compressed_warm (0.01s)
+    --- PASS: TestBundle_ExportIndependentOfPhysicalRepresentation/packed_compressed_cold (0.01s)
+    --- PASS: TestBundle_ExportIndependentOfPhysicalRepresentation/mixed_packed_hot+cold_plus_loose (0.02s)
+PASS
+ok  	zeros3	5.566s

@@ -1,0 +1,13 @@
+{
+  "verdict": "C13_SPECIALIZED",
+  "baseline": "0089c99",
+  "promoted": "opt-in operator-supplied pack-local DEFLATE preset for records at most 4096 bytes",
+  "wide_objects": 4926,
+  "wide_control_allocated": 8519680,
+  "wide_preset_allocated": 8200192,
+  "wide_control_repack_cpu_seconds_median": 0.7067255,
+  "wide_preset_repack_cpu_seconds_median": 1.5389435,
+  "heldout_preset_admitted": false,
+  "cohort_blocks": "research-only for coalesced consumers",
+  "authority_group_compatibility": "fully priced gate admitted zero blocks"
+}

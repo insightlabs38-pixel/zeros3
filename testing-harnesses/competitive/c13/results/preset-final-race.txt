@@ -1,0 +1,14 @@
+=== RUN   TestB5DictionaryCopy
+--- PASS: TestB5DictionaryCopy (1.79s)
+=== RUN   TestC13PresetPackAdmissionAndReopen
+--- PASS: TestC13PresetPackAdmissionAndReopen (0.04s)
+=== RUN   TestC13PresetPackPublication
+=== RUN   TestC13PresetPackPublication/pack-before-publish
+=== RUN   TestC13PresetPackPublication/pack-after-rename
+--- PASS: TestC13PresetPackPublication (0.90s)
+    --- PASS: TestC13PresetPackPublication/pack-before-publish (0.47s)
+    --- PASS: TestC13PresetPackPublication/pack-after-rename (0.43s)
+=== RUN   TestC13PresetPackRejectsUnpaidContext
+--- PASS: TestC13PresetPackRejectsUnpaidContext (0.01s)
+PASS
+ok  	zeros3	3.767s

@@ -1,10 +1,9 @@
 # ZeroS3 C13 · Small-object compression contexts
 
-**C13_RESEARCH_ONLY.** Cohort blocks lowered physical allocation and
-encode CPU in the archive lab. Their higher read amplification at eight
-clients and the integration cost leave the production layout unchanged.
-Scoped dictionary activation avoids paying for contexts that merely
-carry literal bytes of already-retained training samples.
+**C13_SPECIALIZED.** Optional pack-local preset dictionaries lowered
+finalized allocation by 3.75% on 4,926 real source fragments. The native
+repack spent 1.54 s CPU versus 0.71 s, with similar signed 4 KiB read
+latency. Cohort blocks remain research-only for coalesced consumers.
 
 ## Physical comparison
 
@@ -54,8 +53,8 @@ In main churn, one quarter of evaluation objects were replaced. The
 32 KiB layout staged 171,283 new pack bytes versus 185,186 for deflate.
 Rebuild and reopen left 974,848 versus 1,069,056 allocated bytes.
 Both lanes still verified the original data through held-open readers.
-**RESEARCH_ONLY** for cohort blocks and paid dictionaries. **KILL** for
-ungated activation as a general policy.
+Cohort blocks remain research-only. Ungated activation spent more bytes
+on rejected entropy groups than it saved in compressed payload.
 
 ## Verification
 
@@ -71,3 +70,13 @@ include actual input blocks. Page-cache eviction is advisory. The
 benchmarks use two CPUs and exact content digests throughout.
 
 [Reproduction](REPRODUCE.md) · [Fixtures](fixtures.jsonl) · [Raw evidence](results/)
+
+## Native preset follow-up
+
+Ordinary repack retained 8,519,680 bytes on the wide panel. Charging two
+verified context copies, explicit per-record references retained 8,339,456
+bytes and implicit pack-local references retained 8,200,192. The latter
+also saved 20,480 bytes on the main panel. Held-out HTTPX stayed at 233,472
+bytes and did not activate a dictionary. The operator supplies context to
+`repack -preset-dictionary FILE -recompress -apply`. Existing stores and
+new repacks without this flag use their existing layout. [Native follow-up](FOLLOWUP.md)
