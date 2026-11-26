@@ -1,0 +1,41 @@
+=== RUN   TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched
+--- PASS: TestAuthorityOldBinaryRefusesAndLeavesStoreUntouched (5.55s)
+=== RUN   TestAuthorityBundleExportToOldBinary
+    zeros3_authority_test.go:1159: bundle 3787006 bytes for 4 objects
+--- PASS: TestAuthorityBundleExportToOldBinary (0.28s)
+=== RUN   TestAuthorityClosureSyncExport
+--- PASS: TestAuthorityClosureSyncExport (0.23s)
+=== RUN   TestAuthorityClosureSyncReplication
+    zeros3_authority_test.go:1361: native upload 15968 bytes, missing CDC payload 1001856
+--- PASS: TestAuthorityClosureSyncReplication (0.27s)
+=== RUN   TestAuthorityClosureSyncImportRejectsBadPayload
+--- PASS: TestAuthorityClosureSyncImportRejectsBadPayload (0.72s)
+=== RUN   TestAuthorityRecoverPeerClosure
+--- PASS: TestAuthorityRecoverPeerClosure (0.56s)
+=== RUN   TestAuthorityRevertAllLowersFloorAndOldBinaryReopens
+--- PASS: TestAuthorityRevertAllLowersFloorAndOldBinaryReopens (0.60s)
+=== RUN   TestAuthorityCrossKeyHints
+=== RUN   TestAuthorityCrossKeyHints/prior
+=== RUN   TestAuthorityCrossKeyHints/missing
+--- PASS: TestAuthorityCrossKeyHints (0.33s)
+    --- PASS: TestAuthorityCrossKeyHints/prior (0.05s)
+    --- PASS: TestAuthorityCrossKeyHints/missing (0.07s)
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts/auth-import-chunks
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts/after-manifest-published
+=== RUN   TestAuthorityThinImportNamespaceCrashCuts/after-journal-sync
+--- PASS: TestAuthorityThinImportNamespaceCrashCuts (0.29s)
+    --- PASS: TestAuthorityThinImportNamespaceCrashCuts/auth-import-chunks (0.03s)
+    --- PASS: TestAuthorityThinImportNamespaceCrashCuts/after-manifest-published (0.03s)
+    --- PASS: TestAuthorityThinImportNamespaceCrashCuts/after-journal-sync (0.03s)
+=== RUN   TestSync_Discovery_Supported
+--- PASS: TestSync_Discovery_Supported (0.00s)
+=== RUN   TestSync_Discovery_UnknownExtensionPathNotBucketParsed
+--- PASS: TestSync_Discovery_UnknownExtensionPathNotBucketParsed (0.00s)
+=== RUN   TestSync_Discovery_AuthFailureRejected
+--- PASS: TestSync_Discovery_AuthFailureRejected (0.00s)
+=== RUN   TestSync_ResumeAfterPartialPriorUpload
+--- PASS: TestSync_ResumeAfterPartialPriorUpload (0.01s)
+=== RUN   TestBulkReplicate_ThroughStandardReverseProxy
+--- PASS: TestBulkReplicate_ThroughStandardReverseProxy (0.12s)
+PASS

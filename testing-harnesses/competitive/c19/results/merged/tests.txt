@@ -1,0 +1,115 @@
+=== RUN   TestAuthorityClosureSyncExport
+--- PASS: TestAuthorityClosureSyncExport (0.26s)
+=== RUN   TestAuthorityClosureSyncReplication
+    zeros3_authority_test.go:1361: native upload 15968 bytes, missing CDC payload 1001856
+--- PASS: TestAuthorityClosureSyncReplication (5.97s)
+=== RUN   TestAuthorityClosureSyncImportRejectsBadPayload
+--- PASS: TestAuthorityClosureSyncImportRejectsBadPayload (0.75s)
+=== RUN   TestC16NamedBaseReplication
+=== RUN   TestC16NamedBaseReplication/related
+=== RUN   TestC16NamedBaseReplication/replica
+--- PASS: TestC16NamedBaseReplication (0.53s)
+    --- PASS: TestC16NamedBaseReplication/related (0.06s)
+    --- PASS: TestC16NamedBaseReplication/replica (0.04s)
+=== RUN   TestC16NamedBaseChecksScopeAndFrame
+=== RUN   TestC16NamedBaseChecksScopeAndFrame/unmatched-scope
+=== RUN   TestC16NamedBaseChecksScopeAndFrame/stale-version
+=== RUN   TestC16NamedBaseChecksScopeAndFrame/bad-frame
+=== RUN   TestC16NamedBaseChecksScopeAndFrame/wrong-size
+--- PASS: TestC16NamedBaseChecksScopeAndFrame (0.29s)
+    --- PASS: TestC16NamedBaseChecksScopeAndFrame/unmatched-scope (0.01s)
+    --- PASS: TestC16NamedBaseChecksScopeAndFrame/stale-version (0.01s)
+    --- PASS: TestC16NamedBaseChecksScopeAndFrame/bad-frame (0.01s)
+    --- PASS: TestC16NamedBaseChecksScopeAndFrame/wrong-size (0.01s)
+=== RUN   TestC16NamedBaseDiscoveryAuthentication
+--- PASS: TestC16NamedBaseDiscoveryAuthentication (0.00s)
+=== RUN   TestC16NamedBaseDecodedBudget
+--- PASS: TestC16NamedBaseDecodedBudget (0.07s)
+=== RUN   TestC16DerivedBaseImportCuts
+=== RUN   TestC16DerivedBaseImportCuts/pack-before-publish
+=== RUN   TestC16DerivedBaseImportCuts/auth-import-chunks
+=== RUN   TestC16DerivedBaseImportCuts/after-manifest-published
+=== RUN   TestC16DerivedBaseImportCuts/after-journal-sync
+--- PASS: TestC16DerivedBaseImportCuts (0.49s)
+    --- PASS: TestC16DerivedBaseImportCuts/pack-before-publish (0.06s)
+    --- PASS: TestC16DerivedBaseImportCuts/auth-import-chunks (0.06s)
+    --- PASS: TestC16DerivedBaseImportCuts/after-manifest-published (0.06s)
+    --- PASS: TestC16DerivedBaseImportCuts/after-journal-sync (0.07s)
+=== RUN   TestC17RetainedCanonicalPlan
+--- PASS: TestC17RetainedCanonicalPlan (1.36s)
+=== RUN   TestC17CanonicalBudgetAndDigest
+--- PASS: TestC17CanonicalBudgetAndDigest (0.00s)
+=== RUN   TestC17FusedIngestKeepsFailedPacksPrivate
+=== RUN   TestC17FusedIngestKeepsFailedPacksPrivate/1
+=== RUN   TestC17FusedIngestKeepsFailedPacksPrivate/2
+--- PASS: TestC17FusedIngestKeepsFailedPacksPrivate (0.04s)
+    --- PASS: TestC17FusedIngestKeepsFailedPacksPrivate/1 (0.02s)
+    --- PASS: TestC17FusedIngestKeepsFailedPacksPrivate/2 (0.02s)
+=== RUN   TestC18PackDictionaryRepair
+=== RUN   TestC18PackDictionaryRepair/primary
+=== RUN   TestC18PackDictionaryRepair/backup
+=== RUN   TestC18PackDictionaryRepair/both
+=== RUN   TestC18PackDictionaryRepair/unrelated-member
+--- PASS: TestC18PackDictionaryRepair (0.05s)
+    --- PASS: TestC18PackDictionaryRepair/primary (0.01s)
+    --- PASS: TestC18PackDictionaryRepair/backup (0.01s)
+    --- PASS: TestC18PackDictionaryRepair/both (0.01s)
+    --- PASS: TestC18PackDictionaryRepair/unrelated-member (0.01s)
+=== RUN   TestC18PackDictionaryRepairCuts
+=== RUN   TestC18PackDictionaryRepairCuts/pack-dictionary-before-rename
+=== RUN   TestC18PackDictionaryRepairCuts/pack-dictionary-after-rename
+--- PASS: TestC18PackDictionaryRepairCuts (0.04s)
+    --- PASS: TestC18PackDictionaryRepairCuts/pack-dictionary-before-rename (0.02s)
+    --- PASS: TestC18PackDictionaryRepairCuts/pack-dictionary-after-rename (0.02s)
+=== RUN   TestFB02_ReplicateEquivalenceCases
+=== RUN   TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=false
+=== RUN   TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=true
+=== RUN   TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=false
+--- PASS: TestFB02_ReplicateEquivalenceCases (0.21s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=true (0.02s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/absent/if-unchanged=false (0.02s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=true (0.01s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/equivalent/if-unchanged=false (0.01s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=true (0.01s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/metadata-only/if-unchanged=false (0.01s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=true (0.01s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-type-only/if-unchanged=false (0.02s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=true (0.02s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/content-only/if-unchanged=false (0.02s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=true (0.02s)
+    --- PASS: TestFB02_ReplicateEquivalenceCases/etag-equal-content-different/if-unchanged=false (0.02s)
+=== RUN   TestFB02_MultipartOriginEquivalence
+--- PASS: TestFB02_MultipartOriginEquivalence (0.16s)
+=== RUN   TestFB02_CreateOnlyRefusesETagEqualContentDifferent
+--- PASS: TestFB02_CreateOnlyRefusesETagEqualContentDifferent (0.01s)
+=== RUN   TestFB02_NamespaceRerunWritesNothing
+    zeros3_fb02_equivalence_test.go:362: idempotent rerun of 25 objects: source map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25 GET /src:1] destination map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25]
+    zeros3_fb02_equivalence_test.go:369: ordinary rerun of 25 objects: source map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25 GET /src:1] destination map[GET /_zeros3/v1/info:1 GET /_zeros3/v1/object:25 POST /_zeros3/v1/commit:25 POST /_zeros3/v2/negotiate:25]
+--- PASS: TestFB02_NamespaceRerunWritesNothing (0.21s)
+=== RUN   TestFB02_CommitIfUnchanged
+--- PASS: TestFB02_CommitIfUnchanged (0.03s)
+=== RUN   TestFB02_ConcurrentIfUnchangedCommits
+--- PASS: TestFB02_ConcurrentIfUnchangedCommits (0.01s)
+=== RUN   TestFB02_IfUnchangedCrashCuts
+=== RUN   TestFB02_IfUnchangedCrashCuts/after-manifest-published
+=== RUN   TestFB02_IfUnchangedCrashCuts/after-ack
+--- PASS: TestFB02_IfUnchangedCrashCuts (0.02s)
+    --- PASS: TestFB02_IfUnchangedCrashCuts/after-manifest-published (0.01s)
+    --- PASS: TestFB02_IfUnchangedCrashCuts/after-ack (0.01s)
+=== RUN   TestFB02_SnapshotDescribeAndRestoreEquivalence
+--- PASS: TestFB02_SnapshotDescribeAndRestoreEquivalence (0.13s)
+=== RUN   TestFB02_AuthorityImportRetryWritesNoManifest
+--- PASS: TestFB02_AuthorityImportRetryWritesNoManifest (0.27s)
+=== RUN   TestBulkReplicate_ThroughStandardReverseProxy
+--- PASS: TestBulkReplicate_ThroughStandardReverseProxy (0.13s)
+PASS
+ok  	zeros3	11.043s

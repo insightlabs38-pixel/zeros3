@@ -145,8 +145,9 @@ def trial(args, env, source, original, target, lane, event, width, pair):
                                    ("archive", ["authority", "optimize", "-apply", "-profile", "archive", "-finalize"])):
                 result = subprocess.run([str(binary), *command, "-store", str(store)],
                                         env=env, capture_output=True, text=True, timeout=6)
-                if result.returncode == 0 or "needs exclusive access" not in result.stderr:
-                    raise ValueError(f"{check} did not report the writer lease")
+                lease_messages = ("needs exclusive access", "store is currently in use by another process")
+                if result.returncode == 0 or not any(text in result.stderr for text in lease_messages):
+                    raise ValueError(f"{check} did not report the writer lease: {result.stderr[-400:]}")
                 refusal[check] = {"status": result.returncode, "stderr": result.stderr[-400:]}
         before, cpu_before = stats(pid), counters()
         started = time.monotonic()

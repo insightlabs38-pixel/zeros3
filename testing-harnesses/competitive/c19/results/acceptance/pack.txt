@@ -1,0 +1,39 @@
+=== RUN   TestB10GroupedDamagedRecordRefusesGC
+=== RUN   TestB10GroupedDamagedRecordRefusesGC/grouped=false
+=== RUN   TestB10GroupedDamagedRecordRefusesGC/grouped=true
+--- PASS: TestB10GroupedDamagedRecordRefusesGC (0.46s)
+    --- PASS: TestB10GroupedDamagedRecordRefusesGC/grouped=false (0.23s)
+    --- PASS: TestB10GroupedDamagedRecordRefusesGC/grouped=true (0.23s)
+=== RUN   TestB10GroupStaleViews
+--- PASS: TestB10GroupStaleViews (0.41s)
+=== RUN   TestB9GroupFaults
+--- PASS: TestB9GroupFaults (0.13s)
+=== RUN   TestP3_RealKillDuringMaintenance
+=== RUN   TestP3_RealKillDuringMaintenance/repack
+    zeros3_p3_test.go:1093: repack: uninterrupted run 42ms; 17 of 24 child runs were killed in flight
+=== RUN   TestP3_RealKillDuringMaintenance/gc
+    zeros3_p3_test.go:1093: gc: uninterrupted run 13ms; 20 of 24 child runs were killed in flight
+--- PASS: TestP3_RealKillDuringMaintenance (3.42s)
+    --- PASS: TestP3_RealKillDuringMaintenance/repack (1.97s)
+    --- PASS: TestP3_RealKillDuringMaintenance/gc (1.39s)
+=== RUN   TestPack_PayloadAndRecordHeaderDamageFailSafely
+=== RUN   TestPack_PayloadAndRecordHeaderDamageFailSafely/payload
+=== RUN   TestPack_PayloadAndRecordHeaderDamageFailSafely/record-header
+--- PASS: TestPack_PayloadAndRecordHeaderDamageFailSafely (0.02s)
+    --- PASS: TestPack_PayloadAndRecordHeaderDamageFailSafely/payload (0.01s)
+    --- PASS: TestPack_PayloadAndRecordHeaderDamageFailSafely/record-header (0.01s)
+=== RUN   TestPack_ParityRestoresExactPackAndRefusesMultipleLoss
+--- PASS: TestPack_ParityRestoresExactPackAndRefusesMultipleLoss (0.33s)
+=== RUN   TestPack_RepairReplacesCorruptPackedChunkFromPeer
+--- PASS: TestPack_RepairReplacesCorruptPackedChunkFromPeer (0.02s)
+=== RUN   TestRepack_KeepUnchangedChecksReplacement
+=== RUN   TestRepack_KeepUnchangedChecksReplacement/identical
+=== RUN   TestRepack_KeepUnchangedChecksReplacement/mixed-unchanged
+=== RUN   TestRepack_KeepUnchangedChecksReplacement/compressible
+=== RUN   TestRepack_KeepUnchangedChecksReplacement/corrupt
+--- PASS: TestRepack_KeepUnchangedChecksReplacement (0.17s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/identical (0.04s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/mixed-unchanged (0.06s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/compressible (0.04s)
+    --- PASS: TestRepack_KeepUnchangedChecksReplacement/corrupt (0.02s)
+PASS

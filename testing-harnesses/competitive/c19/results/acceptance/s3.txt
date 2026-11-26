@@ -1,0 +1,111 @@
+=== RUN   TestHeadObject_HeadersNoBody
+--- PASS: TestHeadObject_HeadersNoBody (0.00s)
+=== RUN   TestHeadObject_Missing
+--- PASS: TestHeadObject_Missing (0.00s)
+=== RUN   TestGetObject_MetadataAndContentTypeRoundTrip
+--- PASS: TestGetObject_MetadataAndContentTypeRoundTrip (0.00s)
+=== RUN   TestCopyObject_MetadataDirectiveCopyPreservesSourceMetadata
+--- PASS: TestCopyObject_MetadataDirectiveCopyPreservesSourceMetadata (0.00s)
+=== RUN   TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes
+--- PASS: TestCopyObject_MetadataDirectiveReplaceUsesNewMetadataZeroNewChunkBytes (0.01s)
+=== RUN   TestRange_VariousForms
+=== RUN   TestRange_VariousForms/one_byte_at_start
+=== RUN   TestRange_VariousForms/one_byte_in_middle
+=== RUN   TestRange_VariousForms/one_byte_at_end
+=== RUN   TestRange_VariousForms/explicit_start/end
+=== RUN   TestRange_VariousForms/open-ended_start
+=== RUN   TestRange_VariousForms/suffix_range
+=== RUN   TestRange_VariousForms/near_a_chunk_boundary_region
+=== RUN   TestRange_VariousForms/clamp_end_beyond_length
+=== RUN   TestRange_VariousForms/whole_object_as_an_explicit_range
+--- PASS: TestRange_VariousForms (0.01s)
+    --- PASS: TestRange_VariousForms/one_byte_at_start (0.00s)
+    --- PASS: TestRange_VariousForms/one_byte_in_middle (0.00s)
+    --- PASS: TestRange_VariousForms/one_byte_at_end (0.00s)
+    --- PASS: TestRange_VariousForms/explicit_start/end (0.00s)
+    --- PASS: TestRange_VariousForms/open-ended_start (0.00s)
+    --- PASS: TestRange_VariousForms/suffix_range (0.00s)
+    --- PASS: TestRange_VariousForms/near_a_chunk_boundary_region (0.00s)
+    --- PASS: TestRange_VariousForms/clamp_end_beyond_length (0.00s)
+    --- PASS: TestRange_VariousForms/whole_object_as_an_explicit_range (0.00s)
+=== RUN   TestRange_Unsatisfiable
+--- PASS: TestRange_Unsatisfiable (0.00s)
+=== RUN   TestRange_EmptyObjectUnsatisfiable
+--- PASS: TestRange_EmptyObjectUnsatisfiable (0.00s)
+=== RUN   TestRange_MalformedHeaderIgnoredServesFullObject
+--- PASS: TestRange_MalformedHeaderIgnoredServesFullObject (0.00s)
+=== RUN   TestRange_MultiRangeUnsupportedIgnoredServesFullObject
+--- PASS: TestRange_MultiRangeUnsupportedIgnoredServesFullObject (0.00s)
+=== RUN   TestRange_ReadsOnlyOverlappingChunks
+--- PASS: TestRange_ReadsOnlyOverlappingChunks (0.00s)
+=== RUN   TestSnapshotRestore_MetadataAndContentTypePreserved
+--- PASS: TestSnapshotRestore_MetadataAndContentTypePreserved (0.00s)
+=== RUN   TestConditionalPutHTTP_IfNoneMatchStar_CreateThenRejectWith412
+--- PASS: TestConditionalPutHTTP_IfNoneMatchStar_CreateThenRejectWith412 (0.00s)
+=== RUN   TestConditionalPutHTTP_IfMatch_CASUpdateThenStaleRejectWith412
+--- PASS: TestConditionalPutHTTP_IfMatch_CASUpdateThenStaleRejectWith412 (0.00s)
+=== RUN   TestConditionalPutHTTP_IfMatch_QuotedUnquotedAndCaseInsensitive
+--- PASS: TestConditionalPutHTTP_IfMatch_QuotedUnquotedAndCaseInsensitive (0.00s)
+=== RUN   TestConditionalPutHTTP_IfMatch_MultipartCurrentETag
+--- PASS: TestConditionalPutHTTP_IfMatch_MultipartCurrentETag (0.06s)
+=== RUN   TestConditionalPutHTTP_WhitespaceAroundStarTolerated
+--- PASS: TestConditionalPutHTTP_WhitespaceAroundStarTolerated (0.00s)
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-None-Match_not_a_bare_star
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_unterminated_quote
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_comma-separated_list
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_weak_validator
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_star
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_empty_quoted
+=== RUN   TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/both_headers_set
+--- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected (0.00s)
+    --- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-None-Match_not_a_bare_star (0.00s)
+    --- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_unterminated_quote (0.00s)
+    --- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_comma-separated_list (0.00s)
+    --- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_weak_validator (0.00s)
+    --- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_star (0.00s)
+    --- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_empty_quoted (0.00s)
+    --- PASS: TestConditionalPutHTTP_MalformedAndUnsupportedHeaderValuesRejected/both_headers_set (0.00s)
+=== RUN   TestConditionalPutHTTP_UnconditionalPUTUnaffectedByM8F
+--- PASS: TestConditionalPutHTTP_UnconditionalPUTUnaffectedByM8F (0.00s)
+=== RUN   TestConditionalPutHTTP_ConcurrentCreateOnly_ExactlyOneWinnerOverRealHTTP
+--- PASS: TestConditionalPutHTTP_ConcurrentCreateOnly_ExactlyOneWinnerOverRealHTTP (0.01s)
+=== RUN   TestConditionalGetHTTP_IfMatch_MatchSucceeds
+--- PASS: TestConditionalGetHTTP_IfMatch_MatchSucceeds (0.00s)
+=== RUN   TestConditionalGetHTTP_IfMatch_MismatchFailsWith412
+--- PASS: TestConditionalGetHTTP_IfMatch_MismatchFailsWith412 (0.00s)
+=== RUN   TestConditionalGetHTTP_IfNoneMatch_MatchReturns304
+--- PASS: TestConditionalGetHTTP_IfNoneMatch_MatchReturns304 (0.00s)
+=== RUN   TestConditionalGetHTTP_IfNoneMatch_MismatchServesNormally
+--- PASS: TestConditionalGetHTTP_IfNoneMatch_MismatchServesNormally (0.00s)
+=== RUN   TestConditionalGetHTTP_RangeInteraction
+=== RUN   TestConditionalGetHTTP_RangeInteraction/If-Match_passes_+_Range
+=== RUN   TestConditionalGetHTTP_RangeInteraction/If-Match_fails_+_Range
+=== RUN   TestConditionalGetHTTP_RangeInteraction/If-None-Match_matches_+_Range
+--- PASS: TestConditionalGetHTTP_RangeInteraction (0.00s)
+    --- PASS: TestConditionalGetHTTP_RangeInteraction/If-Match_passes_+_Range (0.00s)
+    --- PASS: TestConditionalGetHTTP_RangeInteraction/If-Match_fails_+_Range (0.00s)
+    --- PASS: TestConditionalGetHTTP_RangeInteraction/If-None-Match_matches_+_Range (0.00s)
+=== RUN   TestConditionalGetHTTP_MissingObjectIgnoresCondition
+--- PASS: TestConditionalGetHTTP_MissingObjectIgnoresCondition (0.00s)
+=== RUN   TestConditionalGetHTTP_MultipartCurrentETag
+--- PASS: TestConditionalGetHTTP_MultipartCurrentETag (0.06s)
+=== RUN   TestConditionalGetHTTP_QuotedUnquotedAndCaseInsensitive
+--- PASS: TestConditionalGetHTTP_QuotedUnquotedAndCaseInsensitive (0.00s)
+=== RUN   TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected
+=== RUN   TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_unterminated_quote
+=== RUN   TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_comma_list
+=== RUN   TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_weak_validator
+=== RUN   TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_star
+=== RUN   TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-None-Match_star
+=== RUN   TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-None-Match_weak_validator
+--- PASS: TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected (0.00s)
+    --- PASS: TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_unterminated_quote (0.00s)
+    --- PASS: TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_comma_list (0.00s)
+    --- PASS: TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_weak_validator (0.00s)
+    --- PASS: TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-Match_star (0.00s)
+    --- PASS: TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-None-Match_star (0.00s)
+    --- PASS: TestConditionalGetHTTP_MalformedAndUnsupportedHeaderValuesRejected/If-None-Match_weak_validator (0.00s)
+=== RUN   TestConditionalGetHTTP_HistoricalETagIsNotCurrentForIfMatch
+--- PASS: TestConditionalGetHTTP_HistoricalETagIsNotCurrentForIfMatch (0.00s)
+PASS

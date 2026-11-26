@@ -1,0 +1,9 @@
+=== RUN   TestB8ConcurrentReads
+panic: test timed out after 3m0s
+	running tests:
+		TestB8ConcurrentReads (3m0s)
+
+goroutine 2133 [running]:
+testing.(*M).startAlarm.func1()
+	/workspace/.zeros3-tools/go/src/testing/testing.go:2959 +0x605
+FAIL	zeros3	180.105s

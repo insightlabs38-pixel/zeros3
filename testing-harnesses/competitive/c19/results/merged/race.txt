@@ -1,0 +1,10 @@
+=== RUN   TestC16NamedBaseReplication
+=== RUN   TestC16NamedBaseReplication/related
+=== RUN   TestC16NamedBaseReplication/replica
+--- PASS: TestC16NamedBaseReplication (2.19s)
+    --- PASS: TestC16NamedBaseReplication/related (0.20s)
+    --- PASS: TestC16NamedBaseReplication/replica (0.16s)
+=== RUN   TestFB02_ConcurrentIfUnchangedCommits
+--- PASS: TestFB02_ConcurrentIfUnchangedCommits (0.04s)
+PASS
+ok  	zeros3	3.264s

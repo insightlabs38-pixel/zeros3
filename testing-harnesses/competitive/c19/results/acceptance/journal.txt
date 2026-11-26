@@ -1,0 +1,970 @@
+=== RUN   TestNamespaceCheckpointJournalFaultModel
+=== RUN   TestNamespaceCheckpointJournalFaultModel/all-writes
+=== RUN   TestNamespaceCheckpointJournalFaultModel/last-entire-write-lost
+=== RUN   TestNamespaceCheckpointJournalFaultModel/last-header-torn
+2026/11/26 05:52:07 zeros3: journal: a read-only open serves the valid prefix to offset 2317; the rest is an incomplete final frame past the last completed fsync (offset 2317), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:07 zeros3: journal: a read-only open serves the valid prefix to offset 2317; the rest is an incomplete final frame past the last completed fsync (offset 2317), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:07 zeros3: journal: a read-only open serves the valid prefix to offset 2317; journal: incomplete frame header at offset 2317 (7 of 20 bytes) (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+2026/11/26 05:52:08 zeros3: journal: a read-only open serves the valid prefix to offset 2317; journal: incomplete frame header at offset 2317 (7 of 20 bytes) (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+=== RUN   TestNamespaceCheckpointJournalFaultModel/last-payload-torn
+2026/11/26 05:52:08 zeros3: journal: a read-only open serves the valid prefix to offset 2317; the rest is an incomplete final frame past the last completed fsync (offset 2317), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:08 zeros3: journal: a read-only open serves the valid prefix to offset 2317; the rest is an incomplete final frame past the last completed fsync (offset 2317), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:08 zeros3: journal: a read-only open serves the valid prefix to offset 2317; journal: incomplete frame at offset 2317: declared length 662 needs 686 bytes, 21 present (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+2026/11/26 05:52:08 zeros3: journal: a read-only open serves the valid prefix to offset 2317; journal: incomplete frame at offset 2317: declared length 662 needs 686 bytes, 21 present (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+=== RUN   TestNamespaceCheckpointJournalFaultModel/last-crc-torn
+2026/11/26 05:52:09 zeros3: journal: a read-only open serves the valid prefix to offset 2317; the rest is an incomplete final frame past the last completed fsync (offset 2317), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:09 zeros3: journal: a read-only open serves the valid prefix to offset 2317; the rest is an incomplete final frame past the last completed fsync (offset 2317), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:09 zeros3: journal: a read-only open serves the valid prefix to offset 2317; journal: incomplete frame at offset 2317: declared length 662 needs 686 bytes, 684 present (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+2026/11/26 05:52:09 zeros3: journal: a read-only open serves the valid prefix to offset 2317; journal: incomplete frame at offset 2317: declared length 662 needs 686 bytes, 684 present (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+=== RUN   TestNamespaceCheckpointJournalFaultModel/earlier-write-dropped
+=== RUN   TestNamespaceCheckpointJournalFaultModel/complete-writes-reordered
+--- PASS: TestNamespaceCheckpointJournalFaultModel (2.54s)
+    --- PASS: TestNamespaceCheckpointJournalFaultModel/all-writes (0.01s)
+    --- PASS: TestNamespaceCheckpointJournalFaultModel/last-entire-write-lost (0.00s)
+    --- PASS: TestNamespaceCheckpointJournalFaultModel/last-header-torn (0.86s)
+    --- PASS: TestNamespaceCheckpointJournalFaultModel/last-payload-torn (0.83s)
+    --- PASS: TestNamespaceCheckpointJournalFaultModel/last-crc-torn (0.82s)
+    --- PASS: TestNamespaceCheckpointJournalFaultModel/earlier-write-dropped (0.00s)
+    --- PASS: TestNamespaceCheckpointJournalFaultModel/complete-writes-reordered (0.00s)
+=== RUN   TestNamespaceCheckpointPublicationCuts
+=== RUN   TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-synced
+=== RUN   TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-renamed
+--- PASS: TestNamespaceCheckpointPublicationCuts (0.03s)
+    --- PASS: TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-synced (0.02s)
+    --- PASS: TestNamespaceCheckpointPublicationCuts/namespace-checkpoint-renamed (0.01s)
+=== RUN   TestFB01RKill
+2026/11/26 05:52:23 zeros3: journal: a read-only open serves the valid prefix to offset 14067230; the rest is an incomplete final frame past the last completed fsync (offset 14067230), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:24 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 14067230), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 326 bytes past offset 14067230 (incomplete-frame) to /tmp/TestFB01RKill345721126/001/journal/quarantine/tail-20261126T105224.248032778Z
+2026/11/26 05:52:25 zeros3: journal: a read-only open serves the valid prefix to offset 14071835; the rest is an incomplete final frame past the last completed fsync (offset 14071835), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:25 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 14071835), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 326 bytes past offset 14071835 (incomplete-frame) to /tmp/TestFB01RKill345721126/001/journal/quarantine/tail-20261126T105225.501084098Z
+2026/11/26 05:52:26 zeros3: journal: a read-only open serves the valid prefix to offset 14099057; the rest is an incomplete final frame past the last completed fsync (offset 14099057), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:26 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 14099057), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 327 bytes past offset 14099057 (incomplete-frame) to /tmp/TestFB01RKill345721126/001/journal/quarantine/tail-20261126T105226.640837838Z
+    zeros3_fb01r_kill_test.go:296: verify after 18 kills: {Deep:false JournalFramesChecked:34601 JournalOK:true ManifestsChecked:31145 ChunksChecked:31145 PacksChecked:2 CurrentRootCount:20822 HistoricalRootCount:10323 MultipartRootCount:0 SnapshotRootCount:0 issueTracker:{Missing:0 Corrupt:0 Invalid:0 Issues:[]} RepresentationRoots:0 RepresentationsVerified:0 RepresentationOrphanRoots:0 AuthorityBodies:0 AuthoritiesVerified:0 AuthorityOrphans:0 AuthorityUnavailable:0 UnreachableManifests:0 UnreachableChunks:0 ReclaimableBytes:0}
+    zeros3_fb01r_kill_test.go:299: random                             rounds  6 acked  34308 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 123689us
+    zeros3_fb01r_kill_test.go:299: after-journal-write-before-sync    rounds  3 acked     58 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 118672us
+    zeros3_fb01r_kill_test.go:299: after-journal-sync                 rounds  3 acked     78 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 79195us
+    zeros3_fb01r_kill_test.go:299: after-apply-before-response        rounds  3 acked     49 lost 0 recoveries 0 discarded 0B refusals 0 owner open max 82736us
+    zeros3_fb01r_kill_test.go:299: torn-write                         rounds  3 acked     77 lost 0 recoveries 3 discarded 979B refusals 0 owner open max 87204us
+--- PASS: TestFB01RKill (17.54s)
+=== RUN   TestFB01RKillWithoutWatermark
+--- PASS: TestFB01RKillWithoutWatermark (0.01s)
+=== RUN   TestFB01RInterruptedGroupMatrix
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_not_written
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_not_written/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_not_written/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_written_whole,_unsynced
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_written_whole,_unsynced/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_written_whole,_unsynced/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_header
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_header/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; the rest is an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 7 bytes past offset 4060 (incomplete-header) to /tmp/TestFB01RInterruptedGroupMatrixlazytorn_first_headersame_boot3208043564/001/journal/quarantine/tail-20261126T105227.333935261Z
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_header/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; journal: incomplete frame header at offset 4060 (7 of 20 bytes) (a write still in flight, or a damaged tail the owner will refuse; the host restarted since the watermark at offset 4060 was written, without sync mode: the tail may hold acknowledged frames written since)
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_payload
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_payload/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; the rest is an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 29 bytes past offset 4060 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixlazytorn_first_payloadsame_boo1351055912/001/journal/quarantine/tail-20261126T105227.341018427Z
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_payload/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; journal: incomplete frame at offset 4060: declared length 653 needs 677 bytes, 29 present (a write still in flight, or a damaged tail the owner will refuse; the host restarted since the watermark at offset 4060 was written, without sync mode: the tail may hold acknowledged frames written since)
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_crc
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_crc/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; the rest is an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 676 bytes past offset 4060 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixlazytorn_first_crcsame_boot3771873306/001/journal/quarantine/tail-20261126T105227.348614359Z
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_first_crc/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; journal: incomplete frame at offset 4060: declared length 653 needs 677 bytes, 676 present (a write still in flight, or a damaged tail the owner will refuse; the host restarted since the watermark at offset 4060 was written, without sync mode: the tail may hold acknowledged frames written since)
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/first_frame_complete
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/first_frame_complete/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/first_frame_complete/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_second_frame
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_second_frame/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4737; the rest is an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 23 bytes past offset 4737 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixlazytorn_second_framesame_boot2120148131/001/journal/quarantine/tail-20261126T105227.360697547Z
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_second_frame/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4737; journal: incomplete frame at offset 4737: declared length 296 needs 320 bytes, 23 present (a write still in flight, or a damaged tail the owner will refuse; the host restarted since the watermark at offset 4060 was written, without sync mode: the tail may hold acknowledged frames written since)
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_last_crc
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_last_crc/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 5377; the rest is an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 318 bytes past offset 5377 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixlazytorn_last_crcsame_boot533462638/001/journal/quarantine/tail-20261126T105227.365583717Z
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/torn_last_crc/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 5377; journal: incomplete frame at offset 5377: declared length 296 needs 320 bytes, 318 present (a write still in flight, or a damaged tail the owner will refuse; the host restarted since the watermark at offset 4060 was written, without sync mode: the tail may hold acknowledged frames written since)
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_sector_lost,_later_frames_present
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_sector_lost,_later_frames_present/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/group_sector_lost,_later_frames_present/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/crc_mismatch_in_the_group
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/crc_mismatch_in_the_group/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/crc_mismatch_in_the_group/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_cut_at_a_frame_boundary
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_cut_at_a_frame_boundary/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_cut_at_a_frame_boundary/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_torn
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_torn/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_torn/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_bit_flip,_group_intact
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_bit_flip,_group_intact/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_bit_flip,_group_intact/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/early_acknowledged_frame_bit_flip
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/early_acknowledged_frame_bit_flip/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/early_acknowledged_frame_bit_flip/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/journal_emptied
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/journal_emptied/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/lazy/journal_emptied/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_not_written
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_not_written/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_not_written/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_written_whole,_unsynced
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_written_whole,_unsynced/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_written_whole,_unsynced/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_header
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_header/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4058; the rest is an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 7 bytes past offset 4058 (incomplete-header) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_first_headersame_boot3616936744/001/journal/quarantine/tail-20261126T105227.400530757Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_header/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4058; the rest is damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it; moved 7 bytes past offset 4058 (incomplete-header) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_first_headerafter_res4052064771/001/journal/quarantine/tail-20261126T105227.404457472Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_payload
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_payload/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4058; the rest is an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 29 bytes past offset 4058 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_first_payloadsame_boo2528770081/001/journal/quarantine/tail-20261126T105227.409757767Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_payload/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4058; the rest is damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it; moved 29 bytes past offset 4058 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_first_payloadafter_re369396528/001/journal/quarantine/tail-20261126T105227.412692468Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_crc
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_crc/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4058; the rest is an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 676 bytes past offset 4058 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_first_crcsame_boot2868384919/001/journal/quarantine/tail-20261126T105227.415451103Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_first_crc/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4058; the rest is damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it; moved 676 bytes past offset 4058 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_first_crcafter_restar811612016/001/journal/quarantine/tail-20261126T105227.418556582Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/first_frame_complete
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/first_frame_complete/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/first_frame_complete/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_second_frame
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_second_frame/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4735; the rest is an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 23 bytes past offset 4735 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_second_framesame_boot2303204621/001/journal/quarantine/tail-20261126T105227.427307744Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_second_frame/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4735; the rest is damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it; moved 23 bytes past offset 4735 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_second_frameafter_res1896488942/001/journal/quarantine/tail-20261126T105227.429873455Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_last_crc
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_last_crc/same_boot
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 5375; the rest is an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4058), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 318 bytes past offset 5375 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_last_crcsame_boot3722400064/001/journal/quarantine/tail-20261126T105227.433413442Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/torn_last_crc/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 5375; the rest is damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it; moved 318 bytes past offset 5375 (incomplete-frame) to /tmp/TestFB01RInterruptedGroupMatrixsynctorn_last_crcafter_restart3358681748/001/journal/quarantine/tail-20261126T105227.436677679Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_sector_lost,_later_frames_present
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_sector_lost,_later_frames_present/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/group_sector_lost,_later_frames_present/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4058; the rest is damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it; moved 1637 bytes past offset 4058 (crc-mismatch) to /tmp/TestFB01RInterruptedGroupMatrixsyncgroup_sector_lost,_later_fr3963976212/001/journal/quarantine/tail-20261126T105227.440686499Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/crc_mismatch_in_the_group
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/crc_mismatch_in_the_group/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/crc_mismatch_in_the_group/after_restart
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4735; the rest is damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: damage past offset 4058 after a host restart; every acknowledgement waited for a synced watermark, so none lies past it; moved 960 bytes past offset 4735 (crc-mismatch) to /tmp/TestFB01RInterruptedGroupMatrixsynccrc_mismatch_in_the_groupa1039816186/001/journal/quarantine/tail-20261126T105227.445743216Z
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_cut_at_a_frame_boundary
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_cut_at_a_frame_boundary/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_cut_at_a_frame_boundary/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_torn
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_torn/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_torn/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_bit_flip,_group_intact
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_bit_flip,_group_intact/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_bit_flip,_group_intact/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/early_acknowledged_frame_bit_flip
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/early_acknowledged_frame_bit_flip/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/early_acknowledged_frame_bit_flip/after_restart
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/journal_emptied
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/journal_emptied/same_boot
+=== RUN   TestFB01RInterruptedGroupMatrix/sync/journal_emptied/after_restart
+--- PASS: TestFB01RInterruptedGroupMatrix (0.14s)
+    --- PASS: TestFB01RInterruptedGroupMatrix/lazy (0.06s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_not_written (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_not_written/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_not_written/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_written_whole,_unsynced (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_written_whole,_unsynced/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_written_whole,_unsynced/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_header (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_header/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_header/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_payload (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_payload/same_boot (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_payload/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_crc (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_crc/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_first_crc/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/first_frame_complete (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/first_frame_complete/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/first_frame_complete/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_second_frame (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_second_frame/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_second_frame/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_last_crc (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_last_crc/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/torn_last_crc/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_sector_lost,_later_frames_present (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_sector_lost,_later_frames_present/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/group_sector_lost,_later_frames_present/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/crc_mismatch_in_the_group (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/crc_mismatch_in_the_group/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/crc_mismatch_in_the_group/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_cut_at_a_frame_boundary (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_cut_at_a_frame_boundary/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_cut_at_a_frame_boundary/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_torn (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_torn/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_torn/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_bit_flip,_group_intact (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_bit_flip,_group_intact/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/acknowledged_frame_bit_flip,_group_intact/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/early_acknowledged_frame_bit_flip (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/early_acknowledged_frame_bit_flip/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/early_acknowledged_frame_bit_flip/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/lazy/journal_emptied (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/journal_emptied/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/lazy/journal_emptied/after_restart (0.00s)
+    --- PASS: TestFB01RInterruptedGroupMatrix/sync (0.07s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_not_written (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_not_written/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_not_written/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_written_whole,_unsynced (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_written_whole,_unsynced/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_written_whole,_unsynced/after_restart (0.01s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_header (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_header/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_header/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_payload (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_payload/same_boot (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_payload/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_crc (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_crc/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_first_crc/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/first_frame_complete (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/first_frame_complete/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/first_frame_complete/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_second_frame (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_second_frame/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_second_frame/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_last_crc (0.01s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_last_crc/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/torn_last_crc/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_sector_lost,_later_frames_present (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_sector_lost,_later_frames_present/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/group_sector_lost,_later_frames_present/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/crc_mismatch_in_the_group (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/crc_mismatch_in_the_group/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/crc_mismatch_in_the_group/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_cut_at_a_frame_boundary (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_cut_at_a_frame_boundary/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_cut_at_a_frame_boundary/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_torn (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_torn/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_torn/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_bit_flip,_group_intact (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_bit_flip,_group_intact/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/acknowledged_frame_bit_flip,_group_intact/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/early_acknowledged_frame_bit_flip (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/early_acknowledged_frame_bit_flip/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/early_acknowledged_frame_bit_flip/after_restart (0.00s)
+        --- PASS: TestFB01RInterruptedGroupMatrix/sync/journal_emptied (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/journal_emptied/same_boot (0.00s)
+            --- PASS: TestFB01RInterruptedGroupMatrix/sync/journal_emptied/after_restart (0.00s)
+=== RUN   TestFB01RTailDiscardInterrupted
+2026/11/26 05:52:27 zeros3: journal: recovered automatically: an incomplete final frame past the last completed fsync (offset 4059), in the boot that wrote the watermark: an interrupted write, never acknowledged; moved 25 bytes past offset 4059 (incomplete-frame) to /tmp/TestFB01RTailDiscardInterrupted792056105/003/journal/quarantine/tail-20261126T105227.460006823Z
+--- PASS: TestFB01RTailDiscardInterrupted (0.00s)
+=== RUN   TestFB01RDegradedViews
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; the rest is an incomplete final frame past the last completed fsync (offset 4060), in the boot that wrote the watermark: an interrupted write, never acknowledged
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; journal: incomplete frame at offset 4060: declared length 653 needs 677 bytes, 25 present (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; journal: incomplete frame at offset 4060: declared length 653 needs 677 bytes, 25 present (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+2026/11/26 05:52:27 zeros3: journal: a read-only open serves the valid prefix to offset 4060; journal: incomplete frame at offset 4060: declared length 653 needs 677 bytes, 25 present (a write still in flight, or a damaged tail the owner will refuse; no ack watermark)
+--- PASS: TestFB01RDegradedViews (1.05s)
+=== RUN   TestFB02_ChecksumCheckValues
+--- PASS: TestFB02_ChecksumCheckValues (0.00s)
+=== RUN   TestFB02_CRC64NVMEMatchesBitwiseReference
+--- PASS: TestFB02_CRC64NVMEMatchesBitwiseReference (0.00s)
+=== RUN   TestFB02_HeaderChecksumMatrix
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32--match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32--match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32--match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32--mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32--short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32--not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32--composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c--match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c--match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c--match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c--mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c--short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c--not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c--composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1--match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1--match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1--match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1--mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1--short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1--not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1--composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256--match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256--match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256--match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256--mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256--short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256--not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256--composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-match
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-match-sdk-algorithm
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-match-with-mode-and-type
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-mismatch
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-short-value
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-not-base64
+=== RUN   TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-composite-on-put
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-crc32-true
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-crc32-false
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-crc32c-true
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-crc32c-false
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-crc64nvme-true
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-crc64nvme-false
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-sha1-true
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-sha1-false
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-sha256-true
+=== RUN   TestFB02_HeaderChecksumMatrix/chunked-sha256-false
+--- PASS: TestFB02_HeaderChecksumMatrix (0.72s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32--match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32--match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32--match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32--mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32--short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32--not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32--composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32-unsigned-payload-composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c--match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c--match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c--match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c--mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c--short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c--not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c--composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc32c-unsigned-payload-composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme--composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-crc64nvme-unsigned-payload-composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1--match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1--match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1--match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1--mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1--short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1--not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1--composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha1-unsigned-payload-composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256--match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256--match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256--match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256--mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256--short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256--not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256--composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-match (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-match-sdk-algorithm (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-match-with-mode-and-type (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-mismatch (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-short-value (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-not-base64 (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/hdr-sha256-unsigned-payload-composite-on-put (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-crc32-true (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-crc32-false (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-crc32c-true (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-crc32c-false (0.00s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-crc64nvme-true (0.01s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-crc64nvme-false (0.03s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-sha1-true (0.02s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-sha1-false (0.04s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-sha256-true (0.04s)
+    --- PASS: TestFB02_HeaderChecksumMatrix/chunked-sha256-false (0.01s)
+=== RUN   TestFB02_ChecksumHeaderRules
+=== RUN   TestFB02_ChecksumHeaderRules/two-algorithms
+=== RUN   TestFB02_ChecksumHeaderRules/unknown-algorithm
+=== RUN   TestFB02_ChecksumHeaderRules/unknown-plus-known
+=== RUN   TestFB02_ChecksumHeaderRules/sdk-algorithm-mismatch
+=== RUN   TestFB02_ChecksumHeaderRules/sdk-algorithm-alone
+=== RUN   TestFB02_ChecksumHeaderRules/sdk-algorithm-unknown
+=== RUN   TestFB02_ChecksumHeaderRules/trailer-without-chunked-body
+=== RUN   TestFB02_ChecksumHeaderRules/trailer-unknown
+=== RUN   TestFB02_ChecksumHeaderRules/trailer-two-names
+=== RUN   TestFB02_ChecksumHeaderRules/header-and-trailer
+=== RUN   TestFB02_ChecksumHeaderRules/type-and-mode-only
+=== RUN   TestFB02_ChecksumHeaderRules/md5-and-crc-both-good
+=== RUN   TestFB02_ChecksumHeaderRules/md5-bad-crc-good
+--- PASS: TestFB02_ChecksumHeaderRules (0.01s)
+    --- PASS: TestFB02_ChecksumHeaderRules/two-algorithms (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/unknown-algorithm (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/unknown-plus-known (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/sdk-algorithm-mismatch (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/sdk-algorithm-alone (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/sdk-algorithm-unknown (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/trailer-without-chunked-body (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/trailer-unknown (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/trailer-two-names (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/header-and-trailer (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/type-and-mode-only (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/md5-and-crc-both-good (0.00s)
+    --- PASS: TestFB02_ChecksumHeaderRules/md5-bad-crc-good (0.00s)
+=== RUN   TestFB02_TrailerModes
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-ok
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-extra-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-signature-line-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32-chunk-signature-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-ok
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-extra-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-signature-line-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc32c-chunk-signature-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-ok
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-extra-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-signature-line-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-crc64nvme-chunk-signature-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-ok
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-extra-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-signature-line-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha1-chunk-signature-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-ok
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-extra-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-signature-line-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-unsigned-sha256-chunk-signature-in-unsigned-mode
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-ok
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-extra-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-wrong
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-over-other-value
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-missing
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-first
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32-chunk-signature-dropped
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-ok
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-extra-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-wrong
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-over-other-value
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-missing
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-first
+=== RUN   TestFB02_TrailerModes/tr-signed-crc32c-chunk-signature-dropped
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-ok
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-extra-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-wrong
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-over-other-value
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-missing
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-first
+=== RUN   TestFB02_TrailerModes/tr-signed-crc64nvme-chunk-signature-dropped
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-ok
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-extra-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-wrong
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-over-other-value
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-missing
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-first
+=== RUN   TestFB02_TrailerModes/tr-signed-sha1-chunk-signature-dropped
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-ok
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-ok-one-chunk
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-ok-uneven-chunks
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-wrong-value
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-value-wrong-length
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-value-not-base64
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-missing-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-other-algorithm-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-duplicate-checksum-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-extra-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-line-without-colon
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-bare-lf-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-cut-before-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-cut-inside-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-no-blank-line
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-garbage-after-trailer
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-x-amz-trailer-omitted
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-x-amz-trailer-names-other
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-sdk-algorithm-matches
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-wrong
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-over-other-value
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-missing
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-first
+=== RUN   TestFB02_TrailerModes/tr-signed-sha256-chunk-signature-dropped
+=== RUN   TestFB02_TrailerModes/empty-payload
+--- PASS: TestFB02_TrailerModes (0.58s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-duplicate-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-signature-line-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32-chunk-signature-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-duplicate-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-signature-line-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc32c-chunk-signature-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-ok (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-ok-one-chunk (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-ok-uneven-chunks (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-missing-checksum-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-other-algorithm-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-duplicate-checksum-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-extra-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-line-without-colon (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-bare-lf-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-cut-before-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-cut-inside-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-no-blank-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-garbage-after-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-x-amz-trailer-omitted (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-x-amz-trailer-names-other (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-sdk-algorithm-matches (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-signature-line-in-unsigned-mode (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-crc64nvme-chunk-signature-in-unsigned-mode (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-duplicate-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-signature-line-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha1-chunk-signature-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-duplicate-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-signature-line-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-unsigned-sha256-chunk-signature-in-unsigned-mode (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-duplicate-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-wrong (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-over-other-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-missing (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-trailer-signature-first (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32-chunk-signature-dropped (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-duplicate-checksum-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-wrong (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-over-other-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-missing (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-trailer-signature-first (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc32c-chunk-signature-dropped (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-ok (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-ok-one-chunk (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-ok-uneven-chunks (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-missing-checksum-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-other-algorithm-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-duplicate-checksum-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-extra-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-line-without-colon (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-bare-lf-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-cut-before-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-cut-inside-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-no-blank-line (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-garbage-after-trailer (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-x-amz-trailer-omitted (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-x-amz-trailer-names-other (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-sdk-algorithm-matches (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-wrong (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-over-other-value (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-missing (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-trailer-signature-first (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-crc64nvme-chunk-signature-dropped (0.01s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-duplicate-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-wrong (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-over-other-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-missing (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-trailer-signature-first (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha1-chunk-signature-dropped (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-ok (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-ok-one-chunk (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-ok-uneven-chunks (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-wrong-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-value-wrong-length (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-value-not-base64 (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-missing-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-other-algorithm-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-duplicate-checksum-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-extra-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-line-without-colon (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-bare-lf-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-cut-before-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-cut-inside-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-no-blank-line (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-garbage-after-trailer (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-x-amz-trailer-omitted (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-x-amz-trailer-names-other (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-sdk-algorithm-matches (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-wrong (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-over-other-value (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-missing (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-trailer-signature-first (0.00s)
+    --- PASS: TestFB02_TrailerModes/tr-signed-sha256-chunk-signature-dropped (0.00s)
+    --- PASS: TestFB02_TrailerModes/empty-payload (0.00s)
+=== RUN   TestFB02_TrailerAWSDocumentationVector
+--- PASS: TestFB02_TrailerAWSDocumentationVector (0.00s)
+=== RUN   TestFB02_MultipartChecksums
+=== RUN   TestFB02_MultipartChecksums/part-claim-mismatch
+=== RUN   TestFB02_MultipartChecksums/full-object-crc32
+=== RUN   TestFB02_MultipartChecksums/full-object-crc32c
+=== RUN   TestFB02_MultipartChecksums/full-object-crc64nvme
+=== RUN   TestFB02_MultipartChecksums/full-object-sha1
+=== RUN   TestFB02_MultipartChecksums/full-object-sha256
+=== RUN   TestFB02_MultipartChecksums/composite-claim-not-implemented
+=== RUN   TestFB02_MultipartChecksums/complete-body-md5-still-checks-xml
+--- PASS: TestFB02_MultipartChecksums (1.92s)
+    --- PASS: TestFB02_MultipartChecksums/part-claim-mismatch (0.01s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-crc32 (0.22s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-crc32c (0.21s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-crc64nvme (0.53s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-sha1 (0.32s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-sha256 (0.22s)
+    --- PASS: TestFB02_MultipartChecksums/composite-claim-not-implemented (0.20s)
+    --- PASS: TestFB02_MultipartChecksums/complete-body-md5-still-checks-xml (0.19s)
+=== RUN   TestFB02_DeleteObjectsBodyChecksum
+--- PASS: TestFB02_DeleteObjectsBodyChecksum (0.00s)
+=== RUN   TestFB02_BulkRequiresSignedPayload
+--- PASS: TestFB02_BulkRequiresSignedPayload (0.00s)
+=== RUN   TestFB02_PeerResponsesAreBounded
+=== RUN   TestFB02_PeerResponsesAreBounded/declared-length-refused-before-reading
+=== RUN   TestFB02_PeerResponsesAreBounded/endless-stream-stops-at-limit
+=== RUN   TestFB02_PeerResponsesAreBounded/chunk-fetch-bound-is-one-chunk
+=== RUN   TestFB02_PeerResponsesAreBounded/limit-is-inclusive
+--- PASS: TestFB02_PeerResponsesAreBounded (0.25s)
+    --- PASS: TestFB02_PeerResponsesAreBounded/declared-length-refused-before-reading (0.00s)
+    --- PASS: TestFB02_PeerResponsesAreBounded/endless-stream-stops-at-limit (0.25s)
+    --- PASS: TestFB02_PeerResponsesAreBounded/chunk-fetch-bound-is-one-chunk (0.00s)
+    --- PASS: TestFB02_PeerResponsesAreBounded/limit-is-inclusive (0.00s)
+=== RUN   TestFB02_PartRecordBoundary
+    zeros3_fb02_multipart_test.go:152: cap 8388608 bytes = 90198 chunks (8 widened)
+--- PASS: TestFB02_PartRecordBoundary (0.62s)
+PASS

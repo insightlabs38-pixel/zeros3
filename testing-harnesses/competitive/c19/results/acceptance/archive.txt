@@ -1,0 +1,30 @@
+=== RUN   TestAuthorityRetireEverythingSubprocess
+    zeros3_authority_test.go:5290: physical 6914154 -> 2362696 bytes; 90 of 132 chunks of body-backed versions are physically gone
+--- PASS: TestAuthorityRetireEverythingSubprocess (2.60s)
+=== RUN   TestB8CanonicalCrossFormat
+=== RUN   TestB8CanonicalCrossFormat/sequential_gzip
+--- PASS: TestB8CanonicalCrossFormat (16.73s)
+    --- PASS: TestB8CanonicalCrossFormat/sequential_gzip (0.15s)
+=== RUN   TestB8ZipExact
+--- PASS: TestB8ZipExact (4.43s)
+=== RUN   TestB8OnlineMaintenance
+--- PASS: TestB8OnlineMaintenance (5.32s)
+=== RUN   TestB8ConcurrentReads
+--- PASS: TestB8ConcurrentReads (8.67s)
+=== RUN   TestB9OldBinaryRefuses
+--- PASS: TestB9OldBinaryRefuses (10.12s)
+=== RUN   TestC2StructuredDeltaBasesUseNativeRanges
+=== RUN   TestC2StructuredDeltaBasesUseNativeRanges/testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet
+=== RUN   TestC2StructuredDeltaBasesUseNativeRanges/testdata/p7/rocksdb_lz4_small.sst
+--- PASS: TestC2StructuredDeltaBasesUseNativeRanges (0.03s)
+    --- PASS: TestC2StructuredDeltaBasesUseNativeRanges/testing-harnesses/z3/parquetz3/testdata/pa_snappy_v1.parquet (0.02s)
+    --- PASS: TestC2StructuredDeltaBasesUseNativeRanges/testdata/p7/rocksdb_lz4_small.sst (0.01s)
+=== RUN   TestC2SpliceWindowReuseAndExactFailure
+--- PASS: TestC2SpliceWindowReuseAndExactFailure (0.00s)
+=== RUN   TestC2ArchiveFinishProcessKill
+=== RUN   TestC2ArchiveFinishProcessKill/authority-archive-after-gc
+=== RUN   TestC2ArchiveFinishProcessKill/authority-archive-after-repack
+--- PASS: TestC2ArchiveFinishProcessKill (0.46s)
+    --- PASS: TestC2ArchiveFinishProcessKill/authority-archive-after-gc (0.22s)
+    --- PASS: TestC2ArchiveFinishProcessKill/authority-archive-after-repack (0.23s)
+PASS
