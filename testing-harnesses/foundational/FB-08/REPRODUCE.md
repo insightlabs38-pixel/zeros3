@@ -23,3 +23,12 @@ and changes a signed transport chunk to test both validation layers.
 GOMAXPROCS=2 go test -run '^$' -fuzz '^FuzzFB08NativeStreamPlan$' \
   -fuzztime=5s -parallel=2 .
 ```
+
+`TestFB08NativeWireSelection` uses 64 KiB ranges in the current
+`zeros3.go` and independently generated entropy. It rotates raw
+and selected modes, throttles reads from the signed upload at
+10 Mbit/s, measures actual HTTP body bytes, and reads every result
+back from the receiver. Run without the race detector and without
+competing builds for timing. The high-rate mode uses a 1,000 Mbit/s
+hint and an unthrottled loopback socket. Check service times and
+payload sizes separately.

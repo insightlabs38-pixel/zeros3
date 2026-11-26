@@ -35308,6 +35308,7 @@ func runReplicate(args []string) {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket, instead of a single object")
 	protocol3 := fs.Bool("protocol3", false, "use independently negotiated native batches for recursive CDC replication when both peers support them")
+	wireLink := fs.Int("wire-link-mbit", 0, "measured destination link rate for native wire compression (0 keeps raw streaming)")
 	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything")
 	authority := fs.Bool("authority-closure", false, "attempt negotiated native closures when they cost less than transferring missing CDC chunks")
 	authorityBase := fs.String("authority-base", "", "optional s3:// URI of a related object in the destination bucket; requires -authority-closure and a single real replication")
@@ -35335,6 +35336,10 @@ func runReplicate(args []string) {
 	}
 	if err := validateWorkers(*workers); err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: replicate: -workers: %v\n", err)
+		os.Exit(2)
+	}
+	if *wireLink < 0 {
+		fmt.Fprintln(os.Stderr, "zeros3: replicate: -wire-link-mbit must be nonnegative")
 		os.Exit(2)
 	}
 
@@ -35375,6 +35380,7 @@ func runReplicate(args []string) {
 			PreferAuthority: *authority,
 			IfUnchanged:     *ifUnchanged,
 			NativeBatch:     *protocol3,
+			NativeWireMbit:  *wireLink,
 		}
 		if *dryRun {
 			result, err := planReplicationNamespace(cfg)
@@ -36441,11 +36447,12 @@ type nsReplicateFailure struct {
 // own accounting rule (section 15c). Nothing here is persisted, and no
 // persistent format changed to support it.
 type nsReplicateResult struct {
-	Discovered int // objects returned by source enumeration
-	Replicated int
-	Failed     int
-	Failures   []nsReplicateFailure
-	Stats      syncStats
+	Discovered      int // objects returned by source enumeration
+	Replicated      int
+	Failed          int
+	Failures        []nsReplicateFailure
+	Stats           syncStats
+	NativeWireBytes int64 // signed upload body bytes for acknowledged native streams
 }
 
 // OK reports whether every discovered object replicated successfully.
@@ -36463,6 +36470,7 @@ func (r nsReplicateResult) OK() bool { return r.Failed == 0 }
 type namespaceReplicateConfig struct {
 	PreferAuthority bool
 	NativeBatch     bool
+	NativeWireMbit  int
 	Source          syncClientConfig
 	SourcePrefix    string
 	Dest            syncClientConfig
@@ -36608,13 +36616,20 @@ func wireAWSChunkSize(data int64) int64 {
 	return data + int64(len(strconv.FormatInt(data, 16))+len(awsChunkSigMarker)+2*sha256.Size+4)
 }
 
+func nativeStreamWireBytes(records []nativeStreamRecord) int64 {
+	bytes := wireAWSChunkSize(int64(nativeStreamHeader+len(records)*nativeStreamRecordSize)) +
+		wireAWSChunkSize(nativeStreamEnd) + wireAWSChunkSize(0)
+	for _, record := range records {
+		bytes += wireAWSChunkSize(int64(record.wire))
+	}
+	return bytes
+}
+
 func postNativeStream(ctx context.Context, cfg syncClientConfig, records []nativeStreamRecord,
 	produce func(context.Context, func(int, []byte) error) error) error {
 	head, end, decoded := encodeNativeStreamPlan(records)
-	wired := wireAWSChunkSize(int64(len(head))) + wireAWSChunkSize(int64(len(end))) + wireAWSChunkSize(0)
 	var logical int64
 	for _, rec := range records {
-		wired += wireAWSChunkSize(int64(rec.wire))
 		logical += int64(rec.logical)
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -36626,7 +36641,7 @@ func postNativeStream(ctx context.Context, cfg syncClientConfig, records []nativ
 	if err != nil {
 		return err
 	}
-	r.ContentLength = wired
+	r.ContentLength = nativeStreamWireBytes(records)
 	r.Header.Set("Content-Encoding", "aws-chunked")
 	r.Header.Set("X-Amz-Decoded-Content-Length", strconv.FormatInt(decoded, 10))
 	if err := signSigV4Request(r, cfg.Creds, cfg.Region, sigv4SentinelStreamingHMAC, time.Now()); err != nil {
@@ -36712,7 +36727,25 @@ func postNativeStream(ctx context.Context, cfg syncClientConfig, records []nativ
 	return nil
 }
 
-func relayNativeStreams(workers int, source, dest syncClientConfig, discovery syncDiscoveryResponse, want []syncChunkDescriptor) error {
+const nativeWireFastMbit = 200
+
+func chooseNativeWireCodec(compressor *packCompressor, logical []byte, linkMbit int) ([]byte, byte) {
+	if len(logical) < 4096 {
+		return logical, packCodecRaw
+	}
+	sample := logical[:4096]
+	start := time.Now()
+	encoded, codec := compressor.encodeIndependent(sample)
+	probeNanos := float64(time.Since(start))
+	fraction := float64(len(logical)) / float64(len(sample))
+	savedNanos := float64(len(sample)-len(encoded)) * fraction * 8000 / float64(linkMbit)
+	if codec != packCodecDeflate || len(encoded)*8 > len(sample)*7 || savedNanos < 2*probeNanos*fraction {
+		return logical, packCodecRaw
+	}
+	return compressor.encodeIndependent(logical)
+}
+
+func relayNativeStreams(workers int, source, dest syncClientConfig, discovery syncDiscoveryResponse, want []syncChunkDescriptor, linkMbit int) (int64, error) {
 	caps, bulk := bulkCapsOf(discovery)
 	policy := bulkPolicy{maxRecords: maxNativeStreamRecords, targetBytes: maxNativeStreamLogical}
 	if bulk {
@@ -36721,17 +36754,19 @@ func relayNativeStreams(workers int, source, dest syncClientConfig, discovery sy
 	}
 	batches := planBulkBatches(want, policy)
 	work := make([]transferWork, 0, len(batches))
+	var wireBytes atomic.Int64
 	for _, chunks := range batches {
 		records := make([]nativeStreamRecord, len(chunks))
 		for i, d := range chunks {
 			sum, _, err := normalizedSyncDigest(d.SHA256, d.Length)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			records[i] = nativeStreamRecord{sum: sum, logical: uint32(d.Length), wire: uint32(d.Length), codec: packCodecRaw}
 		}
-		work = append(work, transferWork{SHA256: chunks[0].SHA256, Length: bulkDescriptorBytes(chunks), Do: func(ctx context.Context) error {
-			return postNativeStream(ctx, dest, records, func(ctx context.Context, emit func(int, []byte) error) error {
+		length := bulkDescriptorBytes(chunks)
+		work = append(work, transferWork{SHA256: chunks[0].SHA256, Length: length, Do: func(ctx context.Context) error {
+			produce := func(ctx context.Context, emit func(int, []byte) error) error {
 				if bulk {
 					return fetchBulkChunks(ctx, source, chunks, emit, nil)
 				}
@@ -36745,10 +36780,44 @@ func relayNativeStreams(workers int, source, dest syncClientConfig, discovery sy
 					}
 				}
 				return nil
-			})
+			}
+			if linkMbit > 0 && linkMbit < nativeWireFastMbit {
+				release, err := bulkBudget.acquire(ctx, length)
+				if err != nil {
+					return err
+				}
+				defer release()
+				compressor := newBlockCompressor(true, 0)
+				payloads := make([][]byte, len(records))
+				if err := produce(ctx, func(i int, data []byte) error {
+					if len(data) != int(records[i].logical) {
+						return errors.New("source relay length disagrees with its descriptor")
+					}
+					wire, codec := chooseNativeWireCodec(compressor, data, linkMbit)
+					payloads[i] = bytes.Clone(wire)
+					records[i].wire, records[i].codec = uint32(len(wire)), codec
+					return nil
+				}); err != nil {
+					return err
+				}
+				produce = func(_ context.Context, emit func(int, []byte) error) error {
+					for i, data := range payloads {
+						if err := emit(i, data); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+			}
+			if err := postNativeStream(ctx, dest, records, produce); err != nil {
+				return err
+			}
+			wireBytes.Add(nativeStreamWireBytes(records))
+			return nil
 		}})
 	}
-	return firstTransferError(runTransferWorkers(context.Background(), bulkWorkers(workers), work, true))
+	err := firstTransferError(runTransferWorkers(context.Background(), bulkWorkers(workers), work, true))
+	return wireBytes.Load(), err
 }
 
 func nativeObjectDescription(item nativeBatchItem, requested nativeBatchObject) (syncObjectDescriptor, error) {
@@ -36895,7 +36964,9 @@ func replicateNativeWindow(cfg namespaceReplicateConfig, src, dst syncDiscoveryR
 	}
 	var transferErr error
 	if dst.NativeStream {
-		transferErr = relayNativeStreams(workers, cfg.Source, cfg.Dest, src, want)
+		var wire int64
+		wire, transferErr = relayNativeStreams(workers, cfg.Source, cfg.Dest, src, want, cfg.NativeWireMbit)
+		result.NativeWireBytes += wire
 	} else {
 		transferErr = relayMissingChunks(workers, cfg.Source, cfg.Dest, src, dst, want, "native replication")
 	}
@@ -36964,6 +37035,9 @@ func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
 		fmt.Fprintf(w, "  left unchanged:        %d (already equivalent)\n", r.Stats.Unchanged)
 	}
 	fmt.Fprintf(w, "Failed:                  %d\n", r.Failed)
+	if r.NativeWireBytes != 0 {
+		fmt.Fprintf(w, "Signed native upload:    %s\n", humanBytes(r.NativeWireBytes))
+	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "Logical data:            %s\n", humanBytes(r.Stats.LogicalBytes))
 	fmt.Fprintf(w, "Source chunks:           %d\n", r.Stats.TotalChunks)

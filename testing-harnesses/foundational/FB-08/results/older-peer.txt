@@ -1,0 +1,1 @@
+pre-v3 server and v3 recursive CLI: three exact objects through the negotiated legacy path
