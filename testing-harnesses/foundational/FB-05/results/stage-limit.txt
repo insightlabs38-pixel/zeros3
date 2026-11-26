@@ -1,0 +1,14 @@
+=== RUN   TestFB05RewriteBudgetRetiresDeadSeparately
+    zeros3_fb05_test.go:65: source budget 49807: dead=49808 deferred=99616; budget 49808: rewritten source=49808 deferred=49808 physical output=41520
+--- PASS: TestFB05RewriteBudgetRetiresDeadSeparately (0.02s)
+=== RUN   TestFB05RawCompressionAdmission
+=== RUN   TestFB05RawCompressionAdmission/compressible
+    zeros3_fb05_test.go:119: stage_limit=900 deferred="replacement packs exceed the online staging byte budget" published=0 retired=0
+    zeros3_fb05_test.go:148: compressible: source=93392 probe=7680 admitted=93392 written=2026 retired=1 declined=0 next_source=0 next_probe=0
+=== RUN   TestFB05RawCompressionAdmission/entropy
+    zeros3_fb05_test.go:148: entropy: source=99536 probe=24576 admitted=0 written=0 retired=0 declined=1 next_source=99536 next_probe=0
+--- PASS: TestFB05RawCompressionAdmission (0.03s)
+    --- PASS: TestFB05RawCompressionAdmission/compressible (0.02s)
+    --- PASS: TestFB05RawCompressionAdmission/entropy (0.01s)
+PASS
+ok  	zeros3	0.052s

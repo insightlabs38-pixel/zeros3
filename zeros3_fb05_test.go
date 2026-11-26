@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"testing"
 )
@@ -99,6 +100,30 @@ func TestFB05RawCompressionAdmission(t *testing.T) {
 			opt := b4Opts()
 			opt.MaxRewriteBytes = 1 << 20
 			opt.RecompressRaw = true
+			if mode == "compressible" {
+				// Each replacement can fit on its own. The complete group
+				// cannot fit and must leave the source intact on restart.
+				opt.TargetBytes = 24 << 10
+				opt.MaxStageBytes = 900
+				limited, err := s.maintainOnline(context.Background(), opt)
+				mustOK(t, err)
+				if limited.Deferred != errMaintStageBudget.Error() || limited.RawProbeBytes == 0 ||
+					limited.PacksRetired != 0 || limited.PacksWritten != 0 || limited.PendingPacks != 0 {
+					t.Fatalf("staging limit published or retired packs: %+v", limited)
+				}
+				tmp, err := os.ReadDir(tierTmpDir(dir, tierHot))
+				mustOK(t, err)
+				if len(tmp) != 0 {
+					t.Fatalf("failed staging left %d temporary entries", len(tmp))
+				}
+				t.Logf("stage_limit=%d deferred=%q published=%d retired=%d", opt.MaxStageBytes,
+					limited.Deferred, limited.PacksWritten, limited.PacksRetired)
+				mustOK(t, s.Close())
+				b4Verify(t, dir, want)
+				s = b4OpenMaint(t, dir)
+				defer s.Close()
+				opt.MaxStageBytes = 4 << 10
+			}
 			first, err := s.maintainOnline(context.Background(), opt)
 			mustOK(t, err)
 			if first.RawCandidateBytes == 0 || first.RawProbeBytes == 0 {
@@ -106,7 +131,8 @@ func TestFB05RawCompressionAdmission(t *testing.T) {
 			}
 			switch mode {
 			case "compressible":
-				if first.PacksRetired == 0 || first.BytesWritten >= first.RawCandidateBytes/2 {
+				if first.PacksRetired == 0 || first.PacksWritten < 2 || first.BytesWritten > opt.MaxStageBytes ||
+					first.BytesWritten >= first.RawCandidateBytes/2 {
 					t.Fatalf("compression did not pay: %+v", first)
 				}
 			case "entropy":

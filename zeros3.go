@@ -22698,15 +22698,17 @@ func (w *packWriter) close() {
 // repack, rebalance and direct ingest all build packs through it -- and it
 // retains only compact packEntry metadata, never record payloads.
 type packBuilder struct {
-	f       *os.File
-	path    string
-	w       *packWriter
-	sum     [32]byte // body SHA-256, set by Finish
-	comp    *packCompressor
-	entries []packEntry
-	off     uint64
-	logical int64
-	done    bool
+	f          *os.File
+	path       string
+	w          *packWriter
+	sum        [32]byte // body SHA-256, set by Finish
+	comp       *packCompressor
+	entries    []packEntry
+	off        uint64
+	logical    int64
+	done       bool
+	limitBytes int64
+	limitHit   bool
 }
 
 // newPackBuilder creates the staging file in tier t's staging directory. comp
@@ -22737,6 +22739,11 @@ func (b *packBuilder) Add(sum [32]byte, data []byte) {
 // addEncoded appends a record whose payload is already encoded (data of
 // logical bytes, stored as payload under codec).
 func (b *packBuilder) addEncoded(sum [32]byte, logical int, payload []byte, codec byte) {
+	if b.limitBytes > 0 && int64(b.off)+int64(len(b.entries))*packIndexEntrySize+
+		int64(len(payload))+packRecordBytes+packFooterSize > b.limitBytes {
+		b.limitHit = true
+		return
+	}
 	e := packEntry{sha: sum, off: b.off + packRecordHeaderSize, stored: uint32(len(payload)), logical: uint32(logical), codec: codec}
 	var rec [packRecordHeaderSize]byte
 	putPackRecordHeader(rec[:], e)
@@ -22761,6 +22768,9 @@ func (b *packBuilder) Finish() (string, []packEntry, error) {
 	fail := func(err error) (string, []packEntry, error) {
 		b.Abort()
 		return "", nil, err
+	}
+	if b.limitHit {
+		return fail(errMaintStageBudget)
 	}
 	index := make([]byte, len(b.entries)*packIndexEntrySize)
 	for i, e := range b.entries {
@@ -22831,10 +22841,18 @@ func (b *packBuilder) readRecord(i int) ([]byte, error) {
 // pack is abandoned (an error). Failures (but not simulated crashes)
 // remove the staging file.
 func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor) (string, []packEntry, error) {
+	return s.stagePackWithin(t, batch, read, skip, comp, -1)
+}
+
+func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor, stageBytes int64) (string, []packEntry, error) {
+	if stageBytes >= 0 && stageBytes < packFixedBytes {
+		return "", nil, errMaintStageBudget
+	}
 	b, err := s.newPackBuilder(t, comp, len(batch))
 	if err != nil {
 		return "", nil, err
 	}
+	b.limitBytes = stageBytes
 	if comp != nil {
 		comp.blk, comp.preset = nil, false
 		if len(comp.prefix) > 0 {
@@ -22864,7 +22882,14 @@ func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) 
 				continue
 			}
 			b.Add(c.sum, data)
+			if b.limitHit {
+				break
+			}
 		}
+	}
+	if b.limitHit {
+		b.Abort()
+		return "", nil, errMaintStageBudget
 	}
 	if comp != nil && comp.blk != nil {
 		if b.Records() == 1 {
@@ -23063,6 +23088,12 @@ func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, r
 				continue
 			}
 			b.addEncoded(c.sum, len(r.data), r.payload, r.codec)
+			if b.limitHit {
+				if pending != nil {
+					<-pending
+				}
+				return errMaintStageBudget
+			}
 		}
 	}
 	return nil
@@ -23345,6 +23376,7 @@ type packEncoding struct {
 	keepUnchanged bool
 	BlockLog      uint8 // restartable records (codec 2) of 1<<BlockLog byte blocks; 0: none
 	Prefix        []byte
+	maxStageBytes int64 // total bytes of simultaneously staged replacement packs
 	// order, when set, reorders the records carried into tier t (default: their source physical order).
 	order func(t tier, cands []compactCandidate)
 	// checkpoint runs before staging a replacement batch, outside publication locks.
@@ -23736,6 +23768,10 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 		return false
 	}
 
+	stageRemaining := int64(-1)
+	if enc.maxStageBytes > 0 {
+		stageRemaining = enc.maxStageBytes
+	}
 	for _, pl := range plans {
 		for _, batch := range pl.batches {
 			if enc.checkpoint != nil {
@@ -23746,12 +23782,16 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 			if keep(pl.t, batch) {
 				continue
 			}
-			path, entries, err := s.stagePack(pl.t, batch, read, abort, comp)
+			path, entries, err := s.stagePackWithin(pl.t, batch, read, abort, comp, stageRemaining)
 			if err != nil {
 				return nil, err
 			}
 			if path != "" {
 				staged = append(staged, stagedPack{pl.t, path, entries, len(entries) - len(comp.packChunkEntries(entries))})
+				if stageRemaining >= 0 {
+					last := entries[len(entries)-1]
+					stageRemaining -= int64(last.off) + int64(last.stored) + int64(len(entries))*packIndexEntrySize + packFooterSize
+				}
 			}
 		}
 	}
@@ -24627,10 +24667,11 @@ func (s *Store) beginRead() func() {
 }
 
 var (
-	errMaintWait     = errors.New("maintenance: operations did not drain within the wait limit")
-	errMaintBusy     = errors.New("maintenance: another pass is running")
-	errMaintNotOwner = errors.New("maintenance: the store was not opened for online maintenance")
-	errMaintOwned    = errors.New("store is served by a process running online maintenance")
+	errMaintWait        = errors.New("maintenance: operations did not drain within the wait limit")
+	errMaintStageBudget = errors.New("replacement packs exceed the online staging byte budget")
+	errMaintBusy        = errors.New("maintenance: another pass is running")
+	errMaintNotOwner    = errors.New("maintenance: the store was not opened for online maintenance")
+	errMaintOwned       = errors.New("store is served by a process running online maintenance")
 )
 
 // ---- pins ----------------------------------------------------------------
@@ -25363,6 +25404,7 @@ type MaintOptions struct {
 	MaxSourcePacks  int           `json:"max_source_packs"`
 	RecompressRaw   bool          `json:"recompress_raw,omitempty"`
 	MaxRewriteBytes int64         `json:"max_rewrite_source_bytes,omitempty"` // input pack bytes; dead packs consume none
+	MaxStageBytes   int64         `json:"max_stage_bytes,omitempty"`          // concurrently staged replacement pack bytes
 	MaxLivePercent  int           `json:"max_live_percent"`
 	TargetBytes     int64         `json:"target_bytes"`
 	Compress        bool          `json:"compress"`
@@ -25373,7 +25415,7 @@ type MaintOptions struct {
 }
 
 func (o MaintOptions) encoding() packEncoding {
-	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog}
+	return packEncoding{Compress: o.Compress, BlockLog: o.BlockLog, maxStageBytes: o.MaxStageBytes}
 }
 
 func defaultMaintOptions() MaintOptions {
@@ -25590,6 +25632,10 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		rep.BytesWritten += rres.BytesWritten
 		rep.HeldPacks += rres.HeldPacks
 		if err != nil {
+			if errors.Is(err, errMaintStageBudget) {
+				rep.Deferred = err.Error()
+				return rep, nil
+			}
 			return rep, fmt.Errorf("maintenance: %w", err)
 		}
 		fireTestHook(hookMaintCarried)
@@ -25639,11 +25685,19 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 	n, err := s.maintCarryExtra(late, carry, opt, &rep)
 	rep.LateRecords += n
 	if err != nil {
+		if errors.Is(err, errMaintStageBudget) {
+			rep.Deferred = err.Error()
+			return rep, nil
+		}
 		return rep, err
 	}
 
 	if carry != nil {
 		if err := s.maintSwap(ep, carry, condemned, tierOf, opt, &rep); err != nil {
+			if errors.Is(err, errMaintStageBudget) {
+				rep.Deferred = err.Error()
+				return rep, nil
+			}
 			return rep, err
 		}
 	}
@@ -26013,11 +26067,15 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 		bad = append(bad, carryFailure{c.sum, err})
 		return nil // isolated below: its packs stay in place
 	}
+	stageBytes := int64(-1)
+	if opt.MaxStageBytes > 0 {
+		stageBytes = opt.MaxStageBytes
+	}
 	for t := range numTiers {
 		if len(by[t]) == 0 {
 			continue
 		}
-		path, entries, err := s.stagePack(t, by[t], read, abort, comp)
+		path, entries, err := s.stagePackWithin(t, by[t], read, abort, comp, stageBytes)
 		if err != nil {
 			return n, err
 		}
@@ -37504,6 +37562,7 @@ func runServe(args []string) {
 	maintPacks := fs.Int("maintenance-max-source-packs", 8, "online maintenance: most packs retired or rewritten per pass")
 	maintRaw := fs.Bool("maintenance-recompress-raw", false, "screen and compress verified raw packs within the online rewrite budget")
 	maintRewriteMiB := fs.Int64("maintenance-max-rewrite-mib", 0, "online maintenance: source MiB budget for rewrites (0 uses the pack-count policy); fully dead sources are outside this budget")
+	maintStageMiB := fs.Int64("maintenance-max-stage-mib", 0, "online maintenance: cap concurrently staged replacement pack MiB (0 is unlimited)")
 	maintLive := fs.Int("maintenance-max-live-percent", defaultRepackMaxLivePercent, "online repack: rewrite packs whose live share is below this percentage")
 	maintDeletes := fs.Int("maintenance-max-deletes", 1<<18, "online gc: most loose files and roots removed per pass")
 	maintWait := fs.Duration("maintenance-wait", 10*time.Minute, "online maintenance: longest wait for in-flight requests at each grace period before a pass defers")
@@ -37543,6 +37602,11 @@ func runServe(args []string) {
 		os.Exit(2)
 	}
 	maintOpt.MaxRewriteBytes, maintOpt.RecompressRaw = *maintRewriteMiB<<20, *maintRaw
+	if *maintStageMiB < 0 || *maintStageMiB > math.MaxInt64>>20 {
+		fmt.Fprintln(os.Stderr, "zeros3: serve: invalid -maintenance-max-stage-mib")
+		os.Exit(2)
+	}
+	maintOpt.MaxStageBytes = *maintStageMiB << 20
 	if *maintRaw && (*maintMode != "all" || maintOpt.MaxRewriteBytes <= 0) {
 		fmt.Fprintln(os.Stderr, "zeros3: serve: -maintenance-recompress-raw requires -maintenance all and a positive rewrite budget")
 		os.Exit(2)

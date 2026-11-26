@@ -15,3 +15,5 @@ To check screened compression, run `TestFB05RawCompressionAdmission`
 with the same compiler. The positive source uses distinct numbered
 text, the control uses deterministic random bytes, and both start
 with all-raw packs. Run both passes and verify from a fresh process.
+The positive source also tests an insufficient aggregate scratch
+budget followed by verification, reopen and a successful retry.

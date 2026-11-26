@@ -15,8 +15,7 @@ A 49,808-byte limit admitted exactly one partial pack and produced a
 41,520-byte replacement. Exact reads and deep verification passed
 after reopen. Focused cancellation and damaged-record controls passed.
 
-Source admission is distinct from temporary output, CPU use and
-late or revived records. Compression debt, scratch budgets, restart
+Source admission bounds input pack bytes. Compression debt, restart
 cuts for each job, X9 comparisons and explicit lifecycle scope remain
 open. [Reproduction](REPRODUCE.md) · [Evidence](results/)
 
@@ -33,3 +32,13 @@ source sampled 24,576 bytes and wrote nothing. The second pass
 read no sample payload in either case. Reopened data and deep
 verification matched. Real-series debt and foreground tests are
 still pending.
+
+`-maintenance-max-stage-mib` bounds concurrent replacement pack
+staging, including dictionary records, indexes and footers. An
+exhausted pass defers without retiring the source. A 900-byte
+test cap allowed an individual pack but forced a group deferral.
+The stage directory was empty after return, and offline verification
+after reopening found every object intact. A 4 KiB cap admitted
+the same group, which published 2,026 bytes across multiple packs.
+The option covers pack staging. Grouped authority compaction and
+the store's foreground staging have separate controls.
