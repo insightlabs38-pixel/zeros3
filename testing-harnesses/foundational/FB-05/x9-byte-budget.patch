@@ -1,0 +1,65 @@
+--- a/cmds.go
++++ b/cmds.go
+@@ -51,0 +52,2 @@
++	budgetMiB := fs.Int64("budget-mib", 0, "source MiB per pass; fully dead packs cost no rewrite bytes")
++	seriesOnly := fs.Bool("series-only", false, "real trace: omit the two one-off toolchain archives")
+@@ -86 +88 @@
+-		w = realWorkload(td)
++		w = realWorkload(td, *seriesOnly)
+@@ -125 +127 @@
+-						jl = append(jl, job{len(jl), Config{Policy: pol, Ret: ret, TargetBytes: tb, Threshold: th, Budget: *budget, PassesPerStep: *pps,
++						jl = append(jl, job{len(jl), Config{Policy: pol, Ret: ret, TargetBytes: tb, Threshold: th, Budget: *budget, BudgetBytes: *budgetMiB << 20, PassesPerStep: *pps,
+--- a/loaders.go
++++ b/loaders.go
+@@ -104 +104 @@
+-func realWorkload(td *traceData) *Workload {
++func realWorkload(td *traceData, seriesOnly bool) *Workload {
+@@ -131 +131,3 @@
+-	puts = append(puts, put{serGosrc, 1, 1}, put{serGotools, 1, 17})
++	if !seriesOnly {
++		puts = append(puts, put{serGosrc, 1, 1}, put{serGotools, 1, 17})
++	}
+--- a/sim.go
++++ b/sim.go
+@@ -98 +98,2 @@
+-	Budget         int     // max source packs per pass, 0 unbounded
++	BudgetBytes    int64
++	Budget         int // max source packs per pass, 0 unbounded
+--- a/simrun.go
++++ b/simrun.go
+@@ -16,0 +17 @@
++	BudgetBytes     int64          `json:"budget_bytes,omitempty"`
+@@ -337 +338,29 @@
+-	if s.cfg.Budget > 0 && len(cands) > s.cfg.Budget {
++	if s.cfg.BudgetBytes > 0 {
++		slices.SortStableFunc(cands, func(a, b cand) int {
++			if a.full != b.full {
++				if a.full {
++					return -1
++				}
++				return 1
++			}
++			as, bs := s.packs[a.pi].size, s.packs[b.pi].size
++			if order := cmp.Compare(float64(b.recl)/float64(bs), float64(a.recl)/float64(as)); order != 0 {
++				return order
++			}
++			return cmp.Compare(b.recl, a.recl)
++		})
++		remaining := s.cfg.BudgetBytes
++		kept := cands[:0]
++		for _, c := range cands {
++			if !c.full {
++				size := s.packs[c.pi].size
++				if size > remaining {
++					s.deferredSum++
++					continue
++				}
++				remaining -= size
++			}
++			kept = append(kept, c)
++		}
++		cands = kept
++	} else if s.cfg.Budget > 0 && len(cands) > s.cfg.Budget {
+@@ -638 +667 @@
+-		TargetMiB: float64(s.cfg.TargetBytes) / (1 << 20), Threshold: s.cfg.Threshold, Budget: s.cfg.Budget,
++		TargetMiB: float64(s.cfg.TargetBytes) / (1 << 20), Threshold: s.cfg.Threshold, Budget: s.cfg.Budget, BudgetBytes: s.cfg.BudgetBytes,

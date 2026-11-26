@@ -1,0 +1,2 @@
+PASS
+ok  	zeros3	9.714s

@@ -1,0 +1,10 @@
+--- PASS: TestB4CrashCutsRecover (6.25s)
+--- PASS: TestB4CancelledPass (0.87s)
+--- PASS: TestFB04X_NoJournalFsyncUnderStoreMu (0.20s)
+=== RUN   TestFB05StageCheckpointCancelsLargePack
+--- PASS: TestFB05StageCheckpointCancelsLargePack (0.02s)
+--- PASS: TestFB05RewriteBudgetRetiresDeadSeparately (0.12s)
+--- PASS: TestFB05MultipartExpiryScopeAndRetry (0.04s)
+--- PASS: TestFB05RawCompressionAdmission (0.17s)
+PASS
+ok  	zeros3	8.813s

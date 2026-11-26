@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,6 +13,34 @@ import (
 	"testing"
 	"time"
 )
+
+func TestFB05StageCheckpointCancelsLargePack(t *testing.T) {
+	s := b4OpenMaint(t, t.TempDir())
+	defer s.Close()
+	bodies := make(map[[32]byte][]byte)
+	var batch []compactCandidate
+	for i := range 32 {
+		data := bytes.Repeat([]byte{byte(i)}, 32<<10)
+		sum := sha256.Sum256(data)
+		bodies[sum] = data
+		batch = append(batch, compactCandidate{sum: sum, size: int64(len(data))})
+	}
+	reads := 0
+	read := func(sum [32]byte) ([]byte, error) {
+		reads++
+		return bodies[sum], nil
+	}
+	path, _, err := s.stagePackWithin(tierHot, batch, read, nil, newBlockCompressor(true, 0), 1<<20,
+		func() error { return context.Canceled })
+	if !errors.Is(err, context.Canceled) || path != "" || reads != 8 {
+		t.Fatalf("checkpoint should cancel at 256 KiB: %q, %d reads, %v", path, reads, err)
+	}
+	files, err := os.ReadDir(tierTmpDir(s.root, tierHot))
+	mustOK(t, err)
+	if len(files) != 0 {
+		t.Fatalf("staging cancellation left %d temporary files", len(files))
+	}
+}
 
 func TestFB05RewriteBudgetRetiresDeadSeparately(t *testing.T) {
 	original := b4FixturePackBytes

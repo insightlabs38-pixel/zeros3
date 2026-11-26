@@ -22840,10 +22840,10 @@ func (b *packBuilder) readRecord(i int) ([]byte, error) {
 // pack is abandoned (an error). Failures (but not simulated crashes)
 // remove the staging file.
 func (s *Store) stagePack(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor) (string, []packEntry, error) {
-	return s.stagePackWithin(t, batch, read, skip, comp, -1)
+	return s.stagePackWithin(t, batch, read, skip, comp, -1, nil)
 }
 
-func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor, stageBytes int64) (string, []packEntry, error) {
+func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, comp *packCompressor, stageBytes int64, checkpoint func() error) (string, []packEntry, error) {
 	if stageBytes >= 0 && stageBytes < packFixedBytes {
 		return "", nil, errMaintStageBudget
 	}
@@ -22852,6 +22852,18 @@ func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]
 		return "", nil, err
 	}
 	b.limitBytes = stageBytes
+	var pause func(int64) error
+	if checkpoint != nil {
+		var workBytes int64
+		pause = func(n int64) error {
+			workBytes += n
+			if workBytes < 256<<10 {
+				return nil
+			}
+			workBytes = 0
+			return checkpoint()
+		}
+	}
 	if comp != nil {
 		comp.blk, comp.preset = nil, false
 		if len(comp.prefix) > 0 {
@@ -22866,7 +22878,7 @@ func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]
 		}
 	}
 	if workers := maintWorkers(); workers > 1 && len(batch) >= 2*stageWindowRecords {
-		if err := s.stageRecordsParallel(b, batch, read, skip, comp, workers); err != nil {
+		if err := s.stageRecordsParallel(b, batch, read, skip, comp, workers, pause); err != nil {
 			b.Abort()
 			return "", nil, err
 		}
@@ -22883,6 +22895,12 @@ func (s *Store) stagePackWithin(t tier, batch []compactCandidate, read func([32]
 			b.Add(c.sum, data)
 			if b.limitHit {
 				break
+			}
+			if pause != nil {
+				if err := pause(int64(len(data))); err != nil {
+					b.Abort()
+					return "", nil, err
+				}
 			}
 		}
 	}
@@ -23015,7 +23033,7 @@ type stagedRecord struct {
 // previous window is appended. The appended bytes (and so the pack's digest)
 // are identical to the serial result; at most two windows are in flight, each
 // bounded by stageWindowRecords / stageWindowBytes.
-func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, tmpl *packCompressor, workers int) error {
+func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, read func([32]byte) ([]byte, error), skip func(compactCandidate, error) error, tmpl *packCompressor, workers int, pause func(int64) error) error {
 	windowEnd := func(lo int) int {
 		hi, bytes := lo, int64(0)
 		for hi < len(batch) && hi-lo < stageWindowRecords && (hi == lo || bytes+batch[hi].size <= stageWindowBytes) {
@@ -23072,6 +23090,15 @@ func (s *Store) stageRecordsParallel(b *packBuilder, batch []compactCandidate, r
 	for pending != nil {
 		w := <-pending
 		pending = nil
+		if pause != nil {
+			var workBytes int64
+			for _, record := range w.recs {
+				workBytes += int64(len(record.data))
+			}
+			if err := pause(workBytes); err != nil {
+				return err
+			}
+		}
 		if next := w.lo + len(w.recs); next < len(batch) {
 			pending = start(next)
 		}
@@ -23781,7 +23808,7 @@ func (s *Store) carryLivePacksOnce(doomed []packUsage, live *liveSet, dest func(
 			if keep(pl.t, batch) {
 				continue
 			}
-			path, entries, err := s.stagePackWithin(pl.t, batch, read, abort, comp, stageRemaining)
+			path, entries, err := s.stagePackWithin(pl.t, batch, read, abort, comp, stageRemaining, enc.checkpoint)
 			if err != nil {
 				return nil, err
 			}
@@ -25087,6 +25114,7 @@ func (r *retireSet) unlinkSwapped(rep *MaintReport, fds *packFDCache) error {
 		delete(r.m, k)
 		dirs[filepath.Dir(e.path)] = true
 		rep.PacksRetired++
+		rep.PackBytesReclaimed += e.size
 		rep.BytesReclaimed += e.size
 	}
 	for _, d := range slices.Sorted(maps.Keys(dirs)) {
@@ -25412,6 +25440,7 @@ type MaintOptions struct {
 	BlockLog        uint8                `json:"record_block_log,omitempty"` // restartable records in replacement packs
 	Layout          packLayout           `json:"-"`                          // layoutRecon: also relayout packs by reconstruction co-access
 	MultipartExpiry *multipartExpiryRule `json:"multipart_expiry,omitempty"`
+	DutyPercent     int                  `json:"duty_percent,omitempty"` // maximum target active share between checkpoints
 }
 
 // multipartExpiryRule implements locally configured
@@ -25502,6 +25531,7 @@ type MaintReport struct {
 	ReaderWaitMS int64 `json:"reader_wait_ms"`
 	ScanMS       int64 `json:"scan_ms"`
 	YieldMicros  int64 `json:"yield_us,omitempty"`
+	PaceMicros   int64 `json:"pace_us,omitempty"`
 
 	CandidatePacks      int   `json:"candidate_packs"`
 	RewriteSourceBytes  int64 `json:"rewrite_source_bytes,omitempty"`
@@ -25517,6 +25547,7 @@ type MaintReport struct {
 	LateRecords         int   `json:"late_records"`    // pinned before condemnation, carried
 	RevivedRecords      int   `json:"revived_records"` // pinned while condemned, carried before the swap
 	PacksRetired        int   `json:"packs_retired"`
+	PackBytesReclaimed  int64 `json:"pack_bytes_reclaimed,omitempty"`
 
 	ChunksDeleted     int `json:"chunks_deleted"`
 	ManifestsDeleted  int `json:"manifests_deleted"`
@@ -25586,12 +25617,34 @@ func (s *Store) maintainOnline(ctx context.Context, opt MaintOptions) (rep Maint
 		}
 	}()
 	var checkpoint func() error
-	if s.backgroundYield != "" {
+	if s.backgroundYield != "" || opt.DutyPercent > 0 {
+		last := time.Now()
 		checkpoint = func() error {
 			start := time.Now()
-			err := s.yieldBackground(ctx)
+			err := ctx.Err()
+			if err == nil && s.backgroundYield != "" {
+				err = s.yieldBackground(ctx)
+			}
 			rep.YieldMicros += time.Since(start).Microseconds()
-			return err
+			if err != nil {
+				return err
+			}
+			if opt.DutyPercent > 0 {
+				active := start.Sub(last)
+				wait := active / time.Duration(opt.DutyPercent) * time.Duration(100-opt.DutyPercent)
+				if remaining := wait - time.Since(start); remaining > 0 {
+					pace := time.Now()
+					timer := time.NewTimer(remaining)
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+					}
+					timer.Stop()
+					rep.PaceMicros += time.Since(pace).Microseconds()
+				}
+			}
+			last = time.Now()
+			return ctx.Err()
 		}
 		if err := checkpoint(); err != nil {
 			return rep, err
@@ -26131,7 +26184,7 @@ func (s *Store) maintCarryExtra(need []tieredChunk, carry *packCarry, opt MaintO
 		if len(by[t]) == 0 {
 			continue
 		}
-		path, entries, err := s.stagePackWithin(t, by[t], read, abort, comp, stageBytes)
+		path, entries, err := s.stagePackWithin(t, by[t], read, abort, comp, stageBytes, nil)
 		if err != nil {
 			return n, err
 		}
@@ -37619,6 +37672,7 @@ func runServe(args []string) {
 	maintRaw := fs.Bool("maintenance-recompress-raw", false, "screen and compress verified raw packs within the online rewrite budget")
 	maintRewriteMiB := fs.Int64("maintenance-max-rewrite-mib", 0, "online maintenance: source MiB budget for rewrites (0 uses the pack-count policy); fully dead sources are outside this budget")
 	maintStageMiB := fs.Int64("maintenance-max-stage-mib", 0, "online maintenance: cap concurrently staged replacement pack MiB (0 is unlimited)")
+	maintDuty := fs.Int("maintenance-duty-percent", 0, "online maintenance: wall-time work target between checkpoints (0 is unrestricted)")
 	maintExpiryDays := fs.Int("maintenance-abort-multipart-days", 0, "online maintenance: abort incomplete multipart uploads after this many UTC days (0 is off)")
 	maintExpiryBucket := fs.String("maintenance-abort-multipart-bucket", "", "explicit bucket for incomplete multipart expiry")
 	maintExpiryPrefix := fs.String("maintenance-abort-multipart-prefix", "", "optional key prefix within the multipart expiry bucket")
@@ -37666,6 +37720,11 @@ func runServe(args []string) {
 		os.Exit(2)
 	}
 	maintOpt.MaxStageBytes = *maintStageMiB << 20
+	if *maintDuty < 0 || *maintDuty > 100 {
+		fmt.Fprintln(os.Stderr, "zeros3: serve: invalid -maintenance-duty-percent")
+		os.Exit(2)
+	}
+	maintOpt.DutyPercent = *maintDuty
 	if *maintExpiryDays < 0 || *maintExpiryDays > 36500 ||
 		(*maintExpiryDays > 0 && (*maintMode == "off" || *maintExpiryBucket == "")) ||
 		(*maintExpiryDays == 0 && (*maintExpiryBucket != "" || *maintExpiryPrefix != "")) {
