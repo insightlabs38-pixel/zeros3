@@ -1,0 +1,7 @@
+=== RUN   TestFB08NativeNamespaceThousandObjects
+    zeros3_fb08_test.go:87: replicated 1000 objects in 9 signed requests with one data transfer; 1000 equivalent objects on rerun
+--- PASS: TestFB08NativeNamespaceThousandObjects (0.93s)
+=== RUN   TestFB08NativeControlSignedAndBounded
+--- PASS: TestFB08NativeControlSignedAndBounded (0.01s)
+PASS
+ok  	zeros3	0.953s

@@ -18639,6 +18639,10 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		srv.handleBulk(w, r, rawPath, check)
 		return
 	}
+	if strings.HasPrefix(rawPath, nativeBatchPrefix) {
+		srv.handleNativeBatch(w, r, rawPath, check)
+		return
+	}
 	if rawPath == zeros3AuthExportPath && r.Method == http.MethodPost {
 		if body, ok := readBufferedBodyLimit(w, r, rawPath, check, 16<<10); ok {
 			srv.handleAuthorityExport(w, body)
@@ -30166,7 +30170,9 @@ type syncDiscoveryResponse struct {
 	AuthorityGzipBase bool      `json:"authority_gzip_base,omitempty"`
 	// CommitIfUnchanged: the commit honours syncCommitRequest.IfUnchanged
 	// (FB-02 M-A5).
-	CommitIfUnchanged bool `json:"commit_if_unchanged,omitempty"`
+	CommitIfUnchanged  bool `json:"commit_if_unchanged,omitempty"`
+	NativeBatchVersion int  `json:"native_batch_version,omitempty"`
+	MaxBatchObjects    int  `json:"max_batch_objects,omitempty"`
 }
 
 // syncChunkDescriptor unambiguously identifies one expected chunk: its
@@ -30253,7 +30259,8 @@ type syncCommitRequest struct {
 	// returned. The check runs before the manifest is written, and before
 	// ExpectAbsent/ExpectedETag. Servers advertise it as commit_if_unchanged;
 	// older servers ignore the field and publish as usual.
-	IfUnchanged bool `json:"if_unchanged,omitempty"`
+	IfUnchanged  bool   `json:"if_unchanged,omitempty"`
+	ObjectSHA256 string `json:"object_sha256,omitempty"` // native batch descriptor identity, when known
 }
 
 type syncCommitResponse struct {
@@ -30328,6 +30335,169 @@ type syncErrorBody struct {
 
 func writeSyncError(w http.ResponseWriter, status int, code, message string) {
 	writeSyncJSON(w, status, syncErrorBody{Code: code, Message: message})
+}
+
+const (
+	nativeBatchVersion    = 3
+	maxNativeBatchObjects = 1000
+	maxNativeBatchBytes   = 16 << 20
+	nativeBatchPrefix     = "/_zeros3/v3/"
+	nativeBatchDescribe   = nativeBatchPrefix + "describe"
+	nativeBatchNegotiate  = nativeBatchPrefix + "negotiate"
+	nativeBatchCommit     = nativeBatchPrefix + "commit"
+)
+
+type nativeBatchEnvelope[T any] struct {
+	Version int `json:"version"`
+	Items   []T `json:"items"`
+}
+
+type nativeBatchObject struct {
+	Bucket          string `json:"bucket"`
+	Key             string `json:"key"`
+	RetainedVersion string `json:"retained_version,omitempty"`
+}
+
+type nativeBatchItem struct {
+	Status int             `json:"status"`
+	Body   json.RawMessage `json:"body"`
+}
+
+type nativeBatchMissing struct {
+	Version int    `json:"version"`
+	Count   int    `json:"count"`
+	Bits    []byte `json:"missing_bits"`
+}
+
+type nativeBatchWriter struct {
+	header http.Header
+	item   nativeBatchItem
+}
+
+func (w *nativeBatchWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *nativeBatchWriter) WriteHeader(status int) {
+	if w.item.Status == 0 {
+		w.item.Status = status
+	}
+}
+
+func (w *nativeBatchWriter) Write(body []byte) (int, error) {
+	w.WriteHeader(http.StatusOK)
+	if len(body) > maxNativeBatchBytes-len(w.item.Body) {
+		w.item.Status = http.StatusRequestEntityTooLarge
+		w.item.Body = json.RawMessage(`{"code":"BatchTooLarge","message":"one descriptor exceeded the response limit"}`)
+		return 0, errors.New("native batch response item exceeds limit")
+	}
+	w.item.Body = append(w.item.Body, body...)
+	return len(body), nil
+}
+
+func decodeNativeBatch[T any](body []byte, limit int) ([]T, error) {
+	var envelope nativeBatchEnvelope[T]
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Version != nativeBatchVersion || len(envelope.Items) == 0 || len(envelope.Items) > limit {
+		return nil, errors.New("invalid native batch version or item count")
+	}
+	return envelope.Items, nil
+}
+
+func (srv *Server) handleNativeBatch(w http.ResponseWriter, r *http.Request, rawPath string, check payloadCheck) {
+	if r.Method != http.MethodPost {
+		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown native batch operation")
+		return
+	}
+	if !check.signed || check.sha256 == "" {
+		writeSyncError(w, http.StatusForbidden, "SignedPayloadRequired", "native batch requests require a signed payload SHA-256")
+		return
+	}
+	body, ok := readBufferedBodyLimit(w, r, rawPath, check, maxNativeBatchBytes)
+	if !ok {
+		return
+	}
+	switch rawPath {
+	case nativeBatchDescribe:
+		items, err := decodeNativeBatch[nativeBatchObject](body, maxNativeBatchObjects)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidBatch", err.Error())
+			return
+		}
+		reply := nativeBatchEnvelope[nativeBatchItem]{Version: nativeBatchVersion, Items: make([]nativeBatchItem, len(items))}
+		budget := maxNativeBatchBytes - 1024 - 64*len(items)
+		for i, item := range items {
+			if r.Context().Err() != nil {
+				return
+			}
+			query := url.Values{"bucket": {item.Bucket}, "key": {item.Key}, "retained-version": {item.RetainedVersion}}
+			var captured nativeBatchWriter
+			srv.handleSyncDescribeObject(&captured, &http.Request{URL: &url.URL{RawQuery: query.Encode()}})
+			budget -= len(captured.item.Body)
+			if budget < 0 {
+				writeSyncError(w, http.StatusRequestEntityTooLarge, "BatchTooLarge", "split this batch to fit the descriptor response limit")
+				return
+			}
+			reply.Items[i] = captured.item
+		}
+		writeSyncJSON(w, http.StatusOK, reply)
+	case nativeBatchNegotiate:
+		items, err := decodeNativeBatch[syncChunkDescriptor](body, maxSyncBatchDescriptors)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidBatch", err.Error())
+			return
+		}
+		reply := nativeBatchMissing{Version: nativeBatchVersion, Count: len(items), Bits: make([]byte, (len(items)+7)/8)}
+		sums := make([][32]byte, len(items))
+		for i, item := range items {
+			sum, _, err := normalizedSyncDigest(item.SHA256, item.Length)
+			if err != nil {
+				writeSyncError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
+				return
+			}
+			sums[i] = sum
+		}
+		for i, sum := range sums {
+			srv.store.mpin(sum)
+			if n, err := srv.store.casStatOrVirtual(sum); err != nil || n != items[i].Length {
+				reply.Bits[i/8] |= 1 << uint(i%8)
+			}
+		}
+		writeSyncJSON(w, http.StatusOK, reply)
+	case nativeBatchCommit:
+		items, err := decodeNativeBatch[syncCommitRequest](body, maxNativeBatchObjects)
+		if err != nil {
+			writeSyncError(w, http.StatusBadRequest, "InvalidBatch", err.Error())
+			return
+		}
+		seen := make(map[[2]string]bool, len(items))
+		for _, item := range items {
+			id := [2]string{item.Bucket, item.Key}
+			if id[0] == "" || id[1] == "" || seen[id] {
+				writeSyncError(w, http.StatusBadRequest, "InvalidBatch", "every batch destination must be unique and named")
+				return
+			}
+			seen[id] = true
+		}
+		reply := nativeBatchEnvelope[nativeBatchItem]{Version: nativeBatchVersion, Items: make([]nativeBatchItem, len(items))}
+		parallelFor(len(items), min(8, maintWorkers()), 1, func(i int) {
+			var captured nativeBatchWriter
+			if r.Context().Err() != nil {
+				writeSyncError(&captured, http.StatusServiceUnavailable, "Canceled", "batch request was canceled")
+			} else {
+				srv.commitSyncRequest(&captured, items[i])
+			}
+			reply.Items[i] = captured.item
+		})
+		writeSyncJSON(w, http.StatusOK, reply)
+	default:
+		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown native batch operation")
+	}
 }
 
 // validateSyncProtocolFields rejects any request that does not declare
@@ -30757,6 +30927,7 @@ func (srv *Server) handleSyncDiscovery(w http.ResponseWriter) {
 		CommitIfUnchanged: true,
 	}
 	d.BulkProtocol, d.MaxBulkChunks, d.MaxBulkBytes = zeros3BulkProtocolVersion, maxBulkRecords, maxBulkBytes
+	d.NativeBatchVersion, d.MaxBatchObjects = nativeBatchVersion, maxNativeBatchObjects
 	writeSyncJSON(w, http.StatusOK, d)
 }
 
@@ -31268,6 +31439,10 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 		writeSyncError(w, http.StatusBadRequest, "MalformedRequest", "invalid JSON body")
 		return
 	}
+	srv.commitSyncRequest(w, req)
+}
+
+func (srv *Server) commitSyncRequest(w http.ResponseWriter, req syncCommitRequest) {
 	if err := validateSyncProtocolFields(req.Protocol, req.CDC, req.Hash); err != nil {
 		writeSyncError(w, http.StatusNotImplemented, "UnsupportedProtocol", err.Error())
 		return
@@ -31307,6 +31482,13 @@ func (srv *Server) handleSyncCommit(w http.ResponseWriter, body []byte) {
 	}
 	var objSHA [32]byte
 	copy(objSHA[:], objHash.Sum(nil))
+	if req.ObjectSHA256 != "" {
+		want, err := decodeHexSHA256(req.ObjectSHA256)
+		if err != nil || want != objSHA {
+			writeSyncError(w, http.StatusConflict, "ObjectDigestMismatch", "assembled object differs from its descriptor")
+			return
+		}
+	}
 	etag := hex.EncodeToString(etagHash.Sum(nil))
 
 	contentType := req.ContentType
@@ -34908,6 +35090,7 @@ func replicateObject(cfg replicateConfig) (syncStats, error) {
 func runReplicate(args []string) {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket, instead of a single object")
+	protocol3 := fs.Bool("protocol3", false, "use independently negotiated native batches for recursive CDC replication when both peers support them")
 	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything")
 	authority := fs.Bool("authority-closure", false, "attempt negotiated native closures when they cost less than transferring missing CDC chunks")
 	authorityBase := fs.String("authority-base", "", "optional s3:// URI of a related object in the destination bucket; requires -authority-closure and a single real replication")
@@ -34974,6 +35157,7 @@ func runReplicate(args []string) {
 			Workers:         *workers,
 			PreferAuthority: *authority,
 			IfUnchanged:     *ifUnchanged,
+			NativeBatch:     *protocol3,
 		}
 		if *dryRun {
 			result, err := planReplicationNamespace(cfg)
@@ -36061,6 +36245,7 @@ func (r nsReplicateResult) OK() bool { return r.Failed == 0 }
 // parseS3DirURI already returns ("" for a whole bucket).
 type namespaceReplicateConfig struct {
 	PreferAuthority bool
+	NativeBatch     bool
 	Source          syncClientConfig
 	SourcePrefix    string
 	Dest            syncClientConfig
@@ -36108,6 +36293,23 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 
 	result := nsReplicateResult{Discovered: len(objects)}
 	session := newSyncSession()
+	if cfg.NativeBatch && !cfg.PreferAuthority && !cfg.DestMustBeAbsent && len(objects) != 0 {
+		src, srcErr := session.discover(cfg.Source)
+		dst, dstErr := session.discover(cfg.Dest)
+		if srcErr != nil || dstErr != nil {
+			return result, errors.Join(srcErr, dstErr)
+		}
+		if src.NativeBatchVersion == nativeBatchVersion && dst.NativeBatchVersion == nativeBatchVersion &&
+			src.MaxBatchObjects > 0 && dst.MaxBatchObjects > 0 {
+			if err := replicateNativeNamespace(cfg, src, dst, objects, &result); err != nil {
+				return result, err
+			}
+			if cfg.Out != nil {
+				printNsReplicateSummary(cfg.Out, result)
+			}
+			return result, nil
+		}
+	}
 	for _, obj := range objects {
 		dstKey, err := namespaceDestKey(cfg.SourcePrefix, cfg.DestPrefix, obj.Key)
 		if err != nil {
@@ -36144,6 +36346,240 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 		printNsReplicateSummary(cfg.Out, result)
 	}
 	return result, nil
+}
+
+var errNativeBatchSize = errors.New("native batch exceeds the control message limit")
+
+func nativeBatchCall[T, R any](cfg syncClientConfig, path string, items []T) (R, error) {
+	var output R
+	body, err := json.Marshal(nativeBatchEnvelope[T]{Version: nativeBatchVersion, Items: items})
+	if err != nil {
+		return output, err
+	}
+	if len(body) > maxNativeBatchBytes {
+		return output, errNativeBatchSize
+	}
+	resp, reply, err := cfg.signAndDoLimit(context.Background(), http.MethodPost, path, body,
+		map[string]string{"Content-Type": "application/json"}, maxNativeBatchBytes)
+	if err != nil {
+		return output, err
+	}
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		return output, errNativeBatchSize
+	}
+	if resp.StatusCode != http.StatusOK {
+		return output, fmt.Errorf("native batch %s returned status %d: %s", path, resp.StatusCode, reply)
+	}
+	if err := json.Unmarshal(reply, &output); err != nil {
+		return output, err
+	}
+	return output, nil
+}
+
+func nativeBatchItems[T any](cfg syncClientConfig, path string, items []T) ([]nativeBatchItem, error) {
+	reply, err := nativeBatchCall[T, nativeBatchEnvelope[nativeBatchItem]](cfg, path, items)
+	if err != nil {
+		return nil, err
+	}
+	if reply.Version != nativeBatchVersion || len(reply.Items) != len(items) {
+		return nil, errors.New("native batch reply does not match its request")
+	}
+	return reply.Items, nil
+}
+
+func nativeObjectDescription(item nativeBatchItem, requested nativeBatchObject) (syncObjectDescriptor, error) {
+	var desc syncObjectDescriptor
+	if item.Status != http.StatusOK {
+		return desc, fmt.Errorf("describe status %d: %s", item.Status, item.Body)
+	}
+	if err := json.Unmarshal(item.Body, &desc); err != nil {
+		return desc, err
+	}
+	if desc.Bucket != requested.Bucket || desc.Key != requested.Key || desc.RetainedVersion != requested.RetainedVersion {
+		return desc, errors.New("native descriptor names another object")
+	}
+	if err := validateSyncProtocolFields(desc.Protocol, desc.CDC, desc.Hash); err != nil {
+		return desc, err
+	}
+	var bytes int64
+	for i := range desc.Chunks {
+		c := &desc.Chunks[i]
+		_, digest, err := normalizedSyncDigest(c.SHA256, c.Length)
+		if err != nil {
+			return desc, err
+		}
+		c.SHA256 = digest
+		bytes += c.Length
+	}
+	if bytes != desc.Size {
+		return desc, errors.New("native descriptor chunk lengths disagree with object size")
+	}
+	return desc, nil
+}
+
+func replicateNativeNamespace(cfg namespaceReplicateConfig, src, dst syncDiscoveryResponse, objects []xmlContent, result *nsReplicateResult) error {
+	width := min(src.MaxBatchObjects, dst.MaxBatchObjects, maxNativeBatchObjects)
+	workers, err := resolveTransferWorkers(cfg.Workers)
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(objects); {
+		n := min(width, len(objects)-start)
+		err := replicateNativeWindow(cfg, src, dst, workers, objects[start:start+n], result)
+		if errors.Is(err, errNativeBatchSize) && n > 1 {
+			width = n / 2
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		start += n
+	}
+	return nil
+}
+
+func replicateNativeWindow(cfg namespaceReplicateConfig, src, dst syncDiscoveryResponse, workers int, objects []xmlContent, result *nsReplicateResult) error {
+	source, dest := make([]nativeBatchObject, len(objects)), make([]nativeBatchObject, len(objects))
+	for i, item := range objects {
+		key, err := namespaceDestKey(cfg.SourcePrefix, cfg.DestPrefix, item.Key)
+		if err != nil {
+			return err
+		}
+		source[i], dest[i] = nativeBatchObject{Bucket: cfg.Source.Bucket, Key: item.Key}, nativeBatchObject{Bucket: cfg.Dest.Bucket, Key: key}
+	}
+	from, err := nativeBatchItems(cfg.Source, nativeBatchDescribe, source)
+	if err != nil {
+		return err
+	}
+	to, err := nativeBatchItems(cfg.Dest, nativeBatchDescribe, dest)
+	if err != nil {
+		return err
+	}
+	var failures []nsReplicateFailure
+	markFailure := func(i int, err error) {
+		failures = append(failures, nsReplicateFailure{Key: source[i].Key, Dest: dest[i].Key, Err: err})
+	}
+	skipped := make([]syncObjectDescriptor, 0)
+	var commits []syncCommitRequest
+	var commitIndex []int
+	var unique []syncChunkDescriptor
+	seen := map[string]int64{}
+	for i, item := range from {
+		desc, err := nativeObjectDescription(item, source[i])
+		if err != nil {
+			markFailure(i, err)
+			continue
+		}
+		commit := syncCommitRequest{Protocol: zeros3SyncProtocolVersion, CDC: zeros3SyncCDCFormat,
+			Hash: zeros3SyncHashAlgorithm, Bucket: dest[i].Bucket, Key: dest[i].Key,
+			ContentType: desc.ContentType, Metadata: desc.Metadata, Chunks: desc.Chunks,
+			IfUnchanged: cfg.IfUnchanged, ExpectAbsent: to[i].Status == http.StatusNotFound,
+			ObjectSHA256: desc.ObjectSHA256}
+		if !commit.ExpectAbsent {
+			previous, err := nativeObjectDescription(to[i], dest[i])
+			if err != nil {
+				markFailure(i, err)
+				continue
+			}
+			if same, _ := descriptorIdentity(desc).match(descriptorIdentity(previous)); cfg.IfUnchanged && same {
+				skipped = append(skipped, desc)
+				continue
+			}
+			commit.ExpectedETag = previous.ETag
+		}
+		for _, chunk := range commit.Chunks {
+			if n, ok := seen[chunk.SHA256]; ok {
+				if n != chunk.Length {
+					return errors.New("native batch disagrees on the length of one digest")
+				}
+				continue
+			}
+			seen[chunk.SHA256] = chunk.Length
+			unique = append(unique, chunk)
+		}
+		commits = append(commits, commit)
+		commitIndex = append(commitIndex, i)
+	}
+	// Bound the commit envelope before transferring any payload for this window.
+	control, err := json.Marshal(nativeBatchEnvelope[syncCommitRequest]{Version: nativeBatchVersion, Items: commits})
+	if err != nil {
+		return err
+	}
+	if len(control) > maxNativeBatchBytes {
+		return errNativeBatchSize
+	}
+	missing := make(map[string]bool)
+	var want []syncChunkDescriptor
+	for len(unique) != 0 {
+		n := min(len(unique), maxSyncBatchDescriptors)
+		part := unique[:n]
+		reply, err := nativeBatchCall[syncChunkDescriptor, nativeBatchMissing](cfg.Dest, nativeBatchNegotiate, part)
+		if err != nil {
+			return err
+		}
+		if reply.Version != nativeBatchVersion || reply.Count != n || len(reply.Bits) != (n+7)/8 ||
+			n%8 != 0 && reply.Bits[len(reply.Bits)-1]>>uint(n%8) != 0 {
+			return errors.New("native negotiation returned an invalid bitmap")
+		}
+		for i, chunk := range part {
+			if reply.Bits[i/8]&(1<<uint(i%8)) != 0 {
+				want = append(want, chunk)
+				missing[chunk.SHA256] = true
+			}
+		}
+		unique = unique[n:]
+	}
+	if err := relayMissingChunks(workers, cfg.Source, cfg.Dest, src, dst, want, "native replication"); err != nil {
+		return err
+	}
+	if len(commits) != 0 {
+		replies, err := nativeBatchItems(cfg.Dest, nativeBatchCommit, commits)
+		if err != nil {
+			return err
+		}
+		credited := make(map[string]bool)
+		for i, reply := range replies {
+			if reply.Status != http.StatusOK {
+				markFailure(commitIndex[i], fmt.Errorf("commit status %d: %s", reply.Status, reply.Body))
+				continue
+			}
+			var committed syncCommitResponse
+			if err := json.Unmarshal(reply.Body, &committed); err != nil {
+				return err
+			}
+			request := commits[i]
+			if committed.Bucket != request.Bucket || committed.Key != request.Key {
+				return errors.New("native commit acknowledged another object")
+			}
+			result.Replicated++
+			result.Stats.LogicalBytes += committed.Size
+			result.Stats.Unchanged += btoi(committed.Unchanged)
+			for _, chunk := range request.Chunks {
+				result.Stats.TotalChunks++
+				if missing[chunk.SHA256] {
+					result.Stats.MissingChunkOccur++
+					if !credited[chunk.SHA256] {
+						credited[chunk.SHA256] = true
+						result.Stats.UniqueChunksUploaded++
+						result.Stats.UploadedBytes += chunk.Length
+					}
+				} else {
+					result.Stats.ChunksReused++
+				}
+			}
+		}
+	}
+	for _, desc := range skipped {
+		result.Replicated++
+		result.Stats.LogicalBytes += desc.Size
+		result.Stats.TotalChunks += len(desc.Chunks)
+		result.Stats.ChunksReused += len(desc.Chunks)
+		result.Stats.Unchanged++
+	}
+	result.Failed += len(failures)
+	result.Failures = append(result.Failures, failures...)
+	result.Stats.BytesAvoided = result.Stats.LogicalBytes - result.Stats.UploadedBytes
+	return nil
 }
 
 // printNsReplicateSummary is namespace replication's judge-friendly
