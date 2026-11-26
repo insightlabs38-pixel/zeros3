@@ -1913,7 +1913,7 @@ func TestPayloadMode_ClassifySigV4Payload(t *testing.T) {
 		{"unsigned-payload", "UNSIGNED-PAYLOAD", sigv4PayloadUnsignedFixed, "", false},
 		{"streaming-hmac", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD", sigv4PayloadStreamingHMAC, "", false},
 		{"streaming-hmac-trailer", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", sigv4PayloadStreamingHMACTrailer, "", false},
-		{"streaming-unsigned-trailer-excluded", "STREAMING-UNSIGNED-PAYLOAD-TRAILER", sigv4PayloadUnsupported, "", false},
+		{"streaming-unsigned-trailer", "STREAMING-UNSIGNED-PAYLOAD-TRAILER", sigv4PayloadStreamingUnsignedTrailer, "", false}, // implemented in FB-02 (M-A3)
 		{"streaming-ecdsa-excluded", "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD", sigv4PayloadUnsupported, "", false},
 		{"streaming-ecdsa-trailer-excluded", "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER", sigv4PayloadUnsupported, "", false},
 		{"lowercase-unsigned-payload-rejected", "unsigned-payload", 0, "", true},
@@ -2117,8 +2117,10 @@ func TestPayloadMode_UnsignedPayload_ValidSigButWrongCRC32Fails(t *testing.T) {
 
 func TestPayloadMode_ExcludedModesRejectCleanly(t *testing.T) {
 	srv, signer := newTestServerAndSigner(t)
+	// FB-02 (M-A3) implemented STREAMING-UNSIGNED-PAYLOAD-TRAILER; it is
+	// covered by zeros3_fb02_checksum_test.go. Only the ECDSA (SigV4a)
+	// modes remain excluded.
 	cases := []string{
-		"STREAMING-UNSIGNED-PAYLOAD-TRAILER",
 		"STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD",
 		"STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER",
 	}
@@ -2136,15 +2138,23 @@ func TestPayloadMode_ExcludedModesRejectCleanly(t *testing.T) {
 	}
 }
 
-func TestPayloadMode_StreamingHMACTrailerRejected(t *testing.T) {
+// TestPayloadMode_TrailerModesNeedChunkedFraming: FB-02 (M-A3) implemented
+// both trailer modes (zeros3_fb02_checksum_test.go covers them end to end);
+// a request that names one but is not aws-chunked framed is still refused
+// before any byte of its body is trusted.
+func TestPayloadMode_TrailerModesNeedChunkedFraming(t *testing.T) {
 	srv, signer := newTestServerAndSigner(t)
-	body := []byte("streaming mode body")
-	req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
-	signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"})
-	var ae *authError
-	err := authenticateBody(srv, req, rawPath, rawQuery, body)
-	if !errors.As(err, &ae) || ae.code != "NotImplemented" {
-		t.Fatalf("expected the unimplemented trailer streaming mode to be rejected as NotImplemented, got %v", err)
+	for _, mode := range []string{"STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", "STREAMING-UNSIGNED-PAYLOAD-TRAILER"} {
+		t.Run(mode, func(t *testing.T) {
+			body := []byte("streaming mode body")
+			req, rawPath, rawQuery := mustAuthTestRequest(http.MethodPut, "/b/k", body)
+			signTestRequest(t, req, signer, rawPath, rawQuery, body, time.Now(), &signOpts{badPayloadHash: mode})
+			var ae *authError
+			err := authenticateBody(srv, req, rawPath, rawQuery, body)
+			if !errors.As(err, &ae) || ae.code != "MissingContentLength" {
+				t.Fatalf("expected %s without aws-chunked framing to be refused as MissingContentLength, got %v", mode, err)
+			}
+		})
 	}
 }
 
@@ -28841,7 +28851,10 @@ func TestStreamingPut_RejectedBeforeIngest(t *testing.T) {
 		wantCode    string
 	}{
 		{name: "bad-signature", key: "k", signer: &badSigner, wantStatus: 403, wantCode: "SignatureDoesNotMatch"},
-		{name: "streaming-hmac-trailer-unsupported", key: "k", payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", wantStatus: 501, wantCode: "NotImplemented"},
+		// FB-02 (M-A3) implemented the trailer mode; without its aws-chunked
+		// framing it is still refused before ingest.
+		{name: "streaming-hmac-trailer-unframed", key: "k", payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", wantStatus: 411, wantCode: "MissingContentLength"},
+		{name: "streaming-ecdsa-unsupported", key: "k", payloadHash: "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD", wantStatus: 501, wantCode: "NotImplemented"},
 		{name: "malformed-condition", key: "k", hdr: map[string]string{"If-None-Match": "nope"}, wantStatus: 400, wantCode: "InvalidArgument"},
 		{name: "conflicting-conditions", key: "k", hdr: map[string]string{"If-None-Match": "*", "If-Match": `"x"`}, wantStatus: 400, wantCode: "InvalidArgument"},
 	}
@@ -29887,8 +29900,10 @@ func TestAWSChunked_Matrix(t *testing.T) {
 		{"eof/mid-final-header", awsChunkedPut{payload: payload, raw: truncate(30)}, 400, "IncompleteBody"},
 		{"eof/final-without-crlf", awsChunkedPut{payload: payload, raw: truncate(2)}, 400, "IncompleteBody"},
 
-		{"mode/hmac-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"}, 501, "NotImplemented"},
-		{"mode/unsigned-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-UNSIGNED-PAYLOAD-TRAILER"}, 501, "NotImplemented"},
+		// FB-02 (M-A3) implemented both trailer modes; one that carries no
+		// x-amz-trailer naming its checksum is now refused as malformed.
+		{"mode/hmac-trailer-without-x-amz-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"}, 400, "InvalidRequest"},
+		{"mode/unsigned-trailer-without-x-amz-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-UNSIGNED-PAYLOAD-TRAILER"}, 400, "InvalidRequest"},
 		{"mode/ecdsa", awsChunkedPut{payload: payload, payloadHash: "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD"}, 501, "NotImplemented"},
 		{"mode/ecdsa-trailer", awsChunkedPut{payload: payload, payloadHash: "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER"}, 501, "NotImplemented"},
 		{"mode/lowercase-sentinel", awsChunkedPut{payload: payload, payloadHash: "streaming-aws4-hmac-sha256-payload"}, 403, "AccessDenied"},

@@ -1,0 +1,28 @@
+# checksum throughput (1 MiB) and server CPU per 8 MiB PUT with each claim; -benchtime 100x -count 3
+BenchmarkFB02AlgoCRC32-4               	     100	     26476 ns/op	39604.80 MB/s
+BenchmarkFB02AlgoCRC32-4               	     100	     25294 ns/op	41454.75 MB/s
+BenchmarkFB02AlgoCRC32-4               	     100	     21462 ns/op	48857.53 MB/s
+BenchmarkFB02AlgoCRC32C-4              	     100	     37339 ns/op	28082.38 MB/s
+BenchmarkFB02AlgoCRC32C-4              	     100	     37081 ns/op	28278.28 MB/s
+BenchmarkFB02AlgoCRC32C-4              	     100	     38227 ns/op	27430.40 MB/s
+BenchmarkFB02AlgoCRC64NVME-4           	     100	    527339 ns/op	1988.43 MB/s
+BenchmarkFB02AlgoCRC64NVME-4           	     100	    530043 ns/op	1978.29 MB/s
+BenchmarkFB02AlgoCRC64NVME-4           	     100	    533545 ns/op	1965.30 MB/s
+BenchmarkFB02AlgoSHA1-4                	     100	    535998 ns/op	1956.31 MB/s
+BenchmarkFB02AlgoSHA1-4                	     100	    530281 ns/op	1977.40 MB/s
+BenchmarkFB02AlgoSHA1-4                	     100	    519210 ns/op	2019.56 MB/s
+BenchmarkFB02AlgoSHA256-4              	     100	    564359 ns/op	1857.99 MB/s
+BenchmarkFB02AlgoSHA256-4              	     100	    565685 ns/op	1853.64 MB/s
+BenchmarkFB02AlgoSHA256-4              	     100	    564580 ns/op	1857.27 MB/s
+BenchmarkFB02PutAlgoCRC32C_8MiB-4      	     100	  32227781 ns/op	 260.29 MB/s	  25812430 cpu-ns/op	 1337485 B/op	    1352 allocs/op
+BenchmarkFB02PutAlgoCRC32C_8MiB-4      	     100	  32205203 ns/op	 260.47 MB/s	  25723090 cpu-ns/op	 1342860 B/op	    1351 allocs/op
+BenchmarkFB02PutAlgoCRC32C_8MiB-4      	     100	  31793970 ns/op	 263.84 MB/s	  25555870 cpu-ns/op	 1343886 B/op	    1353 allocs/op
+BenchmarkFB02PutAlgoCRC64NVME_8MiB-4   	     100	 301995759 ns/op	  27.78 MB/s	  29605600 cpu-ns/op	 1371469 B/op	    1353 allocs/op
+BenchmarkFB02PutAlgoCRC64NVME_8MiB-4   	     100	 305049303 ns/op	  27.50 MB/s	  29960970 cpu-ns/op	 1351829 B/op	    1353 allocs/op
+BenchmarkFB02PutAlgoCRC64NVME_8MiB-4   	     100	 307173621 ns/op	  27.31 MB/s	  30329530 cpu-ns/op	 1366526 B/op	    1354 allocs/op
+BenchmarkFB02PutAlgoSHA1_8MiB-4        	     100	  39482320 ns/op	 212.46 MB/s	  29454160 cpu-ns/op	 1338080 B/op	    1352 allocs/op
+BenchmarkFB02PutAlgoSHA1_8MiB-4        	     100	  39259507 ns/op	 213.67 MB/s	  29425790 cpu-ns/op	 1360557 B/op	    1351 allocs/op
+BenchmarkFB02PutAlgoSHA1_8MiB-4        	     100	  39321081 ns/op	 213.34 MB/s	  29205540 cpu-ns/op	 1358242 B/op	    1353 allocs/op
+BenchmarkFB02PutAlgoSHA256_8MiB-4      	     100	  36221547 ns/op	 231.59 MB/s	  25244930 cpu-ns/op	 1363953 B/op	    1350 allocs/op
+BenchmarkFB02PutAlgoSHA256_8MiB-4      	     100	  35674655 ns/op	 235.14 MB/s	  25138630 cpu-ns/op	 1367369 B/op	    1351 allocs/op
+BenchmarkFB02PutAlgoSHA256_8MiB-4      	     100	  35098250 ns/op	 239.00 MB/s	  24891640 cpu-ns/op	 1350068 B/op	    1350 allocs/op

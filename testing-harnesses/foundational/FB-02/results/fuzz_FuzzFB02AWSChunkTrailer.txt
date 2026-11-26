@@ -1,0 +1,6 @@
+fuzz: elapsed: 54s, execs: 718493 (3211/sec), new interesting: 9 (total: 41)
+fuzz: elapsed: 57s, execs: 718493 (0/sec), new interesting: 9 (total: 41)
+fuzz: elapsed: 1m0s, execs: 759862 (13792/sec), new interesting: 11 (total: 43)
+fuzz: elapsed: 1m1s, execs: 759862 (0/sec), new interesting: 11 (total: 43)
+PASS
+ok  	zeros3	61.018s

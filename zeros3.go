@@ -14207,16 +14207,20 @@ const (
 	sigv4PayloadUnsignedFixed
 	// sigv4PayloadStreamingHMAC is the signed aws-chunked mode: the seed
 	// request signature binds the headers and every body chunk carries a
-	// chained signature (see awsChunkReader). The trailer form is
-	// recognized but rejected as not implemented.
+	// chained signature (see awsChunkReader). The trailer form adds a
+	// signed trailer that carries the x-amz-checksum-* value.
 	sigv4PayloadStreamingHMAC
 	sigv4PayloadStreamingHMACTrailer
+	// sigv4PayloadStreamingUnsignedTrailer is aws-chunked framing with no
+	// chunk signatures and a trailing x-amz-checksum-* value: SigV4 binds
+	// the body no more than UNSIGNED-PAYLOAD does, the trailer checksum is
+	// verified.
+	sigv4PayloadStreamingUnsignedTrailer
 	// sigv4PayloadUnsupported covers every AWS payload-mode sentinel this
-	// build has permanently excluded from scope: SigV4A/ECDSA streaming
-	// and the unsigned streaming trailer mode. These are recognized
-	// (case-sensitively, exactly as AWS defines the literal strings) so
-	// they get one clear, documented rejection rather than being
-	// misclassified as a malformed digest.
+	// build has permanently excluded from scope: SigV4A/ECDSA streaming.
+	// These are recognized (case-sensitively, exactly as AWS defines the
+	// literal strings) so they get one clear, documented rejection rather
+	// than being misclassified as a malformed digest.
 	sigv4PayloadUnsupported
 )
 
@@ -14256,7 +14260,9 @@ func classifySigV4Payload(raw string) (kind sigv4PayloadKind, fixedDigest string
 		return sigv4PayloadStreamingHMAC, "", nil
 	case sigv4SentinelStreamingHMACTrailer:
 		return sigv4PayloadStreamingHMACTrailer, "", nil
-	case sigv4SentinelStreamingUnsignedTrailer, sigv4SentinelStreamingECDSA, sigv4SentinelStreamingECDSATrailer:
+	case sigv4SentinelStreamingUnsignedTrailer:
+		return sigv4PayloadStreamingUnsignedTrailer, "", nil
+	case sigv4SentinelStreamingECDSA, sigv4SentinelStreamingECDSATrailer:
 		return sigv4PayloadUnsupported, "", nil
 	}
 	if isHexDigestSHA256(raw) {
@@ -14686,11 +14692,8 @@ func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string)
 	if payloadErr != nil {
 		return signedPayload{}, &authError{code: "AccessDenied", msg: "missing or invalid X-Amz-Content-Sha256"}
 	}
-	switch payloadKind {
-	case sigv4PayloadUnsupported:
+	if payloadKind == sigv4PayloadUnsupported {
 		return signedPayload{}, &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not supported by ZeroS3", rawPayloadHeader)}
-	case sigv4PayloadStreamingHMACTrailer:
-		return signedPayload{}, &authError{code: "NotImplemented", msg: fmt.Sprintf("x-amz-content-sha256 value %q is not yet implemented by ZeroS3", rawPayloadHeader)}
 	}
 	var hasContentSha, hasHost bool
 	for _, h := range auth.signedHeaders {
@@ -14730,22 +14733,31 @@ func (srv *Server) authenticateHeader(r *http.Request, rawPath, rawQuery string)
 	switch payloadKind {
 	case sigv4PayloadFixedSHA256:
 		return signedPayload{sha256: fixedDigest}, nil
-	case sigv4PayloadStreamingHMAC:
+	case sigv4PayloadStreamingHMAC, sigv4PayloadStreamingHMACTrailer, sigv4PayloadStreamingUnsignedTrailer:
 		stream, err := newAWSChunkedStream(r, srv.creds.SecretAccessKey, auth, amzDate)
+		if stream != nil {
+			stream.unsigned = payloadKind == sigv4PayloadStreamingUnsignedTrailer
+			stream.trailer = payloadKind != sigv4PayloadStreamingHMAC
+		}
 		return signedPayload{stream: stream}, err
 	}
 	return signedPayload{}, nil
 }
 
-// awsChunkedStream carries what header authentication established for a
-// STREAMING-AWS4-HMAC-SHA256-PAYLOAD request: the seed signature starts the
-// chain that every body chunk's signature extends.
+// awsChunkedStream carries what header authentication established for an
+// aws-chunked request: the seed signature starts the chain that every body
+// chunk's signature extends. unsigned chunks carry no signature
+// (STREAMING-UNSIGNED-PAYLOAD-TRAILER); a trailer stream ends with the
+// x-amz-checksum-* value that claim receives (see payloadCheck.bindPayload).
 type awsChunkedStream struct {
 	signingKey []byte
 	amzDate    string
 	scope      string
 	seedSig    string
 	decodedLen int64
+	unsigned   bool
+	trailer    bool
+	claim      *checksumTrailer
 }
 
 // maxAWSChunkSize bounds one signed chunk, which is buffered whole so that
@@ -14841,8 +14853,14 @@ func (c *awsChunkReader) nextChunk() error {
 	if !ok {
 		return malformed
 	}
-	sizeHex, sig, ok := strings.Cut(header, awsChunkSigMarker)
-	if !ok || len(sig) != sha256.Size*2 || !isHexDigestSHA256(sig) || len(sizeHex) == 0 || len(sizeHex) > 8 {
+	sizeHex, sig := header, ""
+	if !c.st.unsigned {
+		sizeHex, sig, ok = strings.Cut(header, awsChunkSigMarker)
+		if !ok || len(sig) != sha256.Size*2 || !isHexDigestSHA256(sig) {
+			return malformed
+		}
+	}
+	if len(sizeHex) == 0 || len(sizeHex) > 8 {
 		return malformed
 	}
 	size, err := strconv.ParseUint(sizeHex, 16, 32)
@@ -14854,26 +14872,30 @@ func (c *awsChunkReader) nextChunk() error {
 	}
 
 	c.buf.Reset()
-	if _, err := io.CopyN(&c.buf, c.br, int64(size)); err != nil {
-		return awsChunkFramingError(err)
-	}
-	var crlf [2]byte
-	if _, err := io.ReadFull(c.br, crlf[:]); err != nil {
-		return awsChunkFramingError(err)
-	}
-	if crlf != [2]byte{'\r', '\n'} {
-		return malformed
+	if size > 0 || !c.st.trailer {
+		if _, err := io.CopyN(&c.buf, c.br, int64(size)); err != nil {
+			return awsChunkFramingError(err)
+		}
+		var crlf [2]byte
+		if _, err := io.ReadFull(c.br, crlf[:]); err != nil {
+			return awsChunkFramingError(err)
+		}
+		if crlf != [2]byte{'\r', '\n'} {
+			return malformed
+		}
 	}
 
-	sum := sha256.Sum256(c.buf.Bytes())
-	want := hex.EncodeToString(hmacSHA256(c.st.signingKey, strings.Join([]string{
-		"AWS4-HMAC-SHA256-PAYLOAD", c.st.amzDate, c.st.scope, c.prevSig, emptySHA256Hex, hex.EncodeToString(sum[:]),
-	}, "\n")))
-	if subtle.ConstantTimeCompare([]byte(want), []byte(strings.ToLower(sig))) != 1 {
-		c.buf.Reset()
-		return &authError{code: "SignatureDoesNotMatch", msg: "aws-chunked chunk signature mismatch"}
+	if !c.st.unsigned {
+		sum := sha256.Sum256(c.buf.Bytes())
+		want := hex.EncodeToString(hmacSHA256(c.st.signingKey, strings.Join([]string{
+			"AWS4-HMAC-SHA256-PAYLOAD", c.st.amzDate, c.st.scope, c.prevSig, emptySHA256Hex, hex.EncodeToString(sum[:]),
+		}, "\n")))
+		if subtle.ConstantTimeCompare([]byte(want), []byte(strings.ToLower(sig))) != 1 {
+			c.buf.Reset()
+			return &authError{code: "SignatureDoesNotMatch", msg: "aws-chunked chunk signature mismatch"}
+		}
+		c.prevSig = want
 	}
-	c.prevSig = want
 	c.decoded += int64(size)
 
 	if size > 0 {
@@ -14882,6 +14904,11 @@ func (c *awsChunkReader) nextChunk() error {
 	if c.decoded != c.st.decodedLen {
 		return &authError{code: "IncompleteBody", msg: "aws-chunked payload is shorter than x-amz-decoded-content-length"}
 	}
+	if c.st.trailer {
+		if err := c.readTrailer(); err != nil {
+			return err
+		}
+	}
 	if _, err := c.br.Peek(1); err != io.EOF {
 		if err == nil {
 			return malformed
@@ -14889,6 +14916,69 @@ func (c *awsChunkReader) nextChunk() error {
 		return err
 	}
 	c.done = true
+	return nil
+}
+
+// readTrailer reads the trailer that follows the final chunk of a trailer
+// stream: exactly the declared x-amz-checksum-* line, then, when chunks are
+// signed, x-amz-trailer-signature over it, then an empty line. The declared
+// value is handed to the claim only after the whole trailer verifies.
+func (c *awsChunkReader) readTrailer() error {
+	claim := c.st.claim
+	if claim == nil {
+		return &authError{code: "InvalidRequest", msg: "a trailer payload mode requires an x-amz-trailer header"}
+	}
+	unexpected := func(name string) error {
+		return &authError{code: "InvalidRequest", msg: fmt.Sprintf("unexpected aws-chunked trailer %q", name)}
+	}
+	var (
+		value    []byte
+		canon    string
+		verified bool
+	)
+	for {
+		line, err := c.br.ReadSlice('\n')
+		if err != nil {
+			return awsChunkFramingError(err)
+		}
+		text, ok := strings.CutSuffix(string(line), "\r\n")
+		if !ok {
+			return &authError{code: "InvalidRequest", msg: "malformed aws-chunked trailer"}
+		}
+		if text == "" {
+			break
+		}
+		name, raw, ok := strings.Cut(text, ":")
+		name, raw = strings.ToLower(strings.TrimSpace(name)), strings.TrimSpace(raw)
+		switch {
+		case !ok || verified:
+			return unexpected(name)
+		case name == claim.algo.header() && value == nil:
+			v, err := base64.StdEncoding.DecodeString(raw)
+			if err != nil || len(v) != claim.algo.size() {
+				return &authError{code: "InvalidRequest", msg: fmt.Sprintf("Value for %s trailing header is invalid.", name)}
+			}
+			value, canon = v, name+":"+raw+"\n"
+		case name == "x-amz-trailer-signature" && !c.st.unsigned && value != nil:
+			sum := sha256.Sum256([]byte(canon))
+			want := hex.EncodeToString(hmacSHA256(c.st.signingKey, strings.Join([]string{
+				"AWS4-HMAC-SHA256-TRAILER", c.st.amzDate, c.st.scope, c.prevSig, hex.EncodeToString(sum[:]),
+			}, "\n")))
+			if subtle.ConstantTimeCompare([]byte(want), []byte(strings.ToLower(raw))) != 1 {
+				return &authError{code: "SignatureDoesNotMatch", msg: "aws-chunked trailer signature mismatch"}
+			}
+			verified = true
+		default:
+			return unexpected(name)
+		}
+	}
+	if value == nil {
+		return &authError{code: "InvalidRequest", msg: fmt.Sprintf("aws-chunked trailer is missing %s", claim.algo.header())}
+	}
+	if !c.st.unsigned && !verified {
+		return &authError{code: "SignatureDoesNotMatch", msg: "aws-chunked trailer signature is missing"}
+	}
+	claim.sum = value
 	return nil
 }
 
@@ -15138,32 +15228,201 @@ func GeneratePresignedURL(creds Credentials, region string, req PresignRequest, 
 // 9. Request payload checksums and S3-shaped XML errors
 // =============================================================================
 
+// checksumAlgo is one S3 flexible checksum (x-amz-checksum-<name>). Every
+// algorithm the API accepts is computed in the pass that already reads the
+// body and compared before anything is published; a request naming one this
+// build does not implement is refused with NotImplemented, never accepted
+// unverified. Values are stored nowhere (ADR-ID-03 keeps that for later).
+type checksumAlgo uint8
+
+const (
+	checksumNone checksumAlgo = iota
+	checksumCRC32
+	checksumCRC32C
+	checksumCRC64NVME
+	checksumSHA1
+	checksumSHA256
+)
+
+var checksumAlgoNames = [...]string{"", "crc32", "crc32c", "crc64nvme", "sha1", "sha256"}
+
+func checksumAlgoNamed(name string) (checksumAlgo, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i, n := range checksumAlgoNames {
+		if i > 0 && n == name {
+			return checksumAlgo(i), true
+		}
+	}
+	return checksumNone, false
+}
+
+func (a checksumAlgo) header() string { return "x-amz-checksum-" + checksumAlgoNames[a] }
+
+func (a checksumAlgo) size() int {
+	switch a {
+	case checksumCRC32, checksumCRC32C:
+		return 4
+	case checksumCRC64NVME:
+		return 8
+	case checksumSHA1:
+		return sha1.Size
+	case checksumSHA256:
+		return sha256.Size
+	}
+	return 0
+}
+
+func (a checksumAlgo) newHash() hash.Hash {
+	switch a {
+	case checksumCRC32:
+		return crc32.NewIEEE()
+	case checksumCRC32C:
+		return crc32.New(castagnoliTable)
+	case checksumCRC64NVME:
+		return new(crc64NVME)
+	case checksumSHA1:
+		return sha1.New() //nolint:gosec // S3 request checksum the client asked for, not a security use.
+	case checksumSHA256:
+		return sha256.New()
+	}
+	return nil
+}
+
+// crc64NVME is CRC-64/NVME (reflected polynomial 0x9a6c9329ac4bc9b5, all-ones
+// init and xorout), slicing by eight. hash/crc64 rebuilds its slicing table on
+// every large write for a polynomial other than ISO and ECMA.
+type crc64NVME struct{ crc uint64 }
+
+var crc64NVMETables = func() *[8][256]uint64 {
+	var t [8][256]uint64
+	for i := range 256 {
+		c := uint64(i)
+		for range 8 {
+			if c&1 == 1 {
+				c = c>>1 ^ 0x9a6c9329ac4bc9b5
+			} else {
+				c >>= 1
+			}
+		}
+		t[0][i] = c
+	}
+	for i := range 256 {
+		for k, c := 1, t[0][i]; k < 8; k++ {
+			c = t[0][c&0xff] ^ c>>8
+			t[k][i] = c
+		}
+	}
+	return &t
+}()
+
+func (h *crc64NVME) Write(p []byte) (int, error) {
+	t, crc, n := crc64NVMETables, ^h.crc, len(p)
+	for ; len(p) >= 8; p = p[8:] {
+		crc ^= binary.LittleEndian.Uint64(p)
+		crc = t[7][crc&0xff] ^ t[6][crc>>8&0xff] ^ t[5][crc>>16&0xff] ^ t[4][crc>>24&0xff] ^
+			t[3][crc>>32&0xff] ^ t[2][crc>>40&0xff] ^ t[1][crc>>48&0xff] ^ t[0][crc>>56]
+	}
+	for _, b := range p {
+		crc = t[0][byte(crc)^b] ^ crc>>8
+	}
+	h.crc = ^crc
+	return n, nil
+}
+
+func (h *crc64NVME) Sum(b []byte) []byte { return binary.BigEndian.AppendUint64(b, h.crc) }
+func (h *crc64NVME) Reset()              { h.crc = 0 }
+func (h *crc64NVME) Size() int           { return 8 }
+func (h *crc64NVME) BlockSize() int      { return 1 }
+
+// checksumTrailer is a checksum claim whose value arrives after the body:
+// the aws-chunked reader sets sum once the trailer has verified.
+type checksumTrailer struct {
+	algo checksumAlgo
+	sum  []byte
+}
+
 // payloadCheck holds a request's declared body-integrity claims, parsed
 // from headers before the body is read. They are independent mechanisms --
-// SigV4's signed x-amz-content-sha256 digest, x-amz-checksum-crc32, and
-// Content-MD5 (distinct from CRC32, CAS chunk SHA-256, object_sha256, and
-// the MD5-based single-part ETag) -- and a request may carry any
-// combination. Absent claims are not checked, matching real S3's opt-in
-// checksum headers.
+// SigV4's signed x-amz-content-sha256 digest, one x-amz-checksum-<algo>
+// value (in a header, or in an aws-chunked trailer), and Content-MD5
+// (distinct from CAS chunk SHA-256, object_sha256, and the MD5-based
+// single-part ETag) -- and a request may carry any combination. Absent
+// claims are not checked, matching real S3's opt-in checksum headers.
 type payloadCheck struct {
-	sha256   string // lowercase hex digest bound by SigV4, or ""
-	crc32    uint32
-	hasCRC32 bool
-	md5      []byte
+	sha256    string // lowercase hex digest bound by SigV4, or ""
+	md5       []byte
+	algo      checksumAlgo
+	sum       []byte           // declared x-amz-checksum-<algo> header value
+	composite bool             // the header value is a multipart "<checksum>-<parts>"
+	trailer   *checksumTrailer // the value arrives in the aws-chunked trailer
+	signed    bool             // SigV4 binds the body: a fixed digest or verified chunk signatures
 }
+
+var checksumValueHeaders = map[string]bool{"mode": true, "type": true, "algorithm": true}
 
 // parsePayloadCheck validates the checksum headers' syntax. A malformed
 // Content-MD5 (not base64, or not 16 bytes) is InvalidDigest, distinct from
 // BadDigest for a well-formed digest that simply does not match, matching
-// real S3's split between the two failure modes.
+// real S3's split between the two failure modes. At most one x-amz-checksum
+// value may be declared, by header or by x-amz-trailer, and
+// x-amz-sdk-checksum-algorithm must name it.
 func parsePayloadCheck(r *http.Request, signedSHA256 string) (payloadCheck, error) {
-	c := payloadCheck{sha256: signedSHA256}
-	if h := r.Header.Get("x-amz-checksum-crc32"); h != "" {
-		declared, err := base64.StdEncoding.DecodeString(h)
-		if err != nil || len(declared) != 4 {
-			return payloadCheck{}, &authError{code: "InvalidRequest", msg: "invalid x-amz-checksum-crc32 header"}
+	c := payloadCheck{sha256: signedSHA256, signed: signedSHA256 != ""}
+	multiple := &authError{code: "InvalidRequest", msg: "Expecting a single x-amz-checksum- header. Multiple checksum Types are not allowed."}
+	unsupported := func(what string) error {
+		return &authError{code: "NotImplemented", msg: fmt.Sprintf("%s is not supported by ZeroS3", what)}
+	}
+	for name, vals := range r.Header {
+		lower := strings.ToLower(name)
+		short, ok := strings.CutPrefix(lower, "x-amz-checksum-")
+		if !ok || checksumValueHeaders[short] {
+			continue
 		}
-		c.crc32, c.hasCRC32 = binary.BigEndian.Uint32(declared), true
+		algo, known := checksumAlgoNamed(short)
+		if !known {
+			return payloadCheck{}, unsupported("checksum header " + lower)
+		}
+		if c.algo != checksumNone {
+			return payloadCheck{}, multiple
+		}
+		invalid := &authError{code: "InvalidRequest", msg: fmt.Sprintf("Value for %s header is invalid.", lower)}
+		if len(vals) != 1 {
+			return payloadCheck{}, invalid
+		}
+		c.algo = algo
+		if v, err := base64.StdEncoding.DecodeString(vals[0]); err == nil && len(v) == algo.size() {
+			c.sum = v
+		} else if b64, parts, ok := strings.Cut(vals[0], "-"); ok && isMultipartChecksum(b64, parts, algo) {
+			c.composite = true
+		} else {
+			return payloadCheck{}, invalid
+		}
+	}
+	if h := r.Header.Values("x-amz-trailer"); len(h) > 0 {
+		names := strings.Split(strings.Join(h, ","), ",")
+		if len(names) != 1 {
+			return payloadCheck{}, multiple
+		}
+		short, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(names[0])), "x-amz-checksum-")
+		algo, known := checksumAlgoNamed(short)
+		if !ok || !known {
+			return payloadCheck{}, unsupported("x-amz-trailer " + strings.TrimSpace(names[0]))
+		}
+		if c.algo != checksumNone {
+			return payloadCheck{}, multiple
+		}
+		c.algo, c.trailer = algo, &checksumTrailer{algo: algo}
+	}
+	if h := r.Header.Get("x-amz-sdk-checksum-algorithm"); h != "" {
+		algo, known := checksumAlgoNamed(h)
+		switch {
+		case !known:
+			return payloadCheck{}, unsupported("x-amz-sdk-checksum-algorithm " + h)
+		case c.algo == checksumNone:
+			return payloadCheck{}, &authError{code: "InvalidRequest", msg: "x-amz-sdk-checksum-algorithm specified, but no corresponding x-amz-checksum-* or x-amz-trailer headers were found."}
+		case algo != c.algo:
+			return payloadCheck{}, &authError{code: "InvalidRequest", msg: "Value for x-amz-sdk-checksum-algorithm header is invalid."}
+		}
 	}
 	if h := r.Header.Get("Content-MD5"); h != "" {
 		declared, err := base64.StdEncoding.DecodeString(h)
@@ -15178,17 +15437,90 @@ func parsePayloadCheck(r *http.Request, signedSHA256 string) (payloadCheck, erro
 	return c, nil
 }
 
+// isMultipartChecksum reports a CompleteMultipartUpload composite value,
+// "<base64 checksum>-<part count>".
+func isMultipartChecksum(b64, parts string, algo checksumAlgo) bool {
+	v, err := base64.StdEncoding.DecodeString(b64)
+	n, perr := strconv.Atoi(parts)
+	return err == nil && len(v) == algo.size() && perr == nil && n >= 1 && n <= maxPartNumber && strconv.Itoa(n) == parts
+}
+
+// bindPayload ties the checksum claims to how SigV4 authenticated the body:
+// it records whether the body is signed, and for an aws-chunked body it
+// installs the decoding reader, which hands a trailer claim its value.
+func (c *payloadCheck) bindPayload(r *http.Request, payload signedPayload) error {
+	st := payload.stream
+	if st == nil {
+		if c.trailer != nil {
+			return &authError{code: "InvalidRequest", msg: "x-amz-trailer requires an aws-chunked trailer payload mode"}
+		}
+		return nil
+	}
+	if st.trailer != (c.trailer != nil) {
+		return &authError{code: "InvalidRequest", msg: "x-amz-trailer must name the one checksum a trailer payload mode carries"}
+	}
+	c.signed = !st.unsigned
+	st.claim = c.trailer
+	r.Body = io.NopCloser(st.newReader(r.Body))
+	r.ContentLength = st.decodedLen
+	return nil
+}
+
+// objectClaim splits CompleteMultipartUpload's x-amz-checksum-<algo> header,
+// which describes the assembled object rather than the XML body, from the
+// claims on the body itself.
+func (c payloadCheck) objectClaim() (body, object payloadCheck) {
+	if c.algo == checksumNone || c.trailer != nil {
+		return c, payloadCheck{}
+	}
+	object = payloadCheck{algo: c.algo, sum: c.sum, composite: c.composite}
+	c.algo, c.sum, c.composite = checksumNone, nil, false
+	return c, object
+}
+
 // verify compares the declared claims against the digests of the body
-// actually received; digests for undeclared claims are ignored.
-func (c payloadCheck) verify(bodySHA256 [32]byte, bodyMD5 [md5.Size]byte, bodyCRC32 uint32) error {
+// actually received; digests for undeclared claims are ignored. sum is the
+// body's digest under c.algo (nil when none was declared).
+func (c payloadCheck) verify(bodySHA256 [32]byte, bodyMD5 [md5.Size]byte, sum []byte) error {
 	if c.sha256 != "" && hex.EncodeToString(bodySHA256[:]) != c.sha256 {
 		return &authError{code: "XAmzContentSHA256Mismatch", msg: "declared payload hash does not match body received"}
 	}
-	if c.hasCRC32 && bodyCRC32 != c.crc32 {
-		return &authError{code: "BadDigest", msg: "crc32 checksum does not match request payload"}
+	if c.algo != checksumNone {
+		want := c.sum
+		if c.trailer != nil {
+			want = c.trailer.sum
+		}
+		switch {
+		case c.composite:
+			return &authError{code: "InvalidRequest", msg: fmt.Sprintf("Value for %s header is invalid.", c.algo.header())}
+		case want == nil:
+			return &authError{code: "IncompleteBody", msg: fmt.Sprintf("the %s trailer was not received", c.algo.header())}
+		case !bytes.Equal(sum, want):
+			return &authError{code: "BadDigest", msg: fmt.Sprintf("The %s you specified did not match the calculated checksum.", strings.ToUpper(checksumAlgoNames[c.algo]))}
+		}
 	}
 	if c.md5 != nil && !bytes.Equal(bodyMD5[:], c.md5) {
 		return &authError{code: "BadDigest", msg: "the Content-MD5 you specified did not match what we received"}
+	}
+	return nil
+}
+
+// checksumHash returns the hash a body reader must feed for c.algo, or nil
+// when none was declared or the caller's own SHA-256 serves (have).
+func (c payloadCheck) checksumHash(haveSHA256 bool) hash.Hash {
+	if c.algo == checksumNone || c.algo == checksumSHA256 && haveSHA256 {
+		return nil
+	}
+	return c.algo.newHash()
+}
+
+// checksumSum is the body digest verify compares under c.algo.
+func (c payloadCheck) checksumSum(h hash.Hash, bodySHA256 [32]byte) []byte {
+	switch {
+	case h != nil:
+		return h.Sum(nil)
+	case c.algo == checksumSHA256:
+		return bodySHA256[:]
 	}
 	return nil
 }
@@ -15199,18 +15531,18 @@ func (c payloadCheck) verifyBytes(body []byte) error {
 	var (
 		sum [32]byte
 		m   [md5.Size]byte
-		crc uint32
 	)
-	if c.sha256 != "" {
+	if c.sha256 != "" || c.algo == checksumSHA256 {
 		sum = sha256.Sum256(body)
 	}
-	if c.hasCRC32 {
-		crc = crc32.ChecksumIEEE(body)
+	h := c.checksumHash(true)
+	if h != nil {
+		h.Write(body)
 	}
 	if c.md5 != nil {
 		m = md5.Sum(body) //nolint:gosec // S3-compatible request integrity check, not a security use of MD5.
 	}
-	return c.verify(sum, m, crc)
+	return c.verify(sum, m, c.checksumSum(h, sum))
 }
 
 type s3ErrorBody struct {
@@ -15526,20 +15858,15 @@ func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, che
 		return ingestResult{}, &http.MaxBytesError{Limit: maxStreamedBodySize}
 	}
 	body := io.Reader(bodyReader{http.MaxBytesReader(w, r.Body, maxStreamedBodySize)})
-	var crc hash.Hash32
-	if check.hasCRC32 {
-		crc = crc32.NewIEEE()
-		body = io.TeeReader(body, crc)
+	ck := check.checksumHash(true)
+	if ck != nil {
+		body = io.TeeReader(body, ck)
 	}
 	ing, err := srv.store.ingestStream(body, true, ingestOptions{size: r.ContentLength, overlapFlush: overlap})
 	if err != nil {
 		return ingestResult{}, err
 	}
-	var sum uint32
-	if crc != nil {
-		sum = crc.Sum32()
-	}
-	if err := check.verify(ing.objSHA256, ing.etagMD5, sum); err != nil {
+	if err := check.verify(ing.objSHA256, ing.etagMD5, check.checksumSum(ck, ing.objSHA256)); err != nil {
 		ing.finishIngest() // join the running publication; its chunks stay unreachable
 		return ingestResult{}, err
 	}
@@ -15590,13 +15917,12 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	check, err := parsePayloadCheck(r, payload.sha256)
+	if err == nil {
+		err = check.bindPayload(r, payload)
+	}
 	if err != nil {
 		writeRequestError(w, err, rawPath)
 		return
-	}
-	if payload.stream != nil {
-		r.Body = io.NopCloser(payload.stream.newReader(r.Body))
-		r.ContentLength = payload.stream.decodedLen
 	}
 
 	// The ZeroS3 delta-sync extension (section 15, M6) lives entirely under
@@ -15697,11 +16023,12 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case key != "" && r.Method == http.MethodGet && hasUploadID:
 		srv.handleListParts(w, bucket, key, uploadID, rawQuery)
 	case key != "" && r.Method == http.MethodPost && hasUploadID:
-		body, ok := readBufferedBody(w, r, rawPath, check)
+		bodyCheck, objectCheck := check.objectClaim()
+		body, ok := readBufferedBody(w, r, rawPath, bodyCheck)
 		if !ok {
 			return
 		}
-		srv.handleCompleteMultipartUpload(w, bucket, key, uploadID, body)
+		srv.handleCompleteMultipartUpload(w, r, bucket, key, uploadID, body, objectCheck)
 	case key != "" && r.Method == http.MethodDelete && hasUploadID:
 		srv.handleAbortMultipartUpload(w, bucket, key, uploadID)
 	case key == "" && r.Method == http.MethodGet && hasUploads:
@@ -17259,6 +17586,12 @@ func buildManifestV1FromRefs(refs []chunkRef, total int64, objSHA [32]byte, etag
 // why this never re-chunks by naively concatenating each part's own,
 // independently-computed chunk list.
 func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested []completedPart) (*objectEntry, manifestV1, error) {
+	return s.completeMultipartUpload(bucket, key, uploadID, requested, payloadCheck{})
+}
+
+// completeMultipartUpload also verifies object, a full-object checksum claim,
+// against the assembled bytes before anything is published.
+func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested []completedPart, object payloadCheck) (*objectEntry, manifestV1, error) {
 	if len(requested) == 0 {
 		return nil, manifestV1{}, errEmptyCompletionPartList
 	}
@@ -17312,9 +17645,18 @@ func (s *Store) CompleteMultipartUpload(bucket, key, uploadID string, requested 
 	for _, p := range parts {
 		total += p.size
 	}
-	ing, err := s.ingestStream(mr, false, ingestOptions{size: total})
+	var src io.Reader = mr
+	ck := object.checksumHash(true)
+	if ck != nil {
+		src = io.TeeReader(mr, ck)
+	}
+	ing, err := s.ingestStream(src, false, ingestOptions{size: total})
 	if err != nil {
 		return nil, manifestV1{}, fmt.Errorf("multipart: assembling final object failed: %w", err)
+	}
+	if err := object.verify(ing.objSHA256, ing.etagMD5, object.checksumSum(ck, ing.objSHA256)); err != nil {
+		ing.finishIngest()
+		return nil, manifestV1{}, err
 	}
 	etag, err := multipartETag(parts)
 	if err != nil {
@@ -17703,7 +18045,15 @@ func (srv *Server) handleListMultipartUploads(w http.ResponseWriter, bucket, raw
 	writeXML(w, http.StatusOK, result)
 }
 
-func (srv *Server) handleCompleteMultipartUpload(w http.ResponseWriter, bucket, key, uploadID string, body []byte) {
+// handleCompleteMultipartUpload verifies an x-amz-checksum-<algo> header as
+// a full-object checksum of the assembled bytes, in the assembly pass. A
+// composite (per-part) claim needs stored part checksums, which ZeroS3 does
+// not keep (ADR-ID-03), so it is refused rather than accepted unverified.
+func (srv *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key, uploadID string, body []byte, object payloadCheck) {
+	if object.algo != checksumNone && (object.composite || strings.EqualFold(r.Header.Get("x-amz-checksum-type"), "COMPOSITE")) {
+		writeS3Error(w, "NotImplemented", "composite multipart checksums are not supported by ZeroS3", "/"+bucket+"/"+key)
+		return
+	}
 	var reqXML completeMultipartUploadXML
 	if err := xml.Unmarshal(body, &reqXML); err != nil {
 		writeS3Error(w, "MalformedXML", "the CompleteMultipartUpload request body could not be parsed", "/"+bucket+"/"+key)
@@ -17713,9 +18063,12 @@ func (srv *Server) handleCompleteMultipartUpload(w http.ResponseWriter, bucket, 
 	for i, p := range reqXML.Part {
 		parts[i] = completedPart{PartNumber: p.PartNumber, ETag: p.ETag}
 	}
-	entry, _, err := srv.store.CompleteMultipartUpload(bucket, key, uploadID, parts)
+	entry, _, err := srv.store.completeMultipartUpload(bucket, key, uploadID, parts, object)
 	if err != nil {
+		var ae *authError
 		switch {
+		case errors.As(err, &ae):
+			writeS3Error(w, ae.code, ae.msg, "/"+bucket+"/"+key)
 		case errors.Is(err, errNoSuchUpload):
 			writeS3Error(w, "NoSuchUpload", "the specified multipart upload does not exist", "/"+bucket+"/"+key)
 		case errors.Is(err, errNoSuchBucket):
@@ -26861,13 +27214,13 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	payloadSHA := sha256.New()
-	payloadMD5, payloadCRC := md5.New(), crc32.NewIEEE()
+	payloadMD5, payloadCK := md5.New(), check.checksumHash(true)
 	digests := []io.Writer{payloadSHA}
 	if check.md5 != nil {
 		digests = append(digests, payloadMD5)
 	}
-	if check.hasCRC32 {
-		digests = append(digests, payloadCRC)
+	if payloadCK != nil {
+		digests = append(digests, payloadCK)
 	}
 	reader := io.TeeReader(http.MaxBytesReader(w, r.Body, maxStreamedBodySize+maxAuthCommitHeader+4), io.MultiWriter(digests...))
 	var prefix [4]byte
@@ -26911,7 +27264,7 @@ func (srv *Server) handleAuthorityImport(w http.ResponseWriter, r *http.Request,
 		var stamp [md5.Size]byte
 		payloadSHA.Sum(sum[:0])
 		payloadMD5.Sum(stamp[:0])
-		return check.verify(sum, stamp, payloadCRC.Sum32())
+		return check.verify(sum, stamp, check.checksumSum(payloadCK, sum))
 	}
 	proof := authoritySyncProof{refs: refs, chunk: sha256.New(), etag: md5.New()}
 	var derived *authDerivedImport
@@ -27943,16 +28296,46 @@ func signSigV4Request(r *http.Request, creds Credentials, region string, payload
 // so cancellation actually reaches the in-flight GET/PUT rather than
 // stopping only at the goroutine boundary.
 func (cfg syncClientConfig) signAndDo(ctx context.Context, method, path string, body []byte, headers map[string]string) (*http.Response, []byte, error) {
+	return cfg.signAndDoLimit(ctx, method, path, body, headers, maxPeerResponseBytes)
+}
+
+// maxPeerResponseBytes bounds every buffered response read from a peer: a
+// sync descriptor for the largest object (5 GiB in 16 KiB chunks) is about
+// 31 MB of JSON, so 64 MiB leaves room while a hostile or broken peer can no
+// longer make the client allocate without limit.
+const maxPeerResponseBytes = 64 << 20
+
+// errPeerResponseTooLarge reports a peer response past its read bound.
+var errPeerResponseTooLarge = errors.New("peer response exceeds its size limit")
+
+// signAndDoLimit is signAndDo with an explicit bound on the response body.
+func (cfg syncClientConfig) signAndDoLimit(ctx context.Context, method, path string, body []byte, headers map[string]string, limit int64) (*http.Response, []byte, error) {
 	resp, err := cfg.signAndDoStream(ctx, method, path, body, headers)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readPeerBody(resp, limit)
 	if err != nil {
 		return nil, nil, err
 	}
 	return resp, respBody, nil
+}
+
+// readPeerBody reads at most limit bytes of resp's body, refusing a declared
+// or actual length past it rather than truncating.
+func readPeerBody(resp *http.Response, limit int64) ([]byte, error) {
+	if resp.ContentLength > limit {
+		return nil, fmt.Errorf("%w (%d > %d bytes)", errPeerResponseTooLarge, resp.ContentLength, limit)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w (%d bytes)", errPeerResponseTooLarge, limit)
+	}
+	return data, nil
 }
 
 // signAndDoStream is signAndDo without reading the response: the caller
@@ -28417,7 +28800,8 @@ func doPlainPutFallback(cfg syncClientConfig) (syncStats, error) {
 		return syncStats{}, fmt.Errorf("fallback PutObject failed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	// The answer to a PUT is a short XML error or empty; 64 KiB is plenty.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
 		return syncStats{}, fmt.Errorf("fallback PutObject failed: status %d: %s", resp.StatusCode, body)
 	}
@@ -28810,6 +29194,12 @@ func (srv *Server) handleBulk(w http.ResponseWriter, r *http.Request, rawPath st
 		writeSyncError(w, http.StatusNotFound, "UnknownOperation", "unknown ZeroS3 sync extension operation")
 		return
 	}
+	// A bulk frame is trusted only as far as SigV4 binds it: UNSIGNED-PAYLOAD,
+	// the unsigned trailer mode and presigned URLs are refused (ADR-XFER-02).
+	if !check.signed {
+		writeSyncError(w, http.StatusForbidden, "SignedPayloadRequired", "bulk transfers require a signed payload")
+		return
+	}
 	switch rawPath {
 	case zeros3BulkNegotiatePath:
 		srv.handleBulkNegotiate(w, r, rawPath, check)
@@ -28959,7 +29349,7 @@ func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawP
 		body    io.Reader = io.LimitReader(r.Body, bulkMaxFrameBytes+1)
 		sha     hash.Hash
 		md5h    hash.Hash
-		crc     hash.Hash32
+		ck      = check.checksumHash(check.sha256 != "")
 		writers []io.Writer
 	)
 	if check.sha256 != "" {
@@ -28970,9 +29360,8 @@ func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawP
 		md5h = md5.New() //nolint:gosec // S3-compatible request integrity check, not a security use of MD5.
 		writers = append(writers, md5h)
 	}
-	if check.hasCRC32 {
-		crc = crc32.NewIEEE()
-		writers = append(writers, crc)
+	if ck != nil {
+		writers = append(writers, ck)
 	}
 	if len(writers) > 0 {
 		body = io.TeeReader(body, io.MultiWriter(writers...))
@@ -29009,7 +29398,6 @@ func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawP
 	var (
 		shaSum [32]byte
 		md5Sum [md5.Size]byte
-		crcSum uint32
 	)
 	if sha != nil {
 		sha.Sum(shaSum[:0])
@@ -29017,10 +29405,7 @@ func (srv *Server) handleBulkUpload(w http.ResponseWriter, r *http.Request, rawP
 	if md5h != nil {
 		md5h.Sum(md5Sum[:0])
 	}
-	if crc != nil {
-		crcSum = crc.Sum32()
-	}
-	if err := check.verify(shaSum, md5Sum, crcSum); err != nil {
+	if err := check.verify(shaSum, md5Sum, check.checksumSum(ck, shaSum)); err != nil {
 		writeRequestError(w, err, rawPath)
 		return
 	}
@@ -29897,7 +30282,7 @@ var errReplicateChunkMismatch = errors.New("replicate: source returned chunk con
 // of exactly what M8A4 requires -- this function never returns bytes it
 // hasn't itself confirmed hash to hexDigest.
 func fetchSourceChunk(ctx context.Context, cfg syncClientConfig, hexDigest string) ([]byte, error) {
-	resp, body, err := cfg.signAndDo(ctx, http.MethodGet, zeros3SyncChunksPrefix+hexDigest, nil, nil)
+	resp, body, err := cfg.signAndDoLimit(ctx, http.MethodGet, zeros3SyncChunksPrefix+hexDigest, nil, nil, maxSyncChunkBytes)
 	if err != nil {
 		return nil, fmt.Errorf("source chunk fetch failed: %w", err)
 	}
@@ -32519,7 +32904,9 @@ func showSnapshotRemote(cfg syncClientConfig, id string, withEntries bool) (snap
 	if withEntries {
 		q.Set("entries", "1")
 	}
-	resp, body, err := cfg.signAndDo(context.Background(), http.MethodGet, zeros3SnapshotShowPath+"?"+q.Encode(), nil, nil)
+	// A full entry listing is JSON over a descriptor of up to
+	// maxSnapshotPayload bytes, so it gets a proportionally larger bound.
+	resp, body, err := cfg.signAndDoLimit(context.Background(), http.MethodGet, zeros3SnapshotShowPath+"?"+q.Encode(), nil, nil, 4*maxSnapshotPayload)
 	if err != nil {
 		return snapshotShowResponse{}, fmt.Errorf("snapshot show request failed: %w", err)
 	}

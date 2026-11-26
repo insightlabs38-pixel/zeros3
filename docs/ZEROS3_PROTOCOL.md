@@ -481,6 +481,16 @@ These are implementation policies, not changes to logical object semantics.
 | `/_zeros3/v2/chunks/fetch` | POST | descriptor frame | data frame |
 | `/_zeros3/v2/chunks/upload` | POST | data frame | JSON acknowledgement |
 
+The three v2 endpoints require a signed payload: a fixed
+`X-Amz-Content-Sha256` digest or signed aws-chunked chunks. `UNSIGNED-PAYLOAD`,
+`STREAMING-UNSIGNED-PAYLOAD-TRAILER` and presigned requests are refused with
+HTTP 403 `SignedPayloadRequired` before the frame is read. The built-in
+clients always sign a fixed digest.
+
+Clients bound every buffered native response they read: 64 MiB by default,
+one chunk (`maxSyncChunkBytes`) for a v1 chunk GET, and four times the
+snapshot payload limit for a snapshot listing with entries.
+
 Objects still commit through:
 
 ```text

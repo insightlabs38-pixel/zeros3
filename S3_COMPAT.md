@@ -34,9 +34,9 @@ S3-compatible endpoint.
 | Buckets | `ListBuckets`, `CreateBucket`, `HeadBucket`, `DeleteBucket`, `GetBucketLocation` |
 | Objects | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `ListObjectsV2`, `CopyObject` |
 | Reads | one byte range; `If-Match` / `If-None-Match` |
-| Writes | `Content-MD5`, `x-amz-checksum-crc32`, conditional PUT |
+| Writes | `Content-MD5`, `x-amz-checksum-{crc32,crc32c,crc64nvme,sha1,sha256}` (header or trailer), conditional PUT |
 | Multipart | create, upload part, copy part, list parts, list uploads, complete, abort |
-| Auth | SigV4 header auth; SigV4 presigned GET/PUT; signed `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` aws-chunked bodies |
+| Auth | SigV4 header auth; SigV4 presigned GET/PUT; aws-chunked bodies: signed, signed with trailer, unsigned with trailer |
 | Addressing | path style always; virtual-hosted style when configured |
 | Region | one configured server region |
 
@@ -119,7 +119,7 @@ ZeroS3 deliberately keeps several integrity concepts separate.
 | Multipart ETag | MD5(concatenated binary part-MD5s) + `-N` | conventional multipart ETag |
 | SigV4 payload hash | SHA-256 / sentinel | authentication binding |
 | `Content-MD5` | MD5 + base64 | optional request-body integrity |
-| `x-amz-checksum-crc32` | IEEE CRC32 + base64 | optional request-body integrity |
+| `x-amz-checksum-<algo>` | CRC32, CRC32C, CRC64/NVME, SHA-1 or SHA-256 + base64 | optional request-body integrity, verified, not stored |
 | Journal/snapshot frame checksum | CRC32C | torn/corrupt metadata-frame detection |
 
 The CAS digest is not an ETag, and the ETag is not used as the storage
@@ -246,26 +246,44 @@ Covered edge cases include:
 | 64-hex SHA-256 digest | request is signed against that digest and the received logical body must match |
 | `UNSIGNED-PAYLOAD` | sentinel is signed; SigV4 itself does not bind the body |
 | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` | signed aws-chunked body with chained per-chunk signatures |
+| `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` | the same, then one checksum trailer signed by `x-amz-trailer-signature` |
+| `STREAMING-UNSIGNED-PAYLOAD-TRAILER` | unsigned aws-chunked body (bare hex sizes) with one checksum trailer |
 
-The signed aws-chunked mode requires:
+The aws-chunked modes require:
 
 - `Content-Encoding: aws-chunked`;
 - `x-amz-decoded-content-length`;
-- valid chained signatures;
-- a valid final zero-length signed chunk;
+- valid chained signatures (signed modes);
+- a valid final zero-length chunk;
 - exact decoded length;
-- no bytes after the final chunk.
+- in a trailer mode, `x-amz-trailer` naming exactly one known checksum, and a
+  trailer of exactly that line, then `x-amz-trailer-signature` in the signed
+  mode, then a blank line;
+- no bytes after the final chunk or trailer.
 
-Individual signed chunks are bounded, verified before their bytes are released
-to the ingest path, and the decoded payload then uses the same request checksum
-and object-ingest machinery as an ordinary body.
+Individual chunks are bounded, signed ones verified before their bytes are
+released to the ingest path, and the decoded payload then uses the same
+request checksum and object-ingest machinery as an ordinary body. A trailer
+value counts only after the whole trailer, and its signature, verifies.
 
-Recognized but **not implemented**:
+### Request checksums
 
-- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`;
-- `STREAMING-UNSIGNED-PAYLOAD-TRAILER`;
-- SigV4A/ECDSA streaming payload modes.
+At most one `x-amz-checksum-<algo>` value may be declared, as a header or by
+`x-amz-trailer`; `x-amz-checksum-mode`, `-type` and `-algorithm` are not
+values. A value is base64 of the big-endian digest and is verified against the
+received bytes before the write commits: a mismatch is `BadDigest` and leaves
+nothing published. `x-amz-sdk-checksum-algorithm` must name the declared
+algorithm. An unknown algorithm is `NotImplemented`; two values, a malformed
+value or a trailer without a trailer payload mode is `InvalidRequest`.
 
+On `CompleteMultipartUpload` the header is a `FULL_OBJECT` claim over the
+assembled object, verified before the manifest is published (a failed claim
+leaves the upload in place). Composite claims (`<value>-<parts>`, or
+`x-amz-checksum-type: COMPOSITE`) are `NotImplemented`. Checksums are verified
+only: they are not stored and not returned (`x-amz-checksum-mode` on GET has no
+effect), and per-part `Checksum*` elements in the Complete XML are ignored.
+
+Recognized but **not implemented**: SigV4A/ECDSA streaming payload modes.
 These values are rejected rather than silently interpreted as another mode.
 
 ### Presigned URLs
