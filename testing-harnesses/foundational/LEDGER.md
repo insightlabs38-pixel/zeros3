@@ -32,5 +32,5 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | FB-12 | COMPLETE · RESEARCH GATES MISSED | [Native entropy and delta comparison](FB-12/README.md). Codec 6 and denser anchors were rejected on measured gates. Explicit current-store windowed pricing uses actual piece identities and file costs. |
 | FB-13 | COMPLETE | [Native CDC economics and local dependency rebasing](FB-13/README.md). Existing CDC remains active. X9 keep-last-4 released the expired pin while preserving all retained versions. |
 | FB-14 | RESEARCH_ONLY | [Native pack chunk-delta research](FB-14/README.md) found two clear wins across nine histories. Layout and read costs removed the borderline third cases. M-G3 NOT_APPLICABLE. |
-| FB-15 | pending | M-E2/G4 incremental maintenance |
+| FB-15 | RESEARCH_ONLY | [Verified root-delta accounting and exact confirmation](FB-15/README.md) reached 0.291× mark work and 2.39% held on the reconstructed X10 mix. Native high-churn X9 missed. M-G4 NOT_APPLICABLE. |
 | FB-16 | pending | M-F4/G2 reconciliation and final qualification |

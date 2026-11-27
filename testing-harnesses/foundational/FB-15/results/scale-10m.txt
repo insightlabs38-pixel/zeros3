@@ -1,0 +1,39 @@
+=== RUN   TestFB15ExactCandidateModel
+=== RUN   TestFB15ExactCandidateModel/1
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+=== RUN   TestFB15ExactCandidateModel/2
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+=== RUN   TestFB15ExactCandidateModel/3
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+=== RUN   TestFB15ExactCandidateModel/4
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+=== RUN   TestFB15ExactCandidateModel/5
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+=== RUN   TestFB15ExactCandidateModel/6
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+=== RUN   TestFB15ExactCandidateModel/7
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+=== RUN   TestFB15ExactCandidateModel/8
+    zeros3_fb15_model_test.go:215: confirmed=455 malformed_suffixes_rebuilt=101 lost_hint_states=25 identical_deletion_sets=455
+--- PASS: TestFB15ExactCandidateModel (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/1 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/2 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/3 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/4 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/5 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/6 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/7 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/8 (0.00s)
+=== RUN   TestFB15GeneratedMarkScale
+    zeros3_fb15_model_test.go:286: roots=10000000 distinct_slots=10073728 passes=32 edits=256 marked_refs=160000000 changed_refs=16384 full_refs=640000000 work_ratio=0.25002560 retired=8192 max_held=3145728 max_rss_kib=136292 seed=36.411049ms measured=137.798809ms
+--- PASS: TestFB15GeneratedMarkScale (0.17s)
+=== RUN   TestFB15CheckedJournalSuffix
+=== RUN   TestFB15CheckedJournalSuffix/v1
+    zeros3_fb15_model_test.go:328: from={offset:84 sequence:1} mid={offset:422 sequence:2} end={offset:760 sequence:3} suffix_sha256=0fe4c04bd4d9e836e843faa94c3ba3c782d8860b0066a60ca4fb8cdc0224b3dd refused=5
+=== RUN   TestFB15CheckedJournalSuffix/j2
+    zeros3_fb15_model_test.go:328: from={offset:260 sequence:1} mid={offset:515 sequence:2} end={offset:770 sequence:3} suffix_sha256=3d96de7a49620cd2797554357cbd311f6838fd41a54b1c0369df65dd3dcb9bcc refused=5
+--- PASS: TestFB15CheckedJournalSuffix (0.02s)
+    --- PASS: TestFB15CheckedJournalSuffix/v1 (0.01s)
+    --- PASS: TestFB15CheckedJournalSuffix/j2 (0.01s)
+PASS
+ok  	zeros3	0.228s

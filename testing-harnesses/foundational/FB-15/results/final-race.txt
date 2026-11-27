@@ -1,0 +1,36 @@
+=== RUN   TestFB15ExactCandidateModel
+=== RUN   TestFB15ExactCandidateModel/1
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/2
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/3
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/4
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/5
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/6
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/7
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/8
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+--- PASS: TestFB15ExactCandidateModel (0.18s)
+    --- PASS: TestFB15ExactCandidateModel/1 (0.03s)
+    --- PASS: TestFB15ExactCandidateModel/2 (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/3 (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/4 (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/5 (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/6 (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/7 (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/8 (0.02s)
+=== RUN   TestFB15CheckedJournalSuffix
+=== RUN   TestFB15CheckedJournalSuffix/v1
+    zeros3_fb15_model_test.go:355: from={offset:84 sequence:1} mid={offset:422 sequence:2} end={offset:760 sequence:3} suffix_sha256=e894e92b46b57877cc6b56faa92c0fa8bbb9712fbbd7ea36c4b4a1b51c834550 refused=5
+=== RUN   TestFB15CheckedJournalSuffix/j2
+    zeros3_fb15_model_test.go:355: from={offset:260 sequence:1} mid={offset:515 sequence:2} end={offset:770 sequence:3} suffix_sha256=c4828af09744a5e9a72eaf19d6526894d391ebba2b6e8216dac14f7511944bc1 refused=5
+--- PASS: TestFB15CheckedJournalSuffix (0.04s)
+    --- PASS: TestFB15CheckedJournalSuffix/v1 (0.02s)
+    --- PASS: TestFB15CheckedJournalSuffix/j2 (0.02s)
+PASS
+ok  	zeros3	1.250s
