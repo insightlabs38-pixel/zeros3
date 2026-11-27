@@ -6,8 +6,8 @@
 | GF1 | In progress | Exact and bounded search with native signed materialization, hard work caps and a held-out counterexample. Mixed-load and broader layout optimization remain open. |
 | GF2 | In progress | Specialized signed frontier on one gzip pair with exact crash and downgrade evidence. Admit via GF1 and revisit mixed-load tails in GF8. |
 | GF3 | Research only | Shared pages save space on the controlled cohort and reclaim exactly. Fixed programs lose on real histories across budgets. |
-| GF4 | Next | Online workload and maintenance policy. |
-| GF5 | Pending | Bit-exact checkpoints with true lineage and dtype-aware residuals. |
+| GF4 | Research only | Exact offline comparator and signed concurrent hot-copy trials. The controller missed the tail gate and did not consistently beat LRU. |
+| GF5 | In progress | Bit-exact checkpoints with true lineage and dtype-aware residuals. |
 | GF6 | Pending | Joint verified source/receiver choice and transfer. |
 | GF7 | Pending | One substantial original compression research direction. |
 | GF8 | Pending | Integrated verification and final scientific assessment. |

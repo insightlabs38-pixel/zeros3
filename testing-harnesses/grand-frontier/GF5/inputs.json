@@ -1,0 +1,47 @@
+[
+  {
+    "step": 100000,
+    "revision": "d8ef477bd905f3cceeb9327b0cefba4f6f9895ac",
+    "file": "100000.safetensors",
+    "model": "EleutherAI/pythia-14m",
+    "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/d8ef477bd905f3cceeb9327b0cefba4f6f9895ac/model.safetensors",
+    "sha256": "d42411e70b4110bb69bc4301af75f25efbdf4b2278b2235bfe1d3d567b33bb59",
+    "bytes": 28143920,
+    "bits": 16,
+    "dtype": "F16",
+    "tensors": 76,
+    "header_bytes": 8496,
+    "layout": "little-endian C-contiguous safetensors",
+    "split": "development"
+  },
+  {
+    "step": 101000,
+    "revision": "69bf782f2bd16bc848b386afdabc1ea3378f208f",
+    "file": "101000.safetensors",
+    "model": "EleutherAI/pythia-14m",
+    "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/69bf782f2bd16bc848b386afdabc1ea3378f208f/model.safetensors",
+    "sha256": "ffa0ce742b321ae28485d73d6471a5e6c96b8aa205000acc4536b4bd185cb1a2",
+    "bytes": 28143920,
+    "bits": 16,
+    "dtype": "F16",
+    "tensors": 76,
+    "header_bytes": 8496,
+    "layout": "little-endian C-contiguous safetensors",
+    "split": "development"
+  },
+  {
+    "step": 102000,
+    "revision": "ab9d5f4b52066f529c68dfcb184b140d802ed79f",
+    "file": "102000.safetensors",
+    "model": "EleutherAI/pythia-14m",
+    "url": "https://huggingface.co/EleutherAI/pythia-14m/resolve/ab9d5f4b52066f529c68dfcb184b140d802ed79f/model.safetensors",
+    "sha256": "2d08d671493b4397dfc6bee89afd1f55fc154aba406f56d39b1dc53eb8475cc2",
+    "bytes": 28143920,
+    "bits": 16,
+    "dtype": "F16",
+    "tensors": 76,
+    "header_bytes": 8496,
+    "layout": "little-endian C-contiguous safetensors",
+    "split": "held-out target"
+  }
+]

@@ -1,0 +1,8 @@
+=== RUN   TestGF4NativePolicyReplay
+=== RUN   TestGF4NativePolicyReplay/0/rent-aware
+--- PASS: TestGF4NativePolicyReplay (63.99s)
+    --- PASS: TestGF4NativePolicyReplay/0/rent-aware (63.97s)
+=== RUN   TestGF4OfflineOptimality
+--- PASS: TestGF4OfflineOptimality (0.00s)
+PASS
+ok  	zeros3	65.029s

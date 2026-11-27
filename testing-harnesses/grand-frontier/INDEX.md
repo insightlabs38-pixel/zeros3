@@ -10,6 +10,7 @@ separate physical, byte-exact, retention, compatibility and recovery evidence.
 - [GF1 constrained planner and first exact oracle](GF1/README.md)
 - [GF2 compressed query compilation](GF2/README.md)
 - [GF3 multi-source discovery and phrase banks](GF3/README.md)
+- [GF4 workload and maintenance policy](GF4/README.md)
 
 The baseline corpus manifest pins exact input sizes, digests, order and splits.
 The archive minimum-space lane and CDC fast lane both remain relevant
