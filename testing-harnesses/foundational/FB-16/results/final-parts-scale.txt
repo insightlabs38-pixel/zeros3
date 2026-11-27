@@ -1,0 +1,12 @@
+=== RUN   TestFB10PartPagesScale
+=== RUN   TestFB10PartPagesScale/false
+    zeros3_fb10_pages_test.go:186: paged=false parts=10000 refs=129 journal_bytes=123348312 sequence=10002 checkpoint_bytes=92231321 page_bytes=0 write=4.766156738s consolidate=1.836953467s adopted_checkpoint=true open=1.573999111s
+    zeros3_fb10_pages_test.go:186: paged=false parts=10000 refs=129 journal_bytes=123348312 sequence=10002 checkpoint_bytes=92231321 page_bytes=0 write=4.766156738s consolidate=1.836953467s adopted_checkpoint=false open=619.905949ms
+=== RUN   TestFB10PartPagesScale/true
+    zeros3_fb10_pages_test.go:186: paged=true parts=10000 refs=129 journal_bytes=4158403 sequence=10002 checkpoint_bytes=1270985 page_bytes=4692 write=4.671240937s consolidate=32.109417ms adopted_checkpoint=true open=16.370534ms
+    zeros3_fb10_pages_test.go:186: paged=true parts=10000 refs=129 journal_bytes=4158403 sequence=10002 checkpoint_bytes=1270985 page_bytes=4692 write=4.671240937s consolidate=32.109417ms adopted_checkpoint=false open=21.829592ms
+--- PASS: TestFB10PartPagesScale (13.61s)
+    --- PASS: TestFB10PartPagesScale/false (8.85s)
+    --- PASS: TestFB10PartPagesScale/true (4.77s)
+PASS
+ok  	zeros3	13.621s

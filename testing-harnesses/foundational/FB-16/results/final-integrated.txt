@@ -1,0 +1,396 @@
+=== RUN   TestAuthWindowedProgramValidation
+--- PASS: TestAuthWindowedProgramValidation (0.04s)
+=== RUN   TestFB04X_FaultMatrix
+=== RUN   TestFB04X_FaultMatrix/CreateBucket
+    zeros3_fb04_check_fault_test.go:179: 2 crash points: 0 left the old state, 2 the new
+=== RUN   TestFB04X_FaultMatrix/DeleteBucket
+    zeros3_fb04_check_fault_test.go:179: 2 crash points: 0 left the old state, 2 the new
+=== RUN   TestFB04X_FaultMatrix/DeleteObject
+    zeros3_fb04_check_fault_test.go:179: 2 crash points: 0 left the old state, 2 the new
+=== RUN   TestFB04X_FaultMatrix/DeleteObjects
+    zeros3_fb04_check_fault_test.go:179: 3 crash points: 0 left the old state, 2 the new
+=== RUN   TestFB04X_FaultMatrix/CreateMultipartUpload
+    zeros3_fb04_check_fault_test.go:179: 2 crash points: 0 left the old state, 2 the new
+=== RUN   TestFB04X_FaultMatrix/UploadPart
+    zeros3_fb04_check_fault_test.go:179: 10 crash points: 7 left the old state, 3 the new
+=== RUN   TestFB04X_FaultMatrix/AbortMultipartUpload
+    zeros3_fb04_check_fault_test.go:179: 2 crash points: 0 left the old state, 2 the new
+=== RUN   TestFB04X_FaultMatrix/CompleteMultipartUpload
+    zeros3_fb04_check_fault_test.go:179: 13 crash points: 10 left the old state, 3 the new
+=== RUN   TestFB04X_FaultMatrix/PruneHistory
+    zeros3_fb04_check_fault_test.go:179: 6 crash points: 3 left the old state, 3 the new
+--- PASS: TestFB04X_FaultMatrix (1.45s)
+    --- PASS: TestFB04X_FaultMatrix/CreateBucket (0.21s)
+    --- PASS: TestFB04X_FaultMatrix/DeleteBucket (0.12s)
+    --- PASS: TestFB04X_FaultMatrix/DeleteObject (0.09s)
+    --- PASS: TestFB04X_FaultMatrix/DeleteObjects (0.09s)
+    --- PASS: TestFB04X_FaultMatrix/CreateMultipartUpload (0.09s)
+    --- PASS: TestFB04X_FaultMatrix/UploadPart (0.28s)
+    --- PASS: TestFB04X_FaultMatrix/AbortMultipartUpload (0.11s)
+    --- PASS: TestFB04X_FaultMatrix/CompleteMultipartUpload (0.30s)
+    --- PASS: TestFB04X_FaultMatrix/PruneHistory (0.16s)
+=== RUN   TestFB04X_LinearizableMixedHistories
+=== RUN   TestFB04X_LinearizableMixedHistories/1
+=== RUN   TestFB04X_LinearizableMixedHistories/2
+=== RUN   TestFB04X_LinearizableMixedHistories/3
+=== RUN   TestFB04X_LinearizableMixedHistories/4
+=== RUN   TestFB04X_LinearizableMixedHistories/5
+=== RUN   TestFB04X_LinearizableMixedHistories/6
+--- PASS: TestFB04X_LinearizableMixedHistories (0.25s)
+    --- PASS: TestFB04X_LinearizableMixedHistories/1 (0.04s)
+    --- PASS: TestFB04X_LinearizableMixedHistories/2 (0.05s)
+    --- PASS: TestFB04X_LinearizableMixedHistories/3 (0.04s)
+    --- PASS: TestFB04X_LinearizableMixedHistories/4 (0.04s)
+    --- PASS: TestFB04X_LinearizableMixedHistories/5 (0.05s)
+    --- PASS: TestFB04X_LinearizableMixedHistories/6 (0.04s)
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CreateBucket
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/DeleteBucket
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/PutObject
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CopyObject
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObject
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObjects
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CreateMultipartUpload
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/UploadPart
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/AbortMultipartUpload
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CompleteMultipartUpload
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/RestoreObjectVersion
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/PruneHistory
+--- PASS: TestFB04X_NoJournalFsyncUnderStoreMu (0.22s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CreateBucket (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/DeleteBucket (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/PutObject (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CopyObject (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObject (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObjects (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CreateMultipartUpload (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/UploadPart (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/AbortMultipartUpload (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CompleteMultipartUpload (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/RestoreObjectVersion (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/PruneHistory (0.02s)
+=== RUN   TestFB04DeleteGroupPublication
+=== RUN   TestFB04DeleteGroupPublication/v1
+=== RUN   TestFB04DeleteGroupPublication/grouped
+--- PASS: TestFB04DeleteGroupPublication (0.62s)
+    --- PASS: TestFB04DeleteGroupPublication/v1 (0.31s)
+    --- PASS: TestFB04DeleteGroupPublication/grouped (0.31s)
+=== RUN   TestFB04DeleteGroupSyncError
+--- PASS: TestFB04DeleteGroupSyncError (0.02s)
+=== RUN   TestFB04SerialMutationSyncLeavesReadersUnlocked
+=== RUN   TestFB04SerialMutationSyncLeavesReadersUnlocked/v1
+=== RUN   TestFB04SerialMutationSyncLeavesReadersUnlocked/grouped
+--- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked (0.03s)
+    --- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked/v1 (0.01s)
+    --- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked/grouped (0.02s)
+=== RUN   TestFB04ConcurrentRootLinearizability
+=== RUN   TestFB04ConcurrentRootLinearizability/v1
+=== RUN   TestFB04ConcurrentRootLinearizability/grouped
+--- PASS: TestFB04ConcurrentRootLinearizability (0.12s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/v1 (0.05s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/grouped (0.07s)
+=== RUN   TestFB05StageCheckpointCancelsLargePack
+--- PASS: TestFB05StageCheckpointCancelsLargePack (0.01s)
+=== RUN   TestFB05RewriteBudgetRetiresDeadSeparately
+    zeros3_fb05_test.go:97: source budget 49807: dead=49808 deferred=99616; budget 49808: rewritten source=49808 deferred=49808 physical output=41520
+--- PASS: TestFB05RewriteBudgetRetiresDeadSeparately (0.10s)
+=== RUN   TestFB05MultipartExpiryScopeAndRetry
+=== RUN   TestFB05MultipartExpiryScopeAndRetry/v1
+    zeros3_fb05_test.go:177: v1: default expired=0, failed sync expired=0, retry expired=1, guards survived reopen=3
+=== RUN   TestFB05MultipartExpiryScopeAndRetry/j2
+    zeros3_fb05_test.go:177: j2: default expired=0, failed sync expired=0, retry expired=1, guards survived reopen=3
+--- PASS: TestFB05MultipartExpiryScopeAndRetry (0.04s)
+    --- PASS: TestFB05MultipartExpiryScopeAndRetry/v1 (0.02s)
+    --- PASS: TestFB05MultipartExpiryScopeAndRetry/j2 (0.02s)
+=== RUN   TestFB05RawCompressionAdmission
+=== RUN   TestFB05RawCompressionAdmission/compressible
+    zeros3_fb05_test.go:229: stage_limit=900 deferred="replacement packs exceed the online staging byte budget" published=0 retired=0
+    zeros3_fb05_test.go:258: compressible: source=93392 probe=7680 admitted=93392 written=2026 retired=1 declined=0 next_source=0 next_probe=0
+=== RUN   TestFB05RawCompressionAdmission/entropy
+    zeros3_fb05_test.go:258: entropy: source=99536 probe=24576 admitted=0 written=0 retired=0 declined=1 next_source=99536 next_probe=0
+--- PASS: TestFB05RawCompressionAdmission (0.11s)
+    --- PASS: TestFB05RawCompressionAdmission/compressible (0.06s)
+    --- PASS: TestFB05RawCompressionAdmission/entropy (0.05s)
+=== RUN   TestFB06TagLevelCollisionAndReadFailure
+    zeros3_fb06_test.go:117: verified 1000 forced equal-tag misses and reconstructed the same pack locations after truncation
+--- PASS: TestFB06TagLevelCollisionAndReadFailure (0.11s)
+=== RUN   TestFB06GenerationRoundTripAndFallback
+2026/11/27 07:14:05 zeros3: ignoring locator generation: locator generation: page checksum mismatch
+2026/11/27 07:14:05 zeros3: ignoring locator generation: locator generation: invalid header or length
+2026/11/27 07:14:05 zeros3: ignoring locator generation: locator generation: invalid header or length
+--- PASS: TestFB06GenerationRoundTripAndFallback (0.12s)
+=== RUN   TestFB06GenerationPublishCut
+--- PASS: TestFB06GenerationPublishCut (0.04s)
+=== RUN   TestFB06GenerationCannotResurrectRetiredPacks
+2026/11/27 07:14:05 zeros3: ignoring locator generation: locator generation: pack inventory changed
+--- PASS: TestFB06GenerationCannotResurrectRetiredPacks (0.05s)
+=== RUN   TestFB07ScrubPhysicalDamageAndResume
+    zeros3_fb07_test.go:98: scrub: 2 packs, 4 distinct anomalies; duplicate remains readable; exact byte cut and resume
+--- PASS: TestFB07ScrubPhysicalDamageAndResume (0.02s)
+=== RUN   TestFB07TargetedPhysicalRepair
+    zeros3_fb07_test.go:188: repaired three records in the original pack; one signed peer request, 9216 payload bytes; exact reopen
+--- PASS: TestFB07TargetedPhysicalRepair (0.03s)
+=== RUN   TestFB07PhysicalRepairPublicationCut
+--- PASS: TestFB07PhysicalRepairPublicationCut (0.02s)
+=== RUN   TestFB07SealedRawCarry
+=== RUN   TestFB07SealedRawCarry/two-hashes
+    zeros3_fb07_test.go:306: two-hashes writer_SHA=8192 sealed_SHA=8192 fallback=false
+=== RUN   TestFB07SealedRawCarry/altered-after-proof
+    zeros3_fb07_test.go:306: altered-after-proof writer_SHA=0 sealed_SHA=0 fallback=false
+=== RUN   TestFB07SealedRawCarry/compressed-source-fallback
+    zeros3_fb07_test.go:306: compressed-source-fallback writer_SHA=0 sealed_SHA=0 fallback=true
+--- PASS: TestFB07SealedRawCarry (0.06s)
+    --- PASS: TestFB07SealedRawCarry/two-hashes (0.02s)
+    --- PASS: TestFB07SealedRawCarry/altered-after-proof (0.02s)
+    --- PASS: TestFB07SealedRawCarry/compressed-source-fallback (0.02s)
+=== RUN   TestFB07PhysicalRepairRecode
+    zeros3_fb07_test.go:340: DEFLATE recode: 14848 exact logical bytes from a raw local copy, 263 physical bytes restored
+--- PASS: TestFB07PhysicalRepairRecode (0.01s)
+=== RUN   TestFB08NativeNamespaceThousandObjects
+=== RUN   TestFB08NativeNamespaceThousandObjects/shared-payload-true
+    zeros3_fb08_test.go:24: replicated 1000 objects and 1 unique records in 9 signed requests (1 streams); 1000 equivalent objects on rerun
+=== RUN   TestFB08NativeNamespaceThousandObjects/shared-payload-false
+    zeros3_fb08_test.go:24: replicated 1000 objects and 1000 unique records in 11 signed requests (2 streams); 1000 equivalent objects on rerun
+--- PASS: TestFB08NativeNamespaceThousandObjects (3.27s)
+    --- PASS: TestFB08NativeNamespaceThousandObjects/shared-payload-true (1.40s)
+    --- PASS: TestFB08NativeNamespaceThousandObjects/shared-payload-false (1.87s)
+=== RUN   TestFB08NativeControlSignedAndBounded
+--- PASS: TestFB08NativeControlSignedAndBounded (0.02s)
+=== RUN   TestFB08NativeNegotiationFallsBackToOldPeer
+--- PASS: TestFB08NativeNegotiationFallsBackToOldPeer (0.03s)
+=== RUN   TestFB08NativeStreamKeepsVerifiedPrefix
+    zeros3_fb08_test.go:281: cut after one authenticated record, retained one durable record, retransmitted zero verified records
+--- PASS: TestFB08NativeStreamKeepsVerifiedPrefix (0.01s)
+=== RUN   TestFB08NativeResumeWaitsForMatchingStream
+--- PASS: TestFB08NativeResumeWaitsForMatchingStream (0.00s)
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/reorder
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/duplicate
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/drop
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/kind
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/extend
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/end
+=== RUN   TestFB08NativeStreamRejectsMalformedFrames/tamper
+--- PASS: TestFB08NativeStreamRejectsMalformedFrames (0.03s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/reorder (0.00s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/duplicate (0.00s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/drop (0.00s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/kind (0.00s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/extend (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/end (0.01s)
+    --- PASS: TestFB08NativeStreamRejectsMalformedFrames/tamper (0.00s)
+=== RUN   TestFB08NativeWireSelection
+    zeros3_fb08_test.go:493: wire pair=0 case=text-slow raw_bytes=525669 selected_bytes=207320 raw_ms=429.303 selected_ms=181.260
+    zeros3_fb08_test.go:493: wire pair=0 case=entropy-slow raw_bytes=525669 selected_bytes=525669 raw_ms=429.420 selected_ms=428.800
+    zeros3_fb08_test.go:493: wire pair=0 case=text-fast raw_bytes=525669 selected_bytes=525669 raw_ms=12.379 selected_ms=12.622
+    zeros3_fb08_test.go:493: wire pair=1 case=text-slow raw_bytes=525669 selected_bytes=164784 raw_ms=429.301 selected_ms=150.947
+    zeros3_fb08_test.go:493: wire pair=1 case=entropy-slow raw_bytes=525669 selected_bytes=525669 raw_ms=428.744 selected_ms=432.664
+    zeros3_fb08_test.go:493: wire pair=1 case=text-fast raw_bytes=525669 selected_bytes=525669 raw_ms=14.723 selected_ms=12.828
+    zeros3_fb08_test.go:493: wire pair=2 case=text-slow raw_bytes=525669 selected_bytes=207320 raw_ms=429.320 selected_ms=201.019
+    zeros3_fb08_test.go:493: wire pair=2 case=entropy-slow raw_bytes=525669 selected_bytes=525669 raw_ms=428.460 selected_ms=431.487
+    zeros3_fb08_test.go:493: wire pair=2 case=text-fast raw_bytes=525669 selected_bytes=525669 raw_ms=12.912 selected_ms=13.930
+--- PASS: TestFB08NativeWireSelection (4.64s)
+=== RUN   TestFB09LegacyCopy
+=== RUN   TestFB09LegacyCopy/legacy
+    zeros3_fb09_test.go:68: actual pre-FB09 binary refused the typed source and deep-verified the separate legacy copy
+=== RUN   TestFB09LegacyCopy/j2
+    zeros3_fb09_test.go:68: actual pre-FB09 binary refused the typed source and deep-verified the separate legacy copy
+--- PASS: TestFB09LegacyCopy (0.26s)
+    --- PASS: TestFB09LegacyCopy/legacy (0.12s)
+    --- PASS: TestFB09LegacyCopy/j2 (0.14s)
+=== RUN   TestFB09LegacyCopyRefusesHistory
+--- PASS: TestFB09LegacyCopyRefusesHistory (0.01s)
+=== RUN   TestFB09BinaryManifestGolden
+    zeros3_fb09_test.go:145: binary manifest golden is 273 bytes with two 36-byte refs and an independent chunk-list ID
+--- PASS: TestFB09BinaryManifestGolden (0.00s)
+=== RUN   TestFB09MixedManifestsAndBundle
+    zeros3_fb09_test.go:219: mixed JSON and binary manifests survived current reads, a range, exact mark, and verified bundle import
+--- PASS: TestFB09MixedManifestsAndBundle (0.11s)
+=== RUN   TestFB10JournalCursorAndBenignX14
+=== RUN   TestFB10JournalCursorAndBenignX14/false
+    zeros3_fb10_cursor_test.go:91: compact=false S1=11 S2=11 acknowledged loss=0 benign refusals=0; independent later cursor detected coherent prefix rollback
+=== RUN   TestFB10JournalCursorAndBenignX14/true
+    zeros3_fb10_cursor_test.go:91: compact=true S1=11 S2=11 acknowledged loss=0 benign refusals=0; independent later cursor detected coherent prefix rollback
+--- PASS: TestFB10JournalCursorAndBenignX14 (0.16s)
+    --- PASS: TestFB10JournalCursorAndBenignX14/false (0.08s)
+    --- PASS: TestFB10JournalCursorAndBenignX14/true (0.08s)
+=== RUN   TestFB10JournalSignedMixed
+FBJ2 {"head_ns":{"p50":78518,"p95":4748704,"p99":10995790,"samples":177},"journal_bytes":530198,"kind":"signed-engine","mixed":true,"mode":"lazy","object_bytes":32768,"read_4096_ns":{"p50":73130,"p95":5171607,"p99":11188416,"samples":236},"reopen_ns_cache_ambient":2781921,"request_ns":{"p50":5080579,"p95":13702923,"p99":17277785,"samples":2048},"round":0,"whole_archive_ns":{"p50":251559,"p95":3434339,"p99":7765843,"samples":60},"writer_ops_s":5107.5704209264495,"writers":32}
+FBJ2 {"head_ns":{"p50":61472,"p95":4320033,"p99":7586148,"samples":236},"journal_bytes":596946,"kind":"signed-engine","mixed":true,"mode":"j2","object_bytes":32768,"read_4096_ns":{"p50":59841,"p95":3477174,"p99":9385754,"samples":314},"reopen_ns_cache_ambient":3400523,"request_ns":{"p50":5321812,"p95":14212472,"p99":20595407,"samples":2048},"round":0,"whole_archive_ns":{"p50":237367,"p95":8360400,"p99":9380207,"samples":79},"writer_ops_s":4898.283835553322,"writers":32}
+FBJ2 {"head_ns":{"p50":77116,"p95":3538401,"p99":5581874,"samples":207},"journal_bytes":439390,"kind":"signed-engine","mixed":true,"mode":"j2bin","object_bytes":32768,"read_4096_ns":{"p50":69805,"p95":3838508,"p99":6764742,"samples":276},"reopen_ns_cache_ambient":2924396,"request_ns":{"p50":4656780,"p95":12188713,"p99":15841696,"samples":2048},"round":0,"whole_archive_ns":{"p50":245620,"p95":3260747,"p99":6474974,"samples":69},"writer_ops_s":5610.894555603809,"writers":32}
+FBJ2 {"head_ns":{"p50":79770,"p95":5724745,"p99":12876008,"samples":192},"journal_bytes":598490,"kind":"signed-engine","mixed":true,"mode":"j2","object_bytes":32768,"read_4096_ns":{"p50":81793,"p95":4255035,"p99":6679333,"samples":256},"reopen_ns_cache_ambient":3191789,"request_ns":{"p50":5154336,"p95":13286221,"p99":16749904,"samples":2048},"round":1,"whole_archive_ns":{"p50":286902,"p95":4142391,"p99":6066328,"samples":65},"writer_ops_s":5122.812975025684,"writers":32}
+FBJ2 {"head_ns":{"p50":195655,"p95":3604331,"p99":5082858,"samples":157},"journal_bytes":416229,"kind":"signed-engine","mixed":true,"mode":"j2bin","object_bytes":32768,"read_4096_ns":{"p50":149024,"p95":3251324,"p99":5075737,"samples":208},"reopen_ns_cache_ambient":4196823,"request_ns":{"p50":3652529,"p95":11084779,"p99":14164388,"samples":2048},"round":1,"whole_archive_ns":{"p50":479372,"p95":3108272,"p99":6300963,"samples":53},"writer_ops_s":6528.783914757087,"writers":32}
+FBJ2 {"head_ns":{"p50":70596,"p95":4678459,"p99":7940634,"samples":228},"journal_bytes":530184,"kind":"signed-engine","mixed":true,"mode":"lazy","object_bytes":32768,"read_4096_ns":{"p50":70646,"p95":3874778,"p99":6225614,"samples":304},"reopen_ns_cache_ambient":4694351,"request_ns":{"p50":5347646,"p95":14558743,"p99":17878354,"samples":2048},"round":1,"whole_archive_ns":{"p50":293793,"p95":5203639,"p99":8764243,"samples":76},"writer_ops_s":4809.74540091816,"writers":32}
+FBJ2 {"head_ns":{"p50":171138,"p95":3405570,"p99":9148163,"samples":170},"journal_bytes":421226,"kind":"signed-engine","mixed":true,"mode":"j2bin","object_bytes":32768,"read_4096_ns":{"p50":102474,"p95":2536411,"p99":6499241,"samples":226},"reopen_ns_cache_ambient":2883604,"request_ns":{"p50":4019476,"p95":13676343,"p99":33240337,"samples":2048},"round":2,"whole_archive_ns":{"p50":441936,"p95":9030630,"p99":33300728,"samples":57},"writer_ops_s":5607.7794314459725,"writers":32}
+FBJ2 {"head_ns":{"p50":70997,"p95":6659187,"p99":11117894,"samples":177},"journal_bytes":530194,"kind":"signed-engine","mixed":true,"mode":"lazy","object_bytes":32768,"read_4096_ns":{"p50":75764,"p95":4611047,"p99":9482446,"samples":236},"reopen_ns_cache_ambient":4506391,"request_ns":{"p50":5299614,"p95":13603042,"p99":16225318,"samples":2048},"round":2,"whole_archive_ns":{"p50":275155,"p95":4404315,"p99":6407453,"samples":60},"writer_ops_s":4953.006596531723,"writers":32}
+FBJ2 {"head_ns":{"p50":81002,"p95":6333493,"p99":10450458,"samples":144},"journal_bytes":602197,"kind":"signed-engine","mixed":true,"mode":"j2","object_bytes":32768,"read_4096_ns":{"p50":88834,"p95":5421580,"p99":8136992,"samples":192},"reopen_ns_cache_ambient":4587713,"request_ns":{"p50":5554365,"p95":13245656,"p99":16766575,"samples":2048},"round":2,"whole_archive_ns":{"p50":302626,"p95":4648114,"p99":12961101,"samples":48},"writer_ops_s":5027.601890336086,"writers":32}
+FBJ2 {"head_ns":{"p50":65048,"p95":3353724,"p99":6990550,"samples":212},"journal_bytes":530216,"kind":"signed-engine","mixed":true,"mode":"lazy","object_bytes":32768,"read_4096_ns":{"p50":64157,"p95":4238878,"p99":8692573,"samples":281},"reopen_ns_cache_ambient":4580012,"request_ns":{"p50":5036970,"p95":14648939,"p99":16752325,"samples":2048},"round":3,"whole_archive_ns":{"p50":251910,"p95":3501888,"p99":5378074,"samples":71},"writer_ops_s":5109.294329539251,"writers":32}
+FBJ2 {"head_ns":{"p50":87162,"p95":5231092,"p99":11545248,"samples":169},"journal_bytes":600638,"kind":"signed-engine","mixed":true,"mode":"j2","object_bytes":32768,"read_4096_ns":{"p50":91348,"p95":4496111,"p99":7162233,"samples":224},"reopen_ns_cache_ambient":3381335,"request_ns":{"p50":5077046,"p95":13506583,"p99":17755295,"samples":2048},"round":3,"whole_archive_ns":{"p50":313542,"p95":6319543,"p99":6540130,"samples":57},"writer_ops_s":4942.97176656588,"writers":32}
+FBJ2 {"head_ns":{"p50":57186,"p95":4103824,"p99":8387049,"samples":183},"journal_bytes":449642,"kind":"signed-engine","mixed":true,"mode":"j2bin","object_bytes":32768,"read_4096_ns":{"p50":54452,"p95":4434162,"p99":7612140,"samples":244},"reopen_ns_cache_ambient":2940150,"request_ns":{"p50":4713202,"p95":12891396,"p99":17053933,"samples":2048},"round":3,"whole_archive_ns":{"p50":235876,"p95":5268298,"p99":11838470,"samples":62},"writer_ops_s":5483.395548676417,"writers":32}
+FBJ2 {"head_ns":{"p50":53130,"p95":4025506,"p99":6162836,"samples":267},"journal_bytes":596567,"kind":"signed-engine","mixed":true,"mode":"j2","object_bytes":32768,"read_4096_ns":{"p50":53560,"p95":3803862,"p99":9199589,"samples":356},"reopen_ns_cache_ambient":4990810,"request_ns":{"p50":5024135,"p95":12603688,"p99":18002709,"samples":2048},"round":4,"whole_archive_ns":{"p50":228484,"p95":2876264,"p99":6396589,"samples":90},"writer_ops_s":5215.574370259059,"writers":32}
+FBJ2 {"head_ns":{"p50":162325,"p95":3420289,"p99":5156450,"samples":162},"journal_bytes":414937,"kind":"signed-engine","mixed":true,"mode":"j2bin","object_bytes":32768,"read_4096_ns":{"p50":161438,"p95":3179691,"p99":4514408,"samples":216},"reopen_ns_cache_ambient":2689182,"request_ns":{"p50":4070414,"p95":10933886,"p99":13784662,"samples":2048},"round":4,"whole_archive_ns":{"p50":355716,"p95":3659940,"p99":5156576,"samples":55},"writer_ops_s":6472.745098750022,"writers":32}
+FBJ2 {"head_ns":{"p50":71898,"p95":5818959,"p99":13373853,"samples":183},"journal_bytes":530206,"kind":"signed-engine","mixed":true,"mode":"lazy","object_bytes":32768,"read_4096_ns":{"p50":70906,"p95":5153210,"p99":9521428,"samples":244},"reopen_ns_cache_ambient":2939780,"request_ns":{"p50":5588671,"p95":15600628,"p99":19749300,"samples":2048},"round":4,"whole_archive_ns":{"p50":264058,"p95":1745941,"p99":4557108,"samples":62},"writer_ops_s":4558.818817523692,"writers":32}
+FBJ2 {"head_ns":{"p50":62103,"p95":3586951,"p99":7755837,"samples":262},"journal_bytes":447963,"kind":"signed-engine","mixed":true,"mode":"j2bin","object_bytes":32768,"read_4096_ns":{"p50":58148,"p95":2764125,"p99":5502867,"samples":349},"reopen_ns_cache_ambient":2901543,"request_ns":{"p50":5326616,"p95":13917933,"p99":21065278,"samples":2048},"round":5,"whole_archive_ns":{"p50":274513,"p95":5906721,"p99":11466434,"samples":88},"writer_ops_s":4895.916742564333,"writers":32}
+FBJ2 {"head_ns":{"p50":60171,"p95":3896331,"p99":7067059,"samples":216},"journal_bytes":530216,"kind":"signed-engine","mixed":true,"mode":"lazy","object_bytes":32768,"read_4096_ns":{"p50":56976,"p95":3964013,"p99":7724960,"samples":286},"reopen_ns_cache_ambient":2899945,"request_ns":{"p50":4779342,"p95":13066329,"p99":18001622,"samples":2048},"round":5,"whole_archive_ns":{"p50":241664,"p95":5381083,"p99":9086382,"samples":72},"writer_ops_s":5312.780110202676,"writers":32}
+FBJ2 {"head_ns":{"p50":66680,"p95":5850747,"p99":16547460,"samples":188},"journal_bytes":597589,"kind":"signed-engine","mixed":true,"mode":"j2","object_bytes":32768,"read_4096_ns":{"p50":66581,"p95":4307672,"p99":8862390,"samples":249},"reopen_ns_cache_ambient":3576058,"request_ns":{"p50":5357533,"p95":14326258,"p99":18999415,"samples":2048},"round":5,"whole_archive_ns":{"p50":231959,"p95":3617000,"p99":7029673,"samples":63},"writer_ops_s":5004.9278500060655,"writers":32}
+--- PASS: TestFB10JournalSignedMixed (7.66s)
+=== RUN   TestFB10PartPageGoldens
+=== RUN   TestFB10PartPageGoldens/part-index
+=== RUN   TestFB10PartPageGoldens/part-leaf
+--- PASS: TestFB10PartPageGoldens (0.00s)
+    --- PASS: TestFB10PartPageGoldens/part-index (0.00s)
+    --- PASS: TestFB10PartPageGoldens/part-leaf (0.00s)
+=== RUN   TestFB10PartPageReplayAndReconciliation
+    zeros3_fb10_pages_test.go:118: native UploadPart verified 265 references in checkpoint and exact maintenance closure, then completed 16777216 bytes
+--- PASS: TestFB10PartPageReplayAndReconciliation (0.23s)
+=== RUN   TestFB10PartPagesScale
+    zeros3_fb10_pages_test.go:123: set ZEROS3_TEST_PARTS_SCALE=1 for the 10,000-part comparison
+--- SKIP: TestFB10PartPagesScale (0.00s)
+=== RUN   TestFB10PartPageMultipleLeaves
+--- PASS: TestFB10PartPageMultipleLeaves (0.01s)
+=== RUN   TestFB10MultipartFrontierExact
+    zeros3_fb10_publication_test.go:117: signed in-order completion used zero payload reads after reopen; exact 8444327-byte object, 115 native CDC references and layered MD5 ETag
+--- PASS: TestFB10MultipartFrontierExact (0.17s)
+=== RUN   TestFB10MultipartCopyProvenance
+=== RUN   TestFB10MultipartCopyProvenance/fast
+=== RUN   TestFB10MultipartCopyProvenance/unproven
+=== RUN   TestFB10MultipartCopyProvenance/range
+--- PASS: TestFB10MultipartCopyProvenance (0.11s)
+    --- PASS: TestFB10MultipartCopyProvenance/fast (0.01s)
+    --- PASS: TestFB10MultipartCopyProvenance/unproven (0.03s)
+    --- PASS: TestFB10MultipartCopyProvenance/range (0.00s)
+=== RUN   TestFB10MultipartReplacedPredecessorUsesReader
+--- PASS: TestFB10MultipartReplacedPredecessorUsesReader (0.14s)
+=== RUN   TestFB10PublishExactlyOnce
+=== RUN   TestFB10PublishExactlyOnce/legacy
+    zeros3_fb10_publication_test.go:278: one manifest write and journal record for 24 concurrent requests
+=== RUN   TestFB10PublishExactlyOnce/j2
+    zeros3_fb10_publication_test.go:278: one manifest write and journal record for 24 concurrent requests
+--- PASS: TestFB10PublishExactlyOnce (0.03s)
+    --- PASS: TestFB10PublishExactlyOnce/legacy (0.01s)
+    --- PASS: TestFB10PublishExactlyOnce/j2 (0.01s)
+=== RUN   TestFB10MultipartVerifiedManifestGolden
+--- PASS: TestFB10MultipartVerifiedManifestGolden (0.00s)
+=== RUN   TestFB10JournalBinGolden
+    zeros3_fb10_test.go:77: overwrite JSON=661 binary=205 reduction=69.0%
+    zeros3_fb10_test.go:77: put JSON=315 binary=99 reduction=68.6%
+--- PASS: TestFB10JournalBinGolden (0.00s)
+=== RUN   TestFB10JournalBinUpgradeReplay
+    zeros3_fb10_test.go:168: reopened 1 legacy and 3 compact PUTs, exact archive, validated checkpoint and suffix
+--- PASS: TestFB10JournalBinUpgradeReplay (0.02s)
+=== RUN   TestFB10JournalBinProcessCuts
+=== RUN   TestFB10JournalBinProcessCuts/journalbin-activated
+    zeros3_fb10_test.go:213: reopened after journalbin-activated with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-manifest-published
+    zeros3_fb10_test.go:213: reopened after after-manifest-published with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-write-before-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-write-before-sync with "new" and 1 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-sync with "new" and 1 archived versions
+--- PASS: TestFB10JournalBinProcessCuts (0.07s)
+    --- PASS: TestFB10JournalBinProcessCuts/journalbin-activated (0.02s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-manifest-published (0.02s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-write-before-sync (0.02s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-sync (0.02s)
+=== RUN   TestFB10JournalBinCutWorker
+    zeros3_fb10_test.go:221: standalone process-cut worker
+--- SKIP: TestFB10JournalBinCutWorker (0.00s)
+=== RUN   TestFB11DeltaChangesOnly
+    zeros3_fb11_delta_test.go:121: 512-key v1 delta=445336 bytes, v2=2419, zero-change=527; changed=3 transferred manifests=2 reused payload refs=510
+--- PASS: TestFB11DeltaChangesOnly (0.93s)
+=== RUN   TestFB11SnapshotDeltaGolden
+--- PASS: TestFB11SnapshotDeltaGolden (0.00s)
+=== RUN   TestFB11BundlePreservesBinaryProvenanceMarker
+--- PASS: TestFB11BundlePreservesBinaryProvenanceMarker (0.02s)
+=== RUN   TestFB11SnapshotPageIndexGolden
+--- PASS: TestFB11SnapshotPageIndexGolden (0.00s)
+=== RUN   TestFB11SnapshotPagesAndPortableCompatibility
+    zeros3_fb11_test.go:181: reused 5 of 7 original pages and preserved exact portable bytes; corrupted page blocked GC
+--- PASS: TestFB11SnapshotPagesAndPortableCompatibility (0.50s)
+=== RUN   TestFB11SnapshotPageSweepRandomized
+    zeros3_fb11_test.go:340: 12 randomized snapshots, 432 mutations, 1135 exact retained roots; swept 13 orphan pages, kept 27
+--- PASS: TestFB11SnapshotPageSweepRandomized (0.28s)
+=== RUN   TestFB12WindowedDryAllocationMatchesPublication
+    zeros3_fb12_delta_test.go:368: dry writer predicted exactly 65536 local allocated bytes across 3 independent aligned pieces
+--- PASS: TestFB12WindowedDryAllocationMatchesPublication (0.01s)
+=== RUN   TestFB12SharedWindowConfiguration
+--- PASS: TestFB12SharedWindowConfiguration (0.00s)
+=== RUN   TestFB13FrozenCDCControl
+--- PASS: TestFB13FrozenCDCControl (0.00s)
+=== RUN   TestFB13LocalizedRebaseRecovery
+=== RUN   TestFB13LocalizedRebaseRecovery/snapshot-keeps-base-rooted
+    zeros3_fb13_rebase_test.go:81: seed_migration admitted=6 added=135737
+=== RUN   TestFB13LocalizedRebaseRecovery/failed-proof-and-retry
+    zeros3_fb13_rebase_test.go:90: seed_migration admitted=6 added=135737
+    zeros3_fb13_rebase_test.go:95: before={Bodies:1 BodyBytes:400 Chunks:10 ChunkLogical:524288 ChunkBytes:525248 HotPackBytes:525248} dry={Base:f19b4a60b216b7d34cdd57b3900d9c216ecefc1dd3cf21d242b9c56a148c05f0 Anchor:b65408753452e5e3c0ae841bcc0db7e5e873569e9bfcf214359e1bd15dc2e933 Targets:4 Rebased:0 FreedRecordBytes:525648 FreedHotPackBytes:525248 AddedBytes:88851 StagingBytes:90112 RepackBytes:1062919 TransitionCost:115303 Elapsed:31.891618ms}
+    zeros3_fb13_rebase_test.go:131: after={Bodies:0 BodyBytes:0 Chunks:0 ChunkLogical:0 ChunkBytes:0 HotPackBytes:0} applied={Base:f19b4a60b216b7d34cdd57b3900d9c216ecefc1dd3cf21d242b9c56a148c05f0 Anchor:b65408753452e5e3c0ae841bcc0db7e5e873569e9bfcf214359e1bd15dc2e933 Targets:4 Rebased:4 FreedRecordBytes:525648 FreedHotPackBytes:525248 AddedBytes:88851 StagingBytes:90112 RepackBytes:1062919 TransitionCost:115303 Elapsed:37.290262ms}
+=== RUN   TestFB13LocalizedRebaseRecovery/partial-publication
+    zeros3_fb13_rebase_test.go:142: seed_migration admitted=6 added=135737
+    zeros3_fb13_rebase_test.go:176: cut after 1 verifiable replacement; resumed 3
+--- PASS: TestFB13LocalizedRebaseRecovery (0.93s)
+    --- PASS: TestFB13LocalizedRebaseRecovery/snapshot-keeps-base-rooted (0.19s)
+    --- PASS: TestFB13LocalizedRebaseRecovery/failed-proof-and-retry (0.32s)
+    --- PASS: TestFB13LocalizedRebaseRecovery/partial-publication (0.41s)
+=== RUN   TestFB14PatchBounds
+--- PASS: TestFB14PatchBounds (0.01s)
+=== RUN   TestFB15ExactCandidateModel
+=== RUN   TestFB15ExactCandidateModel/1
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/2
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/3
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/4
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/5
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/6
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/7
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+=== RUN   TestFB15ExactCandidateModel/8
+    zeros3_fb15_model_test.go:230: confirmed=480 malformed_suffixes_rebuilt=101 lost_hint_states=25 false_zeroes_vetoed=25 identical_deletion_sets=480
+--- PASS: TestFB15ExactCandidateModel (0.02s)
+    --- PASS: TestFB15ExactCandidateModel/1 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/2 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/3 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/4 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/5 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/6 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/7 (0.00s)
+    --- PASS: TestFB15ExactCandidateModel/8 (0.00s)
+=== RUN   TestFB15CheckedJournalSuffix
+=== RUN   TestFB15CheckedJournalSuffix/v1
+    zeros3_fb15_model_test.go:355: from={offset:84 sequence:1} mid={offset:422 sequence:2} end={offset:760 sequence:3} suffix_sha256=e6f005b7f5a3590e4e50875d44fd5f3e927c5f94405eebd98bd997d8b770e6cd refused=5
+=== RUN   TestFB15CheckedJournalSuffix/j2
+    zeros3_fb15_model_test.go:355: from={offset:260 sequence:1} mid={offset:515 sequence:2} end={offset:770 sequence:3} suffix_sha256=b31d514998c163631ec643611888ff8fc7e3c1844fdfa9c4ae022d734d3d66e0 refused=5
+--- PASS: TestFB15CheckedJournalSuffix (0.03s)
+    --- PASS: TestFB15CheckedJournalSuffix/v1 (0.01s)
+    --- PASS: TestFB15CheckedJournalSuffix/j2 (0.01s)
+=== RUN   TestFB16SignedProjectionReplication
+--- PASS: TestFB16SignedProjectionReplication (0.05s)
+=== RUN   TestFB16ProjectionTransportTamperAndOldPeer
+--- PASS: TestFB16ProjectionTransportTamperAndOldPeer (0.03s)
+=== RUN   TestFB16ActualOlderPeer
+    zeros3_fb16_projection_test.go:472: older peer fallback preserved SHA-256 e369cf2019c7a1a58effe8190fbd3417437dd6db811474a1c5e299af17434320
+--- PASS: TestFB16ActualOlderPeer (0.04s)
+=== RUN   TestFBJ2GroupedReplay
+=== RUN   TestFBJ2GroupedReplay/complete
+=== RUN   TestFBJ2GroupedReplay/footer-cut
+=== RUN   TestFBJ2GroupedReplay/reordered
+--- PASS: TestFBJ2GroupedReplay (0.05s)
+    --- PASS: TestFBJ2GroupedReplay/complete (0.01s)
+    --- PASS: TestFBJ2GroupedReplay/footer-cut (0.01s)
+    --- PASS: TestFBJ2GroupedReplay/reordered (0.01s)
+=== RUN   TestFBJ2GroupedDamageRefuses
+--- PASS: TestFBJ2GroupedDamageRefuses (0.01s)
+=== RUN   TestFBJ2GroupedSyncFailure
+--- PASS: TestFBJ2GroupedSyncFailure (0.01s)
+=== RUN   TestFBJ2GroupedFeatureGate
+--- PASS: TestFBJ2GroupedFeatureGate (0.01s)
+=== RUN   TestFBJ2GroupedGolden
+--- PASS: TestFBJ2GroupedGolden (0.00s)
+=== RUN   TestFBJ2GroupedCheckpointAheadRefuses
+--- PASS: TestFBJ2GroupedCheckpointAheadRefuses (0.01s)
+PASS
+ok  	zeros3	23.386s

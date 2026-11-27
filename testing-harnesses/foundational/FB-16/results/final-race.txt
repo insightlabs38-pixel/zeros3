@@ -1,0 +1,59 @@
+=== RUN   TestFB04SerialMutationSyncLeavesReadersUnlocked
+=== RUN   TestFB04SerialMutationSyncLeavesReadersUnlocked/v1
+=== RUN   TestFB04SerialMutationSyncLeavesReadersUnlocked/grouped
+--- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked (0.03s)
+    --- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked/v1 (0.02s)
+    --- PASS: TestFB04SerialMutationSyncLeavesReadersUnlocked/grouped (0.01s)
+=== RUN   TestFB04ConcurrentRootLinearizability
+=== RUN   TestFB04ConcurrentRootLinearizability/v1
+=== RUN   TestFB04ConcurrentRootLinearizability/grouped
+--- PASS: TestFB04ConcurrentRootLinearizability (0.16s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/v1 (0.08s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/grouped (0.08s)
+=== RUN   TestFB10JournalCursorAndBenignX14
+=== RUN   TestFB10JournalCursorAndBenignX14/false
+    zeros3_fb10_cursor_test.go:91: compact=false S1=11 S2=11 acknowledged loss=0 benign refusals=0; independent later cursor detected coherent prefix rollback
+=== RUN   TestFB10JournalCursorAndBenignX14/true
+    zeros3_fb10_cursor_test.go:91: compact=true S1=11 S2=11 acknowledged loss=0 benign refusals=0; independent later cursor detected coherent prefix rollback
+--- PASS: TestFB10JournalCursorAndBenignX14 (0.41s)
+    --- PASS: TestFB10JournalCursorAndBenignX14/false (0.30s)
+    --- PASS: TestFB10JournalCursorAndBenignX14/true (0.11s)
+=== RUN   TestFB10MultipartFrontierExact
+    zeros3_fb10_publication_test.go:117: signed in-order completion used zero payload reads after reopen; exact 8444327-byte object, 115 native CDC references and layered MD5 ETag
+--- PASS: TestFB10MultipartFrontierExact (0.95s)
+=== RUN   TestFB10MultipartCopyProvenance
+=== RUN   TestFB10MultipartCopyProvenance/fast
+=== RUN   TestFB10MultipartCopyProvenance/unproven
+=== RUN   TestFB10MultipartCopyProvenance/range
+--- PASS: TestFB10MultipartCopyProvenance (0.53s)
+    --- PASS: TestFB10MultipartCopyProvenance/fast (0.01s)
+    --- PASS: TestFB10MultipartCopyProvenance/unproven (0.13s)
+    --- PASS: TestFB10MultipartCopyProvenance/range (0.00s)
+=== RUN   TestFB10MultipartReplacedPredecessorUsesReader
+--- PASS: TestFB10MultipartReplacedPredecessorUsesReader (1.37s)
+=== RUN   TestFB10PublishExactlyOnce
+=== RUN   TestFB10PublishExactlyOnce/legacy
+    zeros3_fb10_publication_test.go:278: one manifest write and journal record for 24 concurrent requests
+=== RUN   TestFB10PublishExactlyOnce/j2
+    zeros3_fb10_publication_test.go:278: one manifest write and journal record for 24 concurrent requests
+--- PASS: TestFB10PublishExactlyOnce (0.06s)
+    --- PASS: TestFB10PublishExactlyOnce/legacy (0.03s)
+    --- PASS: TestFB10PublishExactlyOnce/j2 (0.03s)
+=== RUN   TestFB10MultipartVerifiedManifestGolden
+--- PASS: TestFB10MultipartVerifiedManifestGolden (0.00s)
+=== RUN   TestFB11SnapshotPageSweepRandomized
+    zeros3_fb11_test.go:340: 12 randomized snapshots, 432 mutations, 1135 exact retained roots; swept 13 orphan pages, kept 27
+--- PASS: TestFB11SnapshotPageSweepRandomized (0.64s)
+=== RUN   TestFB16ProjectionRandomized
+--- PASS: TestFB16ProjectionRandomized (1.00s)
+=== RUN   TestFB16ProjectionShortHintCollision
+--- PASS: TestFB16ProjectionShortHintCollision (0.02s)
+=== RUN   TestFB16SignedProjectionReplication
+--- PASS: TestFB16SignedProjectionReplication (0.15s)
+=== RUN   TestFB16ProjectionTransportTamperAndOldPeer
+--- PASS: TestFB16ProjectionTransportTamperAndOldPeer (0.06s)
+=== RUN   TestFB16ActualOlderPeer
+    zeros3_fb16_projection_test.go:472: older peer fallback preserved SHA-256 e369cf2019c7a1a58effe8190fbd3417437dd6db811474a1c5e299af17434320
+--- PASS: TestFB16ActualOlderPeer (0.05s)
+PASS
+ok  	zeros3	6.469s

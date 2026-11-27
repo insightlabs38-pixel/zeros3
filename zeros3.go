@@ -19500,7 +19500,9 @@ type Credentials struct {
 }
 
 type Server struct {
-	nativeStreams nativeStreamFlights
+	nativeStreams    nativeStreamFlights
+	projections      *projectionCache
+	projectionMirror bool
 
 	store  *Store
 	creds  Credentials
@@ -19737,6 +19739,10 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// URL, so it needs neither path-style nor virtual-hosted-style
 	// resolution. Authentication above already covers it identically to
 	// every ordinary S3 request.
+	if rawPath == namespaceProjectionPath {
+		srv.handleNamespaceProjection(w, r, check)
+		return
+	}
 	if strings.HasPrefix(rawPath, zeros3BulkPathPrefix) {
 		srv.handleBulk(w, r, rawPath, check)
 		return
@@ -36776,6 +36782,8 @@ func runReplicate(args []string) {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	recursive := fs.Bool("recursive", false, "replicate every object under a source prefix or whole bucket into the destination prefix/bucket, instead of a single object")
 	protocol3 := fs.Bool("protocol3", false, "use independently negotiated native batches for recursive CDC replication when both peers support them")
+	incremental := fs.Bool("incremental", false, "compare verified namespace projections before recursive replication")
+	mirror := fs.Bool("mirror", false, "explicitly remove destination-only keys after verified incremental replication")
 	wireLink := fs.Int("wire-link-mbit", 0, "measured destination link rate for native wire compression (0 keeps raw streaming)")
 	dryRun := fs.Bool("dry-run", false, "perform authenticated discovery/negotiation only and report the exact payload-transfer plan for the observed state, without fetching source chunk payload, uploading, or committing anything")
 	authority := fs.Bool("authority-closure", false, "attempt negotiated native closures when they cost less than transferring missing CDC chunks")
@@ -36820,6 +36828,11 @@ func runReplicate(args []string) {
 		os.Exit(2)
 	}
 
+	if *incremental && !*recursive || *mirror && !*incremental {
+		fmt.Fprintln(os.Stderr, "zeros3: replicate: -incremental requires -recursive, and -mirror requires -incremental")
+		os.Exit(2)
+	}
+
 	if *recursive {
 		srcBucket, srcPrefix, err := parseS3DirURI(rest[0])
 		if err != nil {
@@ -36833,6 +36846,7 @@ func runReplicate(args []string) {
 		}
 
 		cfg := namespaceReplicateConfig{
+			Incremental: *incremental, Mirror: *mirror,
 			Source: syncClientConfig{
 				Endpoint: *from, Bucket: srcBucket,
 				Creds: Credentials{AccessKeyID: *fromAccessKey, SecretAccessKey: *fromSecretKey}, Region: *region,
@@ -36969,6 +36983,8 @@ func printDryRunSingle(w io.Writer, p replicationPlan) {
 // by name -- exactly what a real recursive run would still discover about
 // that object even if the object itself can never be committed.
 type nsDryRunResult struct {
+	Reconciled        bool
+	WouldRemove       int
 	Discovered        int
 	WouldPublish      int
 	AlreadyEquivalent int
@@ -37016,16 +37032,15 @@ func (r nsDryRunResult) OK() bool { return r.Failed == 0 && r.WouldConflict == 0
 // mirroring what the real sequential upload would leave for that later
 // object to actually negotiate.
 func planReplicationNamespace(cfg namespaceReplicateConfig) (nsDryRunResult, error) {
-	listPrefix := cfg.SourcePrefix
-	if listPrefix != "" {
-		listPrefix += "/"
-	}
-	objects, err := listSourceObjects(cfg.Source, listPrefix)
+	objects, projection, err := namespaceReplicationObjects(cfg)
 	if err != nil {
 		return nsDryRunResult{}, err
 	}
 
-	result := nsDryRunResult{Discovered: len(objects)}
+	result := nsDryRunResult{Discovered: len(objects), Reconciled: projection.active, WouldRemove: len(projection.plan.guards)}
+	if projection.active {
+		cfg.IfUnchanged = true
+	}
 	simulatedPresent := map[string]bool{}
 	session := newSyncSession()
 	for _, obj := range objects {
@@ -37079,6 +37094,9 @@ func planReplicationNamespace(cfg namespaceReplicateConfig) (nsDryRunResult, err
 // related, with the added WouldPublish/AlreadyEquivalent/WouldConflict
 // breakdown a dry-run needs and printNsReplicateSummary doesn't.
 func printDryRunNamespace(w io.Writer, r nsDryRunResult) {
+	if r.Reconciled {
+		fmt.Fprintf(w, "Verified projection. Proposed removals %d\n", r.WouldRemove)
+	}
 	fmt.Fprintf(w, "Objects discovered:       %d\n", r.Discovered)
 	fmt.Fprintf(w, "Would publish:            %d\n", r.WouldPublish)
 	fmt.Fprintf(w, "Already equivalent:       %d\n", r.AlreadyEquivalent)
@@ -37915,6 +37933,8 @@ type nsReplicateFailure struct {
 // own accounting rule (section 15c). Nothing here is persisted, and no
 // persistent format changed to support it.
 type nsReplicateResult struct {
+	Reconciled      bool
+	Removed         int
 	Discovered      int // objects returned by source enumeration
 	Replicated      int
 	Failed          int
@@ -37929,6 +37949,1185 @@ type nsReplicateResult struct {
 // the one place that verdict is computed.
 func (r nsReplicateResult) OK() bool { return r.Failed == 0 }
 
+// Namespace projection is portable across stores: its leaves contain
+// relative keys and replication identities. UUIDs and ETags are local.
+const (
+	namespaceProjectionDepth = 4
+	namespaceProjectionWidth = 16
+	namespaceProjectionRows  = 1 << 21
+	namespaceProjectionBatch = 1 << 16
+	namespaceProjectionLimit = 16 << 20
+	namespaceProjectionPath  = "/_zeros3/v1/namespace-projection"
+)
+
+var (
+	errProjectionUnavailable = errors.New("namespace projection unavailable")
+	errProjectionUnsupported = errors.New("peer lacks namespace projection")
+	errProjectionStale       = errors.New("namespace projection generation changed")
+	errProjectionProof       = errors.New("namespace projection proof differs")
+)
+
+type projectionScope struct {
+	bucket, prefix string
+	boundary       [32]byte
+}
+
+func (s projectionScope) fullPrefix() string {
+	if s.prefix == "" {
+		return ""
+	}
+	return s.prefix + "/"
+}
+
+func projectionIdentity(id syncIdentity) ([32]byte, error) {
+	if !id.known || id.size < 0 {
+		return [32]byte{}, errProjectionUnavailable
+	}
+	b := append([]byte("zeros3/projection/content/v1\x00"), id.sha[:]...)
+	b = binary.AppendUvarint(b, uint64(id.size))
+	b = appendManifestString(b, id.contentType)
+	b = binary.AppendUvarint(b, uint64(len(id.metadata)))
+	for _, item := range id.metadata {
+		b = appendManifestString(b, item.Key)
+		b = appendManifestString(b, item.Value)
+	}
+	return sha256.Sum256(b), nil
+}
+
+type projectionRow struct {
+	key   string
+	sum   [32]byte
+	hint  uint32
+	guard [32]byte
+}
+
+type projectionEdit struct {
+	key    string
+	sum    [32]byte
+	remove bool
+	guard  [32]byte
+}
+
+func projectionRootGuard(e *objectEntry) [32]byte {
+	var b [40]byte
+	copy(b[:32], e.manifestSHA256[:])
+	binary.BigEndian.PutUint64(b[32:], e.seq)
+	return sha256.Sum256(b[:])
+}
+
+func projectionLeafNumber(boundary [32]byte, key string) int {
+	h := sha256.New()
+	io.WriteString(h, "zeros3/projection/key/v1\x00")
+	h.Write(boundary[:])
+	io.WriteString(h, key)
+	var digest [32]byte
+	h.Sum(digest[:0])
+	return int(binary.BigEndian.Uint16(digest[:2]))
+}
+
+func projectionEntryDigest(boundary [32]byte, key string, sum [32]byte) [32]byte {
+	buf := append([]byte("zeros3/projection/entry/v1\x00"), boundary[:]...)
+	buf = appendManifestString(buf, key)
+	return sha256.Sum256(append(buf, sum[:]...))
+}
+
+func newProjectionRow(boundary [32]byte, key string, sum [32]byte) projectionRow {
+	digest := projectionEntryDigest(boundary, key, sum)
+	return projectionRow{key: key, sum: sum, hint: binary.BigEndian.Uint32(digest[:4])}
+}
+
+func projectionLeaf(rows []projectionRow) [32]byte {
+	if len(rows) == 0 {
+		return [32]byte{}
+	}
+	h := sha256.New()
+	io.WriteString(h, "zeros3/projection/leaf/v1\x00")
+	var length [binary.MaxVarintLen64]byte
+	for _, row := range rows {
+		h.Write(binary.AppendUvarint(length[:0], uint64(len(row.key))))
+		io.WriteString(h, row.key)
+		h.Write(row.sum[:])
+	}
+	var out [32]byte
+	h.Sum(out[:0])
+	return out
+}
+
+func projectionBranch(level int, children *[namespaceProjectionWidth][32]byte) [32]byte {
+	var buf [2 + namespaceProjectionWidth*32]byte
+	buf[0], buf[1] = 0x70, byte(level)
+	nonempty := false
+	for i, c := range children {
+		copy(buf[2+i*32:], c[:])
+		nonempty = nonempty || c != [32]byte{}
+	}
+	if !nonempty {
+		return [32]byte{}
+	}
+	return sha256.Sum256(buf[:])
+}
+
+// projectionTree keeps only the portable rows and at most 65,536 fixed
+// leaf partitions. A changed key recomputes one leaf and four ancestors.
+type projectionTree struct {
+	boundary [32]byte
+	levels   [namespaceProjectionDepth + 1][][32]byte
+	leaves   map[int][]projectionRow
+	rows     int
+}
+
+func newProjectionTree(boundary [32]byte, rows []projectionRow) (*projectionTree, error) {
+	if len(rows) > namespaceProjectionRows {
+		return nil, errProjectionUnavailable
+	}
+	t := &projectionTree{boundary: boundary, leaves: make(map[int][]projectionRow)}
+	for _, row := range rows {
+		n := projectionLeafNumber(t.boundary, row.key)
+		t.leaves[n] = append(t.leaves[n], row)
+	}
+	for level := range t.levels {
+		t.levels[level] = make([][32]byte, 1<<(4*level))
+	}
+	for n, entries := range t.leaves {
+		slices.SortFunc(entries, func(a, b projectionRow) int { return cmp.Compare(a.key, b.key) })
+		for i := 1; i < len(entries); i++ {
+			if entries[i-1].key == entries[i].key {
+				return nil, errProjectionProof
+			}
+		}
+		t.levels[namespaceProjectionDepth][n] = projectionLeaf(entries)
+	}
+	for level := namespaceProjectionDepth - 1; level >= 0; level-- {
+		down := t.levels[level+1]
+		for n := range t.levels[level] {
+			t.levels[level][n] = projectionBranch(level, (*[namespaceProjectionWidth][32]byte)(down[n*namespaceProjectionWidth:]))
+		}
+	}
+	t.rows = len(rows)
+	return t, nil
+}
+
+func (t *projectionTree) root() [32]byte { return t.levels[0][0] }
+
+func (t *projectionTree) affected(edits []projectionEdit) (map[int][]projectionRow, []byte, int, error) {
+	leaves := make(map[int][]projectionRow)
+	status := make([]byte, len(edits))
+	var previous string
+	for i, edit := range edits {
+		if len(edit.key) > metaPageKeyMax || i > 0 && edit.key <= previous {
+			return nil, nil, 0, errProjectionProof
+		}
+		previous = edit.key
+		id := projectionLeafNumber(t.boundary, edit.key)
+		rows, copied := leaves[id]
+		if !copied {
+			rows = slices.Clone(t.leaves[id])
+		}
+		at, found := slices.BinarySearchFunc(rows, edit.key, func(row projectionRow, k string) int {
+			return cmp.Compare(row.key, k)
+		})
+		switch {
+		case edit.remove && found:
+			rows = slices.Delete(rows, at, at+1)
+			status[i] = 3 // removed
+		case edit.remove:
+		case found && rows[at].sum == edit.sum:
+			if edit.guard != [32]byte{} {
+				rows[at].guard = edit.guard
+			}
+		case found:
+			rows[at] = newProjectionRow(t.boundary, edit.key, edit.sum)
+			rows[at].guard = edit.guard
+			status[i] = 2 // changed
+		default:
+			rows = slices.Insert(rows, at, newProjectionRow(t.boundary, edit.key, edit.sum))
+			rows[at].guard = edit.guard
+			status[i] = 1 // added
+		}
+		leaves[id] = rows
+	}
+	count := t.rows
+	for id, rows := range leaves {
+		count += len(rows) - len(t.leaves[id])
+	}
+	if count > namespaceProjectionRows {
+		return nil, nil, 0, errProjectionUnavailable
+	}
+	return leaves, status, count, nil
+}
+
+// fold rebuilds affected ancestors. When commit is false it is a dry
+// proof against a peer root and retains the original live projection.
+func (t *projectionTree) fold(leaves map[int][]projectionRow, commit bool) [32]byte {
+	if len(leaves) == 0 {
+		return t.root()
+	}
+	lvl := namespaceProjectionDepth
+	changed := make(map[int][32]byte, len(leaves))
+	for id, rows := range leaves {
+		changed[id] = projectionLeaf(rows)
+		if commit {
+			if len(rows) > 0 {
+				t.leaves[id] = rows
+			} else {
+				delete(t.leaves, id)
+			}
+		}
+	}
+	for {
+		if commit {
+			for id, sum := range changed {
+				t.levels[lvl][id] = sum
+			}
+		}
+		if lvl == 0 {
+			return changed[0]
+		}
+		parents := make(map[int][32]byte, len(changed)/namespaceProjectionWidth+1)
+		for id := range changed {
+			parent := id / namespaceProjectionWidth
+			if _, done := parents[parent]; done {
+				continue
+			}
+			start := parent * namespaceProjectionWidth
+			children := *(*[namespaceProjectionWidth][32]byte)(t.levels[lvl][start:])
+			for i := range children {
+				if s, ok := changed[start+i]; ok {
+					children[i] = s
+				}
+			}
+			parents[parent] = projectionBranch(lvl-1, &children)
+		}
+		changed = parents
+		lvl--
+	}
+}
+
+type projectionCursor struct {
+	offset int64
+	seq    uint64
+}
+
+func (s *Store) projectionCursor() projectionCursor {
+	o, q := s.journalEnd()
+	return projectionCursor{o, q}
+}
+
+// Bind a cache to the exact previous journal boundary. A new process has
+// an empty cache, so its generation cannot be confused with an old epoch.
+func projectionCursorAnchor(f io.ReaderAt, c projectionCursor) ([32]byte, error) {
+	if c.offset < 0 {
+		return [32]byte{}, errProjectionStale
+	}
+	n := min(c.offset, 96)
+	var tail [96]byte
+	if n != 0 {
+		if _, err := f.ReadAt(tail[:n], c.offset-n); err != nil {
+			return [32]byte{}, err
+		}
+	}
+	return sha256.Sum256(tail[:n]), nil
+}
+
+func projectionChangedKeys(f io.ReaderAt, scope projectionScope, from, to projectionCursor) ([]string, error) {
+	if from == to {
+		return nil, nil
+	}
+	if to.offset <= from.offset || to.seq <= from.seq {
+		return nil, errProjectionStale
+	}
+	seen := make(map[string]bool)
+	add := func(b, k string) error {
+		p := scope.fullPrefix()
+		if b == scope.bucket && k != "" && strings.HasPrefix(k, p) {
+			seen[k] = true
+		}
+		if len(seen) > namespaceProjectionBatch {
+			return errProjectionStale
+		}
+		return nil
+	}
+	end, seq, n, appErr, err := replayJournalRange(f, from.offset, to.offset, from.seq, false, func(rec journalRecord) error {
+		switch rec.recType {
+		case recordTypePutObjectRootV2:
+			if bytes.HasPrefix(rec.payload, []byte(journalBinPut)) {
+				var p journalPutPayloadV2
+				if _, err := decodeJournalBinPut(rec.payload, &p); err != nil {
+					return err
+				}
+				return add(p.Bucket, p.Key)
+			}
+			fallthrough
+		case recordTypePutObjectRoot, recordTypeDeleteObjectRoot, recordTypeDeleteObjectRootV2,
+			recordTypeCompleteMultipartUpload, recordTypeCompleteMultipartUploadV2:
+			var p struct{ Bucket, Key string }
+			if err := json.Unmarshal(rec.payload, &p); err != nil {
+				return err
+			}
+			return add(p.Bucket, p.Key)
+		case recordTypeCreateBucket, recordTypeDeleteBucket, recordTypeCreateMultipartUpload, recordTypeUploadPart,
+			recordTypeAbortMultipartUpload, recordTypePruneHistory:
+			return nil // none removes a current key without a root mutation
+		default:
+			return errProjectionStale
+		}
+	})
+	if err != nil || appErr != nil || end != to.offset || seq != to.seq || uint64(n) != to.seq-from.seq {
+		return nil, errors.Join(errProjectionStale, err, appErr)
+	}
+	return slices.Sorted(maps.Keys(seen)), nil
+}
+
+type projectionCacheEntry struct {
+	tree         *projectionTree
+	cursor       projectionCursor
+	anchor       [32]byte
+	token        [16]byte
+	used         time.Time
+	mirror       bool
+	bucketExists bool
+}
+
+type projectionCache struct {
+	mu      sync.Mutex
+	entries map[projectionScope]*projectionCacheEntry
+}
+
+// scopeForToken is called with the cache lock held. The request names both
+// the signed local scope and an opaque capability for its portable boundary.
+func (p *projectionCache) scopeForToken(scope projectionScope, token [16]byte) (projectionScope, bool) {
+	for key, entry := range p.entries {
+		if key.bucket == scope.bucket && key.prefix == scope.prefix && entry.token == token {
+			return key, true
+		}
+	}
+	return scope, false
+}
+
+func projectionToken() (v [16]byte, err error) {
+	_, err = cryptorand.Read(v[:])
+	return
+}
+
+// buildProjection reads the current immutable scope once. Later cursor
+// advances read only keys named by checked journal records.
+func (s *Store) buildProjection(scope projectionScope) (*projectionTree, error) {
+	entries, err := s.captureSnapshotEntries(scope.bucket, scope.prefix)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) > namespaceProjectionRows {
+		return nil, errProjectionUnavailable
+	}
+	rows := make([]projectionRow, 0, len(entries))
+	prefix := scope.fullPrefix()
+	for _, entry := range entries {
+		key := strings.TrimPrefix(entry.Key, prefix)
+		if !utf8.ValidString(key) {
+			return nil, errProjectionUnavailable
+		}
+		sum, err := decodeHexSHA256(entry.ManifestSHA256)
+		if err != nil {
+			return nil, err
+		}
+		m, err := s.readVerifiedManifest(entry.ManifestUUID, sum)
+		if err != nil {
+			return nil, err
+		}
+		id, err := projectionIdentity(manifestIdentity(&m))
+		if err != nil {
+			return nil, err
+		}
+		obj, err := s.lookupObject(scope.bucket, entry.Key)
+		if err != nil || obj.manifestSHA256 != sum || obj.manifestUUID != entry.ManifestUUID {
+			return nil, errProjectionStale
+		}
+		row := newProjectionRow(scope.boundary, key, id)
+		row.guard = projectionRootGuard(obj)
+		rows = append(rows, row)
+	}
+	return newProjectionTree(scope.boundary, rows)
+}
+
+func (s *Store) projectionBucketExists(bucket string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, exists := s.buckets[bucket]
+	return exists
+}
+
+func (p *projectionCache) current(s *Store, scope projectionScope) (*projectionCacheEntry, error) {
+	now := s.projectionCursor()
+	e := p.entries[scope]
+	if e != nil {
+		anchor, err := projectionCursorAnchor(s.journal.f, e.cursor)
+		if err == nil && anchor == e.anchor {
+			if e.cursor == now {
+				e.used = time.Now()
+				return e, nil
+			}
+			keys, err := projectionChangedKeys(s.journal.f, scope, e.cursor, now)
+			if err == nil {
+				edits := make([]projectionEdit, 0, len(keys))
+				for _, key := range keys {
+					edit := projectionEdit{key: strings.TrimPrefix(key, scope.fullPrefix())}
+					entry, lookupErr := s.lookupObject(scope.bucket, key)
+					switch {
+					case errors.Is(lookupErr, errNoSuchKey) || errors.Is(lookupErr, errNoSuchBucket):
+						edit.remove = true
+					case lookupErr != nil:
+						return nil, lookupErr
+					default:
+						m, err := s.readVerifiedManifest(entry.manifestUUID, entry.manifestSHA256)
+						if err != nil {
+							return nil, err
+						}
+						edit.guard = projectionRootGuard(entry)
+						edit.sum, err = projectionIdentity(manifestIdentity(&m))
+						if err != nil {
+							return nil, err
+						}
+					}
+					edits = append(edits, edit)
+				}
+				leaves, _, count, err := e.tree.affected(edits)
+				if err != nil {
+					return nil, err
+				}
+				exists := s.projectionBucketExists(scope.bucket)
+				if s.projectionCursor() != now {
+					return nil, errProjectionStale
+				}
+				next, err := projectionCursorAnchor(s.journal.f, now)
+				if err != nil {
+					return nil, err
+				}
+				token, err := projectionToken()
+				if err != nil {
+					return nil, err
+				}
+				e.tree.fold(leaves, true)
+				e.tree.rows = count
+				e.bucketExists = exists
+				e.cursor, e.anchor, e.token, e.used = now, next, token, time.Now()
+				return e, nil
+			}
+		}
+	}
+	tree, err := s.buildProjection(scope)
+	exists := !errors.Is(err, errNoSuchBucket)
+	if !exists {
+		tree, err = newProjectionTree(scope.boundary, nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if s.projectionCursor() != now {
+		return nil, errProjectionStale
+	}
+	anchor, err := projectionCursorAnchor(s.journal.f, now)
+	if err != nil {
+		return nil, err
+	}
+	token, err := projectionToken()
+	if err != nil {
+		return nil, err
+	}
+	if p.entries == nil {
+		p.entries = make(map[projectionScope]*projectionCacheEntry)
+	}
+	if len(p.entries) >= 2 && p.entries[scope] == nil {
+		var oldest projectionScope
+		var then time.Time
+		for key, e := range p.entries {
+			if then.IsZero() || e.used.Before(then) {
+				oldest, then = key, e.used
+			}
+		}
+		delete(p.entries, oldest)
+	}
+	e = &projectionCacheEntry{tree: tree, cursor: now, anchor: anchor, token: token, used: time.Now(), bucketExists: exists}
+	p.entries[scope] = e
+	return e, nil
+}
+
+const (
+	projectionRootRequest byte = iota
+	projectionBranchesRequest
+	projectionHintsRequest
+	projectionRowsRequest
+	projectionVerifyRequest
+	projectionRemoveRequest
+)
+
+const projectionMirrorBatch = 1000
+
+func projectionWireMAC(secret string, request, response []byte) [32]byte {
+	mac := hmac.New(sha256.New, []byte(secret))
+	io.WriteString(mac, "zeros3/projection/response/v1\x00")
+	sum := sha256.Sum256(request)
+	mac.Write(sum[:])
+	mac.Write(response)
+	var out [32]byte
+	mac.Sum(out[:0])
+	return out
+}
+
+func projectionIDs(r *binaryManifestReader, limit int) []int {
+	n := r.count(min(limit, len(r.rest)))
+	ids := make([]int, n)
+	for i := range ids {
+		ids[i] = r.count(limit - 1)
+		if i > 0 && ids[i] <= ids[i-1] {
+			r.err = errProjectionProof
+		}
+	}
+	return ids
+}
+
+func projectionAppendIDs(b []byte, ids []int) []byte {
+	b = binary.AppendUvarint(b, uint64(len(ids)))
+	for _, id := range ids {
+		b = binary.AppendUvarint(b, uint64(id))
+	}
+	return b
+}
+
+func projectionDone(r *binaryManifestReader) error {
+	if r.err != nil || len(r.rest) != 0 {
+		return errProjectionProof
+	}
+	return nil
+}
+
+type projectionPosition struct{ leaf, row int }
+
+func projectionAppendPositions(positions []projectionPosition, mode byte) []byte {
+	out := []byte{mode}
+	out = binary.AppendUvarint(out, uint64(len(positions)))
+	for _, p := range positions {
+		out = binary.AppendUvarint(out, uint64(p.leaf))
+		out = binary.AppendUvarint(out, uint64(p.row))
+	}
+	return out
+}
+
+func projectionAppendEdits(out []byte, edits []projectionEdit) []byte {
+	out = binary.AppendUvarint(out, uint64(len(edits)))
+	for _, edit := range edits {
+		tag := byte(0)
+		if edit.remove {
+			tag = 1
+		}
+		out = append(out, tag)
+		out = appendManifestString(out, edit.key)
+		if !edit.remove {
+			out = append(out, edit.sum[:]...)
+		}
+	}
+	return out
+}
+
+func projectionReadEdits(r *binaryManifestReader) []projectionEdit {
+	count := r.count(min(namespaceProjectionRows, len(r.rest)/2))
+	out := make([]projectionEdit, count)
+	for i := range out {
+		t := r.count(1)
+		if t == 0 {
+			// flags use a single byte because the only allowed values are 0 and 1.
+			out[i].key = r.text()
+			copy(out[i].sum[:], r.take(32))
+		} else {
+			out[i].key, out[i].remove = r.text(), true
+		}
+		if len(out[i].key) > metaPageKeyMax || i > 0 && out[i].key <= out[i-1].key {
+			r.err = errProjectionProof
+		}
+	}
+	return out
+}
+
+func projectionQuery(e *projectionCacheEntry, op byte, data []byte) ([]byte, error) {
+	t := e.tree
+	r := binaryManifestReader{rest: data}
+	var out []byte
+	switch op {
+	case projectionRootRequest:
+		root := t.root()
+		out = append(out, e.token[:]...)
+		out = append(out, root[:]...)
+		out = append(out, byte(btoi(e.mirror)), byte(btoi(e.bucketExists)))
+	case projectionBranchesRequest:
+		level := r.count(namespaceProjectionDepth - 1)
+		width := r.count(32)
+		if width != 4 && width != 32 {
+			return nil, errProjectionProof
+		}
+		ids := projectionIDs(&r, len(t.levels[level]))
+		out = make([]byte, 0, len(ids)*namespaceProjectionWidth*width)
+		for _, id := range ids {
+			children := t.levels[level+1][id*namespaceProjectionWidth : (id+1)*namespaceProjectionWidth]
+			for _, child := range children {
+				out = append(out, child[:width]...)
+			}
+		}
+	case projectionHintsRequest:
+		width := r.count(32)
+		if width != 4 && width != 32 {
+			return nil, errProjectionProof
+		}
+		ids := projectionIDs(&r, namespaceProjectionBatch)
+		for _, id := range ids {
+			entries := t.leaves[id]
+			out = binary.AppendUvarint(out, uint64(len(entries)))
+			for _, row := range entries {
+				if width == 4 {
+					out = binary.BigEndian.AppendUint32(out, row.hint)
+				} else {
+					full := projectionEntryDigest(t.boundary, row.key, row.sum)
+					out = append(out, full[:]...)
+				}
+			}
+			if len(out) > namespaceProjectionLimit {
+				return nil, errProjectionUnavailable
+			}
+		}
+	case projectionRowsRequest:
+		mode := r.count(2)
+		n := r.count(min(namespaceProjectionRows, len(r.rest)/2))
+		last := projectionPosition{-1, -1}
+		for range n {
+			pos := projectionPosition{r.count(namespaceProjectionBatch - 1), r.count(namespaceProjectionRows - 1)}
+			rows := t.leaves[pos.leaf]
+			if r.err != nil || pos.row >= len(rows) || pos.leaf < last.leaf || pos.leaf == last.leaf && pos.row <= last.row {
+				return nil, errProjectionProof
+			}
+			row := rows[pos.row]
+			out = appendManifestString(out, row.key)
+			if mode == 1 {
+				out = append(out, row.sum[:]...)
+			} else if mode == 2 {
+				out = append(out, row.guard[:]...)
+			}
+			if len(out) > namespaceProjectionLimit {
+				return nil, errProjectionUnavailable
+			}
+			last = pos
+		}
+	case projectionVerifyRequest:
+		var want [32]byte
+		copy(want[:], r.take(32))
+		edits := projectionReadEdits(&r)
+		if err := projectionDone(&r); err != nil {
+			return nil, err
+		}
+		leaves, status, _, err := t.affected(edits)
+		if err != nil {
+			return nil, err
+		}
+		if t.fold(leaves, false) != want {
+			return nil, errProjectionProof
+		}
+		out = status
+	default:
+		return nil, errProjectionProof
+	}
+	if err := projectionDone(&r); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (srv *Server) handleNamespaceProjection(w http.ResponseWriter, r *http.Request, check payloadCheck) {
+	if srv.projections == nil || r.Method != http.MethodPost {
+		writeSyncError(w, http.StatusNotImplemented, "NotImplemented", errProjectionUnavailable.Error())
+		return
+	}
+	if check.sha256 == "" {
+		writeSyncError(w, http.StatusForbidden, "SignedPayloadRequired", "namespace projection requires a signed payload SHA-256")
+		return
+	}
+	body, ok := readBufferedBodyLimit(w, r, namespaceProjectionPath, check, namespaceProjectionLimit)
+	if !ok {
+		return
+	}
+	in := binaryManifestReader{rest: body}
+	scope := projectionScope{bucket: in.text(), prefix: in.text()}
+	op := byte(in.count(int(projectionRemoveRequest)))
+	var token [16]byte
+	copy(token[:], in.take(16))
+	if op == projectionRootRequest {
+		copy(scope.boundary[:], in.take(32))
+		in.take(16) // request challenge is authenticated with the response
+	}
+	if in.err != nil || scope.bucket == "" || strings.ContainsRune(scope.bucket, 0) || len(scope.prefix) > metaPageKeyMax ||
+		strings.Trim(scope.prefix, "/") != scope.prefix {
+		writeSyncError(w, http.StatusBadRequest, "InvalidArgument", errProjectionProof.Error())
+		return
+	}
+	var response []byte
+	var err error
+	if op == projectionRemoveRequest {
+		response, err = srv.removeProjectedRoots(scope, token, in.rest)
+	} else {
+		srv.projections.mu.Lock()
+		var entry *projectionCacheEntry
+		var cacheErr error
+		if op != projectionRootRequest {
+			var found bool
+			scope, found = srv.projections.scopeForToken(scope, token)
+			if !found {
+				cacheErr = errProjectionStale
+			}
+		}
+		if cacheErr == nil {
+			entry, cacheErr = srv.projections.current(srv.store, scope)
+		}
+		if cacheErr != nil {
+			err = cacheErr
+		} else if op != projectionRootRequest && token != entry.token {
+			err = errProjectionStale
+		} else {
+			entry.mirror = srv.projectionMirror
+			response, err = projectionQuery(entry, op, in.rest)
+		}
+		srv.projections.mu.Unlock()
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, errProjectionUnavailable):
+			writeSyncError(w, http.StatusNotImplemented, "NotImplemented", err.Error())
+		case errors.Is(err, errProjectionStale):
+			writeSyncError(w, http.StatusConflict, "ProjectionStale", err.Error())
+		case errors.Is(err, errProjectionProof):
+			writeSyncError(w, http.StatusUnprocessableEntity, "ProjectionProof", err.Error())
+		default:
+			writeSyncError(w, http.StatusInternalServerError, "InternalError", "namespace projection could not verify its roots")
+		}
+		return
+	}
+	mac := projectionWireMAC(srv.creds.SecretAccessKey, body, response)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Write(response)
+	w.Write(mac[:])
+}
+
+func (srv *Server) removeProjectedRoots(scope projectionScope, token [16]byte, data []byte) ([]byte, error) {
+	if !srv.projectionMirror {
+		return nil, errProjectionUnavailable
+	}
+	// The comparison capability must still name this scope. It can be
+	// older than current because the transfers of other keys wrote roots.
+	srv.projections.mu.Lock()
+	_, ok := srv.projections.scopeForToken(scope, token)
+	srv.projections.mu.Unlock()
+	if !ok {
+		return nil, errProjectionStale
+	}
+	r := binaryManifestReader{rest: data}
+	guards := projectionReadEdits(&r)
+	if err := projectionDone(&r); err != nil {
+		return nil, err
+	}
+	if len(guards) > projectionMirrorBatch {
+		return nil, errProjectionProof
+	}
+	var reqs []*rootCommitReq
+	for _, g := range guards {
+		key := scope.fullPrefix() + g.key
+		if g.remove || key == "" || strings.ContainsRune(key, '\x00') {
+			return nil, errProjectionProof
+		}
+		obj, err := srv.store.lookupObject(scope.bucket, key)
+		if errors.Is(err, errNoSuchKey) || errors.Is(err, errNoSuchBucket) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if projectionRootGuard(obj) != g.sum {
+			return nil, errProjectionStale
+		}
+		reqs = append(reqs, &rootCommitReq{bucket: scope.bucket, key: key, deleteRoot: true,
+			check: func(cur *objectEntry, exists bool) error {
+				if !exists || projectionRootGuard(cur) != g.sum {
+					return errProjectionStale
+				}
+				return nil
+			}})
+	}
+	srv.store.submitRootCommits(reqs)
+	removed, failed := 0, false
+	for _, req := range reqs {
+		if req.err == nil {
+			removed++
+		} else {
+			failed = true
+		}
+	}
+	return append(binary.AppendUvarint(nil, uint64(removed)), byte(btoi(failed))), nil
+}
+
+type projectionExchange func(op byte, token [16]byte, data []byte) ([]byte, error)
+
+type projectionPeer struct {
+	boundary     [32]byte
+	exchange     projectionExchange
+	token        [16]byte
+	root         [32]byte
+	mirror       bool
+	bucketExists bool
+}
+
+type projectionPlan struct {
+	edits  []projectionEdit
+	status []byte
+	guards []projectionEdit
+	rounds int
+	strict bool
+}
+
+func projectionRequestBody(scope projectionScope, op byte, token [16]byte, data []byte) []byte {
+	out := appendManifestString(nil, scope.bucket)
+	out = appendManifestString(out, scope.prefix)
+	out = append(out, op)
+	out = append(out, token[:]...)
+	if op == projectionRootRequest {
+		out = append(out, scope.boundary[:]...)
+		out = append(out, make([]byte, 16)...)
+	}
+	return append(out, data...)
+}
+
+func projectionHTTP(ctx context.Context, cfg syncClientConfig, scope projectionScope) projectionExchange {
+	return func(op byte, token [16]byte, data []byte) ([]byte, error) {
+		body := projectionRequestBody(scope, op, token, data)
+		if op == projectionRootRequest {
+			challenge := len(body) - len(data) - 16
+			if _, err := cryptorand.Read(body[challenge : challenge+16]); err != nil {
+				return nil, err
+			}
+		}
+		if len(body) > namespaceProjectionLimit {
+			return nil, errProjectionUnavailable
+		}
+		res, raw, err := cfg.signAndDoLimit(ctx, http.MethodPost, namespaceProjectionPath, body, nil, namespaceProjectionLimit+32)
+		if err != nil {
+			return nil, err
+		}
+		switch res.StatusCode {
+		case http.StatusOK:
+		case http.StatusConflict:
+			return nil, errProjectionStale
+		case http.StatusUnprocessableEntity:
+			return nil, errProjectionProof
+		case http.StatusNotImplemented, http.StatusNotFound:
+			return nil, errProjectionUnavailable
+		default:
+			return nil, fmt.Errorf("namespace projection returned HTTP %d", res.StatusCode)
+		}
+		if len(raw) < 32 {
+			return nil, errors.New("namespace projection response lacks its authentication tag")
+		}
+		raw, tag := raw[:len(raw)-32], raw[len(raw)-32:]
+		mac := projectionWireMAC(cfg.Creds.SecretAccessKey, body, raw)
+		if !hmac.Equal(mac[:], tag) {
+			return nil, errors.New("namespace projection response authentication failed")
+		}
+		return raw, nil
+	}
+}
+
+// projectionPair sends a logical comparison round to both independent
+// credentials. A peer's request can never carry the other peer's credentials.
+func projectionPair(a, b *projectionPeer, op byte, adata, bdata []byte) ([]byte, []byte, error) {
+	type reply struct {
+		body []byte
+		err  error
+	}
+	ch := make(chan reply, 1)
+	go func() {
+		raw, err := b.exchange(op, b.token, bdata)
+		ch <- reply{raw, err}
+	}()
+	left, leftErr := a.exchange(op, a.token, adata)
+	right := <-ch
+	if leftErr == errProjectionUnavailable && (right.err == nil || right.err == errProjectionUnavailable) ||
+		right.err == errProjectionUnavailable && leftErr == nil {
+		return nil, nil, errProjectionUnavailable
+	}
+	return left, right.body, errors.Join(leftErr, right.err)
+}
+
+func projectionOpenPair(a, b *projectionPeer) error {
+	var err error
+	left, right, err := projectionPair(a, b, projectionRootRequest, nil, nil)
+	if err != nil {
+		return err
+	}
+	if len(left) != 50 || len(right) != 50 || left[48] > 1 || right[48] > 1 || left[49] > 1 || right[49] > 1 {
+		return errProjectionProof
+	}
+	copy(a.token[:], left[:16])
+	copy(a.root[:], left[16:])
+	copy(b.token[:], right[:16])
+	copy(b.root[:], right[16:])
+	a.mirror, b.mirror = left[48] == 1, right[48] == 1
+	a.bucketExists, b.bucketExists = left[49] == 1, right[49] == 1
+	return nil
+}
+
+func projectionHintPositions(a, b []byte, width, leaf int) []projectionPosition {
+	seen := make(map[[32]byte]int, len(b)/width)
+	for at := 0; at < len(b); at += width {
+		var digest [32]byte
+		copy(digest[:], b[at:at+width])
+		seen[digest]++
+	}
+	var out []projectionPosition
+	for at := 0; at < len(a); at += width {
+		var digest [32]byte
+		copy(digest[:], a[at:at+width])
+		if seen[digest] > 0 {
+			seen[digest]--
+		} else {
+			out = append(out, projectionPosition{leaf, at / width})
+		}
+	}
+	return out
+}
+
+func projectionReadRows(boundary [32]byte, body []byte, positions []projectionPosition, identity bool) ([]projectionEdit, error) {
+	r := binaryManifestReader{rest: body}
+	out := make([]projectionEdit, len(positions))
+	for i, p := range positions {
+		out[i].key = r.text()
+		if len(out[i].key) > metaPageKeyMax || projectionLeafNumber(boundary, out[i].key) != p.leaf {
+			return nil, errProjectionProof
+		}
+		if identity {
+			copy(out[i].sum[:], r.take(32))
+		}
+	}
+	return out, projectionDone(&r)
+}
+
+func projectionCompare(dest, source *projectionPeer, mirror bool) (projectionPlan, error) {
+	if err := projectionOpenPair(dest, source); err != nil {
+		if err == errProjectionUnavailable {
+			return projectionPlan{}, errProjectionUnsupported
+		}
+		return projectionPlan{}, err
+	}
+	if mirror && !dest.mirror {
+		return projectionPlan{}, errors.New("destination has not enabled projection mirror removals")
+	}
+	if !source.bucketExists {
+		return projectionPlan{}, errNoSuchBucket
+	}
+	if dest.root == source.root {
+		return projectionPlan{rounds: 1}, nil
+	}
+	p, err := projectionTraverse(dest, source, mirror, false)
+	if errors.Is(err, errProjectionProof) {
+		return projectionTraverse(dest, source, mirror, true)
+	}
+	return p, err
+}
+
+func projectionTraverse(dest, source *projectionPeer, mirror, strict bool) (projectionPlan, error) {
+	p := projectionPlan{rounds: 1, strict: strict}
+	lw, bw := 4, 4
+	if strict {
+		lw, bw = 32, 32
+	}
+	ids := []int{0}
+	for level := 0; level < namespaceProjectionDepth && len(ids) > 0; level++ {
+		request := projectionAppendIDs([]byte{byte(level), byte(bw)}, ids)
+		left, right, err := projectionPair(dest, source, projectionBranchesRequest, request, request)
+		if err != nil {
+			return p, err
+		}
+		expected := len(ids) * namespaceProjectionWidth * bw
+		if len(left) != expected || len(right) != expected {
+			return p, errProjectionProof
+		}
+		var next []int
+		at := 0
+		for _, id := range ids {
+			for child := range namespaceProjectionWidth {
+				if !bytes.Equal(left[at:at+bw], right[at:at+bw]) {
+					next = append(next, id*namespaceProjectionWidth+child)
+				}
+				at += bw
+			}
+		}
+		ids = next
+		p.rounds++
+	}
+	var absent, present []projectionPosition
+	leafBatch := namespaceProjectionBatch
+	if strict {
+		leafBatch = 1024
+	}
+	for start := 0; start < len(ids); start += leafBatch {
+		batch := ids[start:min(len(ids), start+leafBatch)]
+		request := projectionAppendIDs([]byte{byte(lw)}, batch)
+		left, right, err := projectionPair(dest, source, projectionHintsRequest, request, request)
+		if err != nil {
+			return p, err
+		}
+		l := binaryManifestReader{rest: left}
+		r := binaryManifestReader{rest: right}
+		for _, id := range batch {
+			a := l.take(l.count(namespaceProjectionRows) * lw)
+			b := r.take(r.count(namespaceProjectionRows) * lw)
+			if l.err != nil || r.err != nil {
+				return p, errProjectionProof
+			}
+			absent = append(absent, projectionHintPositions(a, b, lw, id)...)
+			present = append(present, projectionHintPositions(b, a, lw, id)...)
+		}
+		if projectionDone(&l) != nil || projectionDone(&r) != nil {
+			return p, errProjectionProof
+		}
+		p.rounds++
+	}
+	var leftMode byte
+	if mirror {
+		leftMode = 2 // local root guard
+	}
+	left, right, err := projectionPair(dest, source, projectionRowsRequest,
+		projectionAppendPositions(absent, leftMode), projectionAppendPositions(present, 1))
+	if err != nil {
+		return p, err
+	}
+	a, err := projectionReadRows(dest.boundary, left, absent, mirror)
+	if err != nil {
+		return p, err
+	}
+	b, err := projectionReadRows(source.boundary, right, present, true)
+	if err != nil {
+		return p, err
+	}
+	p.rounds++
+	edits := make(map[string]projectionEdit, len(a)+len(b))
+	old := make(map[string]projectionEdit, len(a))
+	for _, row := range a {
+		old[row.key] = row
+		edits[row.key] = projectionEdit{key: row.key, remove: true}
+	}
+	for _, row := range b {
+		edits[row.key] = row
+	}
+	selected := make([]projectionEdit, 0, len(edits))
+	for _, key := range slices.Sorted(maps.Keys(edits)) {
+		selected = append(selected, edits[key])
+	}
+	result, err := dest.exchange(projectionVerifyRequest, dest.token, projectionAppendEdits(slices.Clone(source.root[:]), selected))
+	p.rounds++
+	if err != nil {
+		return p, err
+	}
+	if len(result) != len(selected) {
+		return p, errProjectionProof
+	}
+	for i, code := range result {
+		edit := selected[i]
+		if code == 0 {
+			continue
+		}
+		if code > 3 || (code == 3) != edit.remove {
+			return p, errProjectionProof
+		}
+		p.edits, p.status = append(p.edits, edit), append(p.status, code)
+		if mirror && edit.remove {
+			p.guards = append(p.guards, old[edit.key])
+		}
+	}
+	return p, nil
+}
+
+// projectionReplicationDiscovery retains the exact sampled source root and
+// the destination capability for the separately authorized mirror step.
+type projectionReplicationDiscovery struct {
+	source, dest projectionPeer
+	plan         projectionPlan
+	active       bool
+}
+
+func projectionReplicationScopes(cfg namespaceReplicateConfig) (projectionScope, projectionScope) {
+	// Independent endpoint credentials are never shared. This portable
+	// boundary is derived solely from the pair's stable public selectors.
+	buf := []byte("zeros3/projection/scope/v1\x00")
+	for _, name := range []string{cfg.Source.Endpoint, cfg.Source.Bucket, cfg.SourcePrefix, cfg.Source.Creds.AccessKeyID,
+		cfg.Dest.Endpoint, cfg.Dest.Bucket, cfg.DestPrefix, cfg.Dest.Creds.AccessKeyID} {
+		buf = appendManifestString(buf, name)
+	}
+	boundary := sha256.Sum256(buf)
+	return projectionScope{cfg.Source.Bucket, cfg.SourcePrefix, boundary}, projectionScope{cfg.Dest.Bucket, cfg.DestPrefix, boundary}
+}
+
+func namespaceReplicationObjects(cfg namespaceReplicateConfig) ([]xmlContent, projectionReplicationDiscovery, error) {
+	var d projectionReplicationDiscovery
+	if cfg.Mirror && !cfg.Incremental || cfg.DestMustBeAbsent && cfg.Incremental {
+		return nil, d, errors.New("incompatible namespace reconciliation options")
+	}
+	srcScope, dstScope := projectionReplicationScopes(cfg)
+	if cfg.Incremental {
+		d.source.boundary = srcScope.boundary
+		d.dest.boundary = dstScope.boundary
+		d.source.exchange = projectionHTTP(context.Background(), cfg.Source, srcScope)
+		d.dest.exchange = projectionHTTP(context.Background(), cfg.Dest, dstScope)
+		plan, err := projectionCompare(&d.dest, &d.source, cfg.Mirror)
+		if errors.Is(err, errProjectionStale) {
+			plan, err = projectionCompare(&d.dest, &d.source, cfg.Mirror)
+		}
+		if err == nil {
+			d.plan, d.active = plan, true
+			objects := make([]xmlContent, 0, len(plan.edits))
+			for _, edit := range plan.edits {
+				if !edit.remove {
+					objects = append(objects, xmlContent{Key: srcScope.fullPrefix() + edit.key})
+				}
+			}
+			return objects, d, nil
+		}
+		if !errors.Is(err, errProjectionUnsupported) || cfg.Mirror {
+			return nil, d, err
+		}
+	}
+	objects, err := listSourceObjects(cfg.Source, srcScope.fullPrefix())
+	return objects, d, err
+}
+
+func (d *projectionReplicationDiscovery) remove() (int, error) {
+	var removed int
+	for guards := range slices.Chunk(d.plan.guards, projectionMirrorBatch) {
+		current, err := d.source.exchange(projectionRootRequest, [16]byte{}, nil)
+		if err != nil {
+			return removed, err
+		}
+		if len(current) != 50 || current[49] != 1 || !bytes.Equal(current[:16], d.source.token[:]) || !bytes.Equal(current[16:48], d.source.root[:]) {
+			return removed, errProjectionStale
+		}
+		raw, err := d.dest.exchange(projectionRemoveRequest, d.dest.token, projectionAppendEdits(nil, guards))
+		if err != nil {
+			return removed, err
+		}
+		r := binaryManifestReader{rest: raw}
+		n, failed := r.count(len(guards)), r.count(1)
+		if err := projectionDone(&r); err != nil {
+			return removed, err
+		}
+		removed += n
+		if failed != 0 {
+			return removed, errProjectionStale
+		}
+	}
+	return removed, nil
+}
+
 // namespaceReplicateConfig configures one namespace replication run.
 // Source/Dest are independent syncClientConfig values (their own
 // Endpoint/Creds/Region/Bucket); Key is set per object inside
@@ -37936,6 +39135,8 @@ func (r nsReplicateResult) OK() bool { return r.Failed == 0 }
 // DestPrefix are trimmed of leading/trailing '/', exactly the shape
 // parseS3DirURI already returns ("" for a whole bucket).
 type namespaceReplicateConfig struct {
+	Incremental     bool
+	Mirror          bool
 	PreferAuthority bool
 	NativeBatch     bool
 	NativeWireMbit  int
@@ -37975,16 +39176,28 @@ type namespaceReplicateConfig struct {
 // doc comment above for the full non-destructive/partial-failure/resume/
 // source-mutation contract this establishes.
 func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error) {
-	listPrefix := cfg.SourcePrefix
-	if listPrefix != "" {
-		listPrefix += "/"
-	}
-	objects, err := listSourceObjects(cfg.Source, listPrefix)
+	objects, projection, err := namespaceReplicationObjects(cfg)
 	if err != nil {
 		return nsReplicateResult{}, err
 	}
 
-	result := nsReplicateResult{Discovered: len(objects)}
+	result := nsReplicateResult{Discovered: len(objects), Reconciled: projection.active}
+	if projection.active {
+		cfg.IfUnchanged = true
+	}
+	finish := func() (nsReplicateResult, error) {
+		if cfg.Mirror && result.OK() {
+			removed, err := projection.remove()
+			result.Removed = removed
+			if err != nil {
+				return result, err
+			}
+		}
+		if cfg.Out != nil {
+			printNsReplicateSummary(cfg.Out, result)
+		}
+		return result, nil
+	}
 	session := newSyncSession()
 	if cfg.NativeBatch && !cfg.PreferAuthority && !cfg.DestMustBeAbsent && len(objects) != 0 {
 		src, srcErr := session.discover(cfg.Source)
@@ -37997,10 +39210,7 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 			if err := replicateNativeNamespace(cfg, src, dst, objects, &result); err != nil {
 				return result, err
 			}
-			if cfg.Out != nil {
-				printNsReplicateSummary(cfg.Out, result)
-			}
-			return result, nil
+			return finish()
 		}
 	}
 	for _, obj := range objects {
@@ -38035,10 +39245,7 @@ func replicateNamespace(cfg namespaceReplicateConfig) (nsReplicateResult, error)
 		result.Stats.Unchanged += stats.Unchanged
 	}
 
-	if cfg.Out != nil {
-		printNsReplicateSummary(cfg.Out, result)
-	}
-	return result, nil
+	return finish()
 }
 
 var errNativeBatchSize = errors.New("native batch exceeds the control message limit")
@@ -38497,6 +39704,9 @@ func replicateNativeWindow(cfg namespaceReplicateConfig, src, dst syncDiscoveryR
 // something actually failed -- never a wall of per-object success noise,
 // matching printDirSyncSummary's own shape (section 15c).
 func printNsReplicateSummary(w io.Writer, r nsReplicateResult) {
+	if r.Reconciled {
+		fmt.Fprintf(w, "Verified projection. Removed %d\n", r.Removed)
+	}
 	fmt.Fprintf(w, "Objects discovered:      %d\n", r.Discovered)
 	fmt.Fprintf(w, "Replicated:              %d\n", r.Replicated)
 	if r.Stats.Unchanged > 0 {
@@ -41763,6 +42973,8 @@ func runScrub(args []string) {
 
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	namespaceProjection := fs.Bool("namespace-projection", false, "enable authenticated incremental namespace comparison")
+	projectionMirror := fs.Bool("projection-mirror", false, "also permit explicitly guarded namespace mirror removals")
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	addr := fs.String("addr", "127.0.0.1:9000", "listen address")
 	checkpoint := fs.Bool("namespace-checkpoint", nsCheckpointDefault(), "load a verified namespace checkpoint at startup and publish fresh ones in the background; false replays the whole journal and keeps consolidated generations private")
@@ -41919,6 +43131,11 @@ func runServe(args []string) {
 		AccessKeyID:     *accessKey,
 		SecretAccessKey: *secretKey,
 	}, *region)
+	if *namespaceProjection || *projectionMirror {
+		srv.projections = &projectionCache{}
+		srv.projectionMirror = *projectionMirror
+	}
+
 	if *vhostBase != "" {
 		srv.SetVirtualHostBase(*vhostBase)
 	}
