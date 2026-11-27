@@ -1,0 +1,212 @@
+[
+  {
+    "name": "typescript-tar",
+    "split": "development",
+    "paths": [
+      "c12/corpus/typescript-tar/0/package.tar",
+      "c12/corpus/typescript-tar/1/package.tar",
+      "c12/corpus/typescript-tar/2/package.tar"
+    ],
+    "inputs": [
+      {
+        "name": "c12/corpus/typescript-tar/0/package.tar",
+        "bytes": 22536704,
+        "sha256": "3c8bbde7a20c944becbafdc00eb96086a509ffebe1560b3a2faa5261ef379977"
+      },
+      {
+        "name": "c12/corpus/typescript-tar/1/package.tar",
+        "bytes": 22535680,
+        "sha256": "5af0cc99b81eaea42daae41f273cc82628f8a11c12bfb00962b821853e81c1af"
+      },
+      {
+        "name": "c12/corpus/typescript-tar/2/package.tar",
+        "bytes": 22842880,
+        "sha256": "56e2e3b825cf4a82c36f71b4e6e46fb76e51457593d2d184fc031603d2e80ad0"
+      }
+    ]
+  },
+  {
+    "name": "typescript-gzip",
+    "split": "development",
+    "paths": [
+      "c12/corpus/typescript-gzip/0/package.tgz",
+      "c12/corpus/typescript-gzip/1/package.tgz"
+    ],
+    "inputs": [
+      {
+        "name": "c12/corpus/typescript-gzip/0/package.tgz",
+        "bytes": 4174769,
+        "sha256": "6e954963e7689a13573927021cf1fe2d7f85d7808eba49f03f84cb5d77cdd6bf"
+      },
+      {
+        "name": "c12/corpus/typescript-gzip/1/package.tgz",
+        "bytes": 4174590,
+        "sha256": "ef67f8d8ad895858024b7339d3e34bf112cae3c5db1f538c3079038b17ae30fa"
+      }
+    ]
+  },
+  {
+    "name": "urllib3-gzip",
+    "split": "held-out",
+    "paths": [
+      "c19/inputs/urllib3-2.2.2.tar.gz",
+      "c19/inputs/urllib3-2.2.3.tar.gz"
+    ],
+    "inputs": [
+      {
+        "name": "c19/inputs/urllib3-2.2.2.tar.gz",
+        "bytes": 292266,
+        "sha256": "dd505485549a7a552833da5e6063639d0d177c04f23bc3864e41e5dc5f612168"
+      },
+      {
+        "name": "c19/inputs/urllib3-2.2.3.tar.gz",
+        "bytes": 300677,
+        "sha256": "e7d814a81dad81e6caf2ec9fdedb284ecc9c73076b62654547cc64ccdcae26e9"
+      }
+    ]
+  },
+  {
+    "name": "sqlite",
+    "split": "development",
+    "paths": [
+      "c14/final-corpus/sqlite/0/snapshot.sqlite",
+      "c14/final-corpus/sqlite/1/snapshot.sqlite",
+      "c14/final-corpus/sqlite/2/snapshot.sqlite"
+    ],
+    "inputs": [
+      {
+        "name": "c14/final-corpus/sqlite/0/snapshot.sqlite",
+        "bytes": 1183744,
+        "sha256": "9dccd6e427d831a1f10aae8d415d1caa5698e67b4b2b60bf96c705f32f8bf560"
+      },
+      {
+        "name": "c14/final-corpus/sqlite/1/snapshot.sqlite",
+        "bytes": 1191936,
+        "sha256": "6e28edf5e18ce88fd0ea370f222e031c207f2a1b41224ab6c2ed6e74de0e9ca3"
+      },
+      {
+        "name": "c14/final-corpus/sqlite/2/snapshot.sqlite",
+        "bytes": 1187840,
+        "sha256": "3ca34eea56483cb5a8089e0aeb0af7ede5250e00c6c1af6dae391250f3b62a39"
+      }
+    ]
+  },
+  {
+    "name": "parquet",
+    "split": "development",
+    "paths": [
+      "c14/final-corpus/parquet/0/snapshot.parquet",
+      "c14/final-corpus/parquet/1/snapshot.parquet",
+      "c14/final-corpus/parquet/2/snapshot.parquet"
+    ],
+    "inputs": [
+      {
+        "name": "c14/final-corpus/parquet/0/snapshot.parquet",
+        "bytes": 1937122,
+        "sha256": "79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718"
+      },
+      {
+        "name": "c14/final-corpus/parquet/1/snapshot.parquet",
+        "bytes": 1937065,
+        "sha256": "0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2"
+      },
+      {
+        "name": "c14/final-corpus/parquet/2/snapshot.parquet",
+        "bytes": 1937002,
+        "sha256": "7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244"
+      }
+    ]
+  },
+  {
+    "name": "sparse-volume",
+    "split": "development",
+    "paths": [
+      "c14/final-corpus/volume-incremental/0/volume.raw",
+      "c14/final-corpus/volume-incremental/1/volume.raw",
+      "c14/final-corpus/volume-incremental/2/volume.raw"
+    ],
+    "inputs": [
+      {
+        "name": "c14/final-corpus/volume-incremental/0/volume.raw",
+        "bytes": 16777216,
+        "sha256": "d850f84cf235f6db0e6b20db3f9457f393fb2358bd7590993b55dd57cd3b37d2"
+      },
+      {
+        "name": "c14/final-corpus/volume-incremental/1/volume.raw",
+        "bytes": 16777216,
+        "sha256": "72446276f6b5f3562b4da3826a2014b4b674deb7438d2d1c72fecb8e8a9f5783"
+      },
+      {
+        "name": "c14/final-corpus/volume-incremental/2/volume.raw",
+        "bytes": 16908288,
+        "sha256": "15cf8170bb759f6d9fdb345acb1679eeb06b7ee5379e22b8be85050ae2d47957"
+      }
+    ]
+  },
+  {
+    "name": "httpx-tar",
+    "split": "held-out",
+    "paths": [
+      "c12/corpus/httpx-heldout/0/source.tar",
+      "c12/corpus/httpx-heldout/1/source.tar"
+    ],
+    "inputs": [
+      {
+        "name": "c12/corpus/httpx-heldout/0/source.tar",
+        "bytes": 911360,
+        "sha256": "e43e110856971287c8fbf260097b40799b7059b23f841e4d54bdd246c0829cb3"
+      },
+      {
+        "name": "c12/corpus/httpx-heldout/1/source.tar",
+        "bytes": 911360,
+        "sha256": "458fa2289a4d08978e53149a5f4befed0a77d55c140e79d0b8d5f766087f6223"
+      }
+    ]
+  },
+  {
+    "name": "entropy",
+    "split": "negative",
+    "paths": [
+      "c14/final-corpus/entropy/0/payload.bin",
+      "c14/final-corpus/entropy/1/payload.bin"
+    ],
+    "inputs": [
+      {
+        "name": "c14/final-corpus/entropy/0/payload.bin",
+        "bytes": 4194304,
+        "sha256": "f811becca3e268fd599afe5f65c705a68623537e48278a1221d1ca35e7990911"
+      },
+      {
+        "name": "c14/final-corpus/entropy/1/payload.bin",
+        "bytes": 4194304,
+        "sha256": "f23be41a1a1ae971a4b548d9de03242ca08b742236c3d397fe1402f5e417c48b"
+      }
+    ]
+  },
+  {
+    "name": "typed-tensors",
+    "split": "generated-control",
+    "paths": [
+      "c14/final-corpus/tensor-dtypes/0/weights.safetensors",
+      "c14/final-corpus/tensor-dtypes/1/weights.safetensors",
+      "c14/final-corpus/tensor-dtypes/2/weights.safetensors"
+    ],
+    "inputs": [
+      {
+        "name": "c14/final-corpus/tensor-dtypes/0/weights.safetensors",
+        "bytes": 1179936,
+        "sha256": "a3960661514f53283f001b5e71e1716936542ece957f266457f9a59d50d69610"
+      },
+      {
+        "name": "c14/final-corpus/tensor-dtypes/1/weights.safetensors",
+        "bytes": 1179936,
+        "sha256": "701df7a55d7b9a46d0275a905c9203e6f5b231d9755095c5c3acc47d000c70ef"
+      },
+      {
+        "name": "c14/final-corpus/tensor-dtypes/2/weights.safetensors",
+        "bytes": 1179936,
+        "sha256": "fda23fbf4faec3582d1f587c571be1a02d4f414ca11a76efa5cc048fb12b26ac"
+      }
+    ]
+  }
+]
