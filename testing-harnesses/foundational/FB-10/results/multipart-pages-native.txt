@@ -1,0 +1,23 @@
+=== RUN   TestFB10PartPageGoldens
+=== RUN   TestFB10PartPageGoldens/part-index
+=== RUN   TestFB10PartPageGoldens/part-leaf
+--- PASS: TestFB10PartPageGoldens (0.00s)
+    --- PASS: TestFB10PartPageGoldens/part-index (0.00s)
+    --- PASS: TestFB10PartPageGoldens/part-leaf (0.00s)
+=== RUN   TestFB10PartPageReplayAndReconciliation
+    zeros3_fb10_pages_test.go:118: native UploadPart verified 265 references in checkpoint and exact maintenance closure, then completed 16777216 bytes
+--- PASS: TestFB10PartPageReplayAndReconciliation (0.29s)
+=== RUN   TestFB10PartPagesScale
+=== RUN   TestFB10PartPagesScale/false
+    zeros3_fb10_pages_test.go:186: paged=false parts=10000 refs=129 journal_bytes=123348321 sequence=10002 checkpoint_bytes=92231231 page_bytes=0 write=3.841392229s consolidate=679.558718ms adopted_checkpoint=true open=493.948692ms
+    zeros3_fb10_pages_test.go:186: paged=false parts=10000 refs=129 journal_bytes=123348321 sequence=10002 checkpoint_bytes=92231231 page_bytes=0 write=3.841392229s consolidate=679.558718ms adopted_checkpoint=false open=627.458848ms
+=== RUN   TestFB10PartPagesScale/true
+    zeros3_fb10_pages_test.go:186: paged=true parts=10000 refs=129 journal_bytes=4158384 sequence=10002 checkpoint_bytes=1270900 page_bytes=4692 write=3.2270723s consolidate=20.905917ms adopted_checkpoint=true open=7.552967ms
+    zeros3_fb10_pages_test.go:186: paged=true parts=10000 refs=129 journal_bytes=4158384 sequence=10002 checkpoint_bytes=1270900 page_bytes=4692 write=3.2270723s consolidate=20.905917ms adopted_checkpoint=false open=21.343016ms
+--- PASS: TestFB10PartPagesScale (8.98s)
+    --- PASS: TestFB10PartPagesScale/false (5.68s)
+    --- PASS: TestFB10PartPagesScale/true (3.30s)
+=== RUN   TestFB10PartPageMultipleLeaves
+--- PASS: TestFB10PartPageMultipleLeaves (0.01s)
+PASS
+ok  	zeros3	9.286s

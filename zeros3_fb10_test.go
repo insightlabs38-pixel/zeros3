@@ -98,11 +98,11 @@ func TestFB10JournalBinUpgradeReplay(t *testing.T) {
 	mustOK(t, s.CreateBucket("b"))
 	_, err = s.PutObject("b", "mixed", []byte("first"), "text/plain", nil)
 	mustOK(t, err)
-	if _, err := openStoreWithFeatures(dir, true, true, false, false, false, true); err == nil {
+	if _, err := openStoreWithFeatures(dir, true, true, false, false, false, journalResearch{binary: true}); err == nil {
 		t.Fatal("format upgrade raced a writer")
 	}
 	mustOK(t, s.Close())
-	s, err = openStoreWithFeatures(dir, true, true, false, false, false, true)
+	s, err = openStoreWithFeatures(dir, true, true, false, false, false, journalResearch{binary: true})
 	mustOK(t, err)
 	_, err = s.PutObject("b", "mixed", []byte("second"), "text/plain", nil)
 	mustOK(t, err)
@@ -228,7 +228,7 @@ func TestFB10JournalBinCutWorker(t *testing.T) {
 			}
 		}
 	}
-	s, err := openStoreWithFeatures(dir, true, true, false, false, false, true)
+	s, err := openStoreWithFeatures(dir, true, true, false, false, false, journalResearch{binary: true})
 	mustOK(t, err)
 	defer s.Close()
 	_, err = s.PutObject("b", "k", []byte("new"), "text/plain", nil)

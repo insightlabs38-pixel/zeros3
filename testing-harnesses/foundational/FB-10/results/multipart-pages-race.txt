@@ -1,0 +1,84 @@
+=== RUN   TestFB02_MultipartChecksums
+=== RUN   TestFB02_MultipartChecksums/part-claim-mismatch
+=== RUN   TestFB02_MultipartChecksums/full-object-crc32
+=== RUN   TestFB02_MultipartChecksums/full-object-crc32c
+=== RUN   TestFB02_MultipartChecksums/full-object-crc64nvme
+=== RUN   TestFB02_MultipartChecksums/full-object-sha1
+=== RUN   TestFB02_MultipartChecksums/full-object-sha256
+=== RUN   TestFB02_MultipartChecksums/composite-claim-not-implemented
+=== RUN   TestFB02_MultipartChecksums/complete-body-md5-still-checks-xml
+--- PASS: TestFB02_MultipartChecksums (5.62s)
+    --- PASS: TestFB02_MultipartChecksums/part-claim-mismatch (0.02s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-crc32 (0.54s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-crc32c (0.51s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-crc64nvme (1.75s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-sha1 (0.93s)
+    --- PASS: TestFB02_MultipartChecksums/full-object-sha256 (0.71s)
+    --- PASS: TestFB02_MultipartChecksums/composite-claim-not-implemented (0.57s)
+    --- PASS: TestFB02_MultipartChecksums/complete-body-md5-still-checks-xml (0.47s)
+=== RUN   TestFB02_MultipartOriginEquivalence
+--- PASS: TestFB02_MultipartOriginEquivalence (1.25s)
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CreateBucket
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/DeleteBucket
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/PutObject
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CopyObject
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObject
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObjects
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CreateMultipartUpload
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/UploadPart
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/AbortMultipartUpload
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/CompleteMultipartUpload
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/RestoreObjectVersion
+=== RUN   TestFB04X_NoJournalFsyncUnderStoreMu/PruneHistory
+--- PASS: TestFB04X_NoJournalFsyncUnderStoreMu (0.46s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CreateBucket (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/DeleteBucket (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/PutObject (0.05s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CopyObject (0.03s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObject (0.09s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/DeleteObjects (0.04s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CreateMultipartUpload (0.05s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/UploadPart (0.03s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/AbortMultipartUpload (0.02s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/CompleteMultipartUpload (0.06s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/RestoreObjectVersion (0.03s)
+    --- PASS: TestFB04X_NoJournalFsyncUnderStoreMu/PruneHistory (0.02s)
+=== RUN   TestFB10PartPageGoldens
+=== RUN   TestFB10PartPageGoldens/part-index
+=== RUN   TestFB10PartPageGoldens/part-leaf
+--- PASS: TestFB10PartPageGoldens (0.00s)
+    --- PASS: TestFB10PartPageGoldens/part-index (0.00s)
+    --- PASS: TestFB10PartPageGoldens/part-leaf (0.00s)
+=== RUN   TestFB10PartPageReplayAndReconciliation
+    zeros3_fb10_pages_test.go:118: native UploadPart verified 265 references in checkpoint and exact maintenance closure, then completed 16777216 bytes
+--- PASS: TestFB10PartPageReplayAndReconciliation (2.16s)
+=== RUN   TestFB10PartPagesScale
+    zeros3_fb10_pages_test.go:123: set ZEROS3_TEST_PARTS_SCALE=1 for the 10,000-part comparison
+--- SKIP: TestFB10PartPagesScale (0.00s)
+=== RUN   TestFB10JournalBinGolden
+    zeros3_fb10_test.go:77: overwrite JSON=661 binary=205 reduction=69.0%
+    zeros3_fb10_test.go:77: put JSON=315 binary=99 reduction=68.6%
+--- PASS: TestFB10JournalBinGolden (0.00s)
+=== RUN   TestFB10JournalBinUpgradeReplay
+    zeros3_fb10_test.go:168: reopened 1 legacy and 3 compact PUTs, exact archive, validated checkpoint and suffix
+--- PASS: TestFB10JournalBinUpgradeReplay (0.04s)
+=== RUN   TestFB10JournalBinProcessCuts
+=== RUN   TestFB10JournalBinProcessCuts/journalbin-activated
+    zeros3_fb10_test.go:213: reopened after journalbin-activated with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-manifest-published
+    zeros3_fb10_test.go:213: reopened after after-manifest-published with "acknowledged" and 0 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-write-before-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-write-before-sync with "new" and 1 archived versions
+=== RUN   TestFB10JournalBinProcessCuts/after-journal-sync
+    zeros3_fb10_test.go:213: reopened after after-journal-sync with "new" and 1 archived versions
+--- PASS: TestFB10JournalBinProcessCuts (0.18s)
+    --- PASS: TestFB10JournalBinProcessCuts/journalbin-activated (0.06s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-manifest-published (0.04s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-write-before-sync (0.05s)
+    --- PASS: TestFB10JournalBinProcessCuts/after-journal-sync (0.03s)
+=== RUN   TestFB10JournalBinCutWorker
+    zeros3_fb10_test.go:221: standalone process-cut worker
+--- SKIP: TestFB10JournalBinCutWorker (0.00s)
+PASS
+ok  	zeros3	10.770s

@@ -25,4 +25,26 @@ the group write also recovered the full overwrite on this host.
 These process cuts exercise visibility recovery. Power interruption
 and correlated media loss have separate proof limits.
 
+`serve -multipart-pages` keeps large part reference vectors in
+immutable, digest-addressed leaves and a checked index. The journal
+and namespace checkpoint store just the index digest and existing
+part metadata. Every page is synced before its first reference can
+commit. A missing or damaged referenced page refuses replay.
+Journal reconciliation for maintenance resolves the same page and
+compact PUT roots so they remain in the exact live set.
+
+| 10,000 parts with the same 129-reference vector | Inline | Paged |
+|---|---:|---:|
+| Journal bytes | 123,348,321 | 4,158,384 |
+| Checkpoint bytes | 92,231,231 | 1,270,900 |
+| Additional page file bytes | 0 | 4,692 |
+| Reopen from journal | 627 ms | 21 ms |
+
+This uses native commit and reload with reused payload references on
+the same local filesystem. Distinct vectors have higher page costs.
+A separate 16 MiB ordinary upload recovered all 265 references,
+reconciled exactly through maintenance, and completed byte-for-byte.
+Page files are retained as long as their journal references can replay.
+This keeps old groups recoverable without enabling journal retirement.
+
 [Reproduction](REPRODUCE.md) · [Evidence](results/)

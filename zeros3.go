@@ -10028,6 +10028,7 @@ type journalUploadPartPayload struct {
 	Size       int64      `json:"size"`
 	ETag       string     `json:"etag"`
 	Chunks     []chunkRef `json:"chunks"`
+	Pages      string     `json:"pages,omitempty"`
 	UploadedAt time.Time  `json:"uploaded_at"`
 }
 
@@ -12099,6 +12100,7 @@ type multipartPart struct {
 	size       int64
 	etag       string // hex MD5 of this part's bytes, unquoted
 	chunks     []chunkRef
+	pages      string
 	uploadedAt time.Time
 }
 
@@ -12122,6 +12124,7 @@ type Store struct {
 	writeBinaryManifests  bool
 	writeMetadataPages    bool
 	writeBinaryJournal    bool
+	writeMultipartPages   bool
 
 	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
 	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
@@ -12328,10 +12331,23 @@ func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Sto
 }
 
 func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool) (*Store, error) {
-	return openStoreWithFeatures(root, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags, false)
+	return openStoreWithFeatures(root, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags, journalResearch{})
 }
 
-func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags, binaryJournal bool) (*Store, error) {
+type journalResearch struct {
+	binary, multipartPages bool
+}
+
+func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool, research journalResearch) (*Store, error) {
+	activateJournal := research.binary || research.multipartPages
+	if activateJournal && !ownSegments {
+		return nil, errors.New("store: journal feature activation requires a writer")
+	}
+	if activateJournal {
+		if _, err := os.Stat(filepath.Join(root, "FORMAT.json")); os.IsNotExist(err) && os.Getenv("ZEROS3_JOURNAL_FORMAT") != "j2" {
+			return nil, errors.New("store: journal feature activation requires the opt-in J2 format")
+		}
+	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("store: failed to create the store directory: %w", err)
 	}
@@ -12339,11 +12355,11 @@ func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, lo
 	var err error
 	if ownSegments {
 		mode := syscall.LOCK_SH
-		if maintain || binaryJournal {
+		if maintain || activateJournal {
 			mode = syscall.LOCK_EX
 		}
 		if lock, err = flockStore(root, writerLockDir, mode, false); errors.Is(err, syscall.EWOULDBLOCK) {
-			if maintain || binaryJournal {
+			if maintain || activateJournal {
 				return nil, fmt.Errorf("store: online maintenance and journal format activation require the only writing process: %w", errGCStoreInUse)
 			}
 			return nil, fmt.Errorf("store: %w", errMaintOwned)
@@ -12368,17 +12384,23 @@ func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, lo
 	} else {
 		s.readerLock = lock
 	}
-	if binaryJournal {
-		if s.journal.group == nil || !ownSegments {
-			s.Close()
-			return nil, errors.New("store: binary journal records require the opt-in J2 writer")
-		}
+	if activateJournal && s.journal.group == nil {
+		s.Close()
+		return nil, errors.New("store: journal feature activation requires the opt-in J2 writer")
+	}
+	if research.binary {
 		if err := s.ensureFeature(journalBinFeature); err != nil {
 			s.Close()
 			return nil, err
 		}
 		fireTestHook(hookJournalBinActivated)
 		s.writeBinaryJournal = true
+	}
+	if research.multipartPages {
+		if err := s.enableMultipartPages(); err != nil {
+			s.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -13908,7 +13930,16 @@ type nsUploadRec struct {
 	ID, Bucket, Key, ContentType string
 	Metadata                     map[string]string
 	Created                      time.Time
-	Parts                        []namespaceCheckpointPart
+	Parts                        []nsPartRec
+}
+
+type nsPartRec struct {
+	Number   int
+	Size     int64
+	ETag     string
+	Chunks   []chunkRef
+	Pages    string
+	Uploaded time.Time
 }
 
 // nsMeta is the generation's trailer: journal binding, dictionary, bucket list,
@@ -15101,7 +15132,11 @@ func (s *Store) nsFreeze(publish bool) (*nsSnapshot, error) {
 		rec := nsUploadRec{ID: id, Bucket: u.bucket, Key: u.key, ContentType: u.contentType, Metadata: u.metadata, Created: u.createdAt}
 		for _, n := range slices.Sorted(maps.Keys(u.parts)) {
 			p := u.parts[n]
-			rec.Parts = append(rec.Parts, namespaceCheckpointPart{n, p.size, p.etag, p.chunks, p.uploadedAt})
+			saved := nsPartRec{Number: n, Size: p.size, ETag: p.etag, Pages: p.pages, Uploaded: p.uploadedAt}
+			if p.pages == "" {
+				saved.Chunks = p.chunks
+			}
+			rec.Parts = append(rec.Parts, saved)
 		}
 		snap.uploads = append(snap.uploads, rec)
 	}
@@ -15451,7 +15486,11 @@ func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 			if p.Number < 1 || p.Number > 10000 || p.Size < 0 || u.parts[p.Number] != nil {
 				return fmt.Errorf("%w: invalid multipart part", errCheckpointBody)
 			}
-			u.parts[p.Number] = &multipartPart{partNumber: p.Number, size: p.Size, etag: p.ETag, chunks: p.Chunks, uploadedAt: p.Uploaded}
+			refs, err := s.multipartPageRefs(p.Pages, p.Chunks, p.Size)
+			if err != nil {
+				return fmt.Errorf("%w: multipart page: %v", errCheckpointBody, err)
+			}
+			u.parts[p.Number] = &multipartPart{partNumber: p.Number, size: p.Size, etag: p.ETag, chunks: refs, pages: p.Pages, uploadedAt: p.Uploaded}
 		}
 		uploads[r.ID] = u
 	}
@@ -15975,7 +16014,12 @@ func jsonInt(val []byte) (int64, bool) {
 
 // strIntern shares the backing array of the few strings a journal repeats in
 // every frame (bucket, content type, reason); a nil intern just copies.
-type strIntern struct{ m map[string]string }
+type strIntern struct {
+	m        map[string]string
+	partPage string
+	partSize int64
+	partRefs []chunkRef
+}
 
 func (in *strIntern) get(v []byte) string {
 	if in == nil || len(v) == 0 || len(v) > 128 {
@@ -16227,8 +16271,12 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		if !ok {
 			return fmt.Errorf("seq %d: upload-part for unknown upload %q", rec.seq, p.UploadID)
 		}
+		refs, err := s.multipartPageRefs(p.Pages, p.Chunks, p.Size)
+		if err != nil {
+			return fmt.Errorf("seq %d: multipart page: %w", rec.seq, err)
+		}
 		up.parts[p.PartNumber] = &multipartPart{
-			partNumber: p.PartNumber, size: p.Size, etag: p.ETag, chunks: p.Chunks, uploadedAt: p.UploadedAt,
+			partNumber: p.PartNumber, size: p.Size, etag: p.ETag, chunks: refs, pages: p.Pages, uploadedAt: p.UploadedAt,
 		}
 	case recordTypeAbortMultipartUpload:
 		var p journalAbortMultipartPayload
@@ -20912,6 +20960,186 @@ func encodeUploadPartPayload(p journalUploadPartPayload) ([]byte, error) {
 	return payload, nil
 }
 
+const (
+	journalPartPagesFeature = "journalpartpages"
+	journalPartPagesDir     = "multipart-pages"
+	journalPartPageIndex    = "ZPTI"
+	journalPartPageLeaf     = "ZPTL"
+	journalPartPageHeader   = 8
+	journalPartPageRows     = 1024
+	journalPartPageMin      = 128
+	journalPartPageRow      = sha256.Size + 4
+	journalPartPageLimit    = journalPartPageHeader + journalPartPageRows*journalPartPageRow
+	journalPartMaxRefs      = (5 << 30) / cdcMinChunkSize
+)
+
+func (s *Store) enableMultipartPages() error {
+	dir := filepath.Join(s.root, "journal")
+	if err := os.MkdirAll(filepath.Join(dir, journalPartPagesDir), 0700); err != nil {
+		return err
+	}
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	if err := s.ensureFeature(journalPartPagesFeature); err != nil {
+		return err
+	}
+	s.writeMultipartPages = true
+	return nil
+}
+
+func journalPartPage(magic string, count int) []byte {
+	return binary.LittleEndian.AppendUint32([]byte(magic), uint32(count))
+}
+
+func decodeJournalPartPage(b []byte) (magic string, count int, rows []byte, err error) {
+	if len(b) < journalPartPageHeader || len(b) > journalPartPageLimit {
+		return "", 0, nil, errors.New("multipart page exceeds its byte bounds")
+	}
+	magic, count = string(b[:4]), int(binary.LittleEndian.Uint32(b[4:8]))
+	rows = b[8:]
+	switch magic {
+	case journalPartPageIndex:
+		if count < journalPartPageMin || count > journalPartMaxRefs ||
+			len(rows) != (count+journalPartPageRows-1)/journalPartPageRows*sha256.Size {
+			return "", 0, nil, errors.New("invalid multipart page index")
+		}
+	case journalPartPageLeaf:
+		if count < 1 || count > journalPartPageRows || len(rows) != count*journalPartPageRow {
+			return "", 0, nil, errors.New("invalid multipart leaf page")
+		}
+		for at := sha256.Size; at < len(rows); at += journalPartPageRow {
+			if n := binary.LittleEndian.Uint32(rows[at : at+4]); n < 1 || n > cdcMaxChunkSize {
+				return "", 0, nil, errors.New("invalid multipart page chunk length")
+			}
+		}
+	default:
+		return "", 0, nil, errors.New("unrecognized multipart page record")
+	}
+	return
+}
+
+func readJournalPartPage(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, journalPartPageLimit+1))
+}
+
+func (s *Store) writeJournalPartPages(refs []chunkRef, size int64) (string, error) {
+	if len(refs) < journalPartPageMin || len(refs) > journalPartMaxRefs {
+		return "", errors.New("multipart reference count is outside page bounds")
+	}
+	dir := filepath.Join(s.root, "journal", journalPartPagesDir)
+	publish := func(body []byte) (sum [32]byte, err error) {
+		sum = sha256.Sum256(body)
+		path := filepath.Join(dir, hex.EncodeToString(sum[:]))
+		prior, err := readJournalPartPage(path)
+		if err == nil {
+			if !bytes.Equal(prior, body) {
+				return sum, errors.New("existing multipart page has a mismatched digest")
+			}
+			return sum, nil
+		}
+		if !os.IsNotExist(err) {
+			return sum, err
+		}
+		return sum, writeFileDurable(filepath.Join(s.root, "tmp"), path, body)
+	}
+	total := int64(0)
+	index := journalPartPage(journalPartPageIndex, len(refs))
+	for page := range slices.Chunk(refs, journalPartPageRows) {
+		leaf := journalPartPage(journalPartPageLeaf, len(page))
+		for _, ref := range page {
+			sum, err := decodeHexSHA256(ref.SHA256)
+			if err != nil || ref.Length < 1 || ref.Length > cdcMaxChunkSize {
+				return "", errors.New("invalid multipart reference for page publication")
+			}
+			leaf = append(leaf, sum[:]...)
+			leaf = binary.LittleEndian.AppendUint32(leaf, uint32(ref.Length))
+			total += ref.Length
+		}
+		sum, err := publish(leaf)
+		if err != nil {
+			return "", err
+		}
+		index = append(index, sum[:]...)
+	}
+	if total != size {
+		return "", errors.New("multipart references disagree with part size")
+	}
+	sum, err := publish(index)
+	if err != nil {
+		return "", err
+	}
+	if err := syncDir(dir); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (s *Store) multipartPageRefs(ref string, inline []chunkRef, size int64) ([]chunkRef, error) {
+	if ref == "" {
+		return inline, nil
+	}
+	format := s.formatSnapshot()
+	if len(inline) != 0 || !slices.Contains(format.Features, journalPartPagesFeature) || !slices.Contains(format.Features, journalGroupFeature) {
+		return nil, errors.New("multipart page reference lacks its format marker or conflicts with inline references")
+	}
+	if in := s.replayIn; in != nil && in.partPage == ref && in.partSize == size {
+		return in.partRefs, nil
+	}
+	root, err := decodeHexSHA256(ref)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(s.root, "journal", journalPartPagesDir)
+	read := func(sum [32]byte, want string) ([]byte, int, error) {
+		path := filepath.Join(dir, hex.EncodeToString(sum[:]))
+		body, err := readJournalPartPage(path)
+		if err != nil {
+			return nil, 0, err
+		}
+		if sha256.Sum256(body) != sum {
+			return nil, 0, errors.New("multipart page digest mismatch")
+		}
+		magic, count, rows, err := decodeJournalPartPage(body)
+		if err == nil && magic != want {
+			err = errors.New("multipart page kind differs from its reference")
+		}
+		return rows, count, err
+	}
+	children, count, err := read(root, journalPartPageIndex)
+	if err != nil {
+		return nil, err
+	}
+	var total int64
+	refs := make([]chunkRef, 0, count)
+	for child := range slices.Chunk(children, sha256.Size) {
+		body, n, err := read([32]byte(child), journalPartPageLeaf)
+		if err != nil {
+			return nil, err
+		}
+		if n != min(count-len(refs), journalPartPageRows) {
+			return nil, errors.New("multipart page leaf disagrees with index count")
+		}
+		for row := range slices.Chunk(body, journalPartPageRow) {
+			length := int64(binary.LittleEndian.Uint32(row[sha256.Size:]))
+			total += length
+			refs = append(refs, chunkRef{SHA256: hex.EncodeToString(row[:sha256.Size]), Length: length})
+		}
+	}
+	if len(refs) != count || total != size {
+		return nil, errors.New("multipart page total disagrees with journal part")
+	}
+	if in := s.replayIn; in != nil {
+		in.partPage, in.partSize, in.partRefs = ref, size, refs
+	}
+	return refs, nil
+}
+
 // commitPart records an already-ingested part (CDC-chunked into the
 // ordinary CAS outside s.mu, like an ordinary PUT's ingest) with one
 // journal frame carrying its chunk list/size/ETag, under a re-validated
@@ -20919,16 +21147,27 @@ func encodeUploadPartPayload(p journalUploadPartPayload) ([]byte, error) {
 func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ingestResult) (string, error) {
 	etag := hex.EncodeToString(ing.etagMD5[:])
 	uploadedAt := multipartNow().UTC()
-	payload, err := encodeUploadPartPayload(journalUploadPartPayload{
+	record := journalUploadPartPayload{
 		UploadID: uploadID, PartNumber: partNumber, Size: ing.size,
 		ETag: etag, Chunks: ing.chunks, UploadedAt: uploadedAt,
-	})
+	}
+	if s.writeMultipartPages && len(record.Chunks) >= journalPartPageMin {
+		var err error
+		record.Pages, err = s.writeJournalPartPages(record.Chunks, record.Size)
+		if err != nil {
+			return "", err
+		}
+		record.Chunks = nil
+	}
+	payload, err := encodeUploadPartPayload(record)
 	if err != nil {
 		return "", err
 	}
 
 	err = s.submitSerialMutation(func() error {
-		return s.commitPartRecord(bucket, key, uploadID, partNumber, ing, uploadedAt, etag, payload)
+		return s.commitPartRecord(bucket, key, uploadID, &multipartPart{
+			partNumber: partNumber, size: ing.size, etag: etag, chunks: ing.chunks, pages: record.Pages, uploadedAt: uploadedAt,
+		}, payload)
 	})
 	if err != nil {
 		return "", err
@@ -20937,7 +21176,7 @@ func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ing
 	return etag, nil
 }
 
-func (s *Store) commitPartRecord(bucket, key, uploadID string, partNumber int, ing ingestResult, uploadedAt time.Time, etag string, payload []byte) error {
+func (s *Store) commitPartRecord(bucket, key, uploadID string, part *multipartPart, payload []byte) error {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	s.mu.Lock()
@@ -20949,9 +21188,7 @@ func (s *Store) commitPartRecord(bucket, key, uploadID string, partNumber int, i
 	if _, err := s.appendMutationFrameLocked(recordTypeUploadPart, payload); err != nil {
 		return err
 	}
-	up.parts[partNumber] = &multipartPart{
-		partNumber: partNumber, size: ing.size, etag: etag, chunks: ing.chunks, uploadedAt: uploadedAt,
-	}
+	up.parts[part.partNumber] = part
 	return nil
 }
 
@@ -27034,7 +27271,9 @@ type journalRoot struct {
 	ManifestSHA256 string     `json:"manifest_sha256"`
 	UploadID       string     `json:"upload_id"`
 	PartNumber     int        `json:"part_number"`
+	Size           int64      `json:"size"`
 	Chunks         []chunkRef `json:"chunks"`
+	Pages          string     `json:"pages"`
 }
 
 // journalRoots decodes the roots the frames in [start, end) introduce: object
@@ -27055,11 +27294,22 @@ func (s *Store) journalRoots(start, end int64, prev uint64) (mans []journalRoot,
 			return nil
 		}
 		var r journalRoot
-		if err := json.Unmarshal(rec.payload, &r); err != nil {
+		if rec.recType == recordTypePutObjectRootV2 && bytes.HasPrefix(rec.payload, []byte(journalBinPut)) {
+			var p journalPutPayloadV2
+			sum, err := decodeJournalBinPut(rec.payload, &p)
+			if err != nil {
+				return fmt.Errorf("journal frame %d: %w", rec.seq, err)
+			}
+			r = journalRoot{Bucket: p.Bucket, Key: p.Key, ManifestUUID: p.ManifestUUID, ManifestSHA256: hex.EncodeToString(sum[:])}
+		} else if err := json.Unmarshal(rec.payload, &r); err != nil {
 			return fmt.Errorf("journal frame %d: %w", rec.seq, err)
 		}
 		if rec.recType == recordTypeUploadPart {
-			parts = append(parts, &multipartUpload{uploadID: r.UploadID, parts: map[int]*multipartPart{r.PartNumber: {partNumber: r.PartNumber, chunks: r.Chunks}}})
+			refs, err := s.multipartPageRefs(r.Pages, r.Chunks, r.Size)
+			if err != nil {
+				return fmt.Errorf("journal frame %d: %w", rec.seq, err)
+			}
+			parts = append(parts, &multipartUpload{uploadID: r.UploadID, parts: map[int]*multipartPart{r.PartNumber: {partNumber: r.PartNumber, chunks: refs}}})
 		} else {
 			mans = append(mans, r)
 		}
@@ -40924,6 +41174,7 @@ func runServe(args []string) {
 	binaryManifests := fs.Bool("binary-manifests", false, "write binary manifest records with an explicit store feature marker (research)")
 	metadataPages := fs.Bool("metadata-pages", false, "build canonical visible metadata pages when publishing a namespace checkpoint (research)")
 	binaryJournal := fs.Bool("binary-journal", false, "write compact root records inside opt-in J2 groups (research)")
+	multipartPages := fs.Bool("multipart-pages", false, "write immutable multipart chunk-list pages outside opt-in J2 groups (research)")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -41008,7 +41259,8 @@ func runServe(args []string) {
 	}
 	defer lock.release()
 
-	store, err := openStoreWithFeatures(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache, *locatorTags, *binaryJournal)
+	store, err := openStoreWithFeatures(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache, *locatorTags,
+		journalResearch{binary: *binaryJournal, multipartPages: *multipartPages})
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -69741,7 +69993,13 @@ func similarityJournalAdditions(f io.ReaderAt, prior, current authSimilarityStag
 		switch r.recType {
 		case recordTypePutObjectRootV2:
 			var p journalPutPayloadV2
-			if err := json.Unmarshal(r.payload, &p); err != nil {
+			if bytes.HasPrefix(r.payload, []byte(journalBinPut)) {
+				sum, err := decodeJournalBinPut(r.payload, &p)
+				if err != nil {
+					return err
+				}
+				p.ManifestSHA256 = hex.EncodeToString(sum[:])
+			} else if err := json.Unmarshal(r.payload, &p); err != nil {
 				return err
 			}
 			uuid, digest = p.ManifestUUID, p.ManifestSHA256
@@ -89478,7 +89736,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature {
 			return x
 		}
 	}
