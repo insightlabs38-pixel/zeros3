@@ -65402,10 +65402,32 @@ const authMaxAnchors = 1 << 20
 // authWParams bounds the working set: the anchor table follows the base size (one anchor
 // per KiB, 256 Ki to 1 Mi anchors) and each worker caches 2 MiB of base pages.
 func authWParams(workers int, baseSize int64) dwDcoreWParams {
+	return configuredAuthWParams(workers, baseSize, authWindowTuning{})
+}
+
+type authWindowTuning struct {
+	anchorBytes           int
+	windowKiB, segmentKiB int64
+}
+
+func configuredAuthWParams(workers int, baseSize int64, tuning authWindowTuning) dwDcoreWParams {
 	p := dwDcoreDefaultWParams()
 	p.Window, p.Workers, p.CachePages = authWindowSize, workers, 32
 	p.Segment = authSegmentSize
-	p.Anchor.MaxAnchors = int(min(max(baseSize>>10, 256<<10), authMaxAnchors))
+	stride, capAnchors := int64(1<<10), int64(authMaxAnchors)
+	if tuning.anchorBytes > 0 {
+		stride, capAnchors = int64(tuning.anchorBytes), rgMaxAnchors
+	}
+	p.Anchor.MaxAnchors = int(min(max(baseSize/stride, 256<<10), capAnchors))
+	if tuning.windowKiB != 0 {
+		p.Window = tuning.windowKiB << 10
+	}
+	switch {
+	case tuning.segmentKiB < 0:
+		p.Segment = 0
+	case tuning.segmentKiB > 0:
+		p.Segment = tuning.segmentKiB << 10
+	}
 	return p
 }
 
@@ -65954,23 +65976,28 @@ func (w *authPieceWriter) flushPiece() {
 	if len(w.buf) == 0 || w.err != nil {
 		return
 	}
-	if w.err = authFaultAt("pieces-write"); w.err != nil {
-		return
-	}
-	sum, err := w.b.Add(w.buf)
-	if err != nil {
-		w.err = err
-		return
+	var sum [32]byte
+	if w.b == nil {
+		// A planning writer uses the same boundaries without publishing
+		// candidate bytes or taking a CAS lease.
+		sum = sha256.Sum256(w.buf)
+	} else {
+		if w.err = authFaultAt("pieces-write"); w.err != nil {
+			return
+		}
+		if sum, w.err = w.b.Add(w.buf); w.err != nil {
+			return
+		}
 	}
 	w.ps = append(w.ps, authPiece{sum, int64(len(w.buf))})
 	w.n += int64(len(w.buf))
 	w.buf = w.buf[:0]
 }
 
-// finish makes every piece durable and returns them.
+// finish finalizes the pieces and flushes them when writing to CAS.
 func (w *authPieceWriter) finish() ([]authPiece, error) {
 	w.flushPiece()
-	if w.err == nil {
+	if w.err == nil && w.b != nil {
 		w.err = w.b.Flush()
 	}
 	return w.ps, w.err
@@ -67965,6 +67992,76 @@ func (m *authMigrator) deltaAddedBytes(o *authObj, rec *authRecord, blob []byte,
 	return added, nil
 }
 
+// allocatedWindowDelta prices a windowed candidate under the current-store
+// policy. New loose files use the allocation unit. Packed pieces and
+// grouped bodies use the respective record cost for shared files.
+func (m *authMigrator) allocatedWindowDelta(o, base *authObj, rec *authRecord) (int64, error) {
+	var fsInfo syscall.Statfs_t
+	if err := syscall.Statfs(m.s.root, &fsInfo); err != nil {
+		return 0, err
+	}
+	block := int64(fsInfo.Bsize)
+	if block <= 0 {
+		return 0, errors.New("authority: filesystem allocation unit is unavailable")
+	}
+	round := func(n int64) int64 { return (n + block - 1) / block * block }
+	bodyCost := round
+	if m.s.agOn() {
+		bodyCost = agEntryCost
+	}
+	retired := make(map[[32]byte]bool, len(o.man.Chunks))
+	for _, chunk := range o.man.Chunks {
+		sum, err := decodeHexSHA256(chunk.SHA256)
+		if err != nil {
+			return 0, err
+		}
+		retired[sum] = true
+	}
+	var added int64
+	seen := make(map[[32]byte]bool, len(rec.Pieces))
+	for _, piece := range rec.Pieces {
+		if seen[piece.SHA] {
+			continue
+		}
+		seen[piece.SHA] = true
+		refs := m.refs[piece.SHA]
+		if retired[piece.SHA] {
+			refs--
+		}
+		if refs > 0 {
+			continue
+		}
+		if loc, ok := m.s.packLookup(piece.SHA); ok && int64(loc.logical) == piece.Len {
+			added += int64(loc.stored) + packRecordBytes
+			continue
+		}
+		price := round(piece.Len)
+		if info, err := os.Stat(m.s.chunkPath(piece.SHA)); err == nil && info.Size() == piece.Len {
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				price = st.Blocks * 512
+			}
+		}
+		added += price
+	}
+	data, err := rec.marshal()
+	if err != nil {
+		return 0, err
+	}
+	added += bodyCost(int64(len(data)))
+	if !base.hasRec {
+		pin, err := authPinFor(base)
+		if err != nil {
+			return 0, err
+		}
+		data, err := pin.marshal()
+		if err != nil {
+			return 0, err
+		}
+		added += bodyCost(int64(len(data)))
+	}
+	return added, nil
+}
+
 func xdFromDw(ops []dwDcoreOp) []xdOp {
 	out := make([]xdOp, len(ops))
 	var pos int64
@@ -68498,16 +68595,8 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	base := m.s.newAuthObjAtC(bo.man, m.wc)
 	base.ctx = m.ctx
 	defer base.close()
-	wp := authWParams(m.pol.workers(), bo.man.TotalLength)
-	if pol.WindowKiB != 0 {
-		wp.Window = pol.WindowKiB << 10
-	}
-	switch {
-	case pol.SegmentKiB < 0:
-		wp.Segment = 0
-	case pol.SegmentKiB > 0:
-		wp.Segment = pol.SegmentKiB << 10
-	}
+	wp := configuredAuthWParams(pol.workers(), bo.man.TotalLength,
+		authWindowTuning{windowKiB: pol.WindowKiB, segmentKiB: pol.SegmentKiB})
 	defer debug.FreeOSMemory() // the anchor table and page caches are dead once this object is done
 	idx, err := dwDcoreBuildWIndex(base, bo.man.TotalLength, wp.Anchor, wp.Workers, &bo.sha)
 	if err != nil {
@@ -68517,13 +68606,32 @@ func (m *authMigrator) processWindowed(i int, o *authObj, plan AuthPlan, finish 
 	if c := pol.cache; c != nil && c.winAdded[o.sha] != 0 {
 		added = c.winAdded[o.sha]
 	} else {
-		var cw authCountWriter
-		if _, err := dwDcoreWEncode(&cw, tgt, o.man.TotalLength, base, bo.man.TotalLength, idx, wp); err != nil {
+		var count authCountWriter
+		var price authPieceWriter
+		var out io.Writer = &count
+		if pol.PriceCurrentStorage {
+			price.buf = make([]byte, 0, xdPieceSize)
+			out = &price
+		}
+		if _, err := dwDcoreWEncode(out, tgt, o.man.TotalLength, base, bo.man.TotalLength, idx, wp); err != nil {
 			return keep("windowed encoding failed: " + err.Error())
 		}
-		added = cw.n + 96 + 160
-		if !bo.hasRec {
-			added += int64(len(bo.man.Chunks)) * 36
+		if pol.PriceCurrentStorage {
+			pieces, err := price.finish()
+			if err != nil {
+				return keep("windowed pricing failed: " + err.Error())
+			}
+			rec := &authRecord{SHA: o.sha, Size: o.man.TotalLength, Gen: 1, Form: authFormDelta, Depth: byte(depth),
+				Sketch: sk, Bases: []xdBaseRef{{bo.sha, bo.man.TotalLength}}, Pieces: pieces}
+			added, err = m.allocatedWindowDelta(o, bo, rec)
+			if err != nil {
+				return keep("windowed pricing failed: " + err.Error())
+			}
+		} else {
+			added = count.n + 96 + 160
+			if !bo.hasRec {
+				added += int64(len(bo.man.Chunks)) * 36
+			}
 		}
 		if c != nil && !pol.Apply {
 			c.winAdded[o.sha] = added
@@ -73852,14 +73960,8 @@ func (g *rgGraph) memOpts(ctx context.Context, m *authMigrator, v int32, cs rgCa
 // (B7: one anchor per AnchorBytes, at most 8 Mi anchors, a 128 MiB table): matching between sparse
 // anchors misses short and shifted matches that the continuation probes cannot reach.
 func (g *rgGraph) wparams(baseSize int64) dwDcoreWParams {
-	wp := authWParams(g.pol.workers(), baseSize)
-	if g.pol.AnchorBytes > 0 {
-		wp.Anchor.MaxAnchors = int(min(max(baseSize/int64(g.pol.AnchorBytes), 256<<10), rgMaxAnchors))
-	}
-	if g.pol.SegmentKiB > 0 {
-		wp.Segment = g.pol.SegmentKiB << 10
-	}
-	return wp
+	return configuredAuthWParams(g.pol.workers(), baseSize,
+		authWindowTuning{anchorBytes: g.pol.AnchorBytes, segmentKiB: max(0, g.pol.SegmentKiB)})
 }
 
 const rgMaxAnchors = 8 << 20
@@ -73900,9 +74002,6 @@ func (g *rgGraph) windowedOpts(ctx context.Context, m *authMigrator, v int32, ca
 			continue
 		}
 		wp := g.wparams(un.size)
-		if g.pol.SegmentKiB > 0 {
-			wp.Segment = g.pol.SegmentKiB << 10
-		}
 		idx, err := dwDcoreBuildWIndex(base, un.size, wp.Anchor, wp.Workers, &un.sha)
 		if err != nil {
 			bclose()

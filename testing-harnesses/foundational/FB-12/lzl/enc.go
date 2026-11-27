@@ -18,26 +18,29 @@ type Params struct {
 	Mode   int
 	Window int  // maximum distance (0: the whole frame)
 	AvgAll bool // price parser: value uncovered bytes at the frame's mean price (default: mean literal price)
+	Model  int  // literal and position contexts, zero selects the archived model
 }
 
 type pair struct{ l, d int32 } // d is the distance (>= 1)
 
 // Encoder reuses its tables between frames; it is not safe for concurrent use.
 type Encoder struct {
-	P     Params
-	m     model
-	rc    rcEnc
-	f     finder
-	cur   []pair
-	nxt   []pair
-	state int
-	reps  [numReps]uint32 // distance - 1
+	P      Params
+	config coderModel
+	m      model
+	rc     rcEnc
+	f      finder
+	cur    []pair
+	nxt    []pair
+	state  int
+	reps   [numReps]uint32 // distance - 1
 	// running price estimates for the price parser (1/16 bit units)
 	spent, coded       uint64
 	litSpent, litCount uint64
 	// optimal parser
-	lp    *lenPrices
-	nodes []optNode
+	lp     *lenPrices
+	nodes  []optNode
+	joined []byte
 }
 
 func NewEncoder(p Params) *Encoder {
@@ -164,13 +167,13 @@ func (f *finder) skip(k int) {
 // ---- emission ----
 
 func (z *Encoder) emitLit(src []byte, i int) {
-	m, ps := &z.m, i&(posStates-1)
+	m, ps := &z.m, i&z.config.positionMask
 	z.rc.bit(&m.isMatch[z.state][ps], 0)
 	var prev byte
 	if i > 0 {
 		prev = src[i-1]
 	}
-	p := &m.lit[litCtx(prev)]
+	p := &m.lit[prev>>z.config.literalShift]
 	if z.state >= 7 {
 		encLitMatched(&z.rc, p, src[i], src[i-int(z.reps[0])-1])
 	} else {
@@ -180,7 +183,7 @@ func (z *Encoder) emitLit(src []byte, i int) {
 }
 
 func (z *Encoder) emitMatch(i, l int, dist int) {
-	m, ps := &z.m, i&(posStates-1)
+	m, ps := &z.m, i&z.config.positionMask
 	z.rc.bit(&m.isMatch[z.state][ps], 1)
 	z.rc.bit(&m.isRep[z.state], 0)
 	encLen(&z.rc, &m.matchLen, uint32(l-minMatch), ps)
@@ -191,7 +194,7 @@ func (z *Encoder) emitMatch(i, l int, dist int) {
 }
 
 func (z *Encoder) emitRep(i, r, l int) {
-	m, ps, s := &z.m, i&(posStates-1), z.state
+	m, ps, s := &z.m, i&z.config.positionMask, z.state
 	z.rc.bit(&m.isMatch[s][ps], 1)
 	z.rc.bit(&m.isRep[s], 1)
 	if r == 0 {
@@ -218,7 +221,7 @@ func (z *Encoder) emitRep(i, r, l int) {
 }
 
 func (z *Encoder) emitShortRep(i int) {
-	m, ps, s := &z.m, i&(posStates-1), z.state
+	m, ps, s := &z.m, i&z.config.positionMask, z.state
 	z.rc.bit(&m.isMatch[s][ps], 1)
 	z.rc.bit(&m.isRep[s], 1)
 	z.rc.bit(&m.isRepG0[s], 0)
@@ -234,8 +237,8 @@ func (z *Encoder) priceLitAt(src []byte, i, state int, rep0 uint32) uint32 {
 	if i > 0 {
 		prev = src[i-1]
 	}
-	p := &m.lit[litCtx(prev)]
-	c := priceBit(m.isMatch[state][i&(posStates-1)], 0)
+	p := &m.lit[prev>>z.config.literalShift]
+	c := priceBit(m.isMatch[state][i&z.config.positionMask], 0)
 	if state >= 7 {
 		return c + priceLitMatched(p, src[i], src[i-int(rep0)-1])
 	}
@@ -243,13 +246,13 @@ func (z *Encoder) priceLitAt(src []byte, i, state int, rep0 uint32) uint32 {
 }
 
 func (z *Encoder) priceMatch(i, state, l, dist int) uint32 {
-	m, ps := &z.m, i&(posStates-1)
+	m, ps := &z.m, i&z.config.positionMask
 	return priceBit(m.isMatch[state][ps], 1) + priceBit(m.isRep[state], 0) +
 		priceLen(&m.matchLen, uint32(l-minMatch), ps) + priceDist(m, uint32(dist-1), lenState(l))
 }
 
 func (z *Encoder) priceRep(i, state, r, l int) uint32 {
-	m, ps := &z.m, i&(posStates-1)
+	m, ps := &z.m, i&z.config.positionMask
 	c := priceBit(m.isMatch[state][ps], 1) + priceBit(m.isRep[state], 1)
 	if r == 0 {
 		c += priceBit(m.isRepG0[state], 0) + priceBit(m.isRep0Long[state][ps], 1)
@@ -265,7 +268,7 @@ func (z *Encoder) priceRep(i, state, r, l int) uint32 {
 }
 
 func (z *Encoder) priceShortRep(i, state int) uint32 {
-	m, ps := &z.m, i&(posStates-1)
+	m, ps := &z.m, i&z.config.positionMask
 	return priceBit(m.isMatch[state][ps], 1) + priceBit(m.isRep[state], 1) +
 		priceBit(m.isRepG0[state], 0) + priceBit(m.isRep0Long[state][ps], 0)
 }
@@ -329,10 +332,15 @@ func (z *Encoder) emit(src []byte, i int, o option) {
 
 // Encode compresses one independent frame. The decoder needs len(src).
 func (z *Encoder) Encode(dst, src []byte) []byte {
-	n := len(src)
+	return z.encodeStream(dst, src, 0)
+}
+
+func (z *Encoder) encodeStream(dst, src []byte, start int) []byte {
 	z.m.reset()
+	z.config = coderModels[min(max(0, z.P.Model), len(coderModels)-1)]
 	z.rc.reset(dst)
 	z.f.reset(src, z.P.Depth, z.P.Nice, z.P.Window)
+	z.f.skip(start)
 	z.state, z.reps = 0, [numReps]uint32{}
 	z.spent, z.coded, z.litSpent, z.litCount = 0, 0, 0, 0
 	if z.lp != nil {
@@ -340,13 +348,12 @@ func (z *Encoder) Encode(dst, src []byte) []byte {
 	}
 	switch z.P.Mode {
 	case ModePrice:
-		z.encodePrice(src)
+		z.encodePrice(src, start)
 	case ModeOpt:
-		z.encodeOpt(src)
+		z.encodeOpt(src, start)
 	default:
-		z.encodeFast(src)
+		z.encodeFast(src, start)
 	}
-	_ = n
 	return z.rc.finish()
 }
 
@@ -372,11 +379,11 @@ func (z *Encoder) repLens(src []byte, i int) (int, int) {
 }
 
 // encodeFast follows LZMA's fast-mode decision rules (GetOptimumFast).
-func (z *Encoder) encodeFast(src []byte) {
+func (z *Encoder) encodeFast(src []byte, start int) {
 	n, nice := len(src), z.P.Nice
 	f := &z.f
 	have := false
-	for i := 0; i < n; {
+	for i := start; i < n; {
 		if !have {
 			z.cur = f.find(z.cur)
 		}
@@ -465,11 +472,11 @@ func (z *Encoder) literalOrShortRep(src []byte, i int) {
 // i+1", both valued as covered*avg - price, where avg is the running price of a
 // literal in this frame (prior 6 bits over 256 literals): the alternative to
 // covering a byte with a match is coding it as a literal.
-func (z *Encoder) encodePrice(src []byte) {
+func (z *Encoder) encodePrice(src []byte, start int) {
 	n, nice := len(src), z.P.Nice
 	f := &z.f
 	have := false
-	for i := 0; i < n; {
+	for i := start; i < n; {
 		if !have {
 			z.cur = f.find(z.cur)
 		}

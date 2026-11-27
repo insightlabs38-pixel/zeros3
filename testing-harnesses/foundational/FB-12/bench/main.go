@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -76,6 +77,7 @@ type result struct {
 	Records              int     `json:"records"`
 	NativeLogicalBytes   int64   `json:"native_logical_bytes"`
 	SelectedRangeRecords int     `json:"selected_range_records"`
+	DictionaryBytes      int     `json:"dictionary_bytes,omitempty"`
 	StoredPayloadBytes   int64   `json:"stored_payload_bytes"`
 	PackBytes            int64   `json:"pack_bytes"`
 	AllocatedBytes       int64   `json:"allocated_bytes"`
@@ -132,7 +134,39 @@ func measurePacks(f framing, stored []payload) (n, allocated int64, packs int, e
 	return
 }
 
-func encodeLane(name string, rows []record) ([]payload, int, error) {
+func trainDictionary(rows []record) []byte {
+	const sample, per = 128, 4
+	count := min(64, len(rows))
+	dictionary := make([]byte, 0, lzl.MaxDictionaryBytes)
+	for i := range count {
+		r := rows[i*len(rows)/count].raw
+		if len(r) <= sample*per {
+			dictionary = append(dictionary, r...)
+			continue
+		}
+		for j := range per {
+			at := (2*j+1)*len(r)/(2*per) - sample/2
+			dictionary = append(dictionary, r[at:at+sample]...)
+		}
+	}
+	return dictionary
+}
+
+func encodeLane(name string, rows []record) ([]payload, int, []byte, error) {
+	name, selector, hasModel := strings.Cut(name, ":")
+	models := []int{0}
+	var dictionary []byte
+	if selector == "best" {
+		models = []int{0, 1, 4}
+	} else if selector == "dict" {
+		dictionary = trainDictionary(rows)
+	} else if hasModel {
+		var err error
+		models[0], err = strconv.Atoi(selector)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+	}
 	mode, depth, nice := lzl.ModeFast, 48, 64
 	switch name {
 	case "deflate6", "blocked4k":
@@ -144,33 +178,55 @@ func encodeLane(name string, rows []record) ([]payload, int, error) {
 	case "optimal-deep":
 		mode, depth, nice = lzl.ModeOpt, 256, 273
 	default:
-		return nil, 0, fmt.Errorf("unknown lane %q", name)
+		return nil, 0, nil, fmt.Errorf("unknown lane %q", name)
 	}
-	e := lzl.NewEncoder(lzl.Params{Mode: mode, Depth: depth, Nice: nice, Window: lzl.MaxRecordBytes})
+	encoders := make([]*lzl.Encoder, len(models))
+	for j, model := range models {
+		encoders[j] = lzl.NewEncoder(lzl.Params{Mode: mode, Depth: depth, Nice: nice, Window: lzl.MaxRecordBytes, Model: model})
+	}
 	out := make([]payload, 0, len(rows))
 	selected := 0
+	usedDictionary := false
 	var scratch []byte
 	for _, r := range rows {
 		best := payload{r.deflate, r.deflateKind}
 		if name == "blocked4k" {
 			best = payload{r.blocks, r.blockKind}
 		} else if name != "deflate6" {
-			encoded, err := e.EncodeRecord(scratch, r.raw)
-			if err != nil && !errors.Is(err, lzl.ErrEncodedRecordTooLarge) {
-				return nil, 0, err
+			for _, e := range encoders {
+				encoded, err := e.EncodeRecord(scratch, r.raw)
+				if err != nil && !errors.Is(err, lzl.ErrEncodedRecordTooLarge) {
+					return nil, 0, nil, err
+				}
+				if err == nil && len(encoded) < len(best.body) && len(encoded) <= len(r.raw)-max(1, len(r.raw)/16) {
+					best = payload{bytes.Clone(encoded), 6}
+				}
+				scratch = encoded
+				if len(dictionary) != 0 {
+					encoded, err = e.EncodeDictionaryRecord(scratch, r.raw, dictionary)
+					if err != nil && !errors.Is(err, lzl.ErrEncodedRecordTooLarge) {
+						return nil, 0, nil, err
+					}
+					if err == nil && len(encoded) < len(best.body) && len(encoded) <= len(r.raw)-max(1, len(r.raw)/16) {
+						best = payload{bytes.Clone(encoded), 7}
+					}
+					scratch = encoded
+				}
 			}
-			if err == nil && len(encoded) < len(best.body) && len(encoded) <= len(r.raw)-max(1, len(r.raw)/16) {
-				best = payload{bytes.Clone(encoded), 6}
+			if best.form == 6 || best.form == 7 {
 				selected++
 			}
-			scratch = encoded
 		}
+		usedDictionary = usedDictionary || best.form == 7
 		out = append(out, best)
 	}
-	return out, selected, nil
+	if !usedDictionary {
+		dictionary = nil
+	}
+	return out, selected, dictionary, nil
 }
 
-func decodeAll(rows []record, stored []payload) error {
+func decodeAll(rows []record, stored []payload, dictionary []byte) error {
 	var decoder lzl.Decoder
 	var flater io.ReadCloser
 	defer func() {
@@ -178,7 +234,7 @@ func decodeAll(rows []record, stored []payload) error {
 			flater.Close()
 		}
 	}()
-	dst := make([]byte, lzl.MaxRecordBytes)
+	dst := make([]byte, lzl.MaxRecordBytes+len(dictionary))
 	reader := bytes.NewReader(nil)
 	for i, r := range rows {
 		p := stored[i]
@@ -198,8 +254,12 @@ func decodeAll(rows []record, stored []payload) error {
 			if _, err := io.ReadFull(flater, out); err != nil || sha256.Sum256(out) != r.sum {
 				return errors.New("DEFLATE record mismatch")
 			}
-		case 6:
-			out, err := decoder.DecodeRecord(dst[:0], p.body, len(r.raw), r.sum)
+		case 6, 7:
+			var context []byte
+			if p.form == 7 {
+				context = dictionary
+			}
+			out, err := decoder.DecodeDictionaryRecord(dst[:0], p.body, len(r.raw), r.sum, context)
 			if err != nil || !bytes.Equal(out, r.raw) {
 				return errors.New("range-coded record mismatch")
 			}
@@ -231,12 +291,18 @@ func main() {
 		}
 		for _, lane := range strings.Split(*selected, ",") {
 			start, cpu := time.Now(), cpuTime()
-			stored, n, err := encodeLane(lane, rows)
+			stored, n, dictionary, err := encodeLane(lane, rows)
 			if err != nil {
 				log.Fatal(err)
 			}
 			res := result{Corpus: strings.TrimSuffix(filepath.Base(path), ".zrc"), Lane: lane,
 				Records: len(rows), SelectedRangeRecords: n}
+			geometry := f
+			if len(dictionary) != 0 {
+				// The production preset layout stores two independent copies.
+				res.DictionaryBytes = 2*(len(dictionary)+f.record+f.index) + 4 // second copy begins with ZSPD
+				geometry.header += res.DictionaryBytes
+			}
 			if lane != "deflate6" && lane != "blocked4k" {
 				res.EncodeWallNS, res.EncodeCPUNS = time.Since(start).Nanoseconds(), (cpuTime() - cpu).Nanoseconds()
 			}
@@ -244,14 +310,14 @@ func main() {
 				res.NativeLogicalBytes += int64(len(r.raw))
 				res.StoredPayloadBytes += int64(len(stored[i].body))
 			}
-			res.PackBytes, res.AllocatedBytes, res.Packs, err = measurePacks(f, stored)
+			res.PackBytes, res.AllocatedBytes, res.Packs, err = measurePacks(geometry, stored)
 			if err != nil {
 				log.Fatal(err)
 			}
 			if lane != "blocked4k" {
 				for range *rounds {
 					start, cpu := time.Now(), cpuTime()
-					if err := decodeAll(rows, stored); err != nil {
+					if err := decodeAll(rows, stored, dictionary); err != nil {
 						log.Fatal(err)
 					}
 					res.DecodeWallNS = append(res.DecodeWallNS, time.Since(start).Nanoseconds())

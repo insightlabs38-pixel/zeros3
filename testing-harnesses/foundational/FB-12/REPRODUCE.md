@@ -28,3 +28,30 @@ Pack byte accounting uses actual files on the workspace overlay.
 The Go and Python decode timings both validate SHA-256 and exact
 input bytes. The initial comparison runs are whole-corpus CPU
 samples with ambient cache.
+
+Additional matched lanes and native delta tests
+
+```sh
+# From testing-harnesses with the same bounded Go build as above.
+GOMAXPROCS=1 /tmp/fb12-range -input /path/to/records -decode-rounds 3 \
+  -lanes fast-deep:best,optimal-deep:best,fast-deep:dict,optimal-deep:dict
+go test -race ./foundational/FB-12/lzl
+GOMAXPROCS=2 go test -run '^$' -fuzz '^FuzzRangeContextPayload$' \
+  -fuzztime=24000x -fuzzminimizetime=0 -parallel=2 ./foundational/FB-12/lzl
+# From the root Go module. Base/target paths follow the C12 and C14
+# fixture sets. Names and SHA-256 are in results/delta-native.txt.
+ZEROS3_FB12_DELTA_INPUTS=/path/to/pairs.json ZEROS3_FB12_XD_PROGRAMS=/path/to/xd \
+  go test -v -count=1 -run '^TestFB12NativeDeltaMatcherMatrix$' .
+ZEROS3_FB12_STRUCTURED=/path/to/c14/final-corpus \
+  go test -v -count=1 -run '^TestFB12StructuralAllocation$' .
+go test -v -count=1 -run '^(TestFB12Windowed|TestFB12SharedWindow|TestAuthorityWindowedDelta|TestAuthorityWindowedMigrationReportsStagingENOSPC|TestC12FastReencode)' .
+```
+
+The pair manifest is an array of `{"name":"family","base":"/local/base","target":"/local/target"}`
+objects. Use `windowed` for the C12 retained 33 MiB windowed control.
+The exporter emits its independent XD programs into the same `.zrc`
+format. Run the Go and xz harnesses on that directory. For the B9/B10
+control, export the three C14 `parquet` and three `sst` versions as two
+corpora, then compare the native allocated store to the distinct-record
+entropy pack measurement. The native store includes metadata and retained
+dependencies, which the record-only pack measurement omits.

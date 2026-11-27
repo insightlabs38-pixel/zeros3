@@ -105,10 +105,33 @@ func priceLitMatched(p *[0x300]prob, sym, match byte) uint32 {
 }
 
 func decLit(d *rcDec, p *[0x300]prob) byte {
+	rng, code, pos := d.rng, d.code, d.pos
+	in := d.in
 	s := uint32(1)
-	for s < 0x100 {
-		s = s<<1 | d.bit(&p[s])
+	for range 8 {
+		at := byte(s)
+		previous := uint32(p[at])
+		bound := (rng >> probBits) * previous
+		zero := uint32((uint64(code) - uint64(bound)) >> 63)
+		mask := uint32(0) - zero
+		code -= bound &^ mask
+		rng = bound&mask | (rng-bound)&^mask
+		up := previous + (1<<probBits-previous)>>moveBits
+		down := previous - previous>>moveBits
+		p[at] = prob(up&mask | down&^mask)
+		if rng < topValue {
+			rng <<= 8
+			code <<= 8
+			if pos < len(in) {
+				code |= uint32(in[pos])
+				pos++
+			} else {
+				d.over++
+			}
+		}
+		s = s<<1 | (zero ^ 1)
 	}
+	d.rng, d.code, d.pos = rng, code, pos
 	return byte(s)
 }
 

@@ -1,0 +1,48 @@
+=== RUN   TestFB12NativeDeltaMatcherMatrix
+=== RUN   TestFB12NativeDeltaMatcherMatrix/typescript
+    zeros3_fb12_delta_test.go:177: base_bytes=22535680 sha256=5af0cc99b81eaea42daae41f273cc82628f8a11c12bfb00962b821853e81c1af target_bytes=22842880 sha256=56e2e3b825cf4a82c36f71b4e6e46fb76e51457593d2d184fc031603d2e80ad0 base_allocated=4493312
+    zeros3_fb12_delta_test.go:201: lane=baseline anchors=363476 retained_index_bytes=16777216 frames=156 envelope=226498 allocated_pack=229376 allocated_record=4096 allocated_total=4726784 encode=102.210704ms
+    zeros3_fb12_delta_test.go:201: lane=size-budget anchors=726765 retained_index_bytes=33554432 frames=156 envelope=207574 allocated_pack=212992 allocated_record=4096 allocated_total=4710400 encode=153.914833ms
+    zeros3_fb12_delta_test.go:201: lane=short-anchors anchors=670145 retained_index_bytes=33554432 frames=156 envelope=218774 allocated_pack=221184 allocated_record=4096 allocated_total=4718592 encode=154.120438ms
+    zeros3_fb12_delta_test.go:201: lane=larger-frames anchors=726765 retained_index_bytes=33554432 frames=42 envelope=186440 allocated_pack=188416 allocated_record=4096 allocated_total=4685824 encode=130.714456ms
+=== RUN   TestFB12NativeDeltaMatcherMatrix/volume
+    zeros3_fb12_delta_test.go:177: base_bytes=8388608 sha256=2899d5c9c9da74ac60fd09d0a40319d141506b5c27fcb143c9c6d9180b22bf0e target_bytes=8388608 sha256=01ee4e1da69638fb2c5bb0d8743d25b67f78d8d815f6507ed482e41285fc53dd base_allocated=3248128
+    zeros3_fb12_delta_test.go:201: lane=baseline anchors=401223 retained_index_bytes=33554432 frames=46 envelope=30470 allocated_pack=32768 allocated_record=4096 allocated_total=3284992 encode=50.227694ms
+    zeros3_fb12_delta_test.go:201: lane=size-budget anchors=802241 retained_index_bytes=67108864 frames=46 envelope=30470 allocated_pack=32768 allocated_record=4096 allocated_total=3284992 encode=206.675409ms
+    zeros3_fb12_delta_test.go:201: lane=short-anchors anchors=802508 retained_index_bytes=67108864 frames=46 envelope=30470 allocated_pack=32768 allocated_record=4096 allocated_total=3284992 encode=86.592469ms
+    zeros3_fb12_delta_test.go:201: lane=larger-frames anchors=802241 retained_index_bytes=67108864 frames=14 envelope=27915 allocated_pack=28672 allocated_record=4096 allocated_total=3280896 encode=72.999055ms
+=== RUN   TestFB12NativeDeltaMatcherMatrix/volume-shift
+    zeros3_fb12_delta_test.go:177: base_bytes=8388608 sha256=01ee4e1da69638fb2c5bb0d8743d25b67f78d8d815f6507ed482e41285fc53dd target_bytes=8388608 sha256=1d9636f72a4a8b3e6aae97060899047ebd222c43ea259feb00ef973ccdf6dd5e base_allocated=3248128
+    zeros3_fb12_delta_test.go:201: lane=baseline anchors=401395 retained_index_bytes=33554432 frames=46 envelope=30610 allocated_pack=32768 allocated_record=4096 allocated_total=3284992 encode=46.042234ms
+    zeros3_fb12_delta_test.go:201: lane=size-budget anchors=802336 retained_index_bytes=67108864 frames=46 envelope=30610 allocated_pack=32768 allocated_record=4096 allocated_total=3284992 encode=102.823461ms
+    zeros3_fb12_delta_test.go:201: lane=short-anchors anchors=802481 retained_index_bytes=67108864 frames=46 envelope=30610 allocated_pack=32768 allocated_record=4096 allocated_total=3284992 encode=75.193186ms
+    zeros3_fb12_delta_test.go:201: lane=larger-frames anchors=802336 retained_index_bytes=67108864 frames=14 envelope=28094 allocated_pack=28672 allocated_record=4096 allocated_total=3280896 encode=80.60853ms
+=== RUN   TestFB12NativeDeltaMatcherMatrix/heldout-httpx
+    zeros3_fb12_delta_test.go:177: base_bytes=911360 sha256=e43e110856971287c8fbf260097b40799b7059b23f841e4d54bdd246c0829cb3 target_bytes=911360 sha256=458fa2289a4d08978e53149a5f4befed0a77d55c140e79d0b8d5f766087f6223 base_allocated=155648
+    zeros3_fb12_delta_test.go:201: lane=baseline anchors=532965 retained_index_bytes=16777216 frames=6 envelope=1911 allocated_pack=4096 allocated_record=4096 allocated_total=163840 encode=16.740109ms
+    zeros3_fb12_delta_test.go:201: lane=size-budget anchors=532965 retained_index_bytes=16777216 frames=6 envelope=1911 allocated_pack=4096 allocated_record=4096 allocated_total=163840 encode=22.974361ms
+    zeros3_fb12_delta_test.go:201: lane=short-anchors anchors=524421 retained_index_bytes=16777216 frames=6 envelope=1918 allocated_pack=4096 allocated_record=4096 allocated_total=163840 encode=22.002157ms
+    zeros3_fb12_delta_test.go:201: lane=larger-frames anchors=532965 retained_index_bytes=16777216 frames=2 envelope=1601 allocated_pack=4096 allocated_record=4096 allocated_total=163840 encode=18.913434ms
+=== RUN   TestFB12NativeDeltaMatcherMatrix/mixed-edits
+    zeros3_fb12_delta_test.go:177: base_bytes=2097152 sha256=2bc89c8114ad318f218004f30bff0e6959cadb949c29ebbfae99037a1f6d171b target_bytes=2105344 sha256=a49b86065a3c07bc4512990027fb4bbefa1d01f2b56c10543c0b4eacadfffc1b base_allocated=2101248
+    zeros3_fb12_delta_test.go:201: lane=baseline anchors=1050104 retained_index_bytes=33554432 frames=2 envelope=8299 allocated_pack=12288 allocated_record=4096 allocated_total=2117632 encode=63.540997ms
+    zeros3_fb12_delta_test.go:201: lane=size-budget anchors=1050104 retained_index_bytes=33554432 frames=2 envelope=8299 allocated_pack=12288 allocated_record=4096 allocated_total=2117632 encode=45.356161ms
+    zeros3_fb12_delta_test.go:201: lane=short-anchors anchors=1049471 retained_index_bytes=33554432 frames=2 envelope=8299 allocated_pack=12288 allocated_record=4096 allocated_total=2117632 encode=59.512588ms
+    zeros3_fb12_delta_test.go:201: lane=larger-frames anchors=1050104 retained_index_bytes=33554432 frames=2 envelope=8299 allocated_pack=12288 allocated_record=4096 allocated_total=2117632 encode=48.276009ms
+=== RUN   TestFB12NativeDeltaMatcherMatrix/windowed
+    zeros3_fb12_delta_test.go:177: base_bytes=34603008 sha256=ee905d0aa6152b40fbfe2bbfd2a6a068e3d2bf16dd31aa301d7b7bdc786388b8 target_bytes=34614272 sha256=63acd4082d3fdc083b9d1436ffb9e637c926987aa674b421caba4adebd33f713 base_allocated=34656256
+    zeros3_fb12_delta_test.go:179: lane=migrate anchors=135345 retained_index_bytes=2097152 frames=34 envelope=16128 allocated_pack=16384 allocated_record=4096 allocated_total=34676736 encode=107.876741ms exact_24_ranges=22.773683ms
+    zeros3_fb12_delta_test.go:179: lane=optimize anchors=4323086 retained_index_bytes=67108864 frames=34 envelope=16128 allocated_pack=16384 allocated_record=4096 allocated_total=34676736 encode=386.118238ms exact_24_ranges=18.728961ms
+    zeros3_fb12_delta_test.go:179: lane=size-budget anchors=1080758 retained_index_bytes=16777216 frames=34 envelope=16128 allocated_pack=16384 allocated_record=4096 allocated_total=34676736 encode=231.846851ms exact_24_ranges=20.064512ms
+    zeros3_fb12_delta_test.go:179: lane=short-anchors anchors=1081706 retained_index_bytes=16777216 frames=34 envelope=16128 allocated_pack=16384 allocated_record=4096 allocated_total=34676736 encode=145.459249ms exact_24_ranges=19.769438ms
+=== NAME  TestFB12NativeDeltaMatcherMatrix
+    zeros3_fb12_delta_test.go:211: independent XD program bytes under record bound=663581 excluded_oversize_bytes=0
+--- PASS: TestFB12NativeDeltaMatcherMatrix (3.68s)
+    --- PASS: TestFB12NativeDeltaMatcherMatrix/typescript (0.98s)
+    --- PASS: TestFB12NativeDeltaMatcherMatrix/volume (0.55s)
+    --- PASS: TestFB12NativeDeltaMatcherMatrix/volume-shift (0.43s)
+    --- PASS: TestFB12NativeDeltaMatcherMatrix/heldout-httpx (0.10s)
+    --- PASS: TestFB12NativeDeltaMatcherMatrix/mixed-edits (0.24s)
+    --- PASS: TestFB12NativeDeltaMatcherMatrix/windowed (1.38s)
+PASS
+ok  	zeros3	3.691s

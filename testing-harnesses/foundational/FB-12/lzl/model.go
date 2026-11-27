@@ -4,7 +4,7 @@ const (
 	numStates   = 12
 	pb          = 2 // position bits for isMatch / length contexts
 	posStates   = 1 << pb
-	lc          = 3 // literal context: high lc bits of the previous byte
+	maxLC       = 4 // literal context: high bits of the previous byte
 	minMatch    = 2
 	maxMatch    = 273
 	numReps     = 4
@@ -16,6 +16,22 @@ const (
 	endPosModel = 14 // slots below this use context-coded footers
 	alignBits   = 4
 )
+
+type coderModel struct {
+	literalShift uint
+	positionMask int
+}
+
+// Index zero preserves the archived stream. The other measurement lanes
+// vary literal and position contexts without changing the match grammar.
+var coderModels = [...]coderModel{
+	{literalShift: 5, positionMask: 3},
+	{literalShift: 5, positionMask: 0},
+	{literalShift: 4, positionMask: 0},
+	{literalShift: 4, positionMask: 3},
+	{literalShift: 6, positionMask: 0},
+	{literalShift: 4, positionMask: 1},
+}
 
 func stateLit(s int) int {
 	switch {
@@ -60,7 +76,7 @@ type model struct {
 	isRepG1    [numStates]prob
 	isRepG2    [numStates]prob
 	isRep0Long [numStates][posStates]prob
-	lit        [1 << lc][0x300]prob
+	lit        [1 << maxLC][0x300]prob
 	slot       [lenStates][1 << slotBits]prob
 	spec       [endPosModel][1 << 6]prob // footers of slots 4..13 (at most 5 bits)
 	align      [1 << alignBits]prob
@@ -68,7 +84,17 @@ type model struct {
 	repLen     lenModel
 }
 
+var initialModel = func() model {
+	var m model
+	m.initialize()
+	return m
+}()
+
 func (m *model) reset() {
+	*m = initialModel
+}
+
+func (m *model) initialize() {
 	fill := func(p []prob) {
 		for i := range p {
 			p[i] = probInit
@@ -101,8 +127,6 @@ func (m *model) reset() {
 		fill(l.high[:])
 	}
 }
-
-func litCtx(prev byte) int { return int(prev >> (8 - lc)) }
 
 // distSlot returns LZMA's slot for d = distance-1.
 func distSlot(d uint32) uint32 {

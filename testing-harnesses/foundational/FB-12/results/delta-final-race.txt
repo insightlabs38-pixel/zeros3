@@ -1,0 +1,22 @@
+=== RUN   TestAuthorityWindowedMigrationReportsStagingENOSPC
+--- PASS: TestAuthorityWindowedMigrationReportsStagingENOSPC (1.11s)
+=== RUN   TestAuthorityWindowedDelta
+    zeros3_authority_test.go:3404: windowed=3 cdc=9456219 final=3462514 (0.366x)
+--- PASS: TestAuthorityWindowedDelta (4.47s)
+=== RUN   TestAuthWindowedProgramValidation
+--- PASS: TestAuthWindowedProgramValidation (0.17s)
+=== RUN   TestC12FastReencodeMatchesAndPublishes
+=== RUN   TestC12FastReencodeMatchesAndPublishes/fast
+=== RUN   TestC12FastReencodeMatchesAndPublishes/retained
+--- PASS: TestC12FastReencodeMatchesAndPublishes (1.77s)
+    --- PASS: TestC12FastReencodeMatchesAndPublishes/fast (0.73s)
+    --- PASS: TestC12FastReencodeMatchesAndPublishes/retained (0.82s)
+=== RUN   TestC12FastReencodeRejectsLargeGap
+--- PASS: TestC12FastReencodeRejectsLargeGap (0.02s)
+=== RUN   TestFB12WindowedDryAllocationMatchesPublication
+    zeros3_fb12_delta_test.go:368: dry writer predicted exactly 65536 local allocated bytes across 3 independent aligned pieces
+--- PASS: TestFB12WindowedDryAllocationMatchesPublication (0.01s)
+=== RUN   TestFB12SharedWindowConfiguration
+--- PASS: TestFB12SharedWindowConfiguration (0.00s)
+PASS
+ok  	zeros3	8.593s

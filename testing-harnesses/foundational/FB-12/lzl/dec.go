@@ -12,13 +12,19 @@ type Decoder struct {
 
 // Decode decodes one independent frame of n bytes into dst (reused when large enough).
 func (z *Decoder) Decode(dst, src []byte, n int) ([]byte, error) {
-	if n < 0 || n > MaxRecordBytes || len(src) > MaxRecordBytes+16 {
+	return z.decode(dst, src, n, coderModels[0], nil)
+}
+
+func (z *Decoder) decode(dst, src []byte, n int, config coderModel, dictionary []byte) ([]byte, error) {
+	if n < 0 || n > MaxRecordBytes || len(src) > MaxRecordBytes+16 || len(dictionary) > MaxDictionaryBytes {
 		return nil, ErrCorrupt
 	}
+	n += len(dictionary)
 	if cap(dst) < n {
 		dst = make([]byte, n)
 	}
 	out := dst[:n]
+	copy(out, dictionary)
 	m := &z.m
 	m.reset()
 	d := &z.rc
@@ -26,15 +32,15 @@ func (z *Decoder) Decode(dst, src []byte, n int) ([]byte, error) {
 	defer func() { d.in = nil }()
 	var reps [numReps]uint32
 	state := 0
-	i := 0
+	i := len(dictionary)
 	for i < n {
-		ps := i & (posStates - 1)
+		ps := i & config.positionMask
 		if d.bit(&m.isMatch[state][ps]) == 0 {
 			var prev byte
 			if i > 0 {
 				prev = out[i-1]
 			}
-			p := &m.lit[litCtx(prev)]
+			p := &m.lit[prev>>config.literalShift]
 			if state >= 7 {
 				if uint64(reps[0]) >= uint64(i) {
 					return nil, ErrCorrupt
@@ -88,12 +94,21 @@ func (z *Decoder) Decode(dst, src []byte, n int) ([]byte, error) {
 			return nil, ErrCorrupt
 		}
 		dist := int(reps[0]) + 1
-		for k := range l { // overlapping copies are legal
-			out[i+k] = out[i+k-dist]
+		if l < 12 {
+			for k := range l {
+				out[i+k] = out[i+k-dist]
+			}
+		} else {
+			// Copy the already-decoded seed and then double its output
+			// prefix. This also handles overlapping repetitions.
+			written := copy(out[i:i+l], out[i-dist:i])
+			for written < l {
+				written += copy(out[i+written:i+l], out[i:i+written])
+			}
 		}
 		i += l
 	}
 	// Bytes past the end read as zeros (the encoder strips trailing zeros), so
 	// overrun is not an error by itself; the record digest decides integrity.
-	return out, nil
+	return out[len(dictionary):], nil
 }

@@ -123,22 +123,20 @@ func (d *rcDec) reset(in []byte) {
 }
 
 func (d *rcDec) bit(p *prob) uint32 {
-	bound := (d.rng >> probBits) * uint32(*p)
-	var b uint32
-	if d.code < bound {
-		d.rng = bound
-		*p += (1<<probBits - *p) >> moveBits
-	} else {
-		d.code -= bound
-		d.rng -= bound
-		*p -= *p >> moveBits
-		b = 1
-	}
+	previous := uint32(*p)
+	bound := (d.rng >> probBits) * previous
+	zero := uint32((uint64(d.code) - uint64(bound)) >> 63)
+	mask := uint32(0) - zero
+	d.code -= bound &^ mask
+	d.rng = bound&mask | (d.rng-bound)&^mask
+	up := previous + (1<<probBits-previous)>>moveBits
+	down := previous - previous>>moveBits
+	*p = prob(up&mask | down&^mask)
 	if d.rng < topValue {
 		d.rng <<= 8
 		d.code = d.code<<8 | d.next()
 	}
-	return b
+	return zero ^ 1
 }
 
 func (d *rcDec) direct(n uint) uint32 {

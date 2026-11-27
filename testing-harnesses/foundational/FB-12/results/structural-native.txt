@@ -1,0 +1,20 @@
+=== RUN   TestFB12StructuralAllocation
+=== RUN   TestFB12StructuralAllocation/parquet
+    zeros3_fb12_delta_test.go:37: version=0 bytes=1937122 sha256=79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718
+    zeros3_fb12_delta_test.go:37: version=1 bytes=1937065 sha256=0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2
+    zeros3_fb12_delta_test.go:37: version=2 bytes=1937002 sha256=7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244
+    zeros3_fb12_delta_test.go:73: lane=cdc allocated=2138112 forms=map[] optimize=300ns
+    zeros3_fb12_delta_test.go:73: lane=b9 allocated=2543616 forms=map[delta:2 rep:1] optimize=1.900028028s
+    zeros3_fb12_delta_test.go:73: lane=b10 allocated=2543616 forms=map[delta:2 rep:1] optimize=2.128907628s
+=== RUN   TestFB12StructuralAllocation/sst
+    zeros3_fb12_delta_test.go:37: version=0 bytes=3738874 sha256=c5cd91aebbde78a34c6ff3f03394c3f86d9375f492ed83347518f420708655b7
+    zeros3_fb12_delta_test.go:37: version=1 bytes=3738797 sha256=3c61e5ca24749f9a5e9ebb9cd5dac838696adfaaa25b5af6db3026c7f18f4744
+    zeros3_fb12_delta_test.go:37: version=2 bytes=3735006 sha256=a27828949025cdc4eab980b96d543fa851e0b2e7828ee28c675d64749e2fa77c
+    zeros3_fb12_delta_test.go:73: lane=cdc allocated=11284480 forms=map[] optimize=220ns
+    zeros3_fb12_delta_test.go:73: lane=b9 allocated=4141056 forms=map[delta:2 pin:1] optimize=2.655347061s
+    zeros3_fb12_delta_test.go:73: lane=b10 allocated=4141056 forms=map[delta:2 pin:1] optimize=2.668290104s
+--- PASS: TestFB12StructuralAllocation (11.80s)
+    --- PASS: TestFB12StructuralAllocation/parquet (5.91s)
+    --- PASS: TestFB12StructuralAllocation/sst (5.89s)
+PASS
+ok  	zeros3	11.803s

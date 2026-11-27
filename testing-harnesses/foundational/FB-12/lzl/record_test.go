@@ -99,3 +99,59 @@ func FuzzRangePayload(f *testing.F) {
 		}
 	})
 }
+
+func TestRecordModelAndDictionaryProvenance(t *testing.T) {
+	rng := rand.New(rand.NewPCG(29, 422))
+	dictionary := make([]byte, MaxDictionaryBytes)
+	for i := range dictionary {
+		dictionary[i] = byte(rng.Uint32())
+	}
+	data := bytes.Clone(dictionary[6500:19500])
+	sum := sha256.Sum256(data)
+	for model := range coderModels {
+		enc := NewEncoder(Params{Mode: ModeFast, Model: model})
+		coded, err := enc.EncodeDictionaryRecord(nil, data, dictionary)
+		if err != nil || len(coded) > len(data)/4 {
+			t.Fatalf("model %d failed to use the known dictionary: %d bytes %v", model, len(coded), err)
+		}
+		var dec Decoder
+		got, err := dec.DecodeDictionaryRecord(nil, coded, len(data), sum, dictionary)
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("model %d exact decode failed: %v", model, err)
+		}
+		bad := bytes.Clone(dictionary)
+		bad[89] ^= 1
+		if _, err := dec.DecodeDictionaryRecord(nil, coded, len(data), sum, bad); err == nil {
+			t.Fatalf("model %d accepted a foreign dictionary", model)
+		}
+		if _, err := dec.DecodeRecord(nil, coded, len(data), sum); err == nil {
+			t.Fatalf("model %d accepted a missing dictionary", model)
+		}
+		coded[0] = coded[0]&0x8f | 0x70
+		if _, err := dec.DecodeDictionaryRecord(nil, coded, len(data), sum, dictionary); err == nil {
+			t.Fatalf("model %d accepted an unknown model", model)
+		}
+	}
+}
+
+func FuzzRangeContextPayload(f *testing.F) {
+	dictionary := bytes.Repeat([]byte("dictionary match"), 32)
+	logical := bytes.Repeat(dictionary, 3)
+	for model := range coderModels {
+		enc := NewEncoder(Params{Mode: ModeFast, Model: model})
+		record, err := enc.EncodeDictionaryRecord(nil, logical, dictionary)
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(record[recordHeaderBytes:], dictionary, uint16(len(logical)), uint8(model))
+	}
+	f.Fuzz(func(t *testing.T, body, dict []byte, logical uint16, id uint8) {
+		n := int(logical) % 4096
+		dict = dict[:min(len(dict), 2048)]
+		var decoder Decoder
+		out, err := decoder.decode(nil, body, n, coderModels[int(id)%len(coderModels)], dict)
+		if err == nil && len(out) != n {
+			t.Fatal("dictionary decoder crossed its output bounds")
+		}
+	})
+}

@@ -1,0 +1,12 @@
+=== RUN   TestFB12ExportRecordCorpora
+    zeros3_fb12_records_test.go:102: input parquet/parquet-0 bytes=1937122 sha256=79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718
+    zeros3_fb12_records_test.go:102: input parquet/parquet-1 bytes=1937065 sha256=0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2
+    zeros3_fb12_records_test.go:102: input parquet/parquet-2 bytes=1937002 sha256=7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244
+    zeros3_fb12_records_test.go:102: input sst/sst-0 bytes=3738874 sha256=c5cd91aebbde78a34c6ff3f03394c3f86d9375f492ed83347518f420708655b7
+    zeros3_fb12_records_test.go:102: input sst/sst-1 bytes=3738797 sha256=3c61e5ca24749f9a5e9ebb9cd5dac838696adfaaa25b5af6db3026c7f18f4744
+    zeros3_fb12_records_test.go:102: input sst/sst-2 bytes=3735006 sha256=a27828949025cdc4eab980b96d543fa851e0b2e7828ee28c675d64749e2fa77c
+    zeros3_fb12_records_test.go:113: corpus parquet distinct_cdc_records=18 logical_bytes=2095591
+    zeros3_fb12_records_test.go:113: corpus sst distinct_cdc_records=169 logical_bytes=11212677
+--- PASS: TestFB12ExportRecordCorpora (1.09s)
+PASS
+ok  	zeros3	1.094s

@@ -62,7 +62,7 @@ type op struct {
 	l, d int32
 }
 
-func (z *Encoder) encodeOpt(src []byte) {
+func (z *Encoder) encodeOpt(src []byte, start int) {
 	n, nice := len(src), z.P.Nice
 	f := &z.f
 	if z.lp == nil {
@@ -74,7 +74,7 @@ func (z *Encoder) encodeOpt(src []byte) {
 	nodes := z.nodes[:optMax+maxMatch+2]
 	var ops []op
 	have := false
-	for i := 0; i < n; {
+	for i := start; i < n; {
 		if z.lp.left <= 0 {
 			z.refreshLenPrices()
 		}
@@ -132,7 +132,7 @@ func (z *Encoder) encodeOpt(src []byte) {
 			pos := i + p
 			st, reps := int(nd.state), nd.reps
 			base := nd.price
-			ps := pos & (posStates - 1)
+			ps := pos & z.config.positionMask
 			relax := func(l int, price uint32, kind uint8, d int) {
 				q := p + l
 				for lenEnd < q {
