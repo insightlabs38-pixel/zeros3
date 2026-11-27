@@ -8,6 +8,7 @@ separate physical, byte-exact, retention, compatibility and recovery evidence.
 - [Prior art and experiments](PRIOR_ART.md)
 - [GF0 native baseline and engine map](GF0/README.md)
 - [GF1 constrained planner and first exact oracle](GF1/README.md)
+- [GF2 compressed query compilation](GF2/README.md)
 
 The baseline corpus manifest pins exact input sizes, digests, order and splits.
 The archive minimum-space lane and CDC fast lane both remain relevant

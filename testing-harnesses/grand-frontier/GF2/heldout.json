@@ -1,0 +1,42 @@
+[
+  {
+    "name": "urllib3-gzip",
+    "split": "held-out",
+    "paths": [
+      "c19/inputs/urllib3-2.2.2.tar.gz",
+      "c19/inputs/urllib3-2.2.3.tar.gz"
+    ],
+    "inputs": [
+      {
+        "name": "c19/inputs/urllib3-2.2.2.tar.gz",
+        "bytes": 292266,
+        "sha256": "dd505485549a7a552833da5e6063639d0d177c04f23bc3864e41e5dc5f612168"
+      },
+      {
+        "name": "c19/inputs/urllib3-2.2.3.tar.gz",
+        "bytes": 300677,
+        "sha256": "e7d814a81dad81e6caf2ec9fdedb284ecc9c73076b62654547cc64ccdcae26e9"
+      }
+    ]
+  },
+  {
+    "name": "typescript-gzip-adjacent",
+    "split": "adjacent-held-out-target",
+    "paths": [
+      "c12/corpus/typescript-gzip/1/package.tgz",
+      "c12/corpus/typescript-gzip/2/package.tgz"
+    ],
+    "inputs": [
+      {
+        "name": "c12/corpus/typescript-gzip/1/package.tgz",
+        "bytes": 4174590,
+        "sha256": "ef67f8d8ad895858024b7339d3e34bf112cae3c5db1f538c3079038b17ae30fa"
+      },
+      {
+        "name": "c12/corpus/typescript-gzip/2/package.tgz",
+        "bytes": 4231797,
+        "sha256": "6826f763112d55de0093fd94a4257cabadf1f40b387757e7c68485fc971e886b"
+      }
+    ]
+  }
+]
