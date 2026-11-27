@@ -1,0 +1,33 @@
+=== RUN   TestFB02_ConcurrentIfUnchangedCommits
+--- PASS: TestFB02_ConcurrentIfUnchangedCommits (0.19s)
+=== RUN   TestFB04ConcurrentRootLinearizability
+=== RUN   TestFB04ConcurrentRootLinearizability/v1
+=== RUN   TestFB04ConcurrentRootLinearizability/grouped
+--- PASS: TestFB04ConcurrentRootLinearizability (0.62s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/v1 (0.28s)
+    --- PASS: TestFB04ConcurrentRootLinearizability/grouped (0.34s)
+=== RUN   TestFB10MultipartFrontierExact
+    zeros3_fb10_publication_test.go:117: signed in-order completion used zero payload reads after reopen; exact 8444327-byte object, 115 native CDC references and layered MD5 ETag
+--- PASS: TestFB10MultipartFrontierExact (2.62s)
+=== RUN   TestFB10MultipartCopyProvenance
+=== RUN   TestFB10MultipartCopyProvenance/fast
+=== RUN   TestFB10MultipartCopyProvenance/unproven
+=== RUN   TestFB10MultipartCopyProvenance/range
+--- PASS: TestFB10MultipartCopyProvenance (1.39s)
+    --- PASS: TestFB10MultipartCopyProvenance/fast (0.02s)
+    --- PASS: TestFB10MultipartCopyProvenance/unproven (0.39s)
+    --- PASS: TestFB10MultipartCopyProvenance/range (0.01s)
+=== RUN   TestFB10MultipartReplacedPredecessorUsesReader
+--- PASS: TestFB10MultipartReplacedPredecessorUsesReader (3.00s)
+=== RUN   TestFB10PublishExactlyOnce
+=== RUN   TestFB10PublishExactlyOnce/legacy
+    zeros3_fb10_publication_test.go:278: one manifest write and journal record for 24 concurrent requests
+=== RUN   TestFB10PublishExactlyOnce/j2
+    zeros3_fb10_publication_test.go:278: one manifest write and journal record for 24 concurrent requests
+--- PASS: TestFB10PublishExactlyOnce (0.19s)
+    --- PASS: TestFB10PublishExactlyOnce/legacy (0.09s)
+    --- PASS: TestFB10PublishExactlyOnce/j2 (0.09s)
+=== RUN   TestFB10MultipartVerifiedManifestGolden
+--- PASS: TestFB10MultipartVerifiedManifestGolden (0.00s)
+PASS
+ok  	zeros3	9.163s

@@ -22950,13 +22950,17 @@ func TestConditionalPutHTTP_UnconditionalPUTUnaffectedByM8F(t *testing.T) {
 // commit-point lock instead of merely being scheduled close together. The
 // previous hook is restored via t.Cleanup.
 func runBarrieredConcurrentPuts(t *testing.T, n int, do func(i int)) {
+	runBarrieredPublications(t, n, hookAfterManifestPublished, do)
+}
+
+func runBarrieredPublications(t *testing.T, n int, point string, do func(i int)) {
 	t.Helper()
 	var arrived sync.WaitGroup
 	arrived.Add(n)
 	releaseCh := make(chan struct{})
 	old := testHook
-	testHook = func(point string) {
-		if point != hookAfterManifestPublished {
+	testHook = func(reached string) {
+		if reached != point {
 			return
 		}
 		arrived.Done()

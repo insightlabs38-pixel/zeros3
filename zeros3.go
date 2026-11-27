@@ -33,6 +33,7 @@ import (
 	"crypto/sha3"
 	"crypto/sha512"
 	"crypto/subtle"
+	"encoding"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
@@ -501,10 +502,12 @@ const (
 	hookCASAfterDirSync             = "cas-after-dir-sync"
 	hookCASAfterFlush               = "cas-after-flush"
 	hookAfterManifestPublished      = "after-manifest-published"
+	hookPublicationPrepared         = "publication-prepared"
 	hookSnapshotDecoded             = "snapshot-decoded" // FB-02 M-A6: each full snapshot read and validation
 	hookAfterJournalWriteBeforeSync = "after-journal-write-before-sync"
 	hookAfterJournalSync            = "after-journal-sync"
 	hookJournalBinActivated         = "journalbin-activated"
+	hookMultipartSourcePayload      = "multipart-source-payload"
 	hookAfterApplyBeforeResponse    = "after-apply-before-response"
 	hookAfterAck                    = "after-ack"
 	// hookBeforeGCDelete fires immediately before destructive GC
@@ -1814,6 +1817,8 @@ type ingestResult struct {
 	size      int64
 	objSHA256 [32]byte
 	etagMD5   [md5.Size]byte // set only when ingestStream is asked for it
+	partProof *multipartPartProof
+	partState []byte // process-local SHA state, which can contain tail bytes
 	// finish, when non-nil, completes the chunk publication ingestStream left
 	// running (ingestOptions.overlapFlush): the chunks are NOT durable CAS
 	// content until it returns nil, and every caller must call it exactly
@@ -8939,6 +8944,7 @@ type manifestV1 struct {
 	Metadata              []metadataKV `json:"metadata"`
 	CreatedAt             time.Time    `json:"created_at"`
 	VersionID             string       `json:"version_id"`
+	VerifiedIngest        bool         `json:"verified_ingest,omitempty"`
 }
 
 const (
@@ -8982,6 +8988,9 @@ func encodeBinaryManifest(m manifestV1) ([]byte, error) {
 	}
 	if m.ObjectSHA256 != "" {
 		out[4] |= 4
+	}
+	if m.VerifiedIngest {
+		out[4] |= 8
 	}
 	binary.LittleEndian.PutUint64(out[8:], uint64(m.TotalLength))
 	for _, text := range []string{m.ManifestUUID, m.VersionID, m.ContentType, m.ETag, string(at)} {
@@ -9072,10 +9081,11 @@ func (r *binaryManifestReader) text() string {
 func decodeBinaryManifest(data []byte) (manifestV1, error) {
 	m := manifestV1{ManifestFormatVersion: manifestFormatVersion, CDCFormatVersion: cdcFormatVersion, HashAlgorithm: "sha256"}
 	if len(data) < manifestBinHeader || len(data) > maxManifestBin || string(data[:4]) != manifestBinMagic ||
-		data[4]&^7 != 0 || !allZero(data[5:8]) || binary.LittleEndian.Uint64(data[8:]) > math.MaxInt64 {
+		data[4]&^15 != 0 || !allZero(data[5:8]) || binary.LittleEndian.Uint64(data[8:]) > math.MaxInt64 {
 		return m, errors.New("manifest binary: invalid header")
 	}
 	flags := data[4]
+	m.VerifiedIngest = flags&8 != 0
 	m.TotalLength = int64(binary.LittleEndian.Uint64(data[8:]))
 	r := binaryManifestReader{rest: data[manifestBinHeader:]}
 	m.ManifestUUID, m.VersionID, m.ContentType, m.ETag = r.text(), r.text(), r.text(), r.text()
@@ -10023,13 +10033,14 @@ type journalCreateMultipartPayload struct {
 // semantics -- the journal is a log of mutations, not of every historical
 // value.
 type journalUploadPartPayload struct {
-	UploadID   string     `json:"upload_id"`
-	PartNumber int        `json:"part_number"`
-	Size       int64      `json:"size"`
-	ETag       string     `json:"etag"`
-	Chunks     []chunkRef `json:"chunks"`
-	Pages      string     `json:"pages,omitempty"`
-	UploadedAt time.Time  `json:"uploaded_at"`
+	UploadID   string              `json:"upload_id"`
+	PartNumber int                 `json:"part_number"`
+	Size       int64               `json:"size"`
+	ETag       string              `json:"etag"`
+	Chunks     []chunkRef          `json:"chunks"`
+	Pages      string              `json:"pages,omitempty"`
+	Proof      *multipartPartProof `json:"sha_frontier,omitempty"`
+	UploadedAt time.Time           `json:"uploaded_at"`
 }
 
 // journalAbortMultipartPayload is the record-type-7 payload: it removes an
@@ -12101,6 +12112,8 @@ type multipartPart struct {
 	etag       string // hex MD5 of this part's bytes, unquoted
 	chunks     []chunkRef
 	pages      string
+	proof      *multipartPartProof
+	state      []byte
 	uploadedAt time.Time
 }
 
@@ -12125,6 +12138,7 @@ type Store struct {
 	writeMetadataPages    bool
 	writeBinaryJournal    bool
 	writeMultipartPages   bool
+	writeMultipartAdopt   bool
 
 	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
 	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
@@ -12335,11 +12349,11 @@ func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, loc
 }
 
 type journalResearch struct {
-	binary, multipartPages bool
+	binary, multipartPages, multipartAdopt bool
 }
 
 func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool, research journalResearch) (*Store, error) {
-	activateJournal := research.binary || research.multipartPages
+	activateJournal := research.binary || research.multipartPages || research.multipartAdopt
 	if activateJournal && !ownSegments {
 		return nil, errors.New("store: journal feature activation requires a writer")
 	}
@@ -12401,6 +12415,13 @@ func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, lo
 			s.Close()
 			return nil, err
 		}
+	}
+	if research.multipartAdopt {
+		if err := s.ensureFeature(multipartAdoptFeature); err != nil {
+			s.Close()
+			return nil, err
+		}
+		s.writeMultipartAdopt = true
 	}
 	return s, nil
 }
@@ -13939,6 +13960,7 @@ type nsPartRec struct {
 	ETag     string
 	Chunks   []chunkRef
 	Pages    string
+	Proof    *multipartPartProof
 	Uploaded time.Time
 }
 
@@ -15132,7 +15154,7 @@ func (s *Store) nsFreeze(publish bool) (*nsSnapshot, error) {
 		rec := nsUploadRec{ID: id, Bucket: u.bucket, Key: u.key, ContentType: u.contentType, Metadata: u.metadata, Created: u.createdAt}
 		for _, n := range slices.Sorted(maps.Keys(u.parts)) {
 			p := u.parts[n]
-			saved := nsPartRec{Number: n, Size: p.size, ETag: p.etag, Pages: p.pages, Uploaded: p.uploadedAt}
+			saved := nsPartRec{Number: n, Size: p.size, ETag: p.etag, Pages: p.pages, Proof: p.proof, Uploaded: p.uploadedAt}
 			if p.pages == "" {
 				saved.Chunks = p.chunks
 			}
@@ -15490,7 +15512,10 @@ func (s *Store) nsAdopt(g *nsGen, journal *os.File, verify func() error) error {
 			if err != nil {
 				return fmt.Errorf("%w: multipart page: %v", errCheckpointBody, err)
 			}
-			u.parts[p.Number] = &multipartPart{partNumber: p.Number, size: p.Size, etag: p.ETag, chunks: refs, pages: p.Pages, uploadedAt: p.Uploaded}
+			if err := s.validateMultipartProof(p.Number, p.Proof); err != nil {
+				return fmt.Errorf("%w: %v", errCheckpointBody, err)
+			}
+			u.parts[p.Number] = &multipartPart{partNumber: p.Number, size: p.Size, etag: p.ETag, chunks: refs, pages: p.Pages, proof: p.Proof, uploadedAt: p.Uploaded}
 		}
 		uploads[r.ID] = u
 	}
@@ -16275,8 +16300,11 @@ func (s *Store) applyRecord(rec journalRecord) error {
 		if err != nil {
 			return fmt.Errorf("seq %d: multipart page: %w", rec.seq, err)
 		}
+		if err := s.validateMultipartProof(p.PartNumber, p.Proof); err != nil {
+			return fmt.Errorf("seq %d: %w", rec.seq, err)
+		}
 		up.parts[p.PartNumber] = &multipartPart{
-			partNumber: p.PartNumber, size: p.Size, etag: p.ETag, chunks: refs, pages: p.Pages, uploadedAt: p.UploadedAt,
+			partNumber: p.PartNumber, size: p.Size, etag: p.ETag, chunks: refs, pages: p.Pages, proof: p.Proof, uploadedAt: p.UploadedAt,
 		}
 	case recordTypeAbortMultipartUpload:
 		var p journalAbortMultipartPayload
@@ -16715,24 +16743,100 @@ func (s *Store) DeleteObject(bucket, key string) error {
 // on disk orphaned: unreachable, immutable, and ordinary GC garbage.
 func (s *Store) commitIngested(bucket, key string, ing ingestResult, contentType string, metadata map[string]string, cond putCondition) (*objectEntry, error) {
 	man := buildManifestV1FromRefs(ing.chunks, ing.size, ing.objSHA256, hex.EncodeToString(ing.etagMD5[:]), contentType, metadata)
-	// The manifest does not depend on the chunks being durable yet, only the
-	// journal record does: when the chunk publication is still running, the
-	// two barriers overlap and the journal commit waits for both.
-	manUUID, manSHA, err := s.publishManifestJoined(man, &ing)
-	if err != nil {
-		return nil, err
+	man.VerifiedIngest = s.writeMultipartAdopt
+	intent := publicationIntent{bucket: bucket, key: key, man: man, ingested: &ing, prepare: func() { s.maybeBuildRep(man) }}
+	if !cond.isZero() {
+		intent.check = cond.check
 	}
-	fireTestHook(hookAfterManifestPublished)
-	s.maybeBuildRep(man)
-
-	var entry *objectEntry
-	if cond.isZero() {
-		entry, err = s.commitObjectRoot(bucket, key, manUUID, manSHA, man)
-	} else {
-		entry, err = s.commitObjectRootChecked(bucket, key, manUUID, manSHA, man, cond.check)
-	}
+	entry, _, err := s.publish(intent)
 	if err == nil {
 		s.repAfterCommit(bucket, key, man)
+	}
+	return entry, err
+}
+
+type publicationIntent struct {
+	bucket, key, upload string
+	man                 manifestV1
+	ingested            *ingestResult
+	check               func(*objectEntry, bool) error
+	prepare             func()
+	idempotent          bool
+}
+
+// publish owns the manifest-to-visibility state transition. An idempotent
+// hit can linearize at a read. After a miss, the ordered mutation queue
+// checks equivalence again before staging any manifest, including when
+// racing publishers received the same prepared bytes.
+func (s *Store) publish(i publicationIntent) (*objectEntry, bool, error) {
+	fireTestHook(hookPublicationPrepared)
+	if !i.idempotent {
+		e, err := s.publishNew(i, false)
+		return e, false, err
+	}
+	want := manifestIdentity(&i.man)
+	match := func() (*objectEntry, error) {
+		e, sm, err := s.headServed(i.bucket, i.key)
+		if err != nil {
+			return nil, err
+		}
+		if same, _ := manifestIdentity(&sm.man).match(want); same {
+			return e, nil
+		}
+		return nil, nil
+	}
+	if e, _ := match(); e != nil {
+		return e, true, nil
+	}
+	var entry *objectEntry
+	var unchanged bool
+	err := s.submitSerialMutation(func() error {
+		e, err := match()
+		if err != nil && !errors.Is(err, errNoSuchKey) && !errors.Is(err, errNoSuchBucket) {
+			return err
+		}
+		if e != nil {
+			entry, unchanged = e, true
+			return nil
+		}
+		entry, err = s.publishNew(i, true)
+		return err
+	})
+	if err == nil && !unchanged {
+		fireTestHook(hookAfterApplyBeforeResponse)
+	}
+	return entry, unchanged, err
+}
+
+func (s *Store) publishNew(i publicationIntent, alreadyOrdered bool) (*objectEntry, error) {
+	var id string
+	var sum [32]byte
+	var err error
+	if i.ingested != nil {
+		id, sum, err = s.publishManifestJoined(i.man, i.ingested)
+	} else {
+		id, sum, err = s.publishManifest(i.man)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("manifest publish failed: %w", err)
+	}
+	fireTestHook(hookAfterManifestPublished)
+	if i.prepare != nil {
+		i.prepare()
+	}
+	if alreadyOrdered {
+		return s.commitObjectRootSerialLocked(i.bucket, i.key, id, sum, i.man, i.check)
+	}
+	if i.upload == "" {
+		return s.commitObjectRootChecked(i.bucket, i.key, id, sum, i.man, i.check)
+	}
+	var entry *objectEntry
+	err = s.submitSerialMutation(func() error {
+		entry, err = s.commitMultipartRoot(i.bucket, i.key, i.upload, id, sum, i.man)
+		return err
+	})
+	if err == nil {
+		fireTestHook(hookAfterApplyBeforeResponse)
 	}
 	return entry, err
 }
@@ -19545,7 +19649,7 @@ func (b bodyReader) Read(p []byte) (int, error) {
 // request's declared checksums against the digests accumulated during
 // that same pass. Verification precedes any manifest or journal write, so
 // a payload that fails it is never visible; its chunks are unreachable.
-func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, check payloadCheck, overlap bool) (ingestResult, error) {
+func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, check payloadCheck, overlap bool, tap *multipartHashTap) (ingestResult, error) {
 	if r.ContentLength > maxStreamedBodySize {
 		return ingestResult{}, &http.MaxBytesError{Limit: maxStreamedBodySize}
 	}
@@ -19554,7 +19658,7 @@ func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, che
 	if ck != nil {
 		body = io.TeeReader(body, ck)
 	}
-	ing, err := srv.store.ingestStream(body, true, ingestOptions{size: r.ContentLength, overlapFlush: overlap})
+	ing, err := srv.store.ingestStream(tap.wrap(body), true, ingestOptions{size: r.ContentLength, overlapFlush: overlap})
 	if err != nil {
 		return ingestResult{}, err
 	}
@@ -19562,6 +19666,7 @@ func (srv *Server) ingestRequestBody(w http.ResponseWriter, r *http.Request, che
 		ing.finishIngest() // join the running publication; its chunks stay unreachable
 		return ingestResult{}, err
 	}
+	tap.finish(&ing)
 	return ing, nil
 }
 
@@ -19988,7 +20093,7 @@ func (srv *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucke
 		writeBucketOrInternalError(w, err, resource)
 		return
 	}
-	ing, err := srv.ingestRequestBody(w, r, check, true)
+	ing, err := srv.ingestRequestBody(w, r, check, true, nil)
 	if err != nil {
 		writeRequestError(w, err, resource)
 		return
@@ -20636,16 +20741,13 @@ func (s *Store) CopyObject(req CopyObjectRequest) (*objectEntry, manifestV1, err
 		dstMan.Metadata = sortedMetadataKV(req.Metadata)
 	}
 
-	manUUID, manSHA, err := s.publishManifest(dstMan)
-	if err != nil {
-		return nil, manifestV1{}, fmt.Errorf("copy: manifest publish failed: %w", err)
-	}
-	fireTestHook(hookAfterManifestPublished)
-	deferred := s.rep.q.Load() != nil
-	if s.repMode() != repModeOff && !s.repCloneRoot(srcMan.ManifestUUID, dstMan) {
-		s.maybeBuildRep(dstMan)
-	}
-	entry, err := s.commitObjectRoot(req.DstBucket, req.DstKey, manUUID, manSHA, dstMan)
+	var deferred bool
+	entry, _, err := s.publish(publicationIntent{bucket: req.DstBucket, key: req.DstKey, man: dstMan, prepare: func() {
+		deferred = s.rep.q.Load() != nil
+		if s.repMode() != repModeOff && !s.repCloneRoot(srcMan.ManifestUUID, dstMan) {
+			s.maybeBuildRep(dstMan)
+		}
+	}})
 	if err == nil && deferred && !repHasRootFile(s, dstMan.ManifestUUID) {
 		s.repAfterCommit(req.DstBucket, req.DstKey, dstMan)
 	}
@@ -21140,16 +21242,201 @@ func (s *Store) multipartPageRefs(ref string, inline []chunkRef, size int64) ([]
 	return refs, nil
 }
 
-// commitPart records an already-ingested part (CDC-chunked into the
-// ordinary CAS outside s.mu, like an ordinary PUT's ingest) with one
-// journal frame carrying its chunk list/size/ETag, under a re-validated
-// upload session exactly like commitObjectRoot re-validates its bucket.
+const multipartAdoptFeature = "multipartadopt"
+
+// The part and prefix digests are durable evidence from verified input. A
+// SHA state may contain an unhashed suffix, so it lives only in process memory.
+type multipartPartProof struct {
+	Part    string `json:"part"`
+	Prefix  string `json:"prefix,omitempty"`
+	Parent  string `json:"parent,omitempty"`
+	Aligned bool   `json:"aligned,omitempty"`
+}
+
+func (s *Store) validateMultipartProof(number int, proof *multipartPartProof) error {
+	if proof == nil {
+		return nil
+	}
+	f := s.formatSnapshot()
+	if !slices.Contains(f.Features, multipartAdoptFeature) || !slices.Contains(f.Features, journalGroupFeature) {
+		return errors.New("multipart SHA frontier lacks its format markers")
+	}
+	if _, err := decodeHexSHA256(proof.Part); err != nil {
+		return err
+	}
+	if proof.Prefix == "" && proof.Parent == "" {
+		return nil
+	}
+	if _, err := decodeHexSHA256(proof.Prefix); err != nil {
+		return err
+	}
+	if number == 1 {
+		if proof.Parent != "" || proof.Prefix != proof.Part {
+			return errors.New("first multipart frontier does not prove its exact part")
+		}
+		return nil
+	}
+	_, err := decodeHexSHA256(proof.Parent)
+	return err
+}
+
+type multipartHashTap struct {
+	h      hash.Hash
+	parent string
+	tail   [cdcMaskLookback]byte
+	n      int
+}
+
+func (s *Store) startMultipartHash(bucket, key, upload string, number int) *multipartHashTap {
+	if !s.writeMultipartAdopt {
+		return nil
+	}
+	tap := &multipartHashTap{}
+	if number == 1 {
+		tap.h = sha256.New()
+		return tap
+	}
+	s.mu.Lock()
+	up, err := s.lookupUploadLocked(bucket, key, upload)
+	var prior *multipartPart
+	if err == nil {
+		prior = up.parts[number-1]
+	}
+	s.mu.Unlock()
+	if prior != nil && prior.proof != nil && prior.proof.Aligned && prior.proof.Prefix != "" && len(prior.state) != 0 {
+		h := sha256.New()
+		if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(prior.state); err == nil {
+			tap.h, tap.parent = h, prior.proof.Prefix
+		}
+	}
+	return tap
+}
+
+func (tap *multipartHashTap) Write(p []byte) (int, error) {
+	if tap.h != nil {
+		tap.h.Write(p)
+	}
+	if len(p) >= len(tap.tail) {
+		tap.n = copy(tap.tail[:], p[len(p)-len(tap.tail):])
+	} else {
+		keep := min(tap.n, len(tap.tail)-len(p))
+		copy(tap.tail[:keep], tap.tail[tap.n-keep:tap.n])
+		tap.n = keep + copy(tap.tail[keep:], p)
+	}
+	return len(p), nil
+}
+
+func (tap *multipartHashTap) wrap(r io.Reader) io.Reader {
+	if tap == nil {
+		return r
+	}
+	return io.TeeReader(r, tap)
+}
+
+func (tap *multipartHashTap) finish(ing *ingestResult) {
+	if tap == nil {
+		return
+	}
+	p := &multipartPartProof{Part: hex.EncodeToString(ing.objSHA256[:]), Parent: tap.parent}
+	if len(ing.chunks) != 0 {
+		last := ing.chunks[len(ing.chunks)-1].Length
+		var h uint64
+		for _, b := range tap.tail[:tap.n] {
+			h = (h << 1) + gearTable[b]
+		}
+		mask := uint64(cdcMaskL)
+		if last < cdcTargetChunkSize {
+			mask = cdcMaskS
+		}
+		p.Aligned = last == cdcMaxChunkSize || last >= cdcMinChunkSize && h&mask == 0
+	}
+	if tap.h != nil {
+		p.Prefix = hex.EncodeToString(tap.h.Sum(nil))
+		if p.Aligned {
+			ing.partState, _ = tap.h.(encoding.BinaryMarshaler).MarshalBinary()
+		}
+	}
+	ing.partProof = p
+}
+
+// Part adoption requires a journal-bound manifest written by local CDC and
+// MD5 ingest. A checksum supplied by a peer or a composite ETag is insufficient.
+func (s *Store) adoptMultipartPart(m *servedManifest, number int) (ingestResult, bool) {
+	if !s.writeMultipartAdopt || !m.man.VerifiedIngest {
+		return ingestResult{}, false
+	}
+	md5sum, ok := nsParseETag(m.man.ETag)
+	sum, err := decodeHexSHA256(m.man.ObjectSHA256)
+	if !ok || err != nil {
+		return ingestResult{}, false
+	}
+	for i := range m.chunkCount() {
+		digest := m.sum(i)
+		s.mpin(digest)
+		if size, err := s.casStat(digest); err != nil || size != m.length(i) {
+			return ingestResult{}, false
+		}
+	}
+	proof := &multipartPartProof{Part: m.man.ObjectSHA256}
+	if number == 1 {
+		proof.Prefix = proof.Part
+	}
+	return ingestResult{chunks: m.manifest().Chunks, size: m.man.TotalLength, objSHA256: sum, etagMD5: md5sum, partProof: proof}, true
+}
+
+func (s *Store) provenMultipart(parts []*multipartPart, object payloadCheck) (ingestResult, bool) {
+	if !s.writeMultipartAdopt || s.repMode() != repModeOff || object.algo != checksumNone && object.algo != checksumSHA256 || object.md5 != nil {
+		return ingestResult{}, false
+	}
+	var prior string
+	for i, part := range parts {
+		if part.proof == nil {
+			return ingestResult{}, false
+		}
+		if len(parts) == 1 {
+			prior = part.proof.Part
+			break
+		}
+		if part.partNumber != i+1 || part.proof.Prefix == "" || part.proof.Parent != prior || i < len(parts)-1 && !part.proof.Aligned {
+			return ingestResult{}, false
+		}
+		prior = part.proof.Prefix
+	}
+	sum, err := decodeHexSHA256(prior)
+	if err != nil {
+		return ingestResult{}, false
+	}
+	res := ingestResult{chunks: []chunkRef{}, objSHA256: sum}
+	for _, part := range parts {
+		var length int64
+		for _, ref := range part.chunks {
+			digest, err := decodeHexSHA256(ref.SHA256)
+			if err != nil {
+				return ingestResult{}, false
+			}
+			s.mpin(digest)
+			if size, err := s.casStat(digest); err != nil || size != ref.Length || size > math.MaxInt64-length {
+				return ingestResult{}, false
+			}
+			length += ref.Length
+		}
+		if length != part.size || length > math.MaxInt64-res.size {
+			return ingestResult{}, false
+		}
+		res.chunks = append(res.chunks, part.chunks...)
+		res.size += length
+	}
+	return res, true
+}
+
+// commitPart records an already-ingested part under a re-validated upload
+// session. Its immutable chunks are already durable when this runs.
 func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ingestResult) (string, error) {
 	etag := hex.EncodeToString(ing.etagMD5[:])
 	uploadedAt := multipartNow().UTC()
 	record := journalUploadPartPayload{
 		UploadID: uploadID, PartNumber: partNumber, Size: ing.size,
-		ETag: etag, Chunks: ing.chunks, UploadedAt: uploadedAt,
+		ETag: etag, Chunks: ing.chunks, Proof: ing.partProof, UploadedAt: uploadedAt,
 	}
 	if s.writeMultipartPages && len(record.Chunks) >= journalPartPageMin {
 		var err error
@@ -21166,7 +21453,8 @@ func (s *Store) commitPart(bucket, key, uploadID string, partNumber int, ing ing
 
 	err = s.submitSerialMutation(func() error {
 		return s.commitPartRecord(bucket, key, uploadID, &multipartPart{
-			partNumber: partNumber, size: ing.size, etag: etag, chunks: ing.chunks, pages: record.Pages, uploadedAt: uploadedAt,
+			partNumber: partNumber, size: ing.size, etag: etag, chunks: ing.chunks, pages: record.Pages,
+			proof: ing.partProof, state: ing.partState, uploadedAt: uploadedAt,
 		}, payload)
 	})
 	if err != nil {
@@ -21493,6 +21781,7 @@ func (m *multipartReader) Read(p []byte) (int, error) {
 		if int64(len(data)) != ref.Length {
 			return 0, fmt.Errorf("multipart: part %d chunk length mismatch", part.partNumber)
 		}
+		fireTestHook(hookMultipartSourcePayload)
 		m.cur = data
 	}
 	n := copy(p, m.cur)
@@ -21581,23 +21870,23 @@ func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested 
 	metadata := up.metadata
 	s.mu.Unlock()
 
-	// Heavy work, deliberately outside s.mu: a fresh, continuous CDC pass
-	// across every part's already-durable bytes in completion order (see
-	// multipartReader/ingestStream), never buffering the whole
-	// reconstructed object.
-	mr := &multipartReader{s: s, parts: parts}
-	var total int64
-	for _, p := range parts {
-		total += p.size
-	}
-	var src io.Reader = mr
+	// Without independently established SHA and CDC evidence, traverse the
+	// selected parts in order and build the canonical chunk list again.
+	ing, proven := s.provenMultipart(parts, object)
 	ck := object.checksumHash(true)
-	if ck != nil {
-		src = io.TeeReader(mr, ck)
-	}
-	ing, err := s.ingestStream(src, false, ingestOptions{size: total})
-	if err != nil {
-		return nil, manifestV1{}, fmt.Errorf("multipart: assembling final object failed: %w", err)
+	if !proven {
+		var total int64
+		for _, p := range parts {
+			total += p.size
+		}
+		var src io.Reader = &multipartReader{s: s, parts: parts}
+		if ck != nil {
+			src = io.TeeReader(src, ck)
+		}
+		ing, err = s.ingestStream(src, false, ingestOptions{size: total})
+		if err != nil {
+			return nil, manifestV1{}, fmt.Errorf("multipart: assembling final object failed: %w", err)
+		}
 	}
 	if err := object.verify(ing.objSHA256, ing.etagMD5, object.checksumSum(ck, ing.objSHA256)); err != nil {
 		ing.finishIngest()
@@ -21608,23 +21897,11 @@ func (s *Store) completeMultipartUpload(bucket, key, uploadID string, requested 
 		return nil, manifestV1{}, err
 	}
 	man := buildManifestV1FromRefs(ing.chunks, ing.size, ing.objSHA256, etag, contentType, metadata)
-	manUUID, manSHA, err := s.publishManifest(man)
-	if err != nil {
-		return nil, manifestV1{}, fmt.Errorf("multipart: manifest publish failed: %w", err)
-	}
-	fireTestHook(hookAfterManifestPublished)
-	s.maybeBuildRep(man)
-
-	var entry *objectEntry
-	err = s.submitSerialMutation(func() error {
-		var err error
-		entry, err = s.commitMultipartRoot(bucket, key, uploadID, manUUID, manSHA, man)
-		return err
-	})
+	entry, _, err := s.publish(publicationIntent{bucket: bucket, key: key, upload: uploadID, man: man,
+		prepare: func() { s.maybeBuildRep(man) }})
 	if err != nil {
 		return nil, manifestV1{}, err
 	}
-	fireTestHook(hookAfterApplyBeforeResponse)
 	s.repAfterCommit(bucket, key, man)
 	return entry, man, nil
 }
@@ -21834,7 +22111,8 @@ func (srv *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, buck
 		return
 	}
 
-	ing, err := srv.ingestRequestBody(w, r, check, false)
+	tap := srv.store.startMultipartHash(bucket, key, uploadID, partNumber)
+	ing, err := srv.ingestRequestBody(w, r, check, false, tap)
 	if err != nil {
 		writeRequestError(w, err, "/"+bucket+"/"+key)
 		return
@@ -21865,6 +22143,7 @@ func (r *copyPartReader) Read(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		fireTestHook(hookMultipartSourcePayload)
 		r.pending = data
 	}
 	n := copy(p, r.pending)
@@ -21924,12 +22203,21 @@ func (srv *Server) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, 
 		writeS3Error(w, "EntityTooLarge", "copy part exceeds 5 GiB", resource)
 		return
 	}
-	rd := srv.store.openServedReader(man, rng)
-	defer rd.close()
-	ing, err := srv.store.ingestStream(&copyPartReader{source: rd}, true, ingestOptions{})
-	if err != nil {
-		writeS3Error(w, "InternalError", err.Error(), resource)
-		return
+	var ing ingestResult
+	var adopted bool
+	if rng.start == 0 && rng.end == entry.size-1 {
+		ing, adopted = srv.store.adoptMultipartPart(man, partNumber)
+	}
+	if !adopted {
+		rd := srv.store.openServedReader(man, rng)
+		defer rd.close()
+		tap := srv.store.startMultipartHash(bucket, key, uploadID, partNumber)
+		ing, err = srv.store.ingestStream(tap.wrap(&copyPartReader{source: rd}), true, ingestOptions{})
+		if err != nil {
+			writeS3Error(w, "InternalError", err.Error(), resource)
+			return
+		}
+		tap.finish(&ing)
 	}
 	etag, err := srv.store.commitPart(bucket, key, uploadID, partNumber, ing)
 	if err != nil {
@@ -32911,51 +33199,10 @@ func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequ
 	// when it asks (IfUnchanged), so the default rerun still publishes a new
 	// version (ADR-POL-01 is the owner's call).
 	idempotent := authority || req.IfUnchanged
-	want := manifestIdentity(&man)
-	// The equivalence check runs before anything is written (ADR-PUB-01,
-	// F6-REPL-03): an equivalent current version is returned as it is, with
-	// no manifest, fsync or journal record. Any lookup failure falls through
-	// to the ordinary path, which reports it.
-	if idempotent {
-		if cur, sm, err := srv.store.headServed(s3Bucket, s3Key); err == nil {
-			if same, _ := manifestIdentity(&sm.man).match(want); same {
-				fireTestHook(hookAfterAck)
-				writeSyncJSON(w, http.StatusOK, syncCommitResponse{
-					Bucket: s3Bucket, Key: s3Key, VersionID: cur.manifestUUID, ETag: cur.etag, Size: cur.size, Unchanged: true,
-				})
-				return
-			}
-		}
-	}
-	manUUID, manSHA, err := srv.store.publishManifest(man)
-	if err != nil {
-		writeSyncError(w, http.StatusInternalServerError, "InternalError", err.Error())
-		return
-	}
-	fireTestHook(hookAfterManifestPublished)
-
-	// Safe-mode conflict precondition: ExpectAbsent/ExpectedETag
-	// describe the destination identity the client observed via an
-	// ordinary HEAD before it began negotiating/uploading. Checked here,
-	// inside commitObjectRootChecked's locked critical section, so a
-	// PUT/CopyObject/other sync racing in between negotiation and this
-	// commit can never slip past a now-stale precondition.
+	// The conditional check remains at the actual journal commit point.
 	expectAbsent, expectedETag := req.ExpectAbsent, req.ExpectedETag
-	var equivalent *objectEntry
-	entry, err := srv.store.commitObjectRootChecked(s3Bucket, s3Key, manUUID, manSHA, man, func(cur *objectEntry, exists bool) error {
-		// A writer racing the check above may have published an equivalent
-		// version since; the same rule decides again under the lock. The
-		// manifest written above is then left unreferenced, for GC.
-		if idempotent && exists && cur.size == man.TotalLength && cur.contentType == want.contentType {
-			previous, err := srv.store.readVerifiedManifest(cur.manifestUUID, cur.manifestSHA256)
-			if err != nil {
-				return err
-			}
-			if same, _ := manifestIdentity(&previous).match(want); same {
-				equivalent = cur
-				return errSyncEquivalent
-			}
-		}
+	intent := publicationIntent{bucket: s3Bucket, key: s3Key, man: man, idempotent: idempotent}
+	intent.check = func(cur *objectEntry, exists bool) error {
 		if expectAbsent {
 			if exists {
 				return errSyncConflict
@@ -32966,11 +33213,8 @@ func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequ
 			return errSyncConflict
 		}
 		return nil
-	})
-	unchanged := errors.Is(err, errSyncEquivalent)
-	if unchanged {
-		entry, err = equivalent, nil
 	}
+	entry, unchanged, err := srv.store.publish(intent)
 	if err != nil {
 		switch {
 		case errors.Is(err, errNoSuchBucket):
@@ -32998,7 +33242,6 @@ func (srv *Server) publishSyncManifest(w http.ResponseWriter, req syncCommitRequ
 // errSyncConflict is commitObjectRootChecked's check-function sentinel
 // for a failed safe-mode sync precondition (see handleSyncCommit above).
 var errSyncConflict = errors.New("sync: destination changed since sync began (safe-mode conflict)")
-var errSyncEquivalent = errors.New("sync: equivalent object already published")
 
 // snapshotCreateRequest is POST /_zeros3/v1/snapshot/create's JSON body
 // (A6): the source scope to capture. Prefix is trimmed of leading/
@@ -41125,6 +41368,7 @@ func (s *Store) copyLegacyRoots(dst *Store) error {
 		if hex.EncodeToString(h.Sum(nil)) != m.ObjectSHA256 {
 			return errors.New("legacy copy source whole-object SHA-256 mismatch")
 		}
+		m.VerifiedIngest = false // omit the research provenance in a legacy copy
 		id, digest, err := dst.publishManifest(m)
 		if err != nil {
 			return err
@@ -41258,6 +41502,7 @@ func runServe(args []string) {
 	metadataPages := fs.Bool("metadata-pages", false, "build canonical visible metadata pages when publishing a namespace checkpoint (research)")
 	binaryJournal := fs.Bool("binary-journal", false, "write compact root records inside opt-in J2 groups (research)")
 	multipartPages := fs.Bool("multipart-pages", false, "write immutable multipart chunk-list pages outside opt-in J2 groups (research)")
+	multipartAdopt := fs.Bool("multipart-adopt", false, "retain multipart SHA frontier evidence and adopt verified chunk lists (research)")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -41343,7 +41588,7 @@ func runServe(args []string) {
 	defer lock.release()
 
 	store, err := openStoreWithFeatures(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache, *locatorTags,
-		journalResearch{binary: *binaryJournal, multipartPages: *multipartPages})
+		journalResearch{binary: *binaryJournal, multipartPages: *multipartPages, multipartAdopt: *multipartAdopt})
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -89819,7 +90064,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature && x != multipartAdoptFeature {
 			return x
 		}
 	}

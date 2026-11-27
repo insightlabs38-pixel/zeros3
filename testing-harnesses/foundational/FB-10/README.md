@@ -1,6 +1,6 @@
 # FB-10 · Journal and publication
 
-**In progress.** `serve -binary-journal` activates compact root PUT
+**Partial.** `serve -binary-journal` activates compact root PUT
 records in a J2 store. Exclusive writer ownership is required while
 the feature is active. The reader can replay legacy JSON and compact
 records in the same hash-chained log and still adopts an independently
@@ -69,5 +69,20 @@ covered the lost group and was preserved separately.
 | Journal bytes | 530,199 | 592,009 | 440,419 |
 
 The 32-writer, 32 KiB mixed workload still missed the p99 gate.
+
+`serve -multipart-adopt` records exact part and prefix SHA evidence.
+The signed in-order completion of 8,444,327 bytes read zero payload
+after a reopen and matched the 115 continuous CDC references of PUT.
+The existing multipart ETag was preserved. Whole-object part copy
+adopted a locally verified ordinary PUT with zero payload reads.
+Ranges, missing provenance and replaced predecessors use the reader.
+Midstates stay in memory. Already-established digests survive replay.
+
+Shared publication orders both new and equivalent intents. For 24
+concurrent equivalent intents, each journal mode wrote one manifest
+and one journal record with exact final identity and zero history.
+This measures the publication stage after payload preparation.
+Default durability, cross-segment retirement and hardware crash
+qualification remain open. The queue continues with FB-11 snapshots.
 
 [Reproduction](REPRODUCE.md) · [Evidence](results/)

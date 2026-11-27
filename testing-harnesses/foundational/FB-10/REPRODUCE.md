@@ -43,3 +43,14 @@ For the signed repeat, point `FB10_SIGNED_ARCHIVE` at the pinned C19
 Run `GOMAXPROCS=2 go test -v -run '^TestFB10JournalSignedMixed$' .`
 and retain the `FBJ2 ` JSON lines. The local runner had a two-CPU
 cgroup and workspace overlay. Reopen measurements use ambient cache.
+
+Start an opt-in J2 store with `serve -multipart-adopt` for the SHA
+frontier and source adoption path. Completed known-prefix digests can
+be reused after reopen. Appending after restart requires a new usable
+frontier or falls through to reading the selected parts at completion.
+
+```sh
+GOMAXPROCS=2 go test -run '^(TestFB10Multipart|TestFB10Publish|TestFB02_.+IfUnchanged)' \
+  -count=1 -timeout=95s -v .
+GOMAXPROCS=2 go test -race -run '^(TestFB10Multipart|TestFB10Publish|TestFB02_ConcurrentIfUnchanged)' .
+```

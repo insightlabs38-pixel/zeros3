@@ -126,7 +126,9 @@ func TestFB02_FaultIfUnchangedCommit(t *testing.T) {
 			t.Fatalf("equivalent commit: %d %s", code, body)
 		}
 	})
-	if len(pts) != 1 || pts[0] != hookAfterAck || storeContentFingerprint(t, f.dir) != fp {
+	// The preparation barrier can run without a media mutation. Only the
+	// acknowledgement may follow it for an already-equivalent publication.
+	if len(pts) != 2 || pts[0] != hookPublicationPrepared || pts[1] != hookAfterAck || storeContentFingerprint(t, f.dir) != fp {
 		t.Fatalf("an equivalent idempotent commit reached %v", pts)
 	}
 

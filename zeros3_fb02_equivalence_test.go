@@ -485,7 +485,7 @@ func TestFB02_ConcurrentIfUnchangedCommits(t *testing.T) {
 	const n = 8
 	resps := make([]syncCommitResponse, n)
 	codes := make([]int, n)
-	runBarrieredConcurrentPuts(t, n, func(i int) {
+	runBarrieredPublications(t, n, hookPublicationPrepared, func(i int) {
 		codes[i], resps[i], _ = fb02Commit(t, srv, creds, region, syncCommitRequest{Bucket: "b", Key: "same", Chunks: ca, IfUnchanged: true})
 	})
 	published := 0
@@ -502,7 +502,7 @@ func TestFB02_ConcurrentIfUnchangedCommits(t *testing.T) {
 	}
 
 	// Mixed: idempotent commits of a against ordinary commits of b.
-	runBarrieredConcurrentPuts(t, n, func(i int) {
+	runBarrieredPublications(t, n, hookPublicationPrepared, func(i int) {
 		req := syncCommitRequest{Bucket: "b", Key: "mixed", Chunks: ca, IfUnchanged: true}
 		if i%2 == 1 {
 			req = syncCommitRequest{Bucket: "b", Key: "mixed", Chunks: cb}
