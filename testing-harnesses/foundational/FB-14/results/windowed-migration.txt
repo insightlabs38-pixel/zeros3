@@ -1,0 +1,9 @@
+=== RUN   TestFB14WindowedMigrationControl
+    zeros3_fb14_test.go:226: version=0 logical=34603008 sha256=ee905d0aa6152b40fbfe2bbfd2a6a068e3d2bf16dd31aa301d7b7bdc786388b8
+    zeros3_fb14_test.go:226: version=1 logical=34614272 sha256=63acd4082d3fdc083b9d1436ffb9e637c926987aa674b421caba4adebd33f713
+    zeros3_fb14_test.go:234: form=cdc cdc=34170 added=0 reason="no similar base"
+    zeros3_fb14_test.go:234: form=delta cdc=45434 added=35104 reason=""
+    zeros3_fb14_test.go:251: lane=native-migrate retained_versions=2 total=34766848 packs=34693120 p95_decode_bytes=204464
+--- PASS: TestFB14WindowedMigrationControl (2.66s)
+PASS
+ok  	zeros3	2.686s

@@ -217,3 +217,37 @@ func TestFB14PatchBounds(t *testing.T) {
 		t.Fatal("accepted foreign base")
 	}
 }
+
+func TestFB14WindowedMigrationControl(t *testing.T) {
+	for _, family := range fb14Input(t) {
+		if family.Name != "windowed" {
+			continue
+		}
+		versions := fb14Read(t, family)
+		l := newAuthLab(t)
+		l.s.writeBinaryManifests = true
+		l.put("series", versions[0])
+		l.put("series", versions[1])
+		m := l.man("series")
+		r := l.migrate(AuthPolicy{AllowDelta: true, MaxBases: 1, MaxDepth: 1, MinSaving: .001, MaxReadAmp: -1})
+		for _, p := range r.Plans {
+			t.Logf("form=%s cdc=%d added=%d reason=%q", p.Form, p.CDCBytes, p.AddedBytes, p.Reason)
+		}
+		_, err := l.s.finishAuthorityArchive(context.Background(), 0)
+		mustOK(t, err)
+		for _, row := range historyFor(t, l.s, "b", "series") {
+			fb13CheckVersions(t, l, map[string][]byte{row.versionID: versions[0], "": versions[1]})
+		}
+		var p95 []int64
+		for i := range 48 {
+			off := int64(i*196973) % (m.TotalLength - 4095)
+			n, handled, err := l.s.AuthorityReadCost(m, off, 4096)
+			mustOK(t, err)
+			if handled {
+				p95 = append(p95, n)
+			}
+		}
+		total, packs, _ := fb13Allocation(t, l.dir)
+		t.Logf("lane=native-migrate retained_versions=2 total=%d packs=%d p95_decode_bytes=%d", total, packs, fb14Quantile(p95, 95))
+	}
+}

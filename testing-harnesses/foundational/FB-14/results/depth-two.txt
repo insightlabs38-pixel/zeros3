@@ -1,0 +1,75 @@
+=== RUN   TestFB14ChunkDeltaTwoBasesDeep
+=== RUN   TestFB14ChunkDeltaTwoBasesDeep/x9-series
+    zeros3_fb14_chunkdelta_test.go:407: version=0 logical=7342080 sha256=dd16d8850f9aff2a641d3a2ef4a59ae98ce015c9369160bd75558d4ab0117377
+    zeros3_fb14_chunkdelta_test.go:407: version=1 logical=7352320 sha256=185e6d0a53a848f61333d8a8dfa6bd722c03fd3b2c1f882a61034d3be0913bf1
+    zeros3_fb14_chunkdelta_test.go:407: version=2 logical=7352320 sha256=30955d7b9c7928e325c9863faec4da1fe2c42c90d858920223a106cc815ebae1
+    zeros3_fb14_chunkdelta_test.go:407: version=3 logical=7352320 sha256=1a4d9c28917fd079d45204e0fdb1a46fd8669f3d7e19910e8acb3e71fb27a16f
+    zeros3_fb14_chunkdelta_test.go:407: version=4 logical=7362560 sha256=c7adaadf6e60a39fbdd012fb2d9c2b20a8a42b1eb91a73edba1aeb3605c8b980
+    zeros3_fb14_chunkdelta_test.go:407: version=5 logical=7372800 sha256=19a6847cb05f3b52cfd717b8720314645908960757e401af12347a3cec2118b6
+    zeros3_fb14_chunkdelta_test.go:407: version=6 logical=7383040 sha256=f1c49a6b8a46eed15f7307ea2cb29436b5ddec9ea1cfc44e1706b4511e3ffc12
+    zeros3_fb14_chunkdelta_test.go:407: version=7 logical=7393280 sha256=da72f32e0f3a61c0bc4728241c73ed97deaaddd5b6fb2f886eb38c3692cb58ed
+    zeros3_fb14_chunkdelta_test.go:415: target=8192 chunk_delta=true max_depth=2 ingest_cpu=1.012837s sketch_allocated=114688 matcher_peak=1048576 candidates=1686 dedup_hits=4266
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=8 allocated=3088384 pack_apparent=3086962 manifest_extent=200587 dependency_extents=0 rebuild_extents=0 rows=1237 delta=576 p95_decode_bytes=66642 p95_range_ns=289256
+    zeros3_fb14_chunkdelta_test.go:420: keep-last-4 ingest representations
+    zeros3_fb14_chunkdelta_test.go:421: retained_versions=5 allocated=3002368 pack_apparent=2999702 manifest_extent=125534 dependency_extents=397882 rebuild_extents=0 rows=1168 delta=507 p95_decode_bytes=66642 p95_range_ns=245801
+    zeros3_fb14_chunkdelta_test.go:422: keep-last-4 retention repricing
+    zeros3_fb14_chunkdelta_test.go:423: retained_versions=5 allocated=3051520 pack_apparent=3049812 manifest_extent=125534 dependency_extents=380585 rebuild_extents=84033 rows=1090 delta=412 p95_decode_bytes=52571 p95_range_ns=263026
+    zeros3_fb14_chunkdelta_test.go:415: target=16384 chunk_delta=true max_depth=2 ingest_cpu=1.073697s sketch_allocated=114688 matcher_peak=1048576 candidates=1292 dedup_hits=2012
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=8 allocated=2789376 pack_apparent=2785876 manifest_extent=102595 dependency_extents=0 rebuild_extents=0 rows=769 delta=433 p95_decode_bytes=122031 p95_range_ns=460704
+    zeros3_fb14_chunkdelta_test.go:420: keep-last-4 ingest representations
+    zeros3_fb14_chunkdelta_test.go:421: retained_versions=5 allocated=2740224 pack_apparent=2739341 manifest_extent=64298 dependency_extents=509829 rebuild_extents=0 rows=722 delta=386 p95_decode_bytes=122031 p95_range_ns=456708
+    zeros3_fb14_chunkdelta_test.go:422: keep-last-4 retention repricing
+    zeros3_fb14_chunkdelta_test.go:423: retained_versions=5 allocated=2908160 pack_apparent=2905784 manifest_extent=64298 dependency_extents=551034 rebuild_extents=147464 rows=662 delta=302 p95_decode_bytes=104010 p95_range_ns=463127
+    zeros3_fb14_chunkdelta_test.go:415: target=32768 chunk_delta=true max_depth=2 ingest_cpu=1.070557s sketch_allocated=114688 matcher_peak=1048576 candidates=789 dedup_hits=838
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=8 allocated=2580480 pack_apparent=2579869 manifest_extent=48596 dependency_extents=0 rebuild_extents=0 rows=443 delta=287 p95_decode_bytes=253863 p95_range_ns=889490
+    zeros3_fb14_chunkdelta_test.go:420: keep-last-4 ingest representations
+    zeros3_fb14_chunkdelta_test.go:421: retained_versions=5 allocated=2555904 pack_apparent=2555755 manifest_extent=30385 dependency_extents=679017 rebuild_extents=0 rows=413 delta=257 p95_decode_bytes=253863 p95_range_ns=937092
+    zeros3_fb14_chunkdelta_test.go:422: keep-last-4 retention repricing
+    zeros3_fb14_chunkdelta_test.go:423: retained_versions=5 allocated=2863104 pack_apparent=2860343 manifest_extent=30386 dependency_extents=701898 rebuild_extents=285621 rows=372 delta=198 p95_decode_bytes=253863 p95_range_ns=846836
+=== RUN   TestFB14ChunkDeltaTwoBasesDeep/typescript
+    zeros3_fb14_chunkdelta_test.go:407: version=0 logical=22536704 sha256=3c8bbde7a20c944becbafdc00eb96086a509ffebe1560b3a2faa5261ef379977
+    zeros3_fb14_chunkdelta_test.go:407: version=1 logical=22535680 sha256=5af0cc99b81eaea42daae41f273cc82628f8a11c12bfb00962b821853e81c1af
+    zeros3_fb14_chunkdelta_test.go:407: version=2 logical=22842880 sha256=56e2e3b825cf4a82c36f71b4e6e46fb76e51457593d2d184fc031603d2e80ad0
+    zeros3_fb14_chunkdelta_test.go:415: target=8192 chunk_delta=true max_depth=2 ingest_cpu=2.175196s sketch_allocated=114688 matcher_peak=1048576 candidates=3198 dedup_hits=2938
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=4710400 pack_apparent=4706739 manifest_extent=174210 dependency_extents=0 rebuild_extents=0 rows=2404 delta=1206 p95_decode_bytes=115275 p95_range_ns=397809
+    zeros3_fb14_chunkdelta_test.go:415: target=16384 chunk_delta=true max_depth=2 ingest_cpu=2.263098s sketch_allocated=114688 matcher_peak=1048576 candidates=2085 dedup_hits=1357
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=4231168 pack_apparent=4227885 manifest_extent=90318 dependency_extents=0 rebuild_extents=0 rows=1404 delta=785 p95_decode_bytes=179932 p95_range_ns=546553
+    zeros3_fb14_chunkdelta_test.go:415: target=32768 chunk_delta=true max_depth=2 ingest_cpu=2.190709s sketch_allocated=114688 matcher_peak=1048576 candidates=1447 dedup_hits=596
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=3887104 pack_apparent=3885383 manifest_extent=52338 dependency_extents=0 rebuild_extents=0 rows=832 delta=508 p95_decode_bytes=393216 p95_range_ns=837692
+=== RUN   TestFB14ChunkDeltaTwoBasesDeep/heldout-httpx
+    zeros3_fb14_chunkdelta_test.go:407: version=0 logical=911360 sha256=e43e110856971287c8fbf260097b40799b7059b23f841e4d54bdd246c0829cb3
+    zeros3_fb14_chunkdelta_test.go:407: version=1 logical=911360 sha256=458fa2289a4d08978e53149a5f4befed0a77d55c140e79d0b8d5f766087f6223
+    zeros3_fb14_chunkdelta_test.go:415: target=8192 chunk_delta=true max_depth=2 ingest_cpu=43.307ms sketch_allocated=114688 matcher_peak=1048576 candidates=65 dedup_hits=25
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=2 allocated=192512 pack_apparent=190655 manifest_extent=4649 dependency_extents=0 rebuild_extents=0 rows=87 delta=34 p95_decode_bytes=89495 p95_range_ns=328855
+    zeros3_fb14_chunkdelta_test.go:415: target=16384 chunk_delta=true max_depth=2 ingest_cpu=72.734ms sketch_allocated=114688 matcher_peak=1048576 candidates=41 dedup_hits=11
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=2 allocated=176128 pack_apparent=173454 manifest_extent=2922 dependency_extents=0 rebuild_extents=0 rows=53 delta=23 p95_decode_bytes=180500 p95_range_ns=1195451
+    zeros3_fb14_chunkdelta_test.go:415: target=32768 chunk_delta=true max_depth=2 ingest_cpu=64.003ms sketch_allocated=114688 matcher_peak=1048576 candidates=18 dedup_hits=5
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=2 allocated=167936 pack_apparent=164340 manifest_extent=1841 dependency_extents=0 rebuild_extents=0 rows=29 delta=12 p95_decode_bytes=262144 p95_range_ns=972049
+=== RUN   TestFB14ChunkDeltaTwoBasesDeep/sqlite
+    zeros3_fb14_chunkdelta_test.go:407: version=0 logical=1183744 sha256=9dccd6e427d831a1f10aae8d415d1caa5698e67b4b2b60bf96c705f32f8bf560
+    zeros3_fb14_chunkdelta_test.go:407: version=1 logical=1191936 sha256=6e28edf5e18ce88fd0ea370f222e031c207f2a1b41224ab6c2ed6e74de0e9ca3
+    zeros3_fb14_chunkdelta_test.go:407: version=2 logical=1187840 sha256=3ca34eea56483cb5a8089e0aeb0af7ede5250e00c6c1af6dae391250f3b62a39
+    zeros3_fb14_chunkdelta_test.go:415: target=8192 chunk_delta=true max_depth=2 ingest_cpu=199.962ms sketch_allocated=114688 matcher_peak=1048576 candidates=281 dedup_hits=78
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=450560 pack_apparent=447765 manifest_extent=10070 dependency_extents=0 rebuild_extents=0 rows=176 delta=96 p95_decode_bytes=65536 p95_range_ns=445381
+    zeros3_fb14_chunkdelta_test.go:415: target=16384 chunk_delta=true max_depth=2 ingest_cpu=202.54ms sketch_allocated=114688 matcher_peak=1048576 candidates=143 dedup_hits=38
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=425984 pack_apparent=423930 manifest_extent=5679 dependency_extents=0 rebuild_extents=0 rows=94 delta=53 p95_decode_bytes=131072 p95_range_ns=690345
+    zeros3_fb14_chunkdelta_test.go:415: target=32768 chunk_delta=true max_depth=2 ingest_cpu=150.35ms sketch_allocated=114688 matcher_peak=1048576 candidates=75 dedup_hits=17
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=454656 pack_apparent=452883 manifest_extent=3447 dependency_extents=0 rebuild_extents=0 rows=53 delta=25 p95_decode_bytes=170826 p95_range_ns=734827
+=== RUN   TestFB14ChunkDeltaTwoBasesDeep/parquet
+    zeros3_fb14_chunkdelta_test.go:407: version=0 logical=1937122 sha256=79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718
+    zeros3_fb14_chunkdelta_test.go:407: version=1 logical=1937065 sha256=0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2
+    zeros3_fb14_chunkdelta_test.go:407: version=2 logical=1937002 sha256=7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244
+    zeros3_fb14_chunkdelta_test.go:415: target=8192 chunk_delta=true max_depth=2 ingest_cpu=61.438ms sketch_allocated=114688 matcher_peak=1048576 candidates=114 dedup_hits=405
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=241664 pack_apparent=237891 manifest_extent=9524 dependency_extents=0 rebuild_extents=0 rows=89 delta=60 p95_decode_bytes=98304 p95_range_ns=295465
+    zeros3_fb14_chunkdelta_test.go:415: target=16384 chunk_delta=true max_depth=2 ingest_cpu=79.501ms sketch_allocated=114688 matcher_peak=1048576 candidates=70 dedup_hits=162
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=303104 pack_apparent=299515 manifest_extent=5508 dependency_extents=0 rebuild_extents=0 rows=49 delta=38 p95_decode_bytes=196608 p95_range_ns=566794
+    zeros3_fb14_chunkdelta_test.go:415: target=32768 chunk_delta=true max_depth=2 ingest_cpu=83.576ms sketch_allocated=114688 matcher_peak=1048576 candidates=49 dedup_hits=62
+    zeros3_fb14_chunkdelta_test.go:418: retained_versions=3 allocated=462848 pack_apparent=461547 manifest_extent=3352 dependency_extents=0 rebuild_extents=0 rows=28 delta=22 p95_decode_bytes=393216 p95_range_ns=878143
+--- PASS: TestFB14ChunkDeltaTwoBasesDeep (16.51s)
+    --- PASS: TestFB14ChunkDeltaTwoBasesDeep/x9-series (6.66s)
+    --- PASS: TestFB14ChunkDeltaTwoBasesDeep/typescript (8.49s)
+    --- PASS: TestFB14ChunkDeltaTwoBasesDeep/heldout-httpx (0.29s)
+    --- PASS: TestFB14ChunkDeltaTwoBasesDeep/sqlite (0.68s)
+    --- PASS: TestFB14ChunkDeltaTwoBasesDeep/parquet (0.39s)
+PASS
+ok  	zeros3	16.515s

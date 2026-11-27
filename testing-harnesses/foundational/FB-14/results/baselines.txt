@@ -1,0 +1,73 @@
+=== RUN   TestFB14NativeOptimizedBaselines
+=== RUN   TestFB14NativeOptimizedBaselines/x9-series
+    zeros3_fb14_test.go:54: version=0 logical=7342080 sha256=dd16d8850f9aff2a641d3a2ef4a59ae98ce015c9369160bd75558d4ab0117377
+    zeros3_fb14_test.go:54: version=1 logical=7352320 sha256=185e6d0a53a848f61333d8a8dfa6bd722c03fd3b2c1f882a61034d3be0913bf1
+    zeros3_fb14_test.go:54: version=2 logical=7352320 sha256=30955d7b9c7928e325c9863faec4da1fe2c42c90d858920223a106cc815ebae1
+    zeros3_fb14_test.go:54: version=3 logical=7352320 sha256=1a4d9c28917fd079d45204e0fdb1a46fd8669f3d7e19910e8acb3e71fb27a16f
+    zeros3_fb14_test.go:54: version=4 logical=7362560 sha256=c7adaadf6e60a39fbdd012fb2d9c2b20a8a42b1eb91a73edba1aeb3605c8b980
+    zeros3_fb14_test.go:54: version=5 logical=7372800 sha256=19a6847cb05f3b52cfd717b8720314645908960757e401af12347a3cec2118b6
+    zeros3_fb14_test.go:54: version=6 logical=7383040 sha256=f1c49a6b8a46eed15f7307ea2cb29436b5ddec9ea1cfc44e1706b4511e3ffc12
+    zeros3_fb14_test.go:54: version=7 logical=7393280 sha256=da72f32e0f3a61c0bc4728241c73ed97deaaddd5b6fb2f886eb38c3692cb58ed
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=8 total=9605120 packs=9576448 dependency=0 p95_range_ns=1219587 p95_decode_bytes=262144 optimize_cpu=1µs reclaim_cpu=5.645ms
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=5 total=6791168 packs=6762496 dependency=0 p95_range_ns=1352638 p95_decode_bytes=262144 optimize_cpu=1µs reclaim_cpu=526.205ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=8 total=9605120 packs=9576448 dependency=0 p95_range_ns=2020483 p95_decode_bytes=262144 optimize_cpu=2µs reclaim_cpu=3.404ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=5 total=6791168 packs=6762496 dependency=0 p95_range_ns=1275291 p95_decode_bytes=262144 optimize_cpu=2µs reclaim_cpu=555.279ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=8 total=2539520 packs=2461696 dependency=0 p95_range_ns=1432178 p95_decode_bytes=275433 optimize_cpu=9.36168s reclaim_cpu=248.614ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=5 total=2519040 packs=2453504 dependency=0 p95_range_ns=1279798 p95_decode_bytes=275433 optimize_cpu=9.36168s reclaim_cpu=225.152ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=8 total=2555904 packs=2457600 dependency=0 p95_range_ns=1257485 p95_decode_bytes=276802 optimize_cpu=8.931366s reclaim_cpu=210.293ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=5 total=2535424 packs=2449408 dependency=0 p95_range_ns=2912167 p95_decode_bytes=276802 optimize_cpu=8.931366s reclaim_cpu=216.374ms
+=== RUN   TestFB14NativeOptimizedBaselines/typescript
+    zeros3_fb14_test.go:54: version=0 logical=22536704 sha256=3c8bbde7a20c944becbafdc00eb96086a509ffebe1560b3a2faa5261ef379977
+    zeros3_fb14_test.go:54: version=1 logical=22535680 sha256=5af0cc99b81eaea42daae41f273cc82628f8a11c12bfb00962b821853e81c1af
+    zeros3_fb14_test.go:54: version=2 logical=22842880 sha256=56e2e3b825cf4a82c36f71b4e6e46fb76e51457593d2d184fc031603d2e80ad0
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=3 total=9211904 packs=9187328 dependency=0 p95_range_ns=1055951 p95_decode_bytes=262144 optimize_cpu=1µs reclaim_cpu=5.838ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=3 total=9211904 packs=9187328 dependency=0 p95_range_ns=998795 p95_decode_bytes=262144 optimize_cpu=1µs reclaim_cpu=3.72ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=3 total=4792320 packs=4587520 dependency=0 p95_range_ns=957893 p95_decode_bytes=262144 optimize_cpu=3.544537s reclaim_cpu=451.901ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=3 total=4771840 packs=4734976 dependency=0 p95_range_ns=1629404 p95_decode_bytes=280144 optimize_cpu=8.27143s reclaim_cpu=476.092ms
+=== RUN   TestFB14NativeOptimizedBaselines/typescript-gzip
+    zeros3_fb14_test.go:54: version=0 logical=4174769 sha256=6e954963e7689a13573927021cf1fe2d7f85d7808eba49f03f84cb5d77cdd6bf
+    zeros3_fb14_test.go:54: version=1 logical=4174590 sha256=ef67f8d8ad895858024b7339d3e34bf112cae3c5db1f538c3079038b17ae30fa
+    zeros3_fb14_test.go:54: version=2 logical=4231797 sha256=6826f763112d55de0093fd94a4257cabadf1f40b387757e7c68485fc971e886b
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=3 total=12632064 packs=12607488 dependency=0 p95_range_ns=104428 p95_decode_bytes=142707 optimize_cpu=1µs reclaim_cpu=5.99ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=3 total=12632064 packs=12607488 dependency=0 p95_range_ns=130958 p95_decode_bytes=142707 optimize_cpu=2µs reclaim_cpu=2.639ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=3 total=5222400 packs=5185536 dependency=4694598 p95_range_ns=39210620 p95_decode_bytes=3922226 optimize_cpu=43.032093s reclaim_cpu=355.684ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=3 total=5242880 packs=5206016 dependency=4710259 p95_range_ns=37498159 p95_decode_bytes=1286457 optimize_cpu=43.10578s reclaim_cpu=398.785ms
+=== RUN   TestFB14NativeOptimizedBaselines/heldout-httpx
+    zeros3_fb14_test.go:54: version=0 logical=911360 sha256=e43e110856971287c8fbf260097b40799b7059b23f841e4d54bdd246c0829cb3
+    zeros3_fb14_test.go:54: version=1 logical=911360 sha256=458fa2289a4d08978e53149a5f4befed0a77d55c140e79d0b8d5f766087f6223
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=2 total=319488 packs=294912 dependency=0 p95_range_ns=594972 p95_decode_bytes=167539 optimize_cpu=3µs reclaim_cpu=10.379ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=2 total=319488 packs=294912 dependency=0 p95_range_ns=947638 p95_decode_bytes=167539 optimize_cpu=2µs reclaim_cpu=5.002ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=2 total=188416 packs=155648 dependency=0 p95_range_ns=608176 p95_decode_bytes=167539 optimize_cpu=195.352ms reclaim_cpu=23.718ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=2 total=188416 packs=155648 dependency=0 p95_range_ns=574276 p95_decode_bytes=319178 optimize_cpu=156.744ms reclaim_cpu=26.936ms
+=== RUN   TestFB14NativeOptimizedBaselines/sqlite
+    zeros3_fb14_test.go:54: version=0 logical=1183744 sha256=9dccd6e427d831a1f10aae8d415d1caa5698e67b4b2b60bf96c705f32f8bf560
+    zeros3_fb14_test.go:54: version=1 logical=1191936 sha256=6e28edf5e18ce88fd0ea370f222e031c207f2a1b41224ab6c2ed6e74de0e9ca3
+    zeros3_fb14_test.go:54: version=2 logical=1187840 sha256=3ca34eea56483cb5a8089e0aeb0af7ede5250e00c6c1af6dae391250f3b62a39
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=3 total=655360 packs=630784 dependency=0 p95_range_ns=761658 p95_decode_bytes=209343 optimize_cpu=1µs reclaim_cpu=5.079ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=3 total=655360 packs=630784 dependency=0 p95_range_ns=679163 p95_decode_bytes=209343 optimize_cpu=2µs reclaim_cpu=4.162ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=3 total=319488 packs=258048 dependency=0 p95_range_ns=693464 p95_decode_bytes=552285 optimize_cpu=675.145ms reclaim_cpu=43.094ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=3 total=331776 packs=258048 dependency=0 p95_range_ns=602047 p95_decode_bytes=393686 optimize_cpu=1.77987s reclaim_cpu=33.789ms
+=== RUN   TestFB14NativeOptimizedBaselines/parquet
+    zeros3_fb14_test.go:54: version=0 logical=1937122 sha256=79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718
+    zeros3_fb14_test.go:54: version=1 logical=1937065 sha256=0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2
+    zeros3_fb14_test.go:54: version=2 logical=1937002 sha256=7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=3 total=1253376 packs=1228800 dependency=0 p95_range_ns=812273 p95_decode_bytes=231181 optimize_cpu=2µs reclaim_cpu=6.841ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=3 total=1253376 packs=1228800 dependency=0 p95_range_ns=826835 p95_decode_bytes=231181 optimize_cpu=1µs reclaim_cpu=4.618ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=3 total=634880 packs=598016 dependency=0 p95_range_ns=4747121 p95_decode_bytes=1937002 optimize_cpu=2.479236s reclaim_cpu=59.363ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=3 total=1019904 packs=983040 dependency=0 p95_range_ns=757090 p95_decode_bytes=231181 optimize_cpu=1.368202s reclaim_cpu=29.009ms
+=== RUN   TestFB14NativeOptimizedBaselines/windowed
+    zeros3_fb14_test.go:54: version=0 logical=34603008 sha256=ee905d0aa6152b40fbfe2bbfd2a6a068e3d2bf16dd31aa301d7b7bdc786388b8
+    zeros3_fb14_test.go:54: version=1 logical=34614272 sha256=63acd4082d3fdc083b9d1436ffb9e637c926987aa674b421caba4adebd33f713
+    zeros3_fb14_test.go:136: lane=native-cdc retained_versions=2 total=34766848 packs=34742272 dependency=0 p95_range_ns=221734 p95_decode_bytes=199954 optimize_cpu=1µs reclaim_cpu=6.686ms
+    zeros3_fb14_test.go:136: lane=native-preset retained_versions=2 total=34766848 packs=34742272 dependency=0 p95_range_ns=181293 p95_decode_bytes=199954 optimize_cpu=1µs reclaim_cpu=5.178ms
+    zeros3_fb14_test.go:136: lane=native-archive retained_versions=2 total=34766848 packs=34693120 dependency=0 p95_range_ns=207042 p95_decode_bytes=199954 optimize_cpu=2.360532s reclaim_cpu=230.21ms
+    zeros3_fb14_test.go:136: lane=native-mixed retained_versions=2 total=34766848 packs=34693120 dependency=0 p95_range_ns=194933 p95_decode_bytes=199954 optimize_cpu=2.138626s reclaim_cpu=234.095ms
+--- PASS: TestFB14NativeOptimizedBaselines (138.32s)
+    --- PASS: TestFB14NativeOptimizedBaselines/x9-series (27.72s)
+    --- PASS: TestFB14NativeOptimizedBaselines/typescript (19.29s)
+    --- PASS: TestFB14NativeOptimizedBaselines/typescript-gzip (71.46s)
+    --- PASS: TestFB14NativeOptimizedBaselines/heldout-httpx (0.82s)
+    --- PASS: TestFB14NativeOptimizedBaselines/sqlite (3.21s)
+    --- PASS: TestFB14NativeOptimizedBaselines/parquet (8.67s)
+    --- PASS: TestFB14NativeOptimizedBaselines/windowed (7.14s)
+PASS

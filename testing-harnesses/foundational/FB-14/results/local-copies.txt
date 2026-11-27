@@ -1,0 +1,101 @@
+=== RUN   TestFB14ChunkDeltaPanel
+=== RUN   TestFB14ChunkDeltaPanel/typescript
+    zeros3_fb14_chunkdelta_test.go:440: version=0 logical=22536704 sha256=3c8bbde7a20c944becbafdc00eb96086a509ffebe1560b3a2faa5261ef379977
+    zeros3_fb14_chunkdelta_test.go:440: version=1 logical=22535680 sha256=5af0cc99b81eaea42daae41f273cc82628f8a11c12bfb00962b821853e81c1af
+    zeros3_fb14_chunkdelta_test.go:440: version=2 logical=22842880 sha256=56e2e3b825cf4a82c36f71b4e6e46fb76e51457593d2d184fc031603d2e80ad0
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=false ingest_cpu=538.434ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=2938
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=8658944 pack_apparent=8658922 manifest_extent=174210 dependency_extents=0 rebuild_extents=0 rows=2404 delta=0 p95_decode_bytes=43186 p95_range_ns=193071
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=true ingest_cpu=1.789664s sketch_allocated=114688 matcher_peak=1048576 candidates=2541 dedup_hits=2938
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=4874240 pack_apparent=4870828 manifest_extent=174210 dependency_extents=0 rebuild_extents=0 rows=2404 delta=1196 p95_decode_bytes=86314 p95_range_ns=267413
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=2371584 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=false ingest_cpu=387.351ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=1357
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=8851456 pack_apparent=8847664 manifest_extent=90319 dependency_extents=0 rebuild_extents=0 rows=1404 delta=0 p95_decode_bytes=65536 p95_range_ns=282395
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=true ingest_cpu=1.945357s sketch_allocated=114688 matcher_peak=1048576 candidates=1576 dedup_hits=1357
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=4386816 pack_apparent=4385555 manifest_extent=90319 dependency_extents=0 rebuild_extents=0 rows=1404 delta=771 p95_decode_bytes=131072 p95_range_ns=497850
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=2801664 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=false ingest_cpu=428.696ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=596
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=9089024 pack_apparent=9085524 manifest_extent=52338 dependency_extents=0 rebuild_extents=0 rows=832 delta=0 p95_decode_bytes=131072 p95_range_ns=503649
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=true ingest_cpu=1.863478s sketch_allocated=114688 matcher_peak=1048576 candidates=1083 dedup_hits=596
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=4153344 pack_apparent=4150169 manifest_extent=52338 dependency_extents=0 rebuild_extents=0 rows=832 delta=504 p95_decode_bytes=262144 p95_range_ns=710310
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=3104768 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=false ingest_cpu=414.839ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=282
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=9187328 pack_apparent=9184966 manifest_extent=28290 dependency_extents=0 rebuild_extents=0 rows=478 delta=0 p95_decode_bytes=262144 p95_range_ns=1002701
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=true ingest_cpu=1.399234s sketch_allocated=114688 matcher_peak=1048576 candidates=572 dedup_hits=282
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=3997696 pack_apparent=3997555 manifest_extent=28290 dependency_extents=0 rebuild_extents=0 rows=478 delta=306 p95_decode_bytes=454528 p95_range_ns=1365938
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=3215360 displaced_global_dependency_extents=0
+=== RUN   TestFB14ChunkDeltaPanel/heldout-httpx
+    zeros3_fb14_chunkdelta_test.go:440: version=0 logical=911360 sha256=e43e110856971287c8fbf260097b40799b7059b23f841e4d54bdd246c0829cb3
+    zeros3_fb14_chunkdelta_test.go:440: version=1 logical=911360 sha256=458fa2289a4d08978e53149a5f4befed0a77d55c140e79d0b8d5f766087f6223
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=false ingest_cpu=17.427ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=25
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=319488 pack_apparent=315687 manifest_extent=4650 dependency_extents=0 rebuild_extents=0 rows=87 delta=0 p95_decode_bytes=48168 p95_range_ns=248304
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=true ingest_cpu=50.442ms sketch_allocated=114688 matcher_peak=1048576 candidates=62 dedup_hits=25
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=196608 pack_apparent=192908 manifest_extent=4650 dependency_extents=0 rebuild_extents=0 rows=87 delta=34 p95_decode_bytes=89495 p95_range_ns=284869
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=126976 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=false ingest_cpu=15.701ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=11
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=311296 pack_apparent=309629 manifest_extent=2922 dependency_extents=0 rebuild_extents=0 rows=53 delta=0 p95_decode_bytes=95760 p95_range_ns=419732
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=true ingest_cpu=68.192ms sketch_allocated=114688 matcher_peak=1048576 candidates=38 dedup_hits=11
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=180224 pack_apparent=178898 manifest_extent=2921 dependency_extents=0 rebuild_extents=0 rows=53 delta=23 p95_decode_bytes=180500 p95_range_ns=465912
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=135168 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=false ingest_cpu=13.408ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=5
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=303104 pack_apparent=301772 manifest_extent=1842 dependency_extents=0 rebuild_extents=0 rows=29 delta=0 p95_decode_bytes=131072 p95_range_ns=489738
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=true ingest_cpu=39.787ms sketch_allocated=114688 matcher_peak=1048576 candidates=18 dedup_hits=5
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=167936 pack_apparent=164341 manifest_extent=1842 dependency_extents=0 rebuild_extents=0 rows=29 delta=12 p95_decode_bytes=262144 p95_range_ns=745914
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=143360 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=false ingest_cpu=14.173ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=2
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=294912 pack_apparent=294608 manifest_extent=1266 dependency_extents=0 rebuild_extents=0 rows=16 delta=0 p95_decode_bytes=167539 p95_range_ns=669979
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=true ingest_cpu=39.643ms sketch_allocated=114688 matcher_peak=524288 candidates=11 dedup_hits=2
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=159744 pack_apparent=158183 manifest_extent=1266 dependency_extents=0 rebuild_extents=0 rows=16 delta=7 p95_decode_bytes=335078 p95_range_ns=1074038
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=139264 displaced_global_dependency_extents=0
+=== RUN   TestFB14ChunkDeltaPanel/parquet
+    zeros3_fb14_chunkdelta_test.go:440: version=0 logical=1937122 sha256=79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718
+    zeros3_fb14_chunkdelta_test.go:440: version=1 logical=1937065 sha256=0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2
+    zeros3_fb14_chunkdelta_test.go:440: version=2 logical=1937002 sha256=7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=false ingest_cpu=13.4ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=405
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=548864 pack_apparent=545436 manifest_extent=9525 dependency_extents=0 rebuild_extents=0 rows=89 delta=0 p95_decode_bytes=32768 p95_range_ns=124387
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=true ingest_cpu=58.727ms sketch_allocated=114688 matcher_peak=1048576 candidates=75 dedup_hits=405
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=249856 pack_apparent=247481 manifest_extent=9524 dependency_extents=0 rebuild_extents=0 rows=89 delta=59 p95_decode_bytes=65536 p95_range_ns=191188
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=32768 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=false ingest_cpu=14.175ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=162
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=864256 pack_apparent=863125 manifest_extent=5504 dependency_extents=0 rebuild_extents=0 rows=49 delta=0 p95_decode_bytes=69448 p95_range_ns=365090
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=true ingest_cpu=52.722ms sketch_allocated=114688 matcher_peak=1048576 candidates=42 dedup_hits=162
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=450560 pack_apparent=448111 manifest_extent=5502 dependency_extents=0 rebuild_extents=0 rows=49 delta=37 p95_decode_bytes=131072 p95_range_ns=706855
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=77824 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=false ingest_cpu=13.964ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=62
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=1228800 pack_apparent=1227848 manifest_extent=3352 dependency_extents=0 rebuild_extents=0 rows=28 delta=0 p95_decode_bytes=131072 p95_range_ns=515948
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=true ingest_cpu=49.517ms sketch_allocated=114688 matcher_peak=1048576 candidates=25 dedup_hits=62
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=589824 pack_apparent=589404 manifest_extent=3352 dependency_extents=0 rebuild_extents=0 rows=28 delta=21 p95_decode_bytes=262144 p95_range_ns=916039
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=229376 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=false ingest_cpu=13.911ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=48
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=1228800 pack_apparent=1225691 manifest_extent=2729 dependency_extents=0 rebuild_extents=0 rows=18 delta=0 p95_decode_bytes=231181 p95_range_ns=737361
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=true ingest_cpu=44.481ms sketch_allocated=114688 matcher_peak=524288 candidates=15 dedup_hits=48
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=3 allocated=659456 pack_apparent=657378 manifest_extent=2730 dependency_extents=0 rebuild_extents=0 rows=18 delta=11 p95_decode_bytes=401646 p95_range_ns=1232527
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=229376 displaced_global_dependency_extents=0
+=== RUN   TestFB14ChunkDeltaPanel/windowed
+    zeros3_fb14_chunkdelta_test.go:440: version=0 logical=34603008 sha256=ee905d0aa6152b40fbfe2bbfd2a6a068e3d2bf16dd31aa301d7b7bdc786388b8
+    zeros3_fb14_chunkdelta_test.go:440: version=1 logical=34614272 sha256=63acd4082d3fdc083b9d1436ffb9e637c926987aa674b421caba4adebd33f713
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=false ingest_cpu=102.314ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=4139
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=35323904 pack_apparent=35321796 manifest_extent=298736 dependency_extents=0 rebuild_extents=0 rows=4142 delta=0 p95_decode_bytes=27948 p95_range_ns=132200
+    zeros3_fb14_chunkdelta_test.go:452: target=8192 chunk_delta=true ingest_cpu=438.128ms sketch_allocated=114688 matcher_peak=262144 candidates=5 dedup_hits=4139
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=35311616 pack_apparent=35310803 manifest_extent=298736 dependency_extents=0 rebuild_extents=0 rows=4142 delta=2 p95_decode_bytes=28785 p95_range_ns=33991
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=12288 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=false ingest_cpu=91.937ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=2039
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=34988032 pack_apparent=34985963 manifest_extent=147500 dependency_extents=0 rebuild_extents=0 rows=2041 delta=0 p95_decode_bytes=46965 p95_range_ns=46510
+    zeros3_fb14_chunkdelta_test.go:452: target=16384 chunk_delta=true ingest_cpu=156.289ms sketch_allocated=114688 matcher_peak=524288 candidates=1 dedup_hits=2039
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=34959360 pack_apparent=34957836 manifest_extent=147500 dependency_extents=0 rebuild_extents=0 rows=2041 delta=1 p95_decode_bytes=51317 p95_range_ns=45398
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=28672 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=false ingest_cpu=85.898ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=1044
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=34828288 pack_apparent=34824702 manifest_extent=75860 dependency_extents=0 rebuild_extents=0 rows=1046 delta=0 p95_decode_bytes=84427 p95_range_ns=71027
+    zeros3_fb14_chunkdelta_test.go:452: target=32768 chunk_delta=true ingest_cpu=147.347ms sketch_allocated=114688 matcher_peak=524288 candidates=2 dedup_hits=1044
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=34791424 pack_apparent=34790674 manifest_extent=75858 dependency_extents=0 rebuild_extents=0 rows=1046 delta=1 p95_decode_bytes=84427 p95_range_ns=74763
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=36864 displaced_global_dependency_extents=0
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=false ingest_cpu=193.827ms sketch_allocated=0 matcher_peak=0 candidates=0 dedup_hits=519
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=34738176 pack_apparent=34736502 manifest_extent=38060 dependency_extents=0 rebuild_extents=0 rows=521 delta=0 p95_decode_bytes=199954 p95_range_ns=151318
+    zeros3_fb14_chunkdelta_test.go:452: target=65536 chunk_delta=true ingest_cpu=148.238ms sketch_allocated=114688 matcher_peak=524288 candidates=2 dedup_hits=519
+    zeros3_fb14_chunkdelta_test.go:456: retained_versions=2 allocated=34705408 pack_apparent=34702476 manifest_extent=38060 dependency_extents=0 rebuild_extents=0 rows=521 delta=1 p95_decode_bytes=199954 p95_range_ns=136786
+    zeros3_fb14_chunkdelta_test.go:456: sealed_local_copy_allocation=36864 displaced_global_dependency_extents=0
+--- PASS: TestFB14ChunkDeltaPanel (18.37s)
+    --- PASS: TestFB14ChunkDeltaPanel/typescript (13.32s)
+    --- PASS: TestFB14ChunkDeltaPanel/heldout-httpx (0.54s)
+    --- PASS: TestFB14ChunkDeltaPanel/parquet (0.66s)
+    --- PASS: TestFB14ChunkDeltaPanel/windowed (3.84s)
+PASS

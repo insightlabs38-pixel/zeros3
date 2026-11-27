@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ type fb14Row struct {
 	plain   []byte
 	codec   byte
 	base    int
+	depth   int
 	encoded []byte
 }
 
@@ -35,6 +37,7 @@ type fb14Lab struct {
 	digests   map[[32]byte]int
 	versions  [][]int
 	postings  []fb14Posting
+	maxDepth  int
 	matcher   int64
 	probes    int64
 	reuses    int64
@@ -81,7 +84,7 @@ func (l *fb14Lab) similar(raw []byte, position int, features [4]uint64) []int {
 	candidates := make([]int, 0, len(votes))
 	for id := range votes {
 		row := l.rows[id]
-		if row.base == -1 && len(row.raw)*2 >= len(raw) && len(row.raw) <= 2*len(raw) {
+		if row.depth < l.maxDepth && len(row.raw)*2 >= len(raw) && len(row.raw) <= 2*len(raw) {
 			candidates = append(candidates, id)
 		}
 	}
@@ -126,9 +129,9 @@ func (l *fb14Lab) ingest(raw []byte, target int) error {
 				if err != nil || !bytes.Equal(got, c.raw) {
 					return errors.Join(err, errAuthMismatch)
 				}
-				r.base, r.encoded = candidate, encoded
+				r.base, r.encoded, r.depth = candidate, encoded, base.depth+1
 			}
-			if r.base == -1 {
+			if r.depth < l.maxDepth {
 				for _, f := range features {
 					if f == ^uint64(0) {
 						continue
@@ -153,6 +156,65 @@ type fb14Retention struct {
 	pins   []bool
 }
 
+// localBaseCopies measures the layout penalty if each retained revision
+// seals its own pack and a delta may read bases only from that file.
+// With a depth cap, an external required base can be copied as a leaf.
+func (l *fb14Lab) localBaseCopies(t *testing.T, store *Store, r fb14Retention, from int) (int64, int64) {
+	t.Helper()
+	owner := make([]int, len(l.rows))
+	for i := range owner {
+		owner[i] = -1
+	}
+	for i := from; i < len(l.versions); i++ {
+		for _, id := range l.versions[i] {
+			if owner[id] < 0 {
+				owner[id] = i
+			}
+		}
+	}
+	needed := make([]map[int]bool, len(l.versions))
+	for id, row := range l.rows {
+		if !r.roots[id] || !r.deltas[id] || owner[row.base] == owner[id] {
+			continue
+		}
+		version := owner[id]
+		if needed[version] == nil {
+			needed[version] = make(map[int]bool)
+		}
+		needed[version][row.base] = true
+	}
+	var allocated, displaced int64
+	seen := map[int]bool{}
+	for _, copies := range needed {
+		if len(copies) == 0 {
+			continue
+		}
+		builder, err := store.newPackBuilder(tierHot, nil, len(copies))
+		mustOK(t, err)
+		for id := range copies {
+			row := l.rows[id]
+			builder.addEncoded(row.sum, len(row.raw), row.plain, row.codec)
+			if !seen[id] && r.pins[id] {
+				length := len(row.plain)
+				if r.deltas[id] {
+					length = len(row.encoded)
+				}
+				displaced += int64(length) + packRecordBytes
+			}
+			seen[id] = true
+		}
+		path, _, err := builder.Finish()
+		mustOK(t, err)
+		_, _, err = verifyPackFile(path)
+		mustOK(t, err)
+		info, err := os.Stat(path)
+		mustOK(t, err)
+		allocated += info.Sys().(*syscall.Stat_t).Blocks * 512
+		mustOK(t, os.Remove(path))
+	}
+	return allocated, displaced
+}
+
 func (l *fb14Lab) retention(from int, rewrite bool) fb14Retention {
 	r := fb14Retention{make([]bool, len(l.rows)), make([]bool, len(l.rows)), make([]bool, len(l.rows))}
 	for _, ver := range l.versions[from:] {
@@ -172,12 +234,26 @@ func (l *fb14Lab) retention(from int, rewrite bool) fb14Retention {
 		}
 		// Depth one makes the cost of each pin independent. Quote the
 		// entire base record and refuse a base with a negative group gain.
+		// The retention rewrite either materializes a shared expired
+		// pin as an independent record or materializes its live targets.
 		if rewrite && !r.roots[row.base] && gain[row.base] <= len(l.rows[row.base].plain)+packRecordBytes {
 			continue
 		}
 		r.deltas[id] = true
 		if !r.roots[row.base] {
 			r.pins[row.base] = true
+		}
+	}
+	if !rewrite {
+		for id := len(l.rows) - 1; id >= 0; id-- {
+			if !r.pins[id] || l.rows[id].base < 0 {
+				continue
+			}
+			r.deltas[id] = true
+			base := l.rows[id].base
+			if !r.roots[base] {
+				r.pins[base] = true
+			}
 		}
 	}
 	return r
@@ -200,6 +276,9 @@ func (l *fb14Lab) physical(t *testing.T, store *Store, r fb14Retention, from int
 		case r.deltas[id]:
 			deltas++
 			p.addEncoded(row.sum, len(row.raw), row.encoded, fb14DeltaCodec)
+			if r.pins[id] {
+				dep += int64(len(row.encoded)) + packRecordBytes
+			}
 		default:
 			if r.pins[id] {
 				dep += int64(len(row.plain)) + packRecordBytes
@@ -344,8 +423,15 @@ func (l *fb14Lab) physical(t *testing.T, store *Store, r fb14Retention, from int
 		times = append(times, time.Since(begin).Nanoseconds())
 	}
 	allocated := fi.Sys().(*syscall.Stat_t).Blocks * 512
+	var copies, displaced int64
+	if os.Getenv("ZEROS3_FB14_LOCAL_BASES") == "1" && deltas > 0 {
+		copies, displaced = l.localBaseCopies(t, store, r, from)
+	}
 	t.Logf("retained_versions=%d allocated=%d pack_apparent=%d manifest_extent=%d dependency_extents=%d rebuild_extents=%d rows=%d delta=%d p95_decode_bytes=%d p95_range_ns=%d",
 		len(l.versions)-from, allocated, fi.Size(), manifestBytes, dep, rewriteBytes, len(rowIDs), deltas, fb14Quantile(reads, 95), fb14Quantile(times, 95))
+	if copies > 0 {
+		t.Logf("sealed_local_copy_allocation=%d displaced_global_dependency_extents=%d", copies, displaced)
+	}
 }
 
 func TestFB14ChunkDeltaPanel(t *testing.T) {
@@ -357,6 +443,7 @@ func TestFB14ChunkDeltaPanel(t *testing.T) {
 					l := &fb14Lab{digests: make(map[[32]byte]int), comp: newCompressor(true), patchComp: newCompressor(true)}
 					if delta {
 						l.postings = make([]fb14Posting, 2048)
+						l.maxDepth = 1
 					}
 					cpu := fb13CPU()
 					for _, v := range versions {
@@ -375,6 +462,41 @@ func TestFB14ChunkDeltaPanel(t *testing.T) {
 							l.physical(t, scratch.s, l.retention(from, true), from, versions)
 						}
 					}
+				}
+			}
+		})
+	}
+}
+
+func TestFB14ChunkDeltaDepth(t *testing.T) {
+	depth := 2
+	if value := os.Getenv("ZEROS3_FB14_DEPTH"); value != "" {
+		var err error
+		depth, err = strconv.Atoi(value)
+		mustOK(t, err)
+		if depth < 2 || depth > 4 {
+			t.Fatal("research depth must be 2, 3 or 4")
+		}
+	}
+	for _, family := range fb14Input(t) {
+		t.Run(family.Name, func(t *testing.T) {
+			versions := fb14Read(t, family)
+			for _, target := range []int{8 << 10, 16 << 10, 32 << 10} {
+				l := &fb14Lab{digests: make(map[[32]byte]int), comp: newCompressor(true),
+					patchComp: newCompressor(true), postings: make([]fb14Posting, 2048), maxDepth: depth}
+				cpu := fb13CPU()
+				for _, v := range versions {
+					mustOK(t, l.ingest(v, target))
+				}
+				t.Logf("target=%d chunk_delta=true max_depth=%d ingest_cpu=%s sketch_allocated=%d matcher_peak=%d candidates=%d dedup_hits=%d",
+					target, depth, fb13CPU()-cpu, len(l.postings)*int(unsafe.Sizeof(fb14Posting{})), l.matcher, l.probes, l.reuses)
+				scratch := newAuthLab(t)
+				l.physical(t, scratch.s, l.retention(0, false), 0, versions)
+				if from := len(versions) - 5; from > 0 {
+					t.Log("keep-last-4 ingest representations")
+					l.physical(t, scratch.s, l.retention(from, false), from, versions)
+					t.Log("keep-last-4 retention repricing")
+					l.physical(t, scratch.s, l.retention(from, true), from, versions)
 				}
 			}
 		})
