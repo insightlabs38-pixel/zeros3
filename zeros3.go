@@ -22681,6 +22681,8 @@ type reachabilityResult struct {
 	AuthFaults       int
 	AuthOrphans      []string // hex content hashes
 	AuthLive         []string
+	authRoots        map[[32]byte]bool
+	directChunks     *digestTable
 }
 
 // OK reports whether the authoritative live root set is fully valid: every
@@ -22971,6 +22973,9 @@ type reachOpts struct {
 	// keepManifests retains the decoded manifest of every live root in the result
 	// (deep verification checks whole objects from them).
 	keepManifests bool
+	// dependencies classifies components by whether any root needs them
+	// directly, in addition to collecting the normal transitive live set.
+	dependencies bool
 	// mark, for an online pass, supplies the roots captured at T0 plus the
 	// roots of the reconciled journal frames instead of the current namespace.
 	mark *maintMark
@@ -23167,14 +23172,24 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 	seenManifest := make([]bool, len(uniq))
 	rctx := s.newRepReachCtx(&res)
 	actx := s.newAuthReachCtx(&res)
-	want := func(scope rootScope, bucket, key string, m *reachManifest, refs []chunkRef) {
+	if o.dependencies && res.authPresent {
+		res.authRoots = make(map[[32]byte]bool)
+		res.directChunks = newDigestTable(1024)
+	}
+	want := func(scope rootScope, bucket, key string, m *reachManifest, refs []chunkRef, direct bool) {
+		add := func(sum [32]byte, length int64) {
+			tbl.put(sum, length)
+			if direct && res.directChunks != nil {
+				res.directChunks.put(sum, length)
+			}
+		}
 		if m != nil {
 			for i := range m.ends {
 				prev := int64(0)
 				if i > 0 {
 					prev = m.ends[i-1]
 				}
-				tbl.put([32]byte(m.sums[i*32:i*32+32]), m.ends[i]-prev)
+				add([32]byte(m.sums[i*32:i*32+32]), m.ends[i]-prev)
 			}
 			if obs != nil {
 				obs(scope, bucket, key, m.chunkRefs())
@@ -23183,7 +23198,7 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 		}
 		for _, c := range refs {
 			if d, herr := decodeHexSHA256(c.SHA256); herr == nil {
-				tbl.put(d, c.Length)
+				add(d, c.Length)
 			}
 		}
 		if obs != nil {
@@ -23211,7 +23226,7 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 						}
 						valid = append(valid, c)
 					}
-					want(scopeMultipart, up.bucket, up.key, nil, valid)
+					want(scopeMultipart, up.bucket, up.key, nil, valid, true)
 				}
 			case stepManifest:
 				switch {
@@ -23269,14 +23284,14 @@ func (s *Store) reachabilityScanOpts(o reachOpts) (reachabilityResult, error) {
 				// A manifest whose content has a valid authoritative body is rooted through
 				// that body; its CDC chunk list is then only a virtual index. Any doubt keeps the list.
 				if !actx.observe(manifestV1{ObjectSHA256: v.objSHA, TotalLength: v.total}, func(chunks []chunkRef) {
-					want(st.scope, st.bucket, st.key, nil, chunks)
+					want(st.scope, st.bucket, st.key, nil, chunks, false)
 				}) {
-					want(st.scope, st.bucket, st.key, v, nil)
+					want(st.scope, st.bucket, st.key, v, nil, true)
 				}
 				// The optional representation of a live manifest is part of the same root:
 				// its chunks are wanted (and observed) beside the manifest's own.
 				rctx.observe(st.uuid, manifestV1{ObjectSHA256: v.objSHA, TotalLength: v.total}, func(chunks []chunkRef) {
-					want(st.scope, st.bucket, st.key, nil, chunks)
+					want(st.scope, st.bucket, st.key, nil, chunks, true)
 				})
 			}
 			if st.kind == stepManifest {
@@ -23690,18 +23705,31 @@ func parallelFor(n, workers, block int, fn func(i int)) {
 // AuthorityStorage describes store-wide authority data. Component bytes are
 // already counted in the chunk store, including any copies shared with CDC.
 type AuthorityStorage struct {
-	LiveByForm          map[string]int `json:"live_by_form"`
-	OrphanRecords       int            `json:"orphan_records"`
-	UnavailableRecords  int            `json:"unavailable_records"`
-	RecordFileBytes     int64          `json:"record_file_bytes"`
-	LiveRecordFileBytes int64          `json:"live_record_file_bytes"`
-	OrphanFileBytes     int64          `json:"orphan_record_file_bytes"`
-	ComponentCount      int            `json:"closure_component_count"`
-	ComponentLogical    int64          `json:"closure_component_logical_bytes"`
-	ComponentFiles      int64          `json:"closure_component_stored_bytes"`
-	MaxDepth            int            `json:"max_depth"`
-	MaxBases            int            `json:"max_bases_per_record"`
-	MaxDirectDependents int            `json:"max_direct_dependents"`
+	LiveByForm          map[string]int              `json:"live_by_form"`
+	OrphanRecords       int                         `json:"orphan_records"`
+	UnavailableRecords  int                         `json:"unavailable_records"`
+	RecordFileBytes     int64                       `json:"record_file_bytes"`
+	LiveRecordFileBytes int64                       `json:"live_record_file_bytes"`
+	OrphanFileBytes     int64                       `json:"orphan_record_file_bytes"`
+	ComponentCount      int                         `json:"closure_component_count"`
+	ComponentLogical    int64                       `json:"closure_component_logical_bytes"`
+	ComponentFiles      int64                       `json:"closure_component_stored_bytes"`
+	MaxDepth            int                         `json:"max_depth"`
+	MaxBases            int                         `json:"max_bases_per_record"`
+	MaxDirectDependents int                         `json:"max_direct_dependents"`
+	DependencyOnly      *AuthorityDependencyStorage `json:"dependency_only,omitempty"`
+}
+
+// AuthorityDependencyStorage accounts for verified bodies and components
+// held by dependency edges. A chunk also used by a direct root is excluded.
+// Stored bytes use pack extents and file lengths, matching the closure totals.
+type AuthorityDependencyStorage struct {
+	Bodies       int   `json:"bodies"`
+	BodyBytes    int64 `json:"body_stored_bytes"`
+	Chunks       int   `json:"chunks"`
+	ChunkLogical int64 `json:"chunk_logical_bytes"`
+	ChunkBytes   int64 `json:"chunk_stored_bytes"`
+	HotPackBytes int64 `json:"hot_pack_record_bytes"`
 }
 
 // StatsResult is the exact set of fields STATS_SPEC.md defines for one
@@ -23820,7 +23848,7 @@ func (s *Store) computeStats(sel statsScope) (StatsResult, error) {
 	obsTbl := newDigestTable(1024)
 	var obsFlags []scopeFlags
 	var scanErr error
-	rr, err := s.reachabilityScanOpts(reachOpts{cur: func(bucket, key string, size int64, m *reachManifest, why string) {
+	rr, err := s.reachabilityScanOpts(reachOpts{dependencies: true, cur: func(bucket, key string, size int64, m *reachManifest, why string) {
 		if m == nil {
 			if scanErr == nil {
 				scanErr = fmt.Errorf("stats: reading manifest for %s/%s: %w: %s", bucket, key, errManifestUnavailable, why)
@@ -40795,6 +40823,10 @@ func printStatsHuman(w io.Writer, r StatsResult) {
 			a.LiveByForm["pin"], a.LiveByForm["rep"], a.LiveByForm["delta"], a.UnavailableRecords, a.OrphanRecords)
 		fmt.Fprintf(w, "authority files  %d record bytes | %d components (%d stored bytes, included in chunk storage) | depth %d | max dependents %d\n",
 			a.RecordFileBytes, a.ComponentCount, a.ComponentFiles, a.MaxDepth, a.MaxDirectDependents)
+		if d := a.DependencyOnly; d != nil {
+			fmt.Fprintf(w, "dependency only  %d bodies (%d stored bytes) | %d chunks (%d stored bytes, %d in hot packs)\n",
+				d.Bodies, d.BodyBytes, d.Chunks, d.ChunkBytes, d.HotPackBytes)
+		}
 	}
 	fmt.Fprintf(w, "store files      %d bytes chunks | %d bytes manifests | %d bytes journal | %d bytes temp\n",
 		r.ChunkStoreFileBytes, r.ManifestFileBytes, r.JournalFileBytes, r.TemporaryFileBytes)
@@ -66316,6 +66348,9 @@ func (a *authReachCtx) observe(man manifestV1, want func([]chunkRef)) (handled b
 	if _, err := a.mark(sha, want, map[[32]byte]bool{}, 1); err != nil {
 		return false
 	}
+	if a.res.authRoots != nil {
+		a.res.authRoots[sha] = true
+	}
 	return true
 }
 
@@ -68987,15 +69022,23 @@ func (s *Store) authorityStorage(rr reachabilityResult) (AuthorityStorage, error
 	}
 	components := newDigestTable(1024)
 	dependents := make(map[[32]byte]int)
+	if rr.directChunks != nil && rr.OK() {
+		st.DependencyOnly = &AuthorityDependencyStorage{}
+	}
 	for _, id := range rr.AuthLive {
 		sum, _ := decodeHexSHA256(id)
-		st.LiveRecordFileBytes += s.authRecordBytes(sum)
+		recordBytes := s.authRecordBytes(sum)
+		st.LiveRecordFileBytes += recordBytes
 		r, err := s.authLoad(sum)
 		if err != nil {
 			return st, err
 		}
 		if r == nil {
 			continue
+		}
+		if st.DependencyOnly != nil && !rr.authRoots[sum] {
+			st.DependencyOnly.Bodies++
+			st.DependencyOnly.BodyBytes += recordBytes
 		}
 		st.MaxDepth = max(st.MaxDepth, int(r.Depth))
 		st.MaxBases = max(st.MaxBases, len(r.Bases))
@@ -69013,6 +69056,9 @@ func (s *Store) authorityStorage(rr reachabilityResult) (AuthorityStorage, error
 				return st, err
 			}
 			components.add(sum, c.Length)
+			if st.DependencyOnly != nil && rr.authRoots[r.SHA] {
+				rr.directChunks.put(sum, c.Length)
+			}
 		}
 	}
 	st.ComponentCount = len(components.lens)
@@ -69025,14 +69071,334 @@ func (s *Store) authorityStorage(rr reachabilityResult) (AuthorityStorage, error
 			return st, err
 		}
 		st.ComponentFiles += size
+		dep := st.DependencyOnly
+		only := dep != nil && !rr.directChunks.has(sum)
+		if only {
+			dep.Chunks++
+			dep.ChunkLogical += components.lens[i]
+			dep.ChunkBytes += size
+		}
 		for _, loc := range packs.appendLocs(locations[:0], sum) {
-			st.ComponentFiles += int64(loc.stored) + packRecordHeaderSize
+			stored := int64(loc.stored) + packRecordHeaderSize
 			if !packs.packs[loc.pack].open {
-				st.ComponentFiles += packIndexEntrySize
+				stored += packIndexEntrySize
+			}
+			st.ComponentFiles += stored
+			if only {
+				dep.ChunkBytes += stored
+				if loc.tier == tierHot {
+					dep.HotPackBytes += stored
+				}
 			}
 		}
 	}
 	return st, nil
+}
+
+// AuthRebaseReport prices one localized replacement before publishing it.
+// Reclamation stays with the canonical GC and repack paths.
+type AuthRebaseReport struct {
+	Base              string        `json:"dependency_base,omitempty"`
+	Anchor            string        `json:"retained_anchor,omitempty"`
+	Targets           int           `json:"targets"`
+	Rebased           int           `json:"rebased"`
+	FreedRecordBytes  int64         `json:"freed_record_extent_bytes"`
+	FreedHotPackBytes int64         `json:"freed_hot_pack_extent_bytes"`
+	AddedBytes        int64         `json:"added_storage_bytes"`
+	StagingBytes      int64         `json:"staging_bytes"`
+	RepackBytes       int64         `json:"repack_source_file_bytes"`
+	TransitionCost    int64         `json:"transition_cost_equivalent_bytes"`
+	Elapsed           time.Duration `json:"elapsed_ns"`
+}
+
+type authRebaseTarget struct {
+	rec  *authRecord
+	blob []byte
+}
+
+// authorityRebase releases one expired CDC pin by replacing its direct leaf
+// deltas with programs over an independent retained version of the same key.
+// The caller holds the exclusive store lock for planning and publication.
+func (s *Store) authorityRebase(ctx context.Context, bucket, key string, apply bool, reserve uint64, maxAmp float64) (report AuthRebaseReport, err error) {
+	start := time.Now()
+	defer func() { report.Elapsed = time.Since(start) }()
+	if bucket == "" || key == "" {
+		return report, errors.New("authority rebase requires an exact bucket and key")
+	}
+	rr, err := s.reachabilityScanOpts(reachOpts{dependencies: true})
+	if err != nil {
+		return report, err
+	}
+	if !rr.OK() {
+		return report, errors.New("authority rebase needs a verified live set")
+	}
+	if rr.directChunks == nil {
+		return report, nil
+	}
+	manifests := map[[32]byte]manifestV1{}
+	err = s.eachLiveManifest(func(b, k string) bool { return b == bucket && k == key }, func(lm liveMan) error {
+		if sha, err := decodeHexSHA256(lm.man.ObjectSHA256); err == nil {
+			manifests[sha] = lm.man
+		}
+		return nil
+	})
+	if err != nil || len(manifests) < 2 {
+		return report, err
+	}
+	records := make(map[[32]byte]*authRecord, len(rr.AuthLive))
+	children := map[[32]byte][][32]byte{}
+	componentRefs := make(map[[32]byte]int)
+	for _, id := range rr.AuthLive {
+		sha, _ := decodeHexSHA256(id)
+		rec, err := s.authLoad(sha)
+		if err != nil {
+			return report, err
+		}
+		if rec == nil {
+			return report, errAuthMissing
+		}
+		records[sha] = rec
+		for _, base := range rec.Bases {
+			children[base.SHA] = append(children[base.SHA], sha)
+		}
+		refs, err := s.authRecordChunks(rec)
+		if err != nil {
+			return report, err
+		}
+		seen := make(map[[32]byte]bool, len(refs))
+		for _, c := range refs {
+			sum, err := decodeHexSHA256(c.SHA256)
+			if err != nil {
+				return report, err
+			}
+			if !seen[sum] {
+				seen[sum] = true
+				componentRefs[sum]++
+			}
+		}
+	}
+	const maxObject, maxTargets, maxAnchors, maxStaging = 32 << 20, 8, 4, 16 << 20
+	anchors := make([][32]byte, 0, len(manifests))
+	for sha, m := range manifests {
+		if r := records[sha]; m.TotalLength > 0 && m.TotalLength <= maxObject && (r == nil || len(r.Bases) == 0) {
+			anchors = append(anchors, sha)
+		}
+	}
+	slices.SortFunc(anchors, func(a, b [32]byte) int {
+		return cmp.Or(manifests[b].CreatedAt.Compare(manifests[a].CreatedAt), bytes.Compare(a[:], b[:]))
+	})
+	anchors = anchors[:min(maxAnchors, len(anchors))]
+	if len(anchors) == 0 {
+		return report, nil
+	}
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(s.root, &fs); err != nil {
+		return report, err
+	}
+	block := int64(fs.Bsize)
+	if block <= 0 {
+		return report, errors.New("authority rebase cannot determine filesystem allocation unit")
+	}
+	round := func(n int64) int64 { return (n + block - 1) / block * block }
+	packs := s.packSnap()
+	var locs [4]packLoc
+	var bestTargets []authRebaseTarget
+	var bestPin *authRecord
+	var bestSaving int64
+	for _, id := range rr.AuthLive {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		base, _ := decodeHexSHA256(id)
+		dependents := children[base]
+		if rr.authRoots[base] || records[base].Form != authFormPin || len(dependents) == 0 || len(dependents) > maxTargets {
+			continue
+		}
+		ok := true
+		for _, sha := range dependents {
+			m, inScope := manifests[sha]
+			r := records[sha]
+			if !inScope || m.TotalLength > maxObject || !rr.authRoots[sha] || len(children[sha]) != 0 || r.Form != authFormDelta || len(r.Bases) != 1 {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+
+		// Only charge exclusive dependency components. Every other verified
+		// live body, even outside the requested key, can share the old pin.
+		exclusive := make(map[[32]byte]bool)
+		for _, p := range records[base].Pieces {
+			if !rr.directChunks.has(p.SHA) && componentRefs[p.SHA] == 1 {
+				exclusive[p.SHA] = true
+			}
+		}
+		if len(exclusive) == 0 {
+			continue
+		}
+		for _, anchor := range anchors {
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
+			anchorMan := manifests[anchor]
+			source, err := s.manifestBytes(anchorMan)
+			if err != nil {
+				return report, err
+			}
+			index, err := dwDcoreBuildIndex([][]byte{source}, dwDcoreDefaultParams())
+			if err != nil {
+				return report, err
+			}
+			r := AuthRebaseReport{Base: id, Anchor: hex.EncodeToString(anchor[:]), Targets: len(dependents)}
+			var pin *authRecord
+			if records[anchor] == nil {
+				pin, err = authPinFor(&authObj{sha: anchor, man: anchorMan})
+				if err != nil {
+					return report, err
+				}
+				raw, err := pin.marshal()
+				if err != nil {
+					return report, err
+				}
+				r.StagingBytes += round(int64(len(raw)))
+			}
+			r.AddedBytes = r.StagingBytes
+			newPieces := map[[32]byte]bool{}
+			var targets []authRebaseTarget
+			for _, sha := range dependents {
+				if err := ctx.Err(); err != nil {
+					return report, err
+				}
+				old := records[sha]
+				body, err := s.manifestBytes(manifests[sha])
+				if err != nil {
+					return report, err
+				}
+				blob, refs, err := xdEncodeOpsSum([]xdSrc{{anchor, source}}, xdFromDw(index.Match(body)), body, sha, (AuthPolicy{}).norm().FrameSpan)
+				if err != nil {
+					return report, err
+				}
+				if len(refs) != 1 {
+					break
+				}
+				rec := &authRecord{SHA: sha, Gen: old.Gen + 1, Size: old.Size, Form: authFormDelta, Depth: 1, Sketch: old.Sketch, Bases: refs}
+				off := 0
+				for _, end := range authPieceEnds(blob) {
+					p := authPiece{sha256.Sum256(blob[off:end]), int64(end - off)}
+					rec.Pieces = append(rec.Pieces, p)
+					if !newPieces[p.SHA] && !rr.tbl.has(p.SHA) {
+						r.StagingBytes += round(p.Len)
+						r.AddedBytes += round(p.Len)
+					}
+					newPieces[p.SHA] = true
+					off = end
+				}
+				data, err := rec.marshal()
+				if err != nil {
+					return report, err
+				}
+				r.StagingBytes += round(int64(len(data)))
+				r.AddedBytes += max(0, round(int64(len(data)))-s.authRecordBytes(sha))
+				if r.StagingBytes > maxStaging {
+					break
+				}
+				targets = append(targets, authRebaseTarget{rec, blob})
+			}
+			if len(targets) != len(dependents) {
+				continue
+			}
+			r.FreedRecordBytes = s.authRecordBytes(base)
+			touchedPacks := map[int32]bool{}
+			for sha := range exclusive {
+				if newPieces[sha] {
+					continue
+				}
+				n, err := fileSizeOrZero(s.chunkPath(sha))
+				if err != nil {
+					return report, err
+				}
+				r.FreedRecordBytes += n
+				for _, l := range packs.appendLocs(locs[:0], sha) {
+					extent := int64(l.stored) + packRecordHeaderSize
+					if !packs.packs[l.pack].open {
+						extent += packIndexEntrySize
+					}
+					r.FreedRecordBytes += extent
+					if l.tier == tierHot {
+						r.FreedHotPackBytes += extent
+					}
+					touchedPacks[l.pack] = true
+				}
+			}
+			for pack := range touchedPacks {
+				info, err := os.Stat(packs.packs[pack].path)
+				if err != nil {
+					return report, err
+				}
+				r.RepackBytes += info.Size()
+			}
+			// Price staging and potentially rewriting a touched pack at the
+			// same byte-equivalent weight as the archive optimizer.
+			r.TransitionCost = int64(float64(r.StagingBytes+r.RepackBytes) * (OptimizePolicy{}).norm().MigrationWeight)
+			saving := r.FreedRecordBytes - r.AddedBytes - r.TransitionCost
+			if saving <= bestSaving {
+				continue
+			}
+			report = r
+			bestTargets, bestPin = targets, pin
+			bestSaving = saving
+		}
+	}
+	if apply && len(bestTargets) > 0 {
+		err = s.applyAuthorityRebase(ctx, &report, bestTargets, bestPin, manifests, reserve, maxAmp)
+	}
+	return report, err
+}
+
+func (s *Store) applyAuthorityRebase(ctx context.Context, report *AuthRebaseReport, targets []authRebaseTarget, pin *authRecord, manifests map[[32]byte]manifestV1, reserve uint64, maxAmp float64) error {
+	if err := s.checkAuthDiskReserve(max(reserve, 1), uint64(report.StagingBytes), 1); err != nil {
+		return err
+	}
+	pending := map[[32]byte]*authRecord{}
+	if pin != nil {
+		pending[pin.SHA] = pin
+	}
+	for _, target := range targets {
+		ps, err := s.authWritePieces(ctx, target.blob)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(ps, target.rec.Pieces) {
+			return errAuthMismatch
+		}
+		if err := authFaultAt("rebase-proof"); err != nil {
+			return err
+		}
+		_, amp, err := s.authProveContext(ctx, target.rec, pending, 8)
+		if err != nil {
+			return err
+		}
+		if maxAmp > 0 && amp > maxAmp*cdcAmp4K(manifests[target.rec.SHA]) {
+			return fmt.Errorf("authority rebase: amplification %.1f exceeds %.1fx CDC", amp, maxAmp)
+		}
+	}
+	if pin != nil {
+		if err := s.authPublish(pin); err != nil {
+			return err
+		}
+	}
+	for _, target := range targets {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.authPublish(target.rec); err != nil {
+			return err
+		}
+		report.Rebased++
+	}
+	return nil
 }
 
 type authorityAdmissionTier struct {
@@ -71618,7 +71984,7 @@ func (q *authSimilarityQuery) postingWindow(feature uint64, limit int) ([]uint32
 // runAuthority implements the authority maintenance commands.
 func runAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, optimize, status, features, groups, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
+		fmt.Fprintln(os.Stderr, "zeros3: authority: want migrate, optimize, rebase, status, features, groups, revert, recover, index-build, index-refresh, index-publish, index-status, index-inspect, index-prune or index-run-verify")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -71871,6 +72237,16 @@ func runAuthority(args []string) {
 		rep.SimilarityOpenNanos = similarityOpenNanos
 		rep.SimilarityFallback = *indexedDiscovery && pol.AllowDelta && (pol.similarity == nil || pol.similarity.failed)
 		enc.Encode(rep)
+	case "rebase":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		r, err := store.authorityRebase(ctx, *bucket, *key, *apply, *reserveMiB<<20, *amp)
+		if err != nil {
+			log.Fatalf("zeros3: authority rebase: %v (published %d of %d)", err, r.Rebased, r.Targets)
+		}
+		if err := enc.Encode(r); err != nil {
+			log.Fatalf("zeros3: authority rebase: %v", err)
+		}
 	case "optimize":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()

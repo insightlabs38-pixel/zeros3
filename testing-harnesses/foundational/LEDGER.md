@@ -30,7 +30,7 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | FB-10 | PARTIAL | [J2 compact roots, paged multipart, epoch cursors and shared publication](FB-10/README.md). All 44 tested benign X14 cuts recovered exactly. Proven multipart and copy avoid payload reads. The signed mixed p99 gate remains open. |
 | FB-11 | COMPLETE | [Shared snapshots and changes-only delta v2](FB-11/README.md). Exact closure and offline page reclamation passed. Wire metadata is proportional to changes. M-G1 was research-only with no named consumer. |
 | FB-12 | COMPLETE · RESEARCH GATES MISSED | [Native entropy and delta comparison](FB-12/README.md). Codec 6 and denser anchors were rejected on measured gates. Explicit current-store windowed pricing uses actual piece identities and file costs. |
-| FB-13 | pending | M-D3/E1 CDC and lifecycle economics |
+| FB-13 | COMPLETE | [Native CDC economics and local dependency rebasing](FB-13/README.md). Existing CDC remains active. X9 keep-last-4 released the expired pin while preserving all retained versions. |
 | FB-14 | pending | M-D4/G3 conditional ingest delta |
 | FB-15 | pending | M-E2/G4 incremental maintenance |
 | FB-16 | pending | M-F4/G2 reconciliation and final qualification |

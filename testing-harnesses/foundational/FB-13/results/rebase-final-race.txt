@@ -1,0 +1,40 @@
+=== RUN   TestAuthorityInjectedIOFailuresKeepLastValidState
+=== RUN   TestAuthorityInjectedIOFailuresKeepLastValidState/pieces-write
+=== RUN   TestAuthorityInjectedIOFailuresKeepLastValidState/record-write
+=== RUN   TestAuthorityInjectedIOFailuresKeepLastValidState/pin
+--- PASS: TestAuthorityInjectedIOFailuresKeepLastValidState (7.86s)
+    --- PASS: TestAuthorityInjectedIOFailuresKeepLastValidState/pieces-write (2.80s)
+    --- PASS: TestAuthorityInjectedIOFailuresKeepLastValidState/record-write (2.57s)
+    --- PASS: TestAuthorityInjectedIOFailuresKeepLastValidState/pin (2.49s)
+=== RUN   TestFB13FrozenCDCControl
+--- PASS: TestFB13FrozenCDCControl (0.02s)
+=== RUN   TestFB13LocalizedRebaseRecovery
+=== RUN   TestFB13LocalizedRebaseRecovery/snapshot-keeps-base-rooted
+    zeros3_fb13_rebase_test.go:81: seed_migration admitted=6 added=135737
+=== RUN   TestFB13LocalizedRebaseRecovery/failed-proof-and-retry
+    zeros3_fb13_rebase_test.go:90: seed_migration admitted=6 added=135737
+    zeros3_fb13_rebase_test.go:95: before={Bodies:1 BodyBytes:400 Chunks:10 ChunkLogical:524288 ChunkBytes:525248 HotPackBytes:525248} dry={Base:f19b4a60b216b7d34cdd57b3900d9c216ecefc1dd3cf21d242b9c56a148c05f0 Anchor:b65408753452e5e3c0ae841bcc0db7e5e873569e9bfcf214359e1bd15dc2e933 Targets:4 Rebased:0 FreedRecordBytes:525648 FreedHotPackBytes:525248 AddedBytes:88851 StagingBytes:90112 RepackBytes:1062917 TransitionCost:115302 Elapsed:278.810032ms}
+    zeros3_fb13_rebase_test.go:131: after={Bodies:0 BodyBytes:0 Chunks:0 ChunkLogical:0 ChunkBytes:0 HotPackBytes:0} applied={Base:f19b4a60b216b7d34cdd57b3900d9c216ecefc1dd3cf21d242b9c56a148c05f0 Anchor:b65408753452e5e3c0ae841bcc0db7e5e873569e9bfcf214359e1bd15dc2e933 Targets:4 Rebased:4 FreedRecordBytes:525648 FreedHotPackBytes:525248 AddedBytes:88851 StagingBytes:90112 RepackBytes:1062917 TransitionCost:115302 Elapsed:447.873731ms}
+=== RUN   TestFB13LocalizedRebaseRecovery/partial-publication
+    zeros3_fb13_rebase_test.go:142: seed_migration admitted=6 added=135737
+    zeros3_fb13_rebase_test.go:176: cut after 1 verifiable replacement; resumed 3
+--- PASS: TestFB13LocalizedRebaseRecovery (5.35s)
+    --- PASS: TestFB13LocalizedRebaseRecovery/snapshot-keeps-base-rooted (1.08s)
+    --- PASS: TestFB13LocalizedRebaseRecovery/failed-proof-and-retry (2.29s)
+    --- PASS: TestFB13LocalizedRebaseRecovery/partial-publication (1.92s)
+=== RUN   TestFB13X9RetentionReplay
+    zeros3_fb13_rebase_test.go:195: version=0 bytes=7342080 sha256=dd16d8850f9aff2a641d3a2ef4a59ae98ce015c9369160bd75558d4ab0117377
+    zeros3_fb13_rebase_test.go:195: version=1 bytes=7352320 sha256=185e6d0a53a848f61333d8a8dfa6bd722c03fd3b2c1f882a61034d3be0913bf1
+    zeros3_fb13_rebase_test.go:195: version=2 bytes=7352320 sha256=30955d7b9c7928e325c9863faec4da1fe2c42c90d858920223a106cc815ebae1
+    zeros3_fb13_rebase_test.go:195: version=3 bytes=7352320 sha256=1a4d9c28917fd079d45204e0fdb1a46fd8669f3d7e19910e8acb3e71fb27a16f
+    zeros3_fb13_rebase_test.go:195: version=4 bytes=7362560 sha256=c7adaadf6e60a39fbdd012fb2d9c2b20a8a42b1eb91a73edba1aeb3605c8b980
+    zeros3_fb13_rebase_test.go:195: version=5 bytes=7372800 sha256=19a6847cb05f3b52cfd717b8720314645908960757e401af12347a3cec2118b6
+    zeros3_fb13_rebase_test.go:195: version=6 bytes=7383040 sha256=f1c49a6b8a46eed15f7307ea2cb29436b5ddec9ea1cfc44e1706b4511e3ffc12
+    zeros3_fb13_rebase_test.go:195: version=7 bytes=7393280 sha256=da72f32e0f3a61c0bc4728241c73ed97deaaddd5b6fb2f886eb38c3692cb58ed
+    zeros3_fb13_rebase_test.go:197: seed_migration admitted=6 added=66828
+    zeros3_fb13_rebase_test.go:210: before={Bodies:1 BodyBytes:2606 Chunks:39 ChunkLogical:3829855 ChunkBytes:3833599 HotPackBytes:3833599} after={Bodies:0 BodyBytes:0 Chunks:0 ChunkLogical:0 ChunkBytes:0 HotPackBytes:0} allocated=10665984 to 4321280 migration_cpu=2.069535s reclaim_cpu=1.215912s report={Base:dd16d8850f9aff2a641d3a2ef4a59ae98ce015c9369160bd75558d4ab0117377 Anchor:da72f32e0f3a61c0bc4728241c73ed97deaaddd5b6fb2f886eb38c3692cb58ed Targets:4 Rebased:4 FreedRecordBytes:3836205 FreedHotPackBytes:3833599 AddedBytes:48020 StagingBytes:49152 RepackBytes:7349168 TransitionCost:739832 Elapsed:1.988089449s}
+--- PASS: TestFB13X9RetentionReplay (19.28s)
+=== RUN   TestPrune_SnapshotSurvivesPruneThenGC
+--- PASS: TestPrune_SnapshotSurvivesPruneThenGC (0.09s)
+PASS
+ok  	zeros3	33.642s

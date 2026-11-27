@@ -1,0 +1,79 @@
+=== RUN   TestFB13NativeChunkEconomics
+=== RUN   TestFB13NativeChunkEconomics/x9-series
+    zeros3_fb13_cdc_test.go:138: version=0 logical=7342080 sha256=dd16d8850f9aff2a641d3a2ef4a59ae98ce015c9369160bd75558d4ab0117377
+    zeros3_fb13_cdc_test.go:138: version=1 logical=7352320 sha256=185e6d0a53a848f61333d8a8dfa6bd722c03fd3b2c1f882a61034d3be0913bf1
+    zeros3_fb13_cdc_test.go:138: version=2 logical=7352320 sha256=30955d7b9c7928e325c9863faec4da1fe2c42c90d858920223a106cc815ebae1
+    zeros3_fb13_cdc_test.go:138: version=3 logical=7352320 sha256=1a4d9c28917fd079d45204e0fdb1a46fd8669f3d7e19910e8acb3e71fb27a16f
+    zeros3_fb13_cdc_test.go:138: version=4 logical=7362560 sha256=c7adaadf6e60a39fbdd012fb2d9c2b20a8a42b1eb91a73edba1aeb3605c8b980
+    zeros3_fb13_cdc_test.go:138: version=5 logical=7372800 sha256=19a6847cb05f3b52cfd717b8720314645908960757e401af12347a3cec2118b6
+    zeros3_fb13_cdc_test.go:138: version=6 logical=7383040 sha256=f1c49a6b8a46eed15f7307ea2cb29436b5ddec9ea1cfc44e1706b4511e3ffc12
+    zeros3_fb13_cdc_test.go:138: version=7 logical=7393280 sha256=da72f32e0f3a61c0bc4728241c73ed97deaaddd5b6fb2f886eb38c3692cb58ed
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=58910720 references=584 unique=268 retained=9605120 packs=9580544 manifest_allocated=0 manifest_encoded=22981 cross_version_reuse=32638190 cross_boundary_reuse=0 locator_bytes=15220 lookup_ns=23 range_decode_bytes=139097 range_ns=755237 chunk_cpu=69.088ms ingest_cpu=302.757ms repack_cpu=500.437ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=58910720 references=1281 unique=443 retained=7421952 packs=7397376 manifest_allocated=0 manifest_encoded=48083 cross_version_reuse=38491181 cross_boundary_reuse=5464632 locator_bytes=24544 lookup_ns=25 range_decode_bytes=62326 range_ns=364078 chunk_cpu=70.111ms ingest_cpu=353.513ms repack_cpu=463.488ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=58910720 references=2781 unique=769 retained=6422528 packs=6397952 manifest_allocated=0 manifest_encoded=102083 cross_version_reuse=42029304 cross_boundary_reuse=878028 locator_bytes=42456 lookup_ns=30 range_decode_bytes=34063 range_ns=243886 chunk_cpu=122.755ms ingest_cpu=750.573ms repack_cpu=400.496ms
+    zeros3_fb13_cdc_test.go:233: lane=v1-to-16 logical=58910720 references=2509 unique=778 retained=8290304 packs=8265728 manifest_allocated=0 manifest_encoded=92291 cross_version_reuse=36147153 cross_boundary_reuse=746785 locator_bytes=42924 lookup_ns=23 range_decode_bytes=34063 range_ns=227357 chunk_cpu=83.46ms ingest_cpu=685.885ms repack_cpu=582.551ms
+=== RUN   TestFB13NativeChunkEconomics/x9-one
+    zeros3_fb13_cdc_test.go:138: version=0 logical=7393280 sha256=da72f32e0f3a61c0bc4728241c73ed97deaaddd5b6fb2f886eb38c3692cb58ed
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=7393280 references=73 unique=73 retained=2473984 packs=2449408 manifest_allocated=0 manifest_encoded=2873 cross_version_reuse=0 cross_boundary_reuse=0 locator_bytes=4076 lookup_ns=24 range_decode_bytes=139097 range_ns=902994 chunk_cpu=7.674ms ingest_cpu=61.95ms repack_cpu=206.265ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=7393280 references=161 unique=161 retained=2568192 packs=2543616 manifest_allocated=0 manifest_encoded=6042 cross_version_reuse=0 cross_boundary_reuse=620613 locator_bytes=8908 lookup_ns=23 range_decode_bytes=62326 range_ns=397296 chunk_cpu=9.648ms ingest_cpu=117.727ms repack_cpu=142.909ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=7393280 references=349 unique=349 retained=2740224 packs=2715648 manifest_allocated=0 manifest_encoded=12810 cross_version_reuse=0 cross_boundary_reuse=73929 locator_bytes=19164 lookup_ns=23 range_decode_bytes=34063 range_ns=254381 chunk_cpu=7.839ms ingest_cpu=221.278ms repack_cpu=168.51ms
+=== RUN   TestFB13NativeChunkEconomics/typescript
+    zeros3_fb13_cdc_test.go:138: version=0 logical=22536704 sha256=3c8bbde7a20c944becbafdc00eb96086a509ffebe1560b3a2faa5261ef379977
+    zeros3_fb13_cdc_test.go:138: version=1 logical=22535680 sha256=5af0cc99b81eaea42daae41f273cc82628f8a11c12bfb00962b821853e81c1af
+    zeros3_fb13_cdc_test.go:138: version=2 logical=22842880 sha256=56e2e3b825cf4a82c36f71b4e6e46fb76e51457593d2d184fc031603d2e80ad0
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=67915264 references=760 unique=478 retained=9211904 packs=9187328 manifest_allocated=0 manifest_encoded=28098 cross_version_reuse=21891369 cross_boundary_reuse=0 locator_bytes=26168 lookup_ns=37 range_decode_bytes=143418 range_ns=716148 chunk_cpu=71.146ms ingest_cpu=521.507ms repack_cpu=764.305ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=67915264 references=1428 unique=832 retained=9113600 packs=9089024 manifest_allocated=0 manifest_encoded=52146 cross_version_reuse=23487867 cross_boundary_reuse=13555818 locator_bytes=45600 lookup_ns=23 range_decode_bytes=81928 range_ns=362790 chunk_cpu=75.255ms ingest_cpu=776.518ms repack_cpu=814.684ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=67915264 references=2761 unique=1404 retained=8888320 packs=8863744 manifest_allocated=0 manifest_encoded=100134 cross_version_reuse=26614059 cross_boundary_reuse=1785096 locator_bytes=77008 lookup_ns=23 range_decode_bytes=43595 range_ns=295579 chunk_cpu=77.44ms ingest_cpu=1.313529s repack_cpu=681.893ms
+    zeros3_fb13_cdc_test.go:233: lane=v1-to-16 logical=67915264 references=2098 unique=1613 retained=13086720 packs=13062144 manifest_allocated=0 manifest_encoded=76266 cross_version_reuse=5333474 cross_boundary_reuse=1188687 locator_bytes=88132 lookup_ns=23 range_decode_bytes=43595 range_ns=322499 chunk_cpu=78.164ms ingest_cpu=1.403635s repack_cpu=948.04ms
+=== RUN   TestFB13NativeChunkEconomics/typescript-gzip
+    zeros3_fb13_cdc_test.go:138: version=0 logical=4174769 sha256=6e954963e7689a13573927021cf1fe2d7f85d7808eba49f03f84cb5d77cdd6bf
+    zeros3_fb13_cdc_test.go:138: version=1 logical=4174590 sha256=ef67f8d8ad895858024b7339d3e34bf112cae3c5db1f538c3079038b17ae30fa
+    zeros3_fb13_cdc_test.go:138: version=2 logical=4231797 sha256=6826f763112d55de0093fd94a4257cabadf1f40b387757e7c68485fc971e886b
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=12581156 references=188 unique=188 retained=12632064 packs=12607488 manifest_allocated=0 manifest_encoded=7503 cross_version_reuse=0 cross_boundary_reuse=0 locator_bytes=10448 lookup_ns=38 range_decode_bytes=84396 range_ns=70219 chunk_cpu=16.253ms ingest_cpu=201.021ms repack_cpu=68.615ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=12581156 references=378 unique=378 retained=12660736 packs=12636160 manifest_allocated=0 manifest_encoded=14345 cross_version_reuse=0 cross_boundary_reuse=1831214 locator_bytes=20808 lookup_ns=23 range_decode_bytes=42851 range_ns=46744 chunk_cpu=13.716ms ingest_cpu=328.622ms repack_cpu=92.477ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=12581156 references=738 unique=738 retained=12705792 packs=12681216 manifest_allocated=0 manifest_encoded=27306 cross_version_reuse=0 cross_boundary_reuse=234521 locator_bytes=40520 lookup_ns=54 range_decode_bytes=24565 range_ns=75858 chunk_cpu=16.889ms ingest_cpu=512.89ms repack_cpu=104.572ms
+    zeros3_fb13_cdc_test.go:233: lane=v1-to-16 logical=12581156 references=552 unique=552 retained=12685312 packs=12660736 manifest_allocated=0 manifest_encoded=20609 cross_version_reuse=0 cross_boundary_reuse=156142 locator_bytes=30592 lookup_ns=23 range_decode_bytes=24565 range_ns=48021 chunk_cpu=18.182ms ingest_cpu=443.852ms repack_cpu=137.837ms
+=== RUN   TestFB13NativeChunkEconomics/heldout-httpx
+    zeros3_fb13_cdc_test.go:138: version=0 logical=911360 sha256=e43e110856971287c8fbf260097b40799b7059b23f841e4d54bdd246c0829cb3
+    zeros3_fb13_cdc_test.go:138: version=1 logical=911360 sha256=458fa2289a4d08978e53149a5f4befed0a77d55c140e79d0b8d5f766087f6223
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=1822720 references=18 unique=16 retained=323584 packs=299008 manifest_allocated=0 manifest_encoded=1138 cross_version_reuse=144356 cross_boundary_reuse=0 locator_bytes=1004 lookup_ns=27 range_decode_bytes=120403 range_ns=207720 chunk_cpu=3.286ms ingest_cpu=20.534ms repack_cpu=33.363ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=1822720 references=34 unique=29 retained=331776 packs=307200 manifest_allocated=0 manifest_encoded=1714 cross_version_reuse=153563 cross_boundary_reuse=226672 locator_bytes=1712 lookup_ns=26 range_decode_bytes=87265 range_ns=154562 chunk_cpu=1.899ms ingest_cpu=24.363ms repack_cpu=31.273ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=1822720 references=64 unique=53 retained=335872 packs=311296 manifest_allocated=0 manifest_encoded=2794 cross_version_reuse=245679 cross_boundary_reuse=0 locator_bytes=3024 lookup_ns=64 range_decode_bytes=50755 range_ns=136198 chunk_cpu=3.917ms ingest_cpu=42.425ms repack_cpu=37.654ms
+    zeros3_fb13_cdc_test.go:233: lane=v1-to-16 logical=1822720 references=41 unique=41 retained=352256 packs=327680 manifest_allocated=0 manifest_encoded=1966 cross_version_reuse=0 cross_boundary_reuse=0 locator_bytes=2368 lookup_ns=25 range_decode_bytes=50755 range_ns=172224 chunk_cpu=2.545ms ingest_cpu=32.22ms repack_cpu=34.986ms
+=== RUN   TestFB13NativeChunkEconomics/sqlite
+    zeros3_fb13_cdc_test.go:138: version=0 logical=1183744 sha256=9dccd6e427d831a1f10aae8d415d1caa5698e67b4b2b60bf96c705f32f8bf560
+    zeros3_fb13_cdc_test.go:138: version=1 logical=1191936 sha256=6e28edf5e18ce88fd0ea370f222e031c207f2a1b41224ab6c2ed6e74de0e9ca3
+    zeros3_fb13_cdc_test.go:138: version=2 logical=1187840 sha256=3ca34eea56483cb5a8089e0aeb0af7ede5250e00c6c1af6dae391250f3b62a39
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=3563520 references=42 unique=34 retained=655360 packs=630784 manifest_allocated=0 manifest_encoded=2247 cross_version_reuse=745259 cross_boundary_reuse=0 locator_bytes=2056 lookup_ns=25 range_decode_bytes=141144 range_ns=297463 chunk_cpu=3.65ms ingest_cpu=34.211ms repack_cpu=50.944ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=3563520 references=70 unique=53 retained=655360 packs=630784 manifest_allocated=0 manifest_encoded=3255 cross_version_reuse=821872 cross_boundary_reuse=512920 locator_bytes=3076 lookup_ns=25 range_decode_bytes=73479 range_ns=249034 chunk_cpu=4.643ms ingest_cpu=47.636ms repack_cpu=51.065ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=3563520 references=132 unique=94 retained=663552 packs=638976 manifest_allocated=0 manifest_encoded=5487 cross_version_reuse=962940 cross_boundary_reuse=0 locator_bytes=5304 lookup_ns=24 range_decode_bytes=40101 range_ns=223185 chunk_cpu=3.872ms ingest_cpu=77.293ms repack_cpu=52.483ms
+    zeros3_fb13_cdc_test.go:233: lane=v1-to-16 logical=3563520 references=102 unique=102 retained=868352 packs=843776 manifest_allocated=0 manifest_encoded=4407 cross_version_reuse=0 cross_boundary_reuse=0 locator_bytes=5752 lookup_ns=24 range_decode_bytes=40101 range_ns=172158 chunk_cpu=4.312ms ingest_cpu=82.886ms repack_cpu=74.906ms
+=== RUN   TestFB13NativeChunkEconomics/parquet
+    zeros3_fb13_cdc_test.go:138: version=0 logical=1937122 sha256=79ae08967fb32d5b18c4589da7d598c1d314c942b8d12d97d0edc2be4eff3718
+    zeros3_fb13_cdc_test.go:138: version=1 logical=1937065 sha256=0f79fb889da1a6e82686c4ec24c05b4beb5051e2c6040c52a7557faf1a3309e2
+    zeros3_fb13_cdc_test.go:138: version=2 logical=1937002 sha256=7916ffcb46a773a1d5b38cb7b5e775c5fbe579e6e9a0553ef2c9bbb3375ed244
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=5811189 references=66 unique=18 retained=1253376 packs=1228800 manifest_allocated=0 manifest_encoded=3110 cross_version_reuse=3455468 cross_boundary_reuse=0 locator_bytes=1160 lookup_ns=26 range_decode_bytes=142194 range_ns=304323 chunk_cpu=6.209ms ingest_cpu=34.505ms repack_cpu=24.098ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=5811189 references=90 unique=28 retained=1257472 packs=1232896 manifest_allocated=0 manifest_encoded=3975 cross_version_reuse=3455468 cross_boundary_reuse=1342076 locator_bytes=1712 lookup_ns=25 range_decode_bytes=92919 range_ns=228836 chunk_cpu=6.234ms ingest_cpu=41.194ms repack_cpu=26.161ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=5811189 references=211 unique=49 retained=897024 packs=872448 manifest_allocated=0 manifest_encoded=8331 cross_version_reuse=3644478 cross_boundary_reuse=0 locator_bytes=2868 lookup_ns=25 range_decode_bytes=48821 range_ns=145211 chunk_cpu=17.79ms ingest_cpu=113.271ms repack_cpu=45.403ms
+    zeros3_fb13_cdc_test.go:233: lane=v1-to-16 logical=5811189 references=163 unique=60 retained=1814528 packs=1789952 manifest_allocated=0 manifest_encoded=6603 cross_version_reuse=1822239 cross_boundary_reuse=0 locator_bytes=3440 lookup_ns=25 range_decode_bytes=48821 range_ns=171309 chunk_cpu=6.654ms ingest_cpu=73.323ms repack_cpu=40.372ms
+=== RUN   TestFB13NativeChunkEconomics/entropy
+    zeros3_fb13_cdc_test.go:138: version=0 logical=4194304 sha256=f811becca3e268fd599afe5f65c705a68623537e48278a1221d1ca35e7990911
+    zeros3_fb13_cdc_test.go:138: version=1 logical=4194304 sha256=f23be41a1a1ae971a4b548d9de03242ca08b742236c3d397fe1402f5e417c48b
+    zeros3_fb13_cdc_test.go:138: version=2 logical=4194304 sha256=8a607a13209759d79676057ed2f8a684f6e65f97de4092240c7d1503b33412ed
+    zeros3_fb13_cdc_test.go:233: lane=v1-64 logical=12582912 references=195 unique=195 retained=12636160 packs=12611584 manifest_allocated=0 manifest_encoded=7755 cross_version_reuse=0 cross_boundary_reuse=0 locator_bytes=10812 lookup_ns=24 range_decode_bytes=80392 range_ns=62143 chunk_cpu=12.451ms ingest_cpu=168.472ms repack_cpu=61.474ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-32 logical=12582912 references=371 unique=371 retained=12660736 packs=12636160 manifest_allocated=0 manifest_encoded=14092 cross_version_reuse=0 cross_boundary_reuse=2148084 locator_bytes=20444 lookup_ns=24 range_decode_bytes=48196 range_ns=66534 chunk_cpu=17.882ms ingest_cpu=275.033ms repack_cpu=72.573ms
+    zeros3_fb13_cdc_test.go:233: lane=gear-16 logical=12582912 references=754 unique=754 retained=12709888 packs=12685312 manifest_allocated=0 manifest_encoded=27881 cross_version_reuse=0 cross_boundary_reuse=326175 locator_bytes=41352 lookup_ns=23 range_decode_bytes=25590 range_ns=74782 chunk_cpu=13.709ms ingest_cpu=457.789ms repack_cpu=148.391ms
+    zeros3_fb13_cdc_test.go:233: lane=v1-to-16 logical=12582912 references=578 unique=578 retained=12689408 packs=12664832 manifest_allocated=0 manifest_encoded=21545 cross_version_reuse=0 cross_boundary_reuse=173101 locator_bytes=32008 lookup_ns=23 range_decode_bytes=25590 range_ns=59631 chunk_cpu=31.997ms ingest_cpu=493.588ms repack_cpu=142.602ms
+--- PASS: TestFB13NativeChunkEconomics (24.84s)
+    --- PASS: TestFB13NativeChunkEconomics/x9-series (7.46s)
+    --- PASS: TestFB13NativeChunkEconomics/x9-one (1.37s)
+    --- PASS: TestFB13NativeChunkEconomics/typescript (9.64s)
+    --- PASS: TestFB13NativeChunkEconomics/typescript-gzip (2.18s)
+    --- PASS: TestFB13NativeChunkEconomics/heldout-httpx (0.48s)
+    --- PASS: TestFB13NativeChunkEconomics/sqlite (0.84s)
+    --- PASS: TestFB13NativeChunkEconomics/parquet (0.73s)
+    --- PASS: TestFB13NativeChunkEconomics/entropy (2.14s)
+=== RUN   TestFB13FrozenCDCControl
+--- PASS: TestFB13FrozenCDCControl (0.00s)
+PASS
+ok  	zeros3	24.851s
