@@ -55,13 +55,13 @@ func fbj2Percentiles(d []time.Duration) map[string]int64 {
 
 func fbj2SignedRun(t *testing.T, mode string, round, workers, size int, mixed bool, archive []byte) {
 	format, watermark := "", mode
-	if mode == "j2" {
+	if mode == "j2" || mode == "j2bin" {
 		format, watermark = "j2", "lazy"
 	}
 	t.Setenv("ZEROS3_JOURNAL_FORMAT", format)
 	t.Setenv("ZEROS3_JOURNAL_WATERMARK", watermark)
 	dir := t.TempDir()
-	s, err := OpenStore(dir)
+	s, err := openStoreWithFeatures(dir, true, nsCheckpointDefault(), false, false, false, journalResearch{binary: mode == "j2bin"})
 	if err != nil {
 		t.Fatal(err)
 	}

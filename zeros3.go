@@ -40561,12 +40561,95 @@ func inspectJournal(root string) (*journalReport, error) {
 	return rep, nil
 }
 
+type journalCursor struct {
+	StoreID  string `json:"store_id"`
+	Epoch    string `json:"epoch_sha256"`
+	Offset   int64  `json:"offset"`
+	Group    uint64 `json:"group"`
+	Sequence uint64 `json:"sequence"`
+	Digest   string `json:"chain_sha256"`
+}
+
+// readJournalCursor checks a previous cursor against the actual chain. An
+// offset alone is insufficient: a journal with a lost or substituted group
+// can have the same length. A caller can keep the cursor on independent media.
+func readJournalCursor(root string, previous *journalCursor) (journalCursor, error) {
+	var out journalCursor
+	if _, err := os.Stat(filepath.Join(root, "FORMAT.json")); err != nil {
+		return out, err
+	}
+	s, err := OpenStoreShared(root)
+	if err != nil {
+		return out, err
+	}
+	defer s.Close()
+	if s.journal.group == nil {
+		return out, errors.New("journal cursor requires the grouped J2 format")
+	}
+	id, epoch, err := journalGroupHeader(s.journal.f)
+	if err != nil {
+		return out, err
+	}
+	end := *s.journal.group // this is a read-only store view
+	out = journalCursor{StoreID: id, Epoch: hex.EncodeToString(epoch.digest[:]), Offset: end.end,
+		Group: end.number, Sequence: end.sequence, Digest: hex.EncodeToString(end.digest[:])}
+	if previous == nil || *previous == out {
+		return out, nil
+	}
+	if previous.StoreID != id || previous.Epoch != out.Epoch || previous.Offset < epoch.end ||
+		previous.Offset > end.end || previous.Group > end.number || previous.Sequence > end.sequence {
+		return out, errors.New("previous journal cursor belongs to another lineage or is ahead of this journal")
+	}
+	scan, verified, _, err := scanJournalGroups(s.journal.f, 0, previous.Offset, 0, false, nil)
+	if err != nil {
+		return out, err
+	}
+	if scan.Damage != nil || verified.end != previous.Offset || verified.number != previous.Group ||
+		verified.sequence != previous.Sequence || hex.EncodeToString(verified.digest[:]) != previous.Digest {
+		return out, errors.New("previous journal cursor does not identify a verified group boundary")
+	}
+	return out, nil
+}
+
+func runJournalCursor(args []string) {
+	fs := flag.NewFlagSet("journal cursor", flag.ExitOnError)
+	root := fs.String("store", "./zeros3-data", "path to a J2 store")
+	from := fs.String("from", "", "optional JSON cursor previously saved from this store")
+	fs.Parse(args)
+	var previous *journalCursor
+	if *from != "" {
+		f, err := os.Open(*from)
+		if err != nil {
+			log.Fatalf("zeros3: journal cursor: %v", err)
+		}
+		const maxCursor = 2048
+		data, err := io.ReadAll(io.LimitReader(f, maxCursor+1))
+		f.Close()
+		if err != nil || len(data) > maxCursor {
+			log.Fatal("zeros3: journal cursor: could not read a bounded cursor")
+		}
+		previous = new(journalCursor)
+		if err := json.Unmarshal(data, previous); err != nil {
+			log.Fatalf("zeros3: journal cursor: %v", err)
+		}
+	}
+	cursor, err := readJournalCursor(*root, previous)
+	if err != nil {
+		log.Fatalf("zeros3: journal cursor: %v", err)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(cursor); err != nil {
+		log.Fatalf("zeros3: journal cursor: %v", err)
+	}
+}
+
 func runJournal(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "zeros3: journal: want `inspect` or `salvage`")
+		fmt.Fprintln(os.Stderr, "zeros3: journal: want inspect, cursor or salvage")
 		os.Exit(2)
 	}
 	switch args[0] {
+	case "cursor":
+		runJournalCursor(args[1:])
 	case "inspect":
 		fs := flag.NewFlagSet("journal inspect", flag.ExitOnError)
 		root := fs.String("store", "./zeros3-data", "path to the store")
@@ -40598,7 +40681,7 @@ func runJournal(args []string) {
 		fmt.Printf("salvaged %s: kept %d bytes (%d frames, last seq %d), dropped %d bytes; original and record kept in %s\n",
 			*root, rec.KeptBytes, rec.KeptFrames, rec.KeptLastSeq, rec.DroppedBytes, rec.Quarantine)
 	default:
-		fmt.Fprintf(os.Stderr, "zeros3: journal: unknown subcommand %q (want inspect or salvage)\n", args[0])
+		fmt.Fprintf(os.Stderr, "zeros3: journal: unknown subcommand %q (want inspect, cursor or salvage)\n", args[0])
 		os.Exit(2)
 	}
 }

@@ -1,0 +1,10 @@
+=== RUN   TestFB10JournalCursorAndBenignX14
+=== RUN   TestFB10JournalCursorAndBenignX14/false
+    zeros3_fb10_cursor_test.go:91: compact=false S1=11 S2=11 acknowledged loss=0 benign refusals=0; independent later cursor detected coherent prefix rollback
+=== RUN   TestFB10JournalCursorAndBenignX14/true
+    zeros3_fb10_cursor_test.go:91: compact=true S1=11 S2=11 acknowledged loss=0 benign refusals=0; independent later cursor detected coherent prefix rollback
+--- PASS: TestFB10JournalCursorAndBenignX14 (0.20s)
+    --- PASS: TestFB10JournalCursorAndBenignX14/false (0.11s)
+    --- PASS: TestFB10JournalCursorAndBenignX14/true (0.10s)
+PASS
+ok  	zeros3	1.223s

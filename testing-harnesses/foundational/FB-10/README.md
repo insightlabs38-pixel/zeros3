@@ -47,4 +47,27 @@ reconciled exactly through maintenance, and completed byte-for-byte.
 Page files are retained as long as their journal references can replay.
 This keeps old groups recoverable without enabling journal retirement.
 
+`journal cursor` binds the store ID, J2 genesis, group number, byte
+offset, sequence and chain digest. A retained previous cursor can be
+checked against the real chain. It detected coherent prefix rollback,
+and the reader rejected foreign, interior and wrong-digest cursors.
+This is a single-log epoch and an optional read-only witness check.
+
+The S1/S2 X14 matrix ran 44 byte cuts with JSON and compact records.
+Every recovery retained the exact acknowledged journal prefix and
+state. A coherent rollback or damaged acknowledged final group can
+produce the same local bytes as a benign interrupted append. The
+stronger X14 gate is **UNSATISFIABLE UNDER THIS MODEL** without
+independent evidence. An external cursor shows rollback only if it
+covered the lost group and was preserved separately.
+
+| Signed mixed workload, medians of six rounds | v1 lazy | J2 JSON | J2 compact |
+|---|---:|---:|---:|
+| Ops/s | 5,690 | 5,633 | 5,862 |
+| GET 4 KiB p99, ms | 7.02 | 8.23 | 8.51 |
+| HEAD p99, ms | 6.60 | 8.66 | 7.34 |
+| Journal bytes | 530,199 | 592,009 | 440,419 |
+
+The 32-writer, 32 KiB mixed workload still missed the p99 gate.
+
 [Reproduction](REPRODUCE.md) · [Evidence](results/)
