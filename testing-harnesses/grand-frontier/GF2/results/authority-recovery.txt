@@ -1,0 +1,17 @@
+=== RUN   TestB7OptimizeMultiBase
+--- PASS: TestB7OptimizeMultiBase (1.60s)
+=== RUN   TestB8RecordShape
+2026/11/27 15:31:56 zeros3: authoritative body of manifest 01a21eb5-2013-7e6e-ade2-2a8b16bec7b1 unreadable, trying its CDC chunk list: authority: body record missing: b6ef0e3d27ce
+--- PASS: TestB8RecordShape (0.40s)
+=== RUN   TestGF2NativeAuthority
+--- PASS: TestGF2NativeAuthority (0.22s)
+=== RUN   TestGF2NativeCrashBoundaries
+=== RUN   TestGF2NativeCrashBoundaries/cas-after-flush
+=== RUN   TestGF2NativeCrashBoundaries/auth-after-format
+=== RUN   TestGF2NativeCrashBoundaries/auth-published
+--- PASS: TestGF2NativeCrashBoundaries (0.34s)
+    --- PASS: TestGF2NativeCrashBoundaries/cas-after-flush (0.13s)
+    --- PASS: TestGF2NativeCrashBoundaries/auth-after-format (0.12s)
+    --- PASS: TestGF2NativeCrashBoundaries/auth-published (0.09s)
+PASS
+ok  	zeros3	2.574s

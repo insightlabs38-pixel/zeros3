@@ -23,8 +23,7 @@ No semantic re-encoding occurs on this path.
 | Eight alignments, stride 4, relative offsets | 5,406,720 | 29–43 ms | 0.46–0.47 ms |
 
 Relative stride 4 copies 3,223,980 target bytes, including 2,854,192
-from non-byte-aligned sources. The stride-2 variant costs 5,365,760 bytes
-and roughly twice as much analysis CPU. Stride 4 is frozen for the follow-up.
+from non-byte-aligned sources. Stride 2 costs 5,365,760 bytes and roughly twice the analysis CPU.
 The GF0 archive allocated 4,829,184 bytes and had 1,182–1,196 ms warm whole
 p95. That is a separate in-process native lane. The 12.0% space delta and
 27–41× latency delta identify a candidate for a matched authority trial.
@@ -60,10 +59,32 @@ p95 was 31.68 ms versus 32.32 ms. All 720 probes verified exact bytes.
 The durability cost includes native data and metadata. The dispatcher is
 experimental, and the two phases share an ambient page cache.
 
-Next test the relative frame mode through the ordinary native authority
-reader in two disposable stores with independent archive, CDC, and
-prune/reopen/failure controls. Its admission must reject histories with
-poor exact compressed reuse. Test whether native CDC source geometry
-and reclamation preserve the measured space/read tradeoff.
+## Signed native authority
+
+The experimental `bitpatch-v1` authority representation decodes through
+ordinary whole and range paths. It names original CDC components directly
+and verifies each independent target frame before returning bytes. Proof
+at publication uses the complete original digest. The fixture compiler is
+only in the research harness. The feature marker prevents an older build
+from opening a store with this representation.
+
+| TypeScript gzip v0–v1, two reversed signed trials | Allocated bytes | Target whole p95 | Target 4 KiB p95 |
+| --- | ---: | ---: | ---: |
+| CDC | 8,392,704 | 11.9–19.4 ms | 0.28–0.82 ms |
+| Current archive | 4,829,184 | 1,253–1,289 ms | 33.4–35.7 ms |
+| Compiled bit patch | 5,414,912 | 21.6–26.9 ms | 0.97–1.23 ms |
+
+The patch adds 12.1% to the finalized archive allocation for roughly
+48–58× lower paired whole p95. Its compile/proof CPU was 1.38–1.87 s
+versus 27.2–27.7 s for archive search and proof. Eight whole and 48 range
+samples per lane are descriptive. Native GC, repack, reopen and exact
+signed reads passed. The older C19 binary safely refused the feature and
+verified after a CDC downgrade. Native transfer verified after pruning
+the anchor manifest, rejected a truncated closure, refused a peer without
+the feature, and exported an exact ordinary snapshot bundle. Three
+process kills recovered at CAS flush, format adoption and publication.
+
+This is a specialized exact frontier point. GF1 must gate reuse and
+reads. Mixed-load tails, broader cohorts and peer repair remain open.
 
 [Reproduction](REPRODUCE.md) · [Results](results/) · [Design](PREREGISTRATION.md)

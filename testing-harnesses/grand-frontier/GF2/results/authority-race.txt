@@ -1,0 +1,18 @@
+=== RUN   TestGF2NativeAuthority
+--- PASS: TestGF2NativeAuthority (0.85s)
+=== RUN   TestGF2NativeCrashBoundaries
+=== RUN   TestGF2NativeCrashBoundaries/cas-after-flush
+=== RUN   TestGF2NativeCrashBoundaries/auth-after-format
+=== RUN   TestGF2NativeCrashBoundaries/auth-published
+--- PASS: TestGF2NativeCrashBoundaries (1.66s)
+    --- PASS: TestGF2NativeCrashBoundaries/cas-after-flush (0.51s)
+    --- PASS: TestGF2NativeCrashBoundaries/auth-after-format (0.77s)
+    --- PASS: TestGF2NativeCrashBoundaries/auth-published (0.34s)
+=== RUN   TestGF2ShiftedProgram
+    zeros3_gf2_test.go:354: verified 131047 shifted bytes of 131071 compressed bytes
+--- PASS: TestGF2ShiftedProgram (0.05s)
+=== RUN   FuzzGF2FrameProgram
+--- PASS: FuzzGF2FrameProgram (28.28s)
+=== NAME
+PASS
+ok  	zeros3	31.864s

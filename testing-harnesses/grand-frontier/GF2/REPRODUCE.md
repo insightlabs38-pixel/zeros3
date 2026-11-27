@@ -24,3 +24,16 @@ development series and has an unseen gzip target. urllib3 is a separate
 family. The 32 KiB patch lab samples each target after reopen, with
 ambient Linux caches. Witness range timing includes checkpoint lookup
 and sparse native plaintext reads. It assumes the witness is in memory.
+
+## Native authority
+
+```bash
+GOMAXPROCS=2 go test -v -count=1 -timeout=4m -run '^TestGF2NativeAuthorityPanel$' .
+ZEROS3_GF2_OLD_BINARY=/path/to/pre-GF2-zeros3 GOMAXPROCS=2 go test -v -count=1 \
+  -timeout=2m -run '^TestGF2Native(Authority|CrashBoundaries)$' .
+```
+
+The signed tests use a loopback server and repository test credentials.
+The pre-GF2 executable check used the C19 integrated build. The native
+panel alternates the order of its three lanes and samples target reads
+against the pinned original bytes. Capture lines starting with `GF2AUTH`.

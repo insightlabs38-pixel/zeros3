@@ -45980,7 +45980,7 @@ const (
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip || k == repKindExe || k == repKindSplice
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip || k == repKindExe || k == repKindSplice || k == repKindBitPatch
 }
 
 type repRole uint8
@@ -46509,6 +46509,8 @@ func repDecoderFor(k repKind) (repDecoder, bool) {
 		return repExeDecoder{}, true
 	case repKindSplice:
 		return repSpliceDecoder{}, true
+	case repKindBitPatch:
+		return bitPatchDecoder{}, true
 	}
 	return nil, false
 }
@@ -62195,6 +62197,8 @@ func repRangeReader(c *repCall, off, n int64) (func(w io.Writer) error, error) {
 		return func(w io.Writer) error { return exeReadRange(c, off, n, w) }, nil
 	case repKindSplice:
 		return func(w io.Writer) error { return spliceReadRange(c, off, n, w) }, nil
+	case repKindBitPatch:
+		return func(w io.Writer) error { return bitPatchRead(c, off, n, w) }, nil
 	}
 	return nil, nil
 }
@@ -66434,8 +66438,8 @@ func (b *authRepBody) readSeek(p []byte, off int64) (n int, ok bool, err error) 
 		if err := sk.readRange(call, off, want, repAppendWriter{&buf}); err != nil {
 			return 0, true, err
 		}
-	case repKindParquet, repKindSST, repKindSplice:
-		if call.Rep.Kind != repKindSplice && !b.c.structuredRange {
+	case repKindParquet, repKindSST, repKindSplice, repKindBitPatch:
+		if (call.Rep.Kind == repKindParquet || call.Rep.Kind == repKindSST) && !b.c.structuredRange {
 			b.noSeek = true
 			return 0, false, nil
 		}
@@ -70686,7 +70690,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature, authExeFeature, spliceFeature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature, authExeFeature, spliceFeature, bitPatchFeature},
 	}
 }
 
@@ -70858,6 +70862,9 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 			}
 			if need.splice {
 				addFeature(spliceFeature)
+			}
+			if need.bitPatch {
+				addFeature(bitPatchFeature)
 			}
 		}
 	}
@@ -81430,6 +81437,226 @@ func winRangeReader(c *winCache, call *repCall, off, n int64) func(w io.Writer) 
 		}
 		return flush(end)
 	}
+}
+
+// An opt-in authority representation for byte-exact compressed artifacts.
+// Source members are original verified CAS chunks. Target members are
+// independently decodable frames. The recipe authenticates the output
+// digest of every frame, so ranges can be returned without decoding the
+// entire target. Frame boundaries are in compressed output bytes.
+const (
+	repKindBitPatch          repKind = 17
+	bitPatchFeature                  = "bitpatch-v1"
+	bitPatchFrameSize                = 32 << 10
+	bitPatchMaxObject                = 8 << 20
+	bitPatchMaxSourceRecords         = 4096
+)
+
+var errBitPatch = fmt.Errorf("%w: invalid bit-patch program", errRepCorrupt)
+
+type bitPatchLayout struct {
+	sourceEnd []int
+	frames    int
+}
+
+func parseBitPatchLayout(rep *repObject) (bitPatchLayout, error) {
+	if rep.Size < 1 || rep.Size > bitPatchMaxObject || len(rep.Indexes) != 0 {
+		return bitPatchLayout{}, errBitPatch
+	}
+	count, n := binary.Uvarint(rep.Recipe)
+	frames := int((rep.Size + bitPatchFrameSize - 1) / bitPatchFrameSize)
+	if n <= 0 || count < 1 || count > bitPatchMaxSourceRecords ||
+		len(rep.Members) != int(count)+frames || len(rep.Recipe[n:]) != frames*sha256.Size {
+		return bitPatchLayout{}, errBitPatch
+	}
+	p := bitPatchLayout{sourceEnd: make([]int, int(count)), frames: frames}
+	total := 0
+	for i, m := range rep.Members {
+		if m.Role != repStored || m.Size < 1 || m.Size > repDirectMax {
+			return bitPatchLayout{}, errBitPatch
+		}
+		if i < len(p.sourceEnd) {
+			total += int(m.Size)
+			if total > bitPatchMaxObject {
+				return bitPatchLayout{}, errBitPatch
+			}
+			p.sourceEnd[i] = total
+		} else if m.Size > bitPatchFrameSize+1 {
+			return bitPatchLayout{}, errBitPatch
+		}
+	}
+	return p, nil
+}
+
+type bitPatchDecoder struct{}
+
+func (bitPatchDecoder) Expand(c *repCall, _ func([32]byte)) error {
+	_, err := parseBitPatchLayout(c.Rep)
+	return err
+}
+
+func (bitPatchDecoder) Decode(c *repCall) error {
+	return bitPatchRead(c, 0, c.Rep.Size, c.W)
+}
+
+func bitPatchRead(c *repCall, off, n int64, w io.Writer) error {
+	p, err := parseBitPatchLayout(c.Rep)
+	if err != nil {
+		return err
+	}
+	if off < 0 || n < 0 || off > c.Rep.Size || n > c.Rep.Size-off {
+		return errBitPatch
+	}
+	sourceCount := len(p.sourceEnd)
+	sourceSize := p.sourceEnd[sourceCount-1]
+	cache := make([][]byte, sourceCount)
+	load := func(at, need int) ([]byte, error) {
+		i := sort.SearchInts(p.sourceEnd, at+1)
+		var joined []byte
+		for need > 0 && i < sourceCount {
+			start := 0
+			if i > 0 {
+				start = p.sourceEnd[i-1]
+			}
+			m := &c.Rep.Members[i]
+			data := cache[i]
+			if data == nil {
+				if err := c.decodeWork().reserveBytes(m.Size); err != nil {
+					return nil, err
+				}
+				loaded, err := c.getExact(m.SHA, m.Size)
+				if err != nil {
+					return nil, err
+				}
+				cache[i] = loaded
+				data = loaded
+			}
+			take := min(need, p.sourceEnd[i]-at)
+			portion := data[at-start : at-start+take]
+			if len(joined) == 0 && take == need {
+				return portion, nil
+			}
+			joined = append(joined, portion...)
+			at += take
+			need -= take
+			i++
+		}
+		if need != 0 {
+			return nil, errBitPatch
+		}
+		return joined, nil
+	}
+	position := int(off)
+	end := position + int(n)
+	hashes := c.Rep.Recipe[len(c.Rep.Recipe)-p.frames*sha256.Size:]
+	for position < end {
+		i := position / bitPatchFrameSize
+		first := i * bitPatchFrameSize
+		full := min(bitPatchFrameSize, int(c.Rep.Size)-first)
+		m := &c.Rep.Members[sourceCount+i]
+		if err := c.decodeWork().step(1); err != nil {
+			return err
+		}
+		program, err := c.getExact(m.SHA, m.Size)
+		if err != nil {
+			return err
+		}
+		raw, err := bitPatchApplyFrame(program, full, sourceSize, load)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(raw)
+		if !bytes.Equal(sum[:], hashes[i*sha256.Size:(i+1)*sha256.Size]) {
+			return fmt.Errorf("%w: bit-patch frame %d", errRepMismatch, i)
+		}
+		stop := min(first+full, end)
+		written, err := w.Write(raw[position-first : stop-first])
+		if err != nil {
+			return err
+		}
+		if written != stop-position {
+			return io.ErrShortWrite
+		}
+		position = stop
+	}
+	return nil
+}
+
+// Range materialization only reads base spans touched by this frame.
+func bitPatchApplyFrame(program []byte, size, baseSize int, load func(int, int) ([]byte, error)) ([]byte, error) {
+	if len(program) == 0 || size < 1 || size > bitPatchFrameSize || baseSize < 0 || baseSize > bitPatchMaxObject {
+		return nil, errBitPatch
+	}
+	if program[0] == 0 && len(program) == size+1 {
+		return program[1:], nil
+	}
+	if program[0] != 1 && program[0] != 2 {
+		return nil, errBitPatch
+	}
+	relative := program[0] == 2
+	var previousSourceEnd, previousOutputEnd int64
+	out := make([]byte, 0, size)
+	program = program[1:]
+	for operations := 0; len(out) < size; operations++ {
+		if operations >= bitPatchFrameSize/4 {
+			return nil, errBitPatch
+		}
+		val, n := binary.Uvarint(program)
+		if n <= 0 || val>>1 == 0 || val>>1 > uint64(size-len(out)) {
+			return nil, errBitPatch
+		}
+		length := int(val >> 1)
+		program = program[n:]
+		if val&1 == 0 {
+			if length > len(program) {
+				return nil, errBitPatch
+			}
+			out = append(out, program[:length]...)
+			program = program[length:]
+			continue
+		}
+		var bit int64
+		if relative {
+			var delta int64
+			delta, n = binary.Varint(program)
+			if delta < -int64(bitPatchMaxObject+bitPatchFrameSize)*8 || delta > int64(bitPatchMaxObject)*8 {
+				return nil, errBitPatch
+			}
+			bit = previousSourceEnd + int64(len(out))*8 - previousOutputEnd*8 + delta
+		} else {
+			var absolute uint64
+			absolute, n = binary.Uvarint(program)
+			if absolute > uint64(baseSize)*8 {
+				return nil, errBitPatch
+			}
+			bit = int64(absolute)
+		}
+		if n <= 0 || bit < 0 || bit > int64(baseSize)*8 || int64(length)*8 > int64(baseSize)*8-bit || load == nil {
+			return nil, errBitPatch
+		}
+		program = program[n:]
+		previousSourceEnd, previousOutputEnd = bit+int64(length)*8, int64(len(out)+length)
+		shift := uint(bit % 8)
+		extra := int((shift + 7) / 8)
+		source, err := load(int(bit/8), length+extra)
+		if err != nil {
+			return nil, err
+		}
+		if len(source) != length+extra {
+			return nil, errBitPatch
+		}
+		if shift == 0 {
+			out = append(out, source...)
+			continue
+		}
+		for i := range length {
+			out = append(out, source[i]>>shift|source[i+1]<<(8-shift))
+		}
+	}
+	if len(program) != 0 {
+		return nil, errBitPatch
+	}
+	return out, nil
 }
 
 // =============================================================================
@@ -92297,7 +92524,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature && x != multipartAdoptFeature && x != snapshotPagesFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != bitPatchFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature && x != multipartAdoptFeature && x != snapshotPagesFeature {
 			return x
 		}
 	}
@@ -92329,7 +92556,7 @@ func (s *Store) authRecordFeatures(rec *authRecord) ([]string, error) {
 		for _, f := range []struct {
 			on   bool
 			name string
-		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}, {need.exe, authExeFeature}, {need.splice, spliceFeature}} {
+		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}, {need.exe, authExeFeature}, {need.splice, spliceFeature}, {need.bitPatch, bitPatchFeature}} {
 			if f.on {
 				out = append(out, f.name)
 			}
@@ -100823,6 +101050,7 @@ type repReplayNeeds struct {
 	canon        bool // B8: body references or ZIP representations
 	exe          bool // B9: normalized executable representations
 	splice       bool // B10: deep canonical streams (kind 16)
+	bitPatch     bool // GF2: exact compressed output frames
 }
 
 func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
@@ -100852,6 +101080,7 @@ func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
 		need.canon = need.canon || obj.Kind == repKindZip
 		need.exe = need.exe || obj.Kind == repKindExe
 		need.splice = need.splice || obj.Kind == repKindSplice
+		need.bitPatch = need.bitPatch || obj.Kind == repKindBitPatch
 		need.hard = need.hard || obj.Kind == repKindSplice && splNeedsHard(env, id, obj)
 		switch obj.Kind {
 		case repKindGzip:

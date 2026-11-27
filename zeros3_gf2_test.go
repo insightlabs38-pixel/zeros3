@@ -154,80 +154,6 @@ func gf2FrameProgram(base, target []byte, index gf2Index, cfg gf2MatchConfig) ([
 	return out, stats
 }
 
-// Range materialization only reads base spans touched by this frame.
-func gf2ApplyFrame(program []byte, size, baseSize int, load func(int, int) ([]byte, error)) ([]byte, error) {
-	if len(program) == 0 || size < 1 || size > gf2FrameSize || baseSize < 0 || baseSize > gf2MaxObject {
-		return nil, gf2BadProgram
-	}
-	if program[0] == 0 && len(program) == size+1 {
-		return program[1:], nil
-	}
-	if program[0] != 1 && program[0] != 2 {
-		return nil, gf2BadProgram
-	}
-	relative := program[0] == 2
-	var previousSourceEnd, previousOutputEnd int64
-	out := make([]byte, 0, size)
-	program = program[1:]
-	for len(out) < size {
-		val, n := binary.Uvarint(program)
-		if n <= 0 || val>>1 == 0 || val>>1 > uint64(size-len(out)) {
-			return nil, gf2BadProgram
-		}
-		length := int(val >> 1)
-		program = program[n:]
-		if val&1 == 0 {
-			if length > len(program) {
-				return nil, gf2BadProgram
-			}
-			out = append(out, program[:length]...)
-			program = program[length:]
-			continue
-		}
-		var bit int64
-		if relative {
-			var delta int64
-			delta, n = binary.Varint(program)
-			if delta < -int64(gf2MaxObject+gf2FrameSize)*8 || delta > int64(gf2MaxObject)*8 {
-				return nil, gf2BadProgram
-			}
-			bit = previousSourceEnd + int64(len(out))*8 - previousOutputEnd*8 + delta
-		} else {
-			var absolute uint64
-			absolute, n = binary.Uvarint(program)
-			if absolute > uint64(baseSize)*8 {
-				return nil, gf2BadProgram
-			}
-			bit = int64(absolute)
-		}
-		if n <= 0 || bit < 0 || bit > int64(baseSize)*8 || int64(length)*8 > int64(baseSize)*8-bit || load == nil {
-			return nil, gf2BadProgram
-		}
-		program = program[n:]
-		previousSourceEnd, previousOutputEnd = bit+int64(length)*8, int64(len(out)+length)
-		shift := uint(bit % 8)
-		extra := int((shift + 7) / 8)
-		source, err := load(int(bit/8), length+extra)
-		if err != nil {
-			return nil, err
-		}
-		if len(source) != length+extra {
-			return nil, gf2BadProgram
-		}
-		if shift == 0 {
-			out = append(out, source...)
-			continue
-		}
-		for i := range length {
-			out = append(out, source[i]>>shift|source[i+1]<<(8-shift))
-		}
-	}
-	if len(program) != 0 {
-		return nil, gf2BadProgram
-	}
-	return out, nil
-}
-
 type gf2RecordRef struct{ id, sum [32]byte }
 type gf2RootRef struct {
 	index [32]byte
@@ -327,7 +253,7 @@ func (r *gf2Reader) getFrame(ref gf2RecordRef, size, baseSize int, load func(int
 	if err != nil {
 		return nil, err
 	}
-	out, err := gf2ApplyFrame(data, size, baseSize, load)
+	out, err := bitPatchApplyFrame(data, size, baseSize, load)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +347,7 @@ func TestGF2ShiftedProgram(t *testing.T) {
 		t.Fatal("accepted out-of-range read")
 	}
 	for _, bad := range [][]byte{{}, {1}, {1, 5, 255}, {1, 17, 127}, {1, 2, 1, 3}, {0, 1, 2}} {
-		if _, err := gf2ApplyFrame(bad, 1, 0, nil); err == nil {
+		if _, err := bitPatchApplyFrame(bad, 1, 0, nil); err == nil {
 			t.Fatalf("accepted malformed program %x", bad)
 		}
 	}
@@ -602,7 +528,7 @@ func FuzzGF2FrameProgram(f *testing.F) {
 			}
 			return base[off : off+n], nil
 		}
-		got, err := gf2ApplyFrame(program, int(size), len(base), load)
+		got, err := bitPatchApplyFrame(program, int(size), len(base), load)
 		if err == nil && len(got) != int(size) {
 			t.Fatal("unchecked frame size")
 		}
