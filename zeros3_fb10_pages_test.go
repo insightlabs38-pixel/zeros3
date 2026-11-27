@@ -54,7 +54,7 @@ func FuzzFB10PartPage(f *testing.F) {
 func TestFB10PartPageReplayAndReconciliation(t *testing.T) {
 	t.Setenv("ZEROS3_JOURNAL_FORMAT", "j2")
 	dir := t.TempDir()
-	s, err := openStoreWithFeatures(dir, true, true, false, false, false, journalResearch{binary: true, multipartPages: true})
+	s, err := openStoreWithFeatures(dir, true, true, false, false, false, storeResearch{binary: true, multipartPages: true})
 	mustOK(t, err)
 	mustOK(t, s.CreateBucket("b"))
 	up, err := s.CreateMultipartUpload("b", "part", "application/octet-stream", nil)
@@ -126,7 +126,7 @@ func TestFB10PartPagesScale(t *testing.T) {
 	for _, pageMode := range []bool{false, true} {
 		t.Run(fmt.Sprint(pageMode), func(t *testing.T) {
 			dir := t.TempDir()
-			s, err := openStoreWithFeatures(dir, true, true, false, false, false, journalResearch{multipartPages: pageMode})
+			s, err := openStoreWithFeatures(dir, true, true, false, false, false, storeResearch{multipartPages: pageMode})
 			mustOK(t, err)
 			mustOK(t, s.CreateBucket("b"))
 			id, err := s.CreateMultipartUpload("b", "maximum", "", nil)
@@ -193,7 +193,7 @@ func TestFB10PartPagesScale(t *testing.T) {
 
 func TestFB10PartPageMultipleLeaves(t *testing.T) {
 	t.Setenv("ZEROS3_JOURNAL_FORMAT", "j2")
-	s, err := openStoreWithFeatures(t.TempDir(), true, true, false, false, false, journalResearch{multipartPages: true})
+	s, err := openStoreWithFeatures(t.TempDir(), true, true, false, false, false, storeResearch{multipartPages: true})
 	mustOK(t, err)
 	defer s.Close()
 	refs := make([]chunkRef, journalPartPageRows+1)

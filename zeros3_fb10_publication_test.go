@@ -49,7 +49,7 @@ func fb10UploadPartHTTP(t *testing.T, ts *httptest.Server, signer testSigner, ke
 func TestFB10MultipartFrontierExact(t *testing.T) {
 	t.Setenv("ZEROS3_JOURNAL_FORMAT", "j2")
 	dir := t.TempDir()
-	opt := journalResearch{binary: true, multipartAdopt: true, multipartPages: true}
+	opt := storeResearch{binary: true, multipartAdopt: true, multipartPages: true}
 	s, err := openStoreWithFeatures(dir, true, true, false, false, false, opt)
 	mustOK(t, err)
 	mustOK(t, s.CreateBucket("b"))
@@ -127,7 +127,7 @@ func TestFB10MultipartCopyProvenance(t *testing.T) {
 	_, err = s.PutObject("b", "legacy", body, "application/octet-stream", nil)
 	mustOK(t, err)
 	mustOK(t, s.Close())
-	s, err = openStoreWithFeatures(dir, true, true, false, false, false, journalResearch{multipartAdopt: true})
+	s, err = openStoreWithFeatures(dir, true, true, false, false, false, storeResearch{multipartAdopt: true})
 	mustOK(t, err)
 	defer s.Close()
 	s.writeBinaryManifests = true
@@ -179,7 +179,7 @@ func TestFB10MultipartCopyProvenance(t *testing.T) {
 
 func TestFB10MultipartReplacedPredecessorUsesReader(t *testing.T) {
 	t.Setenv("ZEROS3_JOURNAL_FORMAT", "j2")
-	s, err := openStoreWithFeatures(t.TempDir(), true, true, false, false, false, journalResearch{multipartAdopt: true})
+	s, err := openStoreWithFeatures(t.TempDir(), true, true, false, false, false, storeResearch{multipartAdopt: true})
 	mustOK(t, err)
 	defer s.Close()
 	mustOK(t, s.CreateBucket("b"))

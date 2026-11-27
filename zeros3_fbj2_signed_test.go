@@ -61,7 +61,7 @@ func fbj2SignedRun(t *testing.T, mode string, round, workers, size int, mixed bo
 	t.Setenv("ZEROS3_JOURNAL_FORMAT", format)
 	t.Setenv("ZEROS3_JOURNAL_WATERMARK", watermark)
 	dir := t.TempDir()
-	s, err := openStoreWithFeatures(dir, true, nsCheckpointDefault(), false, false, false, journalResearch{binary: mode == "j2bin"})
+	s, err := openStoreWithFeatures(dir, true, nsCheckpointDefault(), false, false, false, storeResearch{binary: mode == "j2bin"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,7 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | FB-08 | PARTIAL | [Signed native protocol v3](FB-08/README.md) replicated 1,000 objects in nine or eleven requests, resumed an authenticated connection-cut prefix, and improved throttled text transfer. Directory batching, source passthrough, durable process-cut acknowledgments and WAN qualification remain open. |
 | FB-09 | PARTIAL | [Binary manifests, canonical visible-key pages and verified current-only downgrade](FB-09/README.md). Generated archive is 99.3% of flat v4 at 1M and 10M keys. Durable snapshot page reuse and authority remain open for FB-11. |
 | FB-10 | PARTIAL | [J2 compact roots, paged multipart, epoch cursors and shared publication](FB-10/README.md). All 44 tested benign X14 cuts recovered exactly. Proven multipart and copy avoid payload reads. The signed mixed p99 gate remains open. |
-| FB-11 | pending | M-F5/G1 snapshots and optional range proofs |
+| FB-11 | IN PROGRESS | [Shared immutable snapshot pages](FB-11/README.md) with exact portable identity and GC closure. One-million-row physical churn reused pages. Delta transport and range proof research are in progress. |
 | FB-12 | pending | M-D1/D2 compression and delta |
 | FB-13 | pending | M-D3/E1 CDC and lifecycle economics |
 | FB-14 | pending | M-D4/G3 conditional ingest delta |

@@ -1,0 +1,10 @@
+=== RUN   TestFB11SnapshotPageIndexGolden
+--- PASS: TestFB11SnapshotPageIndexGolden (0.00s)
+=== RUN   TestFB11SnapshotPagesAndPortableCompatibility
+    zeros3_fb11_test.go:164: reused 4 of 7 original pages and preserved exact portable bytes; corrupted page blocked GC
+--- PASS: TestFB11SnapshotPagesAndPortableCompatibility (0.35s)
+=== RUN   TestFB11SnapshotPagesPhysicalScale
+    zeros3_fb11_test.go:229: rows=1000000 flat=227000199 flat_allocated=227000320 initial_pages=13290 initial_bytes=68116689 initial_allocated=109953024 changed=1000 new_pages=1109 incremental=5836336 incremental_allocated=9228288 first=6.364512857s second=2.321118265s
+--- PASS: TestFB11SnapshotPagesPhysicalScale (10.82s)
+PASS
+ok  	zeros3	11.213s

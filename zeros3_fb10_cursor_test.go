@@ -14,7 +14,7 @@ func TestFB10JournalCursorAndBenignX14(t *testing.T) {
 	for _, compact := range []bool{false, true} {
 		t.Run(fmt.Sprint(compact), func(t *testing.T) {
 			dir := t.TempDir()
-			s, err := openStoreWithFeatures(dir, true, true, false, false, false, journalResearch{binary: compact})
+			s, err := openStoreWithFeatures(dir, true, true, false, false, false, storeResearch{binary: compact})
 			mustOK(t, err)
 			mustOK(t, s.CreateBucket("b"))
 			_, err = s.PutObject("b", "key", []byte("acknowledged"), "text/plain", nil)

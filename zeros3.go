@@ -12139,6 +12139,7 @@ type Store struct {
 	writeBinaryJournal    bool
 	writeMultipartPages   bool
 	writeMultipartAdopt   bool
+	writeSnapshotPages    bool
 
 	canon    canonOverlay // B8 planning: decoded canonical streams served for synthetic manifests
 	replayIn *strIntern   // journal replay only: shared bucket/content-type strings
@@ -12345,17 +12346,18 @@ func openStoreWith(root string, ownSegments, useCheckpoint, maintain bool) (*Sto
 }
 
 func openStoreWithLocator(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool) (*Store, error) {
-	return openStoreWithFeatures(root, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags, journalResearch{})
+	return openStoreWithFeatures(root, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags, storeResearch{})
 }
 
-type journalResearch struct {
-	binary, multipartPages, multipartAdopt bool
+type storeResearch struct {
+	binary, multipartPages, multipartAdopt, snapshotPages bool
 }
 
-func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool, research journalResearch) (*Store, error) {
+func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, locatorCache, locatorTags bool, research storeResearch) (*Store, error) {
 	activateJournal := research.binary || research.multipartPages || research.multipartAdopt
-	if activateJournal && !ownSegments {
-		return nil, errors.New("store: journal feature activation requires a writer")
+	activateFormat := activateJournal || research.snapshotPages
+	if activateFormat && !ownSegments {
+		return nil, errors.New("store: format activation requires a writer")
 	}
 	if activateJournal {
 		if _, err := os.Stat(filepath.Join(root, "FORMAT.json")); os.IsNotExist(err) && os.Getenv("ZEROS3_JOURNAL_FORMAT") != "j2" {
@@ -12369,12 +12371,12 @@ func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, lo
 	var err error
 	if ownSegments {
 		mode := syscall.LOCK_SH
-		if maintain || activateJournal {
+		if maintain || activateFormat {
 			mode = syscall.LOCK_EX
 		}
 		if lock, err = flockStore(root, writerLockDir, mode, false); errors.Is(err, syscall.EWOULDBLOCK) {
-			if maintain || activateJournal {
-				return nil, fmt.Errorf("store: online maintenance and journal format activation require the only writing process: %w", errGCStoreInUse)
+			if maintain || activateFormat {
+				return nil, fmt.Errorf("store: online maintenance and format activation require the only writing process: %w", errGCStoreInUse)
 			}
 			return nil, fmt.Errorf("store: %w", errMaintOwned)
 		}
@@ -12422,6 +12424,12 @@ func openStoreWithFeatures(root string, ownSegments, useCheckpoint, maintain, lo
 			return nil, err
 		}
 		s.writeMultipartAdopt = true
+	}
+	if research.snapshotPages {
+		if err := s.enableSnapshotPages(); err != nil {
+			s.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -21121,13 +21129,13 @@ func decodeJournalPartPage(b []byte) (magic string, count int, rows []byte, err 
 	return
 }
 
-func readJournalPartPage(path string) ([]byte, error) {
+func readBoundedFile(path string, limit int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, journalPartPageLimit+1))
+	return io.ReadAll(io.LimitReader(f, limit+1))
 }
 
 func (s *Store) writeJournalPartPages(refs []chunkRef, size int64) (string, error) {
@@ -21138,7 +21146,7 @@ func (s *Store) writeJournalPartPages(refs []chunkRef, size int64) (string, erro
 	publish := func(body []byte) (sum [32]byte, err error) {
 		sum = sha256.Sum256(body)
 		path := filepath.Join(dir, hex.EncodeToString(sum[:]))
-		prior, err := readJournalPartPage(path)
+		prior, err := readBoundedFile(path, journalPartPageLimit)
 		if err == nil {
 			if !bytes.Equal(prior, body) {
 				return sum, errors.New("existing multipart page has a mismatched digest")
@@ -21200,7 +21208,7 @@ func (s *Store) multipartPageRefs(ref string, inline []chunkRef, size int64) ([]
 	dir := filepath.Join(s.root, "journal", journalPartPagesDir)
 	read := func(sum [32]byte, want string) ([]byte, int, error) {
 		path := filepath.Join(dir, hex.EncodeToString(sum[:]))
-		body, err := readJournalPartPage(path)
+		body, err := readBoundedFile(path, journalPartPageLimit)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -39088,11 +39096,175 @@ func (s *Store) captureSnapshotEntries(bucket, prefix string) ([]snapshotEntryV1
 // CRC-valid descriptor, never a partial one, because writeFileDurable
 // only ever makes the final file visible via one atomic rename of an
 // already-fsynced temp file.
+const (
+	snapshotPagesFeature = "snapshotpages"
+	snapshotPagesDir     = "snapshot-pages"
+	snapshotPagesMagic   = "ZSSP"
+	snapshotPagesFixed   = 80
+	snapshotPagesMaxHead = 16 << 10
+)
+
+func (s *Store) enableSnapshotPages() error {
+	if err := os.MkdirAll(filepath.Join(s.root, snapshotPagesDir), 0700); err != nil {
+		return err
+	}
+	if _, err := s.metadataPageKey(); err != nil {
+		return err
+	}
+	if err := s.ensureFeature(snapshotPagesFeature); err != nil {
+		return err
+	}
+	// Also covers the page directory if the marker was already present.
+	if err := syncDir(s.root); err != nil {
+		return err
+	}
+	s.writeSnapshotPages = true
+	return nil
+}
+
+type snapshotPageIndex struct {
+	root, legacy [sha256.Size]byte
+	rows         uint64
+	head         []byte
+}
+
+func encodeSnapshotPageIndex(i snapshotPageIndex) []byte {
+	b := make([]byte, snapshotPagesFixed, snapshotPagesFixed+len(i.head)+4)
+	copy(b, snapshotPagesMagic)
+	binary.BigEndian.PutUint32(b[4:8], uint32(len(i.head)))
+	binary.BigEndian.PutUint64(b[8:16], i.rows)
+	copy(b[16:48], i.root[:])
+	copy(b[48:80], i.legacy[:])
+	b = append(b, i.head...)
+	return binary.BigEndian.AppendUint32(b, crc32.Checksum(b, castagnoliTable))
+}
+
+func decodeSnapshotPageIndex(b []byte) (snapshotPageIndex, error) {
+	var i snapshotPageIndex
+	if len(b) < snapshotPagesFixed+4 || string(b[:4]) != snapshotPagesMagic {
+		return i, fmt.Errorf("%w: paged snapshot header", errSnapshotCorrupt)
+	}
+	n := binary.BigEndian.Uint32(b[4:8])
+	i.rows = binary.BigEndian.Uint64(b[8:16])
+	if n > snapshotPagesMaxHead || i.rows > maxSnapshotEntries || len(b) != snapshotPagesFixed+int(n)+4 ||
+		crc32.Checksum(b[:len(b)-4], castagnoliTable) != binary.BigEndian.Uint32(b[len(b)-4:]) {
+		return i, fmt.Errorf("%w: paged snapshot length, count or checksum", errSnapshotCorrupt)
+	}
+	copy(i.root[:], b[16:48])
+	copy(i.legacy[:], b[48:80])
+	i.head = b[snapshotPagesFixed : len(b)-4]
+	return i, nil
+}
+
+func (s *Store) buildSnapshotPages(d snapshotDescriptorV1, legacy []byte) ([]byte, error) {
+	entries := d.Entries
+	if len(entries) != 0 {
+		d.Entries = nil
+	}
+	head, err := encodeSnapshotDescriptor(d)
+	if err != nil {
+		return nil, err
+	}
+	if len(head) > snapshotPagesMaxHead || len(entries) > maxSnapshotEntries {
+		return legacy, nil
+	}
+	for _, entry := range entries {
+		if len(entry.Key) > metaPageKeyMax || len(entry.Key)+len(entry.ContentType)+len(entry.ETag)+256 > metaPageLimit ||
+			!utf8.ValidString(entry.Key) || !utf8.ValidString(entry.ETag) || !utf8.ValidString(entry.ContentType) ||
+			entry.ManifestSHA256 != strings.ToLower(entry.ManifestSHA256) {
+			return legacy, nil
+		}
+	}
+	key, err := s.metadataPageKey()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(s.root, snapshotPagesDir)
+	b := newMetadataTree(key, func(sum [32]byte, body []byte) error {
+		path := filepath.Join(dir, hex.EncodeToString(sum[:]))
+		prior, err := readBoundedFile(path, metaPageLimit)
+		if err == nil {
+			if !bytes.Equal(prior, body) {
+				return fmt.Errorf("%w: existing shared snapshot page differs", errSnapshotCorrupt)
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		return writeFileDurable(filepath.Join(s.root, "tmp"), path, body)
+	})
+	for _, e := range entries {
+		sum, err := decodeHexSHA256(e.ManifestSHA256)
+		if err != nil || !validSnapshotUUID(e.ManifestUUID) || e.Size < 0 {
+			return nil, fmt.Errorf("%w: invalid page entry %q", errSnapshotCorrupt, e.Key)
+		}
+		row := objectEntry{manifestUUID: e.ManifestUUID, manifestSHA256: sum, size: e.Size, etag: e.ETag, contentType: e.ContentType}
+		if err := b.add([]byte(e.Key), &row); err != nil {
+			return nil, err
+		}
+	}
+	root, err := b.finish()
+	if err != nil {
+		return nil, err
+	}
+	if err := syncDir(dir); err != nil {
+		return nil, err
+	}
+	return encodeSnapshotPageIndex(snapshotPageIndex{root: root.sum, legacy: sha256.Sum256(legacy), rows: root.rows, head: head}), nil
+}
+
+func (s *Store) decodeStoredSnapshot(data []byte) (snapshotDescriptorV1, []byte, error) {
+	if !bytes.HasPrefix(data, []byte(snapshotPagesMagic)) {
+		d, err := decodeSnapshotDescriptor(data)
+		return d, data, err
+	}
+	var d snapshotDescriptorV1
+	if !slices.Contains(s.formatSnapshot().Features, snapshotPagesFeature) {
+		return d, nil, fmt.Errorf("%w: missing snapshot page format marker", errSnapshotCorrupt)
+	}
+	i, err := decodeSnapshotPageIndex(data)
+	if err != nil {
+		return d, nil, err
+	}
+	d, err = decodeSnapshotDescriptor(i.head)
+	if err != nil || len(d.Entries) != 0 {
+		return d, nil, fmt.Errorf("%w: invalid paged snapshot metadata", errSnapshotCorrupt)
+	}
+	dir := filepath.Join(s.root, snapshotPagesDir)
+	rows, _, err := walkMetadataTree(i.root, func(sum [32]byte) ([]byte, error) {
+		return readBoundedFile(filepath.Join(dir, hex.EncodeToString(sum[:])), metaPageLimit)
+	}, func(key []byte, entry *objectEntry) error {
+		if uint64(len(d.Entries)) >= i.rows || !validSnapshotUUID(entry.manifestUUID) || entry.seq != 0 {
+			return errors.New("invalid snapshot page row")
+		}
+		d.Entries = append(d.Entries, snapshotEntryV1{Key: string(key), ManifestUUID: entry.manifestUUID,
+			ManifestSHA256: hex.EncodeToString(entry.manifestSHA256[:]), Size: entry.size, ETag: entry.etag, ContentType: entry.contentType})
+		return nil
+	})
+	if err != nil || rows != i.rows {
+		return d, nil, fmt.Errorf("%w: invalid snapshot page tree: %v", errSnapshotCorrupt, err)
+	}
+	legacy, err := encodeSnapshotDescriptor(d)
+	if err != nil || sha256.Sum256(legacy) != i.legacy {
+		return d, nil, fmt.Errorf("%w: paged snapshot disagrees with its portable identity", errSnapshotCorrupt)
+	}
+	return d, legacy, nil
+}
+
 func (s *Store) publishSnapshot(d snapshotDescriptorV1) error {
 	data, err := encodeSnapshotDescriptor(d)
 	if err != nil {
 		return err
 	}
+	if s.writeSnapshotPages {
+		data, err = s.buildSnapshotPages(d, data)
+		if err != nil {
+			return err
+		}
+	}
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
 	return s.publishSnapshotFrame(d.SnapshotID, data)
 }
 
@@ -39143,12 +39315,12 @@ func (s *Store) scanSnapshots() (valid []snapshotDescriptorV1, issues []VerifyIs
 			issues = append(issues, VerifyIssue{Kind: "invalid", Subject: "snapshots/" + name, Detail: "unexpected file name in snapshot store"})
 			continue
 		}
-		data, rerr := os.ReadFile(filepath.Join(dir, name))
+		data, rerr := readBoundedFile(filepath.Join(dir, name), maxSnapshotPayload+snapshotHeaderSize+4)
 		if rerr != nil {
 			issues = append(issues, VerifyIssue{Kind: "missing", Subject: "snapshot:" + id, Detail: rerr.Error()})
 			continue
 		}
-		d, derr := decodeSnapshotDescriptor(data)
+		d, _, derr := s.decodeStoredSnapshot(data)
 		if derr != nil {
 			issues = append(issues, VerifyIssue{Kind: "corrupt", Subject: "snapshot:" + id, Detail: derr.Error()})
 			continue
@@ -39222,7 +39394,7 @@ func (s *Store) readSnapshotFrameStat(id string) (snapshotDescriptorV1, []byte, 
 	fi, err := os.Stat(path)
 	var data []byte
 	if err == nil {
-		data, err = os.ReadFile(path)
+		data, err = readBoundedFile(path, maxSnapshotPayload+snapshotHeaderSize+4)
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -39230,7 +39402,7 @@ func (s *Store) readSnapshotFrameStat(id string) (snapshotDescriptorV1, []byte, 
 		}
 		return snapshotDescriptorV1{}, nil, nil, err
 	}
-	d, err := decodeSnapshotDescriptor(data)
+	d, legacy, err := s.decodeStoredSnapshot(data)
 	if err != nil {
 		return snapshotDescriptorV1{}, nil, nil, err
 	}
@@ -39238,7 +39410,7 @@ func (s *Store) readSnapshotFrameStat(id string) (snapshotDescriptorV1, []byte, 
 		return snapshotDescriptorV1{}, nil, nil, fmt.Errorf("%w: descriptor's snapshot_id does not match its own file name", errSnapshotCorrupt)
 	}
 	fireTestHook(hookSnapshotDecoded)
-	return d, data, fi, nil
+	return d, legacy, fi, nil
 }
 
 // deleteSnapshot durably removes one snapshot's descriptor file (A10):
@@ -41503,6 +41675,7 @@ func runServe(args []string) {
 	binaryJournal := fs.Bool("binary-journal", false, "write compact root records inside opt-in J2 groups (research)")
 	multipartPages := fs.Bool("multipart-pages", false, "write immutable multipart chunk-list pages outside opt-in J2 groups (research)")
 	multipartAdopt := fs.Bool("multipart-adopt", false, "retain multipart SHA frontier evidence and adopt verified chunk lists (research)")
+	snapshotPages := fs.Bool("snapshot-pages", false, "publish snapshots over immutable shared metadata pages (research)")
 	fs.Parse(args)
 	switch *bgYield {
 	case "off", "adaptive", "fixed":
@@ -41588,7 +41761,7 @@ func runServe(args []string) {
 	defer lock.release()
 
 	store, err := openStoreWithFeatures(*storeDir, true, *checkpoint, *maintMode != "off", *locatorCache, *locatorTags,
-		journalResearch{binary: *binaryJournal, multipartPages: *multipartPages, multipartAdopt: *multipartAdopt})
+		storeResearch{binary: *binaryJournal, multipartPages: *multipartPages, multipartAdopt: *multipartAdopt, snapshotPages: *snapshotPages})
 	if err != nil {
 		log.Fatalf("zeros3: failed to open store: %v", err)
 	}
@@ -43100,13 +43273,13 @@ func (im *bundleImporter) descriptor(d snapshotDescriptorV1, f []byte) error {
 			}
 		}
 	}
-	existing, rerr := os.ReadFile(im.s.snapshotPath(d.SnapshotID))
+	_, existing, rerr := im.s.readSnapshotFrame(d.SnapshotID)
 	switch {
 	case rerr == nil && bytes.Equal(existing, f):
 		im.haveSnap = true
 	case rerr == nil:
 		return fmt.Errorf("bundle import: snapshot %s already exists with a different descriptor", d.SnapshotID)
-	case !os.IsNotExist(rerr):
+	case !errors.Is(rerr, errNoSuchSnapshot):
 		return rerr
 	}
 	return nil
@@ -90064,7 +90237,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature && x != multipartAdoptFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature && x != multipartAdoptFeature && x != snapshotPagesFeature {
 			return x
 		}
 	}
