@@ -1,0 +1,15 @@
+=== RUN   TestFB12ExportRecordCorpora
+    zeros3_fb12_records_test.go:102: input x9-tree/linux-go-tool-tree-2337f48 bytes=7393280 sha256=da72f32e0f3a61c0bc4728241c73ed97deaaddd5b6fb2f886eb38c3692cb58ed
+    zeros3_fb12_records_test.go:102: input typescript/c12-source-package-v2 bytes=22842880 sha256=56e2e3b825cf4a82c36f71b4e6e46fb76e51457593d2d184fc031603d2e80ad0
+    zeros3_fb12_records_test.go:102: input structured/c14-sqlite-v2 bytes=1187840 sha256=3ca34eea56483cb5a8089e0aeb0af7ede5250e00c6c1af6dae391250f3b62a39
+    zeros3_fb12_records_test.go:102: input structured/c14-events-v2 bytes=1030810 sha256=f4530e224a0ad5c7d65e77fa9e97016c84de2a6b0235f7f3a55a83ef21fd6c03
+    zeros3_fb12_records_test.go:102: input heldout-httpx/c12-httpx-source-v1 bytes=911360 sha256=458fa2289a4d08978e53149a5f4befed0a77d55c140e79d0b8d5f766087f6223
+    zeros3_fb12_records_test.go:102: input entropy-control/c14-entropy-v0 bytes=4194304 sha256=f811becca3e268fd599afe5f65c705a68623537e48278a1221d1ca35e7990911
+    zeros3_fb12_records_test.go:113: corpus entropy-control distinct_cdc_records=76 logical_bytes=4194304
+    zeros3_fb12_records_test.go:113: corpus heldout-httpx distinct_cdc_records=9 logical_bytes=911360
+    zeros3_fb12_records_test.go:113: corpus structured distinct_cdc_records=18 logical_bytes=2218650
+    zeros3_fb12_records_test.go:113: corpus typescript distinct_cdc_records=242 logical_bytes=22214229
+    zeros3_fb12_records_test.go:113: corpus x9-tree distinct_cdc_records=73 logical_bytes=7393280
+--- PASS: TestFB12ExportRecordCorpora (1.29s)
+PASS
+ok  	zeros3	1.292s

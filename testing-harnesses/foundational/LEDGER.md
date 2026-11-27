@@ -29,7 +29,7 @@ Status: COMPLETE, PARTIAL, BLOCKED, RESEARCH_ONLY or ALREADY_FIXED. Branch
 | FB-09 | PARTIAL | [Binary manifests, canonical visible-key pages and verified current-only downgrade](FB-09/README.md). Generated archive is 99.3% of flat v4 at 1M and 10M keys. Durable snapshot page reuse and authority remain open for FB-11. |
 | FB-10 | PARTIAL | [J2 compact roots, paged multipart, epoch cursors and shared publication](FB-10/README.md). All 44 tested benign X14 cuts recovered exactly. Proven multipart and copy avoid payload reads. The signed mixed p99 gate remains open. |
 | FB-11 | COMPLETE | [Shared snapshots and changes-only delta v2](FB-11/README.md). Exact closure and offline page reclamation passed. Wire metadata is proportional to changes. M-G1 was research-only with no named consumer. |
-| FB-12 | pending | M-D1/D2 compression and delta |
+| FB-12 | IN PROGRESS | [Archived X6 Go coder on native records](FB-12/README.md). Exact decoding passed. Corpus size and xz throughput gates remain open while the Go implementation is tuned. |
 | FB-13 | pending | M-D3/E1 CDC and lifecycle economics |
 | FB-14 | pending | M-D4/G3 conditional ingest delta |
 | FB-15 | pending | M-E2/G4 incremental maintenance |

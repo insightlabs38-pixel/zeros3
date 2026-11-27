@@ -1,0 +1,5 @@
+fuzz: elapsed: 0s, gathering baseline coverage: 0/3 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 3/3 completed, now fuzzing with 2 workers
+fuzz: elapsed: 1s, execs: 24000 (21052/sec), new interesting: 71 (total: 74)
+PASS
+ok  	zeros3-testing/foundational/FB-12/lzl	1.142s

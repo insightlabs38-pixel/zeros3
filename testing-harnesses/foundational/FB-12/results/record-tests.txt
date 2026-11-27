@@ -1,0 +1,6 @@
+=== RUN   TestRecordV1Golden
+--- PASS: TestRecordV1Golden (0.00s)
+=== RUN   TestRecordRoundTrip
+--- PASS: TestRecordRoundTrip (0.23s)
+PASS
+ok  	zeros3-testing/foundational/FB-12/lzl	0.237s
