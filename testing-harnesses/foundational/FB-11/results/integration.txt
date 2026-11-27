@@ -1,0 +1,170 @@
+=== RUN   TestFB02_SnapshotSessionDescribeEqualsFresh
+--- PASS: TestFB02_SnapshotSessionDescribeEqualsFresh (0.03s)
+=== RUN   TestFB02_SnapshotSessionRestoreDecodesOnce
+--- PASS: TestFB02_SnapshotSessionRestoreDecodesOnce (0.08s)
+=== RUN   TestFB02_SnapshotSessionDeletedMidRestore
+=== RUN   TestFB02_SnapshotSessionDeletedMidRestore/sessions=true
+=== RUN   TestFB02_SnapshotSessionDeletedMidRestore/sessions=false
+--- PASS: TestFB02_SnapshotSessionDeletedMidRestore (0.04s)
+    --- PASS: TestFB02_SnapshotSessionDeletedMidRestore/sessions=true (0.02s)
+    --- PASS: TestFB02_SnapshotSessionDeletedMidRestore/sessions=false (0.02s)
+=== RUN   TestFB02_SnapshotSessionCorruptDescriptor
+--- PASS: TestFB02_SnapshotSessionCorruptDescriptor (0.01s)
+=== RUN   TestFB02_SnapshotSessionMissingManifest
+--- PASS: TestFB02_SnapshotSessionMissingManifest (0.01s)
+=== RUN   TestFB02_SnapshotSessionBounds
+--- PASS: TestFB02_SnapshotSessionBounds (0.02s)
+=== RUN   TestFB02_SnapshotSessionCost
+    zeros3_fb02_snapshot_session_test.go:343: 200 entries: descriptor file 48595 B, index cost 24200 B (0.50x)
+--- PASS: TestFB02_SnapshotSessionCost (0.12s)
+=== RUN   TestFB02_SnapshotSessionOldServer
+--- PASS: TestFB02_SnapshotSessionOldServer (0.02s)
+=== RUN   TestFB11DeltaChangesOnly
+    zeros3_fb11_delta_test.go:120: 512-key v1 delta=445347 bytes, v2=2419, zero-change=527; changed=3 transferred manifests=2 reused payload refs=510
+--- PASS: TestFB11DeltaChangesOnly (0.85s)
+=== RUN   TestFB11SnapshotDeltaGolden
+--- PASS: TestFB11SnapshotDeltaGolden (0.00s)
+=== RUN   TestFB11DeltaMetadataScalesWithChanges
+    zeros3_fb11_delta_test.go:199: keys=1000 changed=3 full_descriptor=219235 delta_metadata=1133
+    zeros3_fb11_delta_test.go:199: keys=100000 changed=3 full_descriptor=21900234 delta_metadata=1136
+--- PASS: TestFB11DeltaMetadataScalesWithChanges (0.36s)
+=== RUN   TestFB11SnapshotPageIndexGolden
+--- PASS: TestFB11SnapshotPageIndexGolden (0.00s)
+=== RUN   TestFB11SnapshotPagesAndPortableCompatibility
+    zeros3_fb11_test.go:178: reused 5 of 7 original pages and preserved exact portable bytes; corrupted page blocked GC
+--- PASS: TestFB11SnapshotPagesAndPortableCompatibility (0.36s)
+=== RUN   TestFB11SnapshotPagesPhysicalScale
+    zeros3_fb11_test.go:183: set ZEROS3_TEST_SNAPSHOT_PAGES_SCALE=1 for generated one-million-entry metadata
+--- SKIP: TestFB11SnapshotPagesPhysicalScale (0.00s)
+=== RUN   TestFB11SnapshotPageSweepRandomized
+    zeros3_fb11_test.go:337: 12 randomized snapshots, 432 mutations, 1135 exact retained roots; swept 13 orphan pages, kept 27
+--- PASS: TestFB11SnapshotPageSweepRandomized (0.24s)
+=== RUN   TestBundleDelta_ParserMutationMatrix
+=== RUN   TestBundleDelta_ParserMutationMatrix/bad_magic
+=== RUN   TestBundleDelta_ParserMutationMatrix/unsupported_version
+=== RUN   TestBundleDelta_ParserMutationMatrix/invalid_flags
+=== RUN   TestBundleDelta_ParserMutationMatrix/malformed_base_id
+=== RUN   TestBundleDelta_ParserMutationMatrix/truncated_header
+=== RUN   TestBundleDelta_ParserMutationMatrix/oversized_descriptor_length
+=== RUN   TestBundleDelta_ParserMutationMatrix/truncated_target_descriptor
+=== RUN   TestBundleDelta_ParserMutationMatrix/bad_target_descriptor
+=== RUN   TestBundleDelta_ParserMutationMatrix/impossible_manifest_count
+=== RUN   TestBundleDelta_ParserMutationMatrix/impossible_chunk_count
+=== RUN   TestBundleDelta_ParserMutationMatrix/impossible_payload_count
+=== RUN   TestBundleDelta_ParserMutationMatrix/payload_bytes_beyond_target_bytes
+=== RUN   TestBundleDelta_ParserMutationMatrix/duplicate_manifest
+=== RUN   TestBundleDelta_ParserMutationMatrix/unknown_manifest
+=== RUN   TestBundleDelta_ParserMutationMatrix/missing_manifest
+=== RUN   TestBundleDelta_ParserMutationMatrix/manifest_sha_mismatch
+=== RUN   TestBundleDelta_ParserMutationMatrix/manifest_malformed
+=== RUN   TestBundleDelta_ParserMutationMatrix/duplicate_chunk
+=== RUN   TestBundleDelta_ParserMutationMatrix/missing_target_chunk
+=== RUN   TestBundleDelta_ParserMutationMatrix/extra_unknown_chunk
+=== RUN   TestBundleDelta_ParserMutationMatrix/out_of_order_chunks
+=== RUN   TestBundleDelta_ParserMutationMatrix/wrong_logical_length
+=== RUN   TestBundleDelta_ParserMutationMatrix/unknown_codec
+=== RUN   TestBundleDelta_ParserMutationMatrix/raw_payload_with_zero_stored_length
+=== RUN   TestBundleDelta_ParserMutationMatrix/base_reference_with_stored_bytes
+=== RUN   TestBundleDelta_ParserMutationMatrix/base_reference_with_declared_stored_length_only
+=== RUN   TestBundleDelta_ParserMutationMatrix/base_reference_not_held_by_the_base
+=== RUN   TestBundleDelta_ParserMutationMatrix/base_reference_with_the_wrong_base_length
+=== RUN   TestBundleDelta_ParserMutationMatrix/payload_for_a_chunk_the_base_holds
+=== RUN   TestBundleDelta_ParserMutationMatrix/truncated_raw_payload
+=== RUN   TestBundleDelta_ParserMutationMatrix/truncated_compressed_payload
+=== RUN   TestBundleDelta_ParserMutationMatrix/deflate_bomb
+=== RUN   TestBundleDelta_ParserMutationMatrix/deflate_trailing_garbage
+=== RUN   TestBundleDelta_ParserMutationMatrix/payload_digest_mismatch
+=== RUN   TestBundleDelta_ParserMutationMatrix/wrong_payload_chunk_count
+=== RUN   TestBundleDelta_ParserMutationMatrix/wrong_payload_byte_count
+=== RUN   TestBundleDelta_ParserMutationMatrix/wrong_target_chunk_count
+=== RUN   TestBundleDelta_ParserMutationMatrix/wrong_target_byte_count
+=== RUN   TestBundleDelta_ParserMutationMatrix/footer_stored_bytes
+=== RUN   TestBundleDelta_ParserMutationMatrix/footer_raw_records
+=== RUN   TestBundleDelta_ParserMutationMatrix/footer_deflate_records
+=== RUN   TestBundleDelta_ParserMutationMatrix/footer_base-reference_records
+=== RUN   TestBundleDelta_ParserMutationMatrix/missing_footer
+=== RUN   TestBundleDelta_ParserMutationMatrix/truncated_footer_hash
+=== RUN   TestBundleDelta_ParserMutationMatrix/whole-file_hash_mismatch
+=== RUN   TestBundleDelta_ParserMutationMatrix/trailing_garbage
+=== RUN   TestBundleDelta_ParserMutationMatrix/flipped_payload_byte_under_valid_framing
+--- PASS: TestBundleDelta_ParserMutationMatrix (0.05s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/bad_magic (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/unsupported_version (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/invalid_flags (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/malformed_base_id (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/truncated_header (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/oversized_descriptor_length (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/truncated_target_descriptor (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/bad_target_descriptor (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/impossible_manifest_count (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/impossible_chunk_count (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/impossible_payload_count (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/payload_bytes_beyond_target_bytes (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/duplicate_manifest (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/unknown_manifest (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/missing_manifest (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/manifest_sha_mismatch (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/manifest_malformed (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/duplicate_chunk (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/missing_target_chunk (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/extra_unknown_chunk (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/out_of_order_chunks (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/wrong_logical_length (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/unknown_codec (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/raw_payload_with_zero_stored_length (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/base_reference_with_stored_bytes (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/base_reference_with_declared_stored_length_only (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/base_reference_not_held_by_the_base (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/base_reference_with_the_wrong_base_length (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/payload_for_a_chunk_the_base_holds (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/truncated_raw_payload (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/truncated_compressed_payload (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/deflate_bomb (0.01s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/deflate_trailing_garbage (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/payload_digest_mismatch (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/wrong_payload_chunk_count (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/wrong_payload_byte_count (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/wrong_target_chunk_count (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/wrong_target_byte_count (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/footer_stored_bytes (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/footer_raw_records (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/footer_deflate_records (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/footer_base-reference_records (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/missing_footer (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/truncated_footer_hash (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/whole-file_hash_mismatch (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/trailing_garbage (0.00s)
+    --- PASS: TestBundleDelta_ParserMutationMatrix/flipped_payload_byte_under_valid_framing (0.00s)
+=== RUN   TestBundleDelta_ExportImportRestoresTargetOverBase
+    zeros3_test.go:42169: delta 0.29 MiB vs full 1.06 MiB; payload 0.29 MiB, base-reused 0.76 MiB (72.7%)
+--- PASS: TestBundleDelta_ExportImportRestoresTargetOverBase (0.13s)
+=== RUN   TestBundleDelta_ImportIsIdempotentAndNeverTouchesNamespaceOrFormat
+--- PASS: TestBundleDelta_ImportIsIdempotentAndNeverTouchesNamespaceOrFormat (0.09s)
+=== RUN   TestBundleDelta_ImportCrashMatrix
+=== RUN   TestBundleDelta_ImportCrashMatrix/bundle-chunk
+=== RUN   TestBundleDelta_ImportCrashMatrix/cas-after-flush
+=== RUN   TestBundleDelta_ImportCrashMatrix/bundle-chunks-done
+=== RUN   TestBundleDelta_ImportCrashMatrix/bundle-manifest-published
+=== RUN   TestBundleDelta_ImportCrashMatrix/bundle-manifests-done
+=== RUN   TestBundleDelta_ImportCrashMatrix/bundle-before-snapshot
+=== RUN   TestBundleDelta_ImportCrashMatrix/bundle-snapshot-written
+=== RUN   TestBundleDelta_ImportCrashMatrix/bundle-snapshot-published
+--- PASS: TestBundleDelta_ImportCrashMatrix (0.56s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/bundle-chunk (0.07s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/cas-after-flush (0.06s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/bundle-chunks-done (0.06s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/bundle-manifest-published (0.06s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/bundle-manifests-done (0.06s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/bundle-before-snapshot (0.06s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/bundle-snapshot-written (0.08s)
+    --- PASS: TestBundleDelta_ImportCrashMatrix/bundle-snapshot-published (0.07s)
+=== RUN   TestBundleDelta_ImportUsesGroupedCASPublication
+--- PASS: TestBundleDelta_ImportUsesGroupedCASPublication (0.44s)
+=== RUN   TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation
+=== RUN   TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation/packed_compressed_cold
+=== RUN   TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation/mixed_packed_hot+cold
+--- PASS: TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation (0.07s)
+    --- PASS: TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation/packed_compressed_cold (0.01s)
+    --- PASS: TestBundleDelta_ExportDeterministicAndIndependentOfPhysicalRepresentation/mixed_packed_hot+cold (0.01s)
+PASS
+ok  	zeros3	3.501s

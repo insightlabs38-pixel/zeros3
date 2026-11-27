@@ -1,6 +1,6 @@
 # ZeroS3 portable snapshot bundles
 
-This is the normative file-format reference for ZeroS3 portable snapshot artifacts. Both formats below are **format v1** and are independent of live CAS pack/tier layout. An incompatible future artifact change must use an explicit new version/magic rather than silently reinterpreting v1. Current project maturity/format policy is summarized in [STATUS.md](./STATUS.md).
+This is the normative file-format reference for ZeroS3 portable snapshot artifacts. The default full and delta formats are **v1** and are independent of live CAS pack/tier layout. An opt-in changes-only delta uses explicit version 2. An incompatible future artifact change must use an explicit new version/magic rather than silently reinterpreting v1. Current project maturity/format policy is summarized in [STATUS.md](./STATUS.md).
 
 Two artifacts move one immutable snapshot between stores. All integers are
 big-endian; the magic decides the format, the file extension is only a convention.
@@ -229,3 +229,25 @@ byte-identical, regardless of loose/packed/tier layout of either snapshot.
   of the next delta. Each delta names exactly one base, so chains such as
   `S0 -> S1 -> S2` must be imported in order. There is no automatic chain
   search.
+## Changes-only delta v2 (opt-in)
+
+`bundle export -base-snapshot BASE -snapshot TARGET -changes-only`
+writes version 2 in the `ZS3DLTA1` header. The default remains v1.
+Version 1 readers refuse version 2 at the header check.
+
+Version 2 retains the fixed header and footer geometry. The descriptor
+length covers one canonical JSON edit record with the target scope,
+entry count, manifest count, logical bytes, portable descriptor SHA-256
+and strictly sorted unique key edits. An edit carries the exact replacement
+entry or omits it to delete the key. The receiver rebuilds the portable
+descriptor from the exact base and checks its digest and summary.
+
+The header's manifest count gives the number of manifest records carried.
+A target manifest present in the base under the same UUID and digest is
+omitted. Conflicting digests for one UUID fail validation. The stream carries
+novel chunk records in digest order and omits all base-held chunk records.
+The footer's base-reference count describes logical reuse. Both versions
+check that each reused chunk is readable with the expected length and digest
+before publishing a destination snapshot. Header-only inspection reports
+declared values. Use `bundle inspect -verify -base-store PATH` to verify
+the artifact and the exact base together.

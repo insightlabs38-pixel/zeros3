@@ -1,0 +1,9 @@
+{"block_bytes": 4096, "initial_content_bytes_hashed": 67108864, "object_bytes": 67108864, "proof_and_covering_block_bytes": 4544, "returned_range_bytes": 4096, "sibling_bytes": 448, "tree_bytes": 1048544}
+{"block_bytes": 16384, "initial_content_bytes_hashed": 67108864, "object_bytes": 67108864, "proof_and_covering_block_bytes": 16768, "returned_range_bytes": 4096, "sibling_bytes": 384, "tree_bytes": 262112}
+{"block_bytes": 65536, "initial_content_bytes_hashed": 67108864, "object_bytes": 67108864, "proof_and_covering_block_bytes": 65856, "returned_range_bytes": 4096, "sibling_bytes": 320, "tree_bytes": 65504}
+{"block_bytes": 4096, "initial_content_bytes_hashed": 2147483648, "object_bytes": 2147483648, "proof_and_covering_block_bytes": 4704, "returned_range_bytes": 4096, "sibling_bytes": 608, "tree_bytes": 33554400}
+{"block_bytes": 16384, "initial_content_bytes_hashed": 2147483648, "object_bytes": 2147483648, "proof_and_covering_block_bytes": 16928, "returned_range_bytes": 4096, "sibling_bytes": 544, "tree_bytes": 8388576}
+{"block_bytes": 65536, "initial_content_bytes_hashed": 2147483648, "object_bytes": 2147483648, "proof_and_covering_block_bytes": 66016, "returned_range_bytes": 4096, "sibling_bytes": 480, "tree_bytes": 2097120}
+{"block_bytes": 4096, "initial_content_bytes_hashed": 1099511627776, "object_bytes": 1099511627776, "proof_and_covering_block_bytes": 4992, "returned_range_bytes": 4096, "sibling_bytes": 896, "tree_bytes": 17179869152}
+{"block_bytes": 16384, "initial_content_bytes_hashed": 1099511627776, "object_bytes": 1099511627776, "proof_and_covering_block_bytes": 17216, "returned_range_bytes": 4096, "sibling_bytes": 832, "tree_bytes": 4294967264}
+{"block_bytes": 65536, "initial_content_bytes_hashed": 1099511627776, "object_bytes": 1099511627776, "proof_and_covering_block_bytes": 66304, "returned_range_bytes": 4096, "sibling_bytes": 768, "tree_bytes": 1073741792}

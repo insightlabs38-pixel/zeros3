@@ -1,0 +1,22 @@
+=== RUN   TestFB11DeltaChangesOnly
+    zeros3_fb11_delta_test.go:120: 512-key v1 delta=445341 bytes, v2=2419, zero-change=527; changed=3 transferred manifests=2 reused payload refs=510
+--- PASS: TestFB11DeltaChangesOnly (2.06s)
+=== RUN   TestFB11SnapshotDeltaGolden
+--- PASS: TestFB11SnapshotDeltaGolden (0.00s)
+=== RUN   TestFB11DeltaMetadataScalesWithChanges
+    zeros3_fb11_delta_test.go:199: keys=1000 changed=3 full_descriptor=219235 delta_metadata=1133
+    zeros3_fb11_delta_test.go:199: keys=100000 changed=3 full_descriptor=21900234 delta_metadata=1136
+--- PASS: TestFB11DeltaMetadataScalesWithChanges (2.78s)
+=== RUN   TestFB11SnapshotPageIndexGolden
+--- PASS: TestFB11SnapshotPageIndexGolden (0.00s)
+=== RUN   TestFB11SnapshotPagesAndPortableCompatibility
+    zeros3_fb11_test.go:181: reused 5 of 7 original pages and preserved exact portable bytes; corrupted page blocked GC
+--- PASS: TestFB11SnapshotPagesAndPortableCompatibility (0.96s)
+=== RUN   TestFB11SnapshotPagesPhysicalScale
+    zeros3_fb11_test.go:186: set ZEROS3_TEST_SNAPSHOT_PAGES_SCALE=1 for generated one-million-entry metadata
+--- SKIP: TestFB11SnapshotPagesPhysicalScale (0.00s)
+=== RUN   TestFB11SnapshotPageSweepRandomized
+    zeros3_fb11_test.go:340: 12 randomized snapshots, 432 mutations, 1135 exact retained roots; swept 13 orphan pages, kept 27
+--- PASS: TestFB11SnapshotPageSweepRandomized (0.58s)
+PASS
+ok  	zeros3	7.412s

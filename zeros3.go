@@ -39214,7 +39214,7 @@ func (s *Store) buildSnapshotPages(d snapshotDescriptorV1, legacy []byte) ([]byt
 	return encodeSnapshotPageIndex(snapshotPageIndex{root: root.sum, legacy: sha256.Sum256(legacy), rows: root.rows, head: head}), nil
 }
 
-func (s *Store) decodeStoredSnapshot(data []byte) (snapshotDescriptorV1, []byte, error) {
+func (s *Store) decodeStoredSnapshot(data []byte, notePage func([32]byte)) (snapshotDescriptorV1, []byte, error) {
 	if !bytes.HasPrefix(data, []byte(snapshotPagesMagic)) {
 		d, err := decodeSnapshotDescriptor(data)
 		return d, data, err
@@ -39233,6 +39233,9 @@ func (s *Store) decodeStoredSnapshot(data []byte) (snapshotDescriptorV1, []byte,
 	}
 	dir := filepath.Join(s.root, snapshotPagesDir)
 	rows, _, err := walkMetadataTree(i.root, func(sum [32]byte) ([]byte, error) {
+		if notePage != nil {
+			notePage(sum)
+		}
 		return readBoundedFile(filepath.Join(dir, hex.EncodeToString(sum[:])), metaPageLimit)
 	}, func(key []byte, entry *objectEntry) error {
 		if uint64(len(d.Entries)) >= i.rows || !validSnapshotUUID(entry.manifestUUID) || entry.seq != 0 {
@@ -39296,6 +39299,10 @@ func (s *Store) publishSnapshotFrame(id string, data []byte) error {
 // silently skipped -- nothing is ever expected to be present in
 // store/snapshots/ except descriptors this package itself published.
 func (s *Store) scanSnapshots() (valid []snapshotDescriptorV1, issues []VerifyIssue) {
+	return s.scanSnapshotsWithPages(nil)
+}
+
+func (s *Store) scanSnapshotsWithPages(notePage func([32]byte)) (valid []snapshotDescriptorV1, issues []VerifyIssue) {
 	dir := filepath.Join(s.root, "snapshots")
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -39320,7 +39327,7 @@ func (s *Store) scanSnapshots() (valid []snapshotDescriptorV1, issues []VerifyIs
 			issues = append(issues, VerifyIssue{Kind: "missing", Subject: "snapshot:" + id, Detail: rerr.Error()})
 			continue
 		}
-		d, _, derr := s.decodeStoredSnapshot(data)
+		d, _, derr := s.decodeStoredSnapshot(data, notePage)
 		if derr != nil {
 			issues = append(issues, VerifyIssue{Kind: "corrupt", Subject: "snapshot:" + id, Detail: derr.Error()})
 			continue
@@ -39333,6 +39340,93 @@ func (s *Store) scanSnapshots() (valid []snapshotDescriptorV1, issues []VerifyIs
 	}
 	sort.Slice(valid, func(i, j int) bool { return valid[i].SnapshotID < valid[j].SnapshotID })
 	return valid, issues
+}
+
+type snapshotPagesGCReport struct {
+	Live       int   `json:"live_pages"`
+	Candidates int   `json:"unreferenced_pages"`
+	Bytes      int64 `json:"unreferenced_bytes"`
+	Removed    int   `json:"removed_pages"`
+}
+
+// sweepSnapshotPages holds the same offline exclusion used by bundle
+// import, plus the writer lock. The set is the exact union of checked
+// descriptors. An invalid root or an unexpected file forbids all removals.
+func sweepSnapshotPages(root string, apply bool) (snapshotPagesGCReport, error) {
+	var report snapshotPagesGCReport
+	if _, err := os.Stat(filepath.Join(root, "FORMAT.json")); err != nil {
+		return report, err
+	}
+	lock, err := acquireStoreLock(root, true)
+	if err != nil {
+		return report, err
+	}
+	defer lock.release()
+	writer, err := flockStore(root, writerLockDir, syscall.LOCK_EX, false)
+	if err != nil {
+		return report, err
+	}
+	defer writer.release()
+	s, err := OpenStoreShared(root)
+	if err != nil {
+		return report, err
+	}
+	defer s.Close()
+	dir := filepath.Join(s.root, snapshotPagesDir)
+	files, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return report, nil
+	}
+	if err != nil {
+		return report, err
+	}
+	live := map[[32]byte]struct{}{}
+	_, issues := s.scanSnapshotsWithPages(func(digest [32]byte) { live[digest] = struct{}{} })
+	if len(issues) != 0 {
+		return report, fmt.Errorf("%w: %s: %s", errSnapshotCorrupt, issues[0].Subject, issues[0].Detail)
+	}
+	report.Live = len(live)
+	var candidates []string
+	for _, file := range files {
+		digest, err := decodeHexSHA256(file.Name())
+		if err != nil || file.Name() != hex.EncodeToString(digest[:]) || !file.Type().IsRegular() {
+			return report, fmt.Errorf("unexpected file in snapshot page store: %s", file.Name())
+		}
+		if _, needed := live[digest]; needed {
+			continue
+		}
+		info, err := file.Info()
+		if err != nil {
+			return report, err
+		}
+		candidates = append(candidates, filepath.Join(dir, file.Name()))
+		report.Bytes += info.Size()
+	}
+	report.Candidates = len(candidates)
+	if apply && len(candidates) != 0 {
+		for _, path := range candidates {
+			if err := os.Remove(path); err != nil {
+				return report, err
+			}
+			report.Removed++
+		}
+		return report, syncDir(dir)
+	}
+	return report, nil
+}
+
+func runSnapshotPagesGC(args []string) {
+	fs := flag.NewFlagSet("snapshot-pages-gc", flag.ExitOnError)
+	root := fs.String("store", "./zeros3-data", "path to a verified offline store")
+	apply := fs.Bool("apply", false, "remove pages outside every verified snapshot tree")
+	fs.Parse(args)
+	report, err := sweepSnapshotPages(*root, *apply)
+	if err != nil {
+		log.Fatalf("zeros3: snapshot-pages-gc: %v", err)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // listSnapshots is the API/CLI-facing snapshot catalog read (A7):
@@ -39402,7 +39496,7 @@ func (s *Store) readSnapshotFrameStat(id string) (snapshotDescriptorV1, []byte, 
 		}
 		return snapshotDescriptorV1{}, nil, nil, err
 	}
-	d, legacy, err := s.decodeStoredSnapshot(data)
+	d, legacy, err := s.decodeStoredSnapshot(data, nil)
 	if err != nil {
 		return snapshotDescriptorV1{}, nil, nil, err
 	}
@@ -42617,6 +42711,8 @@ type BundleStats struct {
 	Kind                     string  `json:"kind,omitempty"` // "full" or "delta"
 	BaseSnapshotID           string  `json:"base_snapshot_id,omitempty"`
 	BaseDescriptorSHA256     string  `json:"base_descriptor_sha256,omitempty"`
+	TransferredManifests     int     `json:"transferred_manifests,omitempty"`
+	ChangedKeys              int     `json:"changed_keys,omitempty"`
 	TargetUniqueChunks       int64   `json:"target_unique_chunks,omitempty"`
 	TargetUniqueLogicalBytes int64   `json:"target_unique_logical_bytes,omitempty"`
 	BaseReusedChunks         int64   `json:"base_reused_chunks,omitempty"`
@@ -42694,11 +42790,16 @@ type bundleSnapshotPlan struct {
 }
 
 func (s *Store) planBundleSnapshot(id string) (bundleSnapshotPlan, error) {
-	var sp bundleSnapshotPlan
-	var err error
-	if sp.d, sp.frame, err = s.readSnapshotFrame(id); err != nil {
-		return sp, err
+	d, frame, err := s.readSnapshotFrame(id)
+	if err != nil {
+		return bundleSnapshotPlan{}, err
 	}
+	return s.planBundleSnapshotFrame(d, frame)
+}
+
+func (s *Store) planBundleSnapshotFrame(d snapshotDescriptorV1, frame []byte) (bundleSnapshotPlan, error) {
+	sp := bundleSnapshotPlan{d: d, frame: frame}
+	var err error
 	if len(sp.frame) > maxBundleDescriptor {
 		return sp, bundleErr("snapshot descriptor of %d bytes is too large for a bundle", len(sp.frame))
 	}
@@ -43234,15 +43335,17 @@ type stagedManifest struct{ uuid, tmp string }
 // manifests, groups chunks through casBatch and, in publish, makes the target
 // durable with the snapshot descriptor strictly last.
 type bundleImporter struct {
-	binaryManifests bool
-	s               *Store
-	res             BundleImportResult
-	frame           []byte
-	haveSnap        bool
-	staged          []stagedManifest
-	batch           *casBatch
-	committed       bool
-	manifests       []string // optional backfill; includes reused manifests
+	binaryManifests    bool
+	ingestProvenance   bool
+	descriptorForPages snapshotDescriptorV1
+	s                  *Store
+	res                BundleImportResult
+	frame              []byte
+	haveSnap           bool
+	staged             []stagedManifest
+	batch              *casBatch
+	committed          bool
+	manifests          []string // optional backfill; includes reused manifests
 }
 
 func (s *Store) newBundleImporter() *bundleImporter {
@@ -43263,6 +43366,9 @@ func (im *bundleImporter) close() {
 
 func (im *bundleImporter) descriptor(d snapshotDescriptorV1, f []byte) error {
 	im.frame = append([]byte(nil), f...)
+	if im.s.writeSnapshotPages {
+		im.descriptorForPages = d
+	}
 	im.res.SnapshotID, im.res.Objects = d.SnapshotID, len(d.Entries)
 	if im.s.repMode() != repModeOff {
 		seen := make(map[string]bool)
@@ -43286,7 +43392,10 @@ func (im *bundleImporter) descriptor(d snapshotDescriptorV1, f []byte) error {
 }
 
 func (im *bundleImporter) manifest(uuid string, data []byte) error {
-	im.binaryManifests = im.binaryManifests || bytes.HasPrefix(data, []byte(manifestBinMagic))
+	if bytes.HasPrefix(data, []byte(manifestBinMagic)) {
+		im.binaryManifests = true
+		im.ingestProvenance = im.ingestProvenance || len(data) >= manifestBinHeader && data[4]&8 != 0
+	}
 	path := filepath.Join(im.s.root, "manifests", uuid+".json")
 	existing, rerr := os.ReadFile(path)
 	switch {
@@ -43344,6 +43453,11 @@ func (im *bundleImporter) publish() (BundleImportResult, error) {
 			return *res, err
 		}
 	}
+	if im.ingestProvenance {
+		if err := s.ensureFeature(multipartAdoptFeature); err != nil {
+			return *res, err
+		}
+	}
 	if err := im.batch.Flush(); err != nil {
 		return *res, err
 	}
@@ -43366,7 +43480,15 @@ func (im *bundleImporter) publish() (BundleImportResult, error) {
 			if _, serr := os.Stat(s.snapshotPath(res.SnapshotID)); serr == nil {
 				return fmt.Errorf("bundle import: snapshot %s appeared during import", res.SnapshotID)
 			}
-			if err := s.publishSnapshotFrame(res.SnapshotID, im.frame); err != nil {
+			frame := im.frame
+			if s.writeSnapshotPages {
+				var err error
+				frame, err = s.buildSnapshotPages(im.descriptorForPages, im.frame)
+				if err != nil {
+					return err
+				}
+			}
+			if err := s.publishSnapshotFrame(res.SnapshotID, frame); err != nil {
 				return err
 			}
 		}
@@ -43436,6 +43558,10 @@ func importBundleFile(storeDir, path string) (BundleImportResult, error) {
 }
 
 func importBundleFileMode(storeDir, path string, mode repMode) (BundleImportResult, error) {
+	return importBundleFileWithPages(storeDir, path, mode, false)
+}
+
+func importBundleFileWithPages(storeDir, path string, mode repMode, pages bool) (BundleImportResult, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return BundleImportResult{}, err
@@ -43446,7 +43572,7 @@ func importBundleFileMode(storeDir, path string, mode repMode) (BundleImportResu
 		return BundleImportResult{}, err
 	}
 	defer lock.release()
-	store, err := OpenStore(storeDir)
+	store, err := openStoreWithFeatures(storeDir, true, nsCheckpointDefault(), false, false, false, storeResearch{snapshotPages: pages})
 	if err != nil {
 		return BundleImportResult{}, err
 	}
@@ -43510,6 +43636,7 @@ func runBundleExport(args []string) {
 	storeDir := fs.String("store", "./zeros3-data", "path to the store directory")
 	snapshot := fs.String("snapshot", "", "ID of an existing snapshot to export")
 	baseSnapshot := fs.String("base-snapshot", "", "export a delta bundle (.zs3d) carrying only chunks this base snapshot (same store) does not hold; omit for a self-contained full bundle (.zs3b)")
+	changesOnly := fs.Bool("changes-only", false, "emit only changed namespace entries and new records in a v2 delta")
 	out := fs.String("out", "", "output bundle file (.zs3b full, .zs3d delta), written atomically")
 	compression := fs.String("compression", "auto", "chunk record compression: auto (DEFLATE when it saves space) or off (raw records)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
@@ -43524,13 +43651,16 @@ func runBundleExport(args []string) {
 	if err == nil && *out == "" {
 		err = errors.New("-out is required")
 	}
+	if err == nil && *changesOnly && *baseSnapshot == "" {
+		err = errors.New("-changes-only requires -base-snapshot")
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeros3: bundle export: %v\n", err)
 		os.Exit(2)
 	}
 	var st BundleStats
 	if *baseSnapshot != "" {
-		st, err = exportDeltaFile(*storeDir, *baseSnapshot, *snapshot, *out, compress)
+		st, err = exportDeltaFileMode(*storeDir, *baseSnapshot, *snapshot, *out, compress, *changesOnly)
 	} else {
 		st, err = exportBundleFile(*storeDir, *snapshot, *out, compress)
 	}
@@ -43555,6 +43685,7 @@ func runBundleImport(args []string) {
 	in := fs.String("in", "", "bundle file to import (.zs3b full or .zs3d delta, detected by magic; a delta needs its base snapshot already in the store)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text")
 	representations := fs.String("representations", "off", "optional representations: off, shadow or prefer")
+	pages := fs.Bool("snapshot-pages", false, "publish the imported descriptor over shared immutable pages (research)")
 	fs.Parse(args)
 	if *in == "" {
 		fmt.Fprintln(os.Stderr, "zeros3: bundle import: -in is required")
@@ -43565,7 +43696,7 @@ func runBundleImport(args []string) {
 		fmt.Fprintln(os.Stderr, "zeros3: bundle import:", err)
 		os.Exit(2)
 	}
-	res, err := importBundleFileMode(*storeDir, *in, mode)
+	res, err := importBundleFileWithPages(*storeDir, *in, mode, *pages)
 	if err != nil {
 		if errors.Is(err, errGCStoreInUse) {
 			fmt.Fprintf(os.Stderr, "zeros3: bundle import: %v -- import requires exclusive access; stop `zeros3 serve`/any other command using this store first\n", err)
@@ -43671,17 +43802,19 @@ func runBundleInspect(args []string) {
 // =============================================================================
 
 const (
-	deltaMagic         = "ZS3DLTA1"
-	deltaFooterMagic   = "ZS3DEND1"
-	deltaFormatVersion = 1
-	deltaHeaderSize    = 120 // magic 8, version 2, flags 2, desc len 4, manifests 4, target chunks 8, target bytes 8, payload chunks 8, payload bytes 8, base ID 36, base descriptor sha256 32
-	deltaFooterSize    = 40  // magic 8, stored bytes 8, raw records 8, deflate records 8, base-ref records 8 (then sha256 32)
+	deltaMagic          = "ZS3DLTA1"
+	deltaFooterMagic    = "ZS3DEND1"
+	deltaFormatVersion  = 1
+	deltaChangesVersion = 2
+	deltaHeaderSize     = 120 // magic 8, version 2, flags 2, desc len 4, manifests 4, target chunks 8, target bytes 8, payload chunks 8, payload bytes 8, base ID 36, base descriptor sha256 32
+	deltaFooterSize     = 40  // magic 8, stored bytes 8, raw records 8, deflate records 8, base-ref records 8 (then sha256 32)
 
 	deltaCodecBaseRef = 2
 )
 
 // deltaHeader is the parsed fixed header of a delta bundle.
 type deltaHeader struct {
+	version             uint16
 	descLen, manifests  uint32
 	chunks, uniqueBytes uint64
 	payloadChunks       uint64
@@ -43695,8 +43828,9 @@ func parseDeltaHeader(hdr []byte) (deltaHeader, error) {
 	if string(hdr[:8]) != deltaMagic {
 		return h, bundleErr("bad delta magic")
 	}
-	if v := binary.BigEndian.Uint16(hdr[8:]); v != deltaFormatVersion {
-		return h, bundleErr("unsupported delta bundle format version %d (this build supports %d)", v, deltaFormatVersion)
+	h.version = binary.BigEndian.Uint16(hdr[8:])
+	if h.version != deltaFormatVersion && h.version != deltaChangesVersion {
+		return h, bundleErr("unsupported delta bundle format version %d", h.version)
 	}
 	if f := binary.BigEndian.Uint16(hdr[10:]); f != 0 {
 		return h, bundleErr("unsupported delta flags %#x", f)
@@ -43725,6 +43859,143 @@ func parseDeltaHeader(hdr []byte) (deltaHeader, error) {
 		return h, bundleErr("payload chunk count %d / byte total %d is impossible", h.payloadChunks, h.payloadBytes)
 	}
 	return h, nil
+}
+
+// A changes-only delta binds the same portable target as a full snapshot
+// frame. Its ordered edits are interpreted only against the exact named base.
+type snapshotEdit struct {
+	Key   string           `json:"key"`
+	Entry *snapshotEntryV1 `json:"entry,omitempty"`
+}
+
+type snapshotDelta struct {
+	Head      snapshotDescriptorV1 `json:"head"`
+	Rows      int                  `json:"rows"`
+	Manifests int                  `json:"manifests"`
+	Bytes     int64                `json:"logical_bytes"`
+	TargetSHA string               `json:"target_sha256"`
+	Edits     []snapshotEdit       `json:"edits"`
+}
+
+func buildSnapshotDelta(base, target bundleSnapshotPlan) snapshotDelta {
+	h := sha256.Sum256(target.frame)
+	p := snapshotDelta{Head: target.d, Rows: len(target.d.Entries), Manifests: len(target.refs), TargetSHA: hex.EncodeToString(h[:])}
+	if p.Rows != 0 {
+		p.Head.Entries = nil
+	}
+	a, b := base.d.Entries, target.d.Entries
+	for _, row := range b {
+		p.Bytes += row.Size
+	}
+	for len(a) != 0 || len(b) != 0 {
+		switch {
+		case len(b) == 0 || len(a) != 0 && a[0].Key < b[0].Key:
+			p.Edits = append(p.Edits, snapshotEdit{Key: a[0].Key})
+			a = a[1:]
+		case len(a) == 0 || b[0].Key < a[0].Key:
+			p.Edits = append(p.Edits, snapshotEdit{Key: b[0].Key, Entry: &b[0]})
+			b = b[1:]
+		default:
+			if a[0] != b[0] {
+				p.Edits = append(p.Edits, snapshotEdit{Key: b[0].Key, Entry: &b[0]})
+			}
+			a, b = a[1:], b[1:]
+		}
+	}
+	return p
+}
+
+func decodeSnapshotDelta(body []byte) (snapshotDelta, error) {
+	var p snapshotDelta
+	if len(body) > maxBundleDescriptor {
+		return p, bundleErr("snapshot edit record exceeds its bounds")
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return p, bundleErr("invalid snapshot edit record: %v", err)
+	}
+	if p.Head.SnapshotFormatVersion != snapshotFormatVersion || !validSnapshotID(p.Head.SnapshotID) ||
+		len(p.Head.Entries) != 0 || p.Rows < 0 || p.Rows > maxSnapshotEntries || p.Manifests < 0 ||
+		p.Manifests > maxBundleManifests || p.Manifests > p.Rows || p.Bytes < 0 || len(p.Edits) > 2*maxSnapshotEntries {
+		return p, bundleErr("snapshot edit record has invalid target metadata")
+	}
+	if _, err := decodeHexSHA256(p.TargetSHA); err != nil {
+		return p, bundleErr("snapshot edit record has an invalid target digest")
+	}
+	previous := ""
+	for _, e := range p.Edits {
+		if e.Key <= previous {
+			return p, bundleErr("snapshot edits repeat a key or are out of order")
+		}
+		previous = e.Key
+		if e.Entry != nil {
+			row := e.Entry
+			_, err := decodeHexSHA256(row.ManifestSHA256)
+			if row.Key != e.Key || row.Size < 0 || !validSnapshotUUID(row.ManifestUUID) || err != nil {
+				return p, bundleErr("upsert for %q has invalid snapshot metadata", e.Key)
+			}
+		}
+	}
+	canonical, err := json.Marshal(p)
+	if err != nil || !bytes.Equal(body, canonical) {
+		return p, bundleErr("noncanonical snapshot edit record")
+	}
+	return p, nil
+}
+
+func applySnapshotDelta(p snapshotDelta, base snapshotDescriptorV1) (snapshotDescriptorV1, []byte, error) {
+	d := p.Head
+	entries := base.Entries
+	if p.Rows > 0 {
+		d.Entries = make([]snapshotEntryV1, 0, min(p.Rows, len(entries)+len(p.Edits)))
+	}
+	for _, e := range p.Edits {
+		for len(entries) != 0 && entries[0].Key < e.Key {
+			d.Entries = append(d.Entries, entries[0])
+			entries = entries[1:]
+		}
+		found := len(entries) != 0 && entries[0].Key == e.Key
+		if e.Entry == nil && !found || e.Entry != nil && found && *e.Entry == entries[0] {
+			return d, nil, bundleErr("snapshot edit for %q changes no data", e.Key)
+		}
+		if found {
+			entries = entries[1:]
+		}
+		if e.Entry != nil {
+			d.Entries = append(d.Entries, *e.Entry)
+		}
+		if len(d.Entries) > p.Rows {
+			return d, nil, bundleErr("snapshot edit exceeds target row count")
+		}
+	}
+	if len(d.Entries)+len(entries) != p.Rows {
+		return d, nil, bundleErr("snapshot edits disagree with the target row count")
+	}
+	d.Entries = append(d.Entries, entries...)
+	frame, err := encodeSnapshotDescriptor(d)
+	if err != nil {
+		return d, nil, err
+	}
+	sum := sha256.Sum256(frame)
+	if p.TargetSHA != hex.EncodeToString(sum[:]) {
+		return d, nil, bundleErr("snapshot edits disagree with the target descriptor digest")
+	}
+	return d, frame, nil
+}
+
+func deltaManifestDiff(target, base []bundleManifestRef) (novel, shared []bundleManifestRef, err error) {
+	for _, r := range target {
+		for len(base) > 0 && base[0].uuid < r.uuid {
+			base = base[1:]
+		}
+		if len(base) == 0 || base[0].uuid != r.uuid {
+			novel = append(novel, r)
+		} else if base[0].sha != r.sha {
+			return nil, nil, bundleErr("manifest %s has a different digest in the base snapshot", r.uuid)
+		} else {
+			shared = append(shared, r)
+		}
+	}
+	return novel, shared, nil
 }
 
 // checkDeltaLengths is the per-codec length rule of a delta record: the pack
@@ -43800,22 +44071,19 @@ func (b *BundleStats) finishDelta() {
 // store and returns its verified unique chunk inventory. The stored
 // descriptor frame must hash to the header's value and every base manifest
 // is read and validated exactly as a full-bundle export would.
-func (s *Store) resolveDeltaBase(h deltaHeader) ([]bundleChunkDesc, error) {
-	_, frame, err := s.readSnapshotFrame(h.baseID)
+func (s *Store) resolveDeltaBase(h deltaHeader) (bundleSnapshotPlan, error) {
+	d, frame, err := s.readSnapshotFrame(h.baseID)
 	if err != nil {
-		return nil, fmt.Errorf("delta bundle requires base snapshot %s: %w", h.baseID, err)
+		return bundleSnapshotPlan{}, fmt.Errorf("delta bundle requires base snapshot %s: %w", h.baseID, err)
 	}
 	if sha256.Sum256(frame) != h.baseSHA {
-		return nil, bundleErr("base snapshot %s is stored with a different descriptor than the delta was built against", h.baseID)
+		return bundleSnapshotPlan{}, bundleErr("base snapshot %s is stored with a different descriptor than the delta was built against", h.baseID)
 	}
-	sp, err := s.planBundleSnapshot(h.baseID)
+	sp, err := s.planBundleSnapshotFrame(d, frame)
 	if err != nil {
-		return nil, fmt.Errorf("delta base snapshot %s: %w", h.baseID, err)
+		return bundleSnapshotPlan{}, fmt.Errorf("delta base snapshot %s: %w", h.baseID, err)
 	}
-	if sha256.Sum256(sp.frame) != h.baseSHA {
-		return nil, bundleErr("base snapshot %s changed while it was being resolved", h.baseID)
-	}
-	return sp.plan, nil
+	return sp, nil
 }
 
 // checkBaseRef proves a base-referenced chunk is really readable: casRead
@@ -43837,6 +44105,10 @@ func (s *Store) checkBaseRef(sum [32]byte, length uint32) error {
 // exportDelta streams target as a delta against base to w. Both inventories
 // are compact sorted slices; only payload chunks are read from the CAS.
 func (s *Store) exportDelta(baseID, targetID string, w io.Writer, compress bool) (BundleStats, error) {
+	return s.exportDeltaMode(baseID, targetID, w, compress, false)
+}
+
+func (s *Store) exportDeltaMode(baseID, targetID string, w io.Writer, compress, changesOnly bool) (BundleStats, error) {
 	tp, err := s.planBundleSnapshot(targetID)
 	if err != nil {
 		return BundleStats{}, err
@@ -43858,13 +44130,28 @@ func (s *Store) exportDelta(baseID, targetID string, w io.Writer, compress bool)
 	st.BaseSnapshotID, st.BaseDescriptorSHA256 = baseID, hex.EncodeToString(baseSHA[:])
 	st.BaseReusedChunks, st.BaseReusedLogicalBytes = cnt.refChunks, cnt.refBytes
 	st.PayloadChunks, st.PayloadLogicalBytes = cnt.payloadChunks, cnt.payloadBytes
+	version, frame, refs := uint16(deltaFormatVersion), tp.frame, tp.refs
+	if changesOnly {
+		version = deltaChangesVersion
+		patch := buildSnapshotDelta(bp, tp)
+		st.ChangedKeys = len(patch.Edits)
+		frame, err = json.Marshal(patch)
+		if err != nil || len(frame) > maxBundleDescriptor {
+			return BundleStats{}, bundleErr("snapshot edit record exceeds the format limit")
+		}
+		refs, _, err = deltaManifestDiff(tp.refs, bp.refs)
+		if err != nil {
+			return BundleStats{}, err
+		}
+		st.TransferredManifests = len(refs)
+	}
 
 	hw := &bundleHashWriter{w: w, h: sha256.New()}
 	hdr := make([]byte, deltaHeaderSize)
 	copy(hdr, deltaMagic)
-	binary.BigEndian.PutUint16(hdr[8:], deltaFormatVersion)
-	binary.BigEndian.PutUint32(hdr[12:], uint32(len(tp.frame)))
-	binary.BigEndian.PutUint32(hdr[16:], uint32(len(tp.refs)))
+	binary.BigEndian.PutUint16(hdr[8:], version)
+	binary.BigEndian.PutUint32(hdr[12:], uint32(len(frame)))
+	binary.BigEndian.PutUint32(hdr[16:], uint32(len(refs)))
 	binary.BigEndian.PutUint64(hdr[20:], uint64(len(tp.plan)))
 	binary.BigEndian.PutUint64(hdr[28:], uint64(tp.uniqueBytes))
 	binary.BigEndian.PutUint64(hdr[36:], uint64(cnt.payloadChunks))
@@ -43874,10 +44161,10 @@ func (s *Store) exportDelta(baseID, targetID string, w io.Writer, compress bool)
 	if _, err := hw.Write(hdr); err != nil {
 		return BundleStats{}, err
 	}
-	if _, err := hw.Write(tp.frame); err != nil {
+	if _, err := hw.Write(frame); err != nil {
 		return BundleStats{}, err
 	}
-	if err := s.writeBundleManifestRecords(hw, tp.refs); err != nil {
+	if err := s.writeBundleManifestRecords(hw, refs); err != nil {
 		return BundleStats{}, err
 	}
 	comp := newCompressor(compress)
@@ -43886,6 +44173,9 @@ func (s *Store) exportDelta(baseID, targetID string, w io.Writer, compress bool)
 		copy(rec, c.sha[:])
 		binary.BigEndian.PutUint32(rec[32:], c.length)
 		if inBase {
+			if changesOnly {
+				return nil
+			}
 			binary.BigEndian.PutUint32(rec[36:], 0)
 			rec[40] = deltaCodecBaseRef
 			_, err := hw.Write(rec)
@@ -43932,12 +44222,17 @@ func (s *Store) exportDelta(baseID, targetID string, w io.Writer, compress bool)
 	}
 	st.BundleBytes = hw.n + sha256.Size
 	st.finishDelta()
+	st.FormatVersion = int(version)
 	return st, nil
 }
 
 // exportDeltaFile writes the delta atomically (temp file, fsync, rename)
 // under a shared store lock; nothing in the store is modified.
 func exportDeltaFile(storeDir, baseID, targetID, out string, compress bool) (BundleStats, error) {
+	return exportDeltaFileMode(storeDir, baseID, targetID, out, compress, false)
+}
+
+func exportDeltaFileMode(storeDir, baseID, targetID, out string, compress, changesOnly bool) (BundleStats, error) {
 	lock, err := acquireStoreLock(storeDir, false)
 	if err != nil {
 		return BundleStats{}, err
@@ -43949,7 +44244,7 @@ func exportDeltaFile(storeDir, baseID, targetID, out string, compress bool) (Bun
 	}
 	defer store.Close()
 	return writeBundleAtomic(out, ".zs3d-export-*.tmp", func(w io.Writer) (BundleStats, error) {
-		return store.exportDelta(baseID, targetID, w, compress)
+		return store.exportDeltaMode(baseID, targetID, w, compress, changesOnly)
 	})
 }
 
@@ -43959,10 +44254,11 @@ func exportDeltaFile(storeDir, baseID, targetID, out string, compress bool) (Bun
 // chunk (as in a full bundle); base-referenced chunks only through baseRef.
 // Slices are valid only during the call; any callback may be nil.
 type deltaSink struct {
-	descriptor func(d snapshotDescriptorV1, frame []byte) error
-	manifest   func(uuid string, data []byte) error
-	chunk      func(sum [32]byte, data []byte) error
-	baseRef    func(sum [32]byte, length uint32) error
+	descriptor   func(d snapshotDescriptorV1, frame []byte) error
+	manifest     func(uuid string, data []byte) error
+	chunk        func(sum [32]byte, data []byte) error
+	baseRef      func(sum [32]byte, length uint32) error
+	baseManifest func(bundleManifestRef) ([]byte, manifestV1, error)
 }
 
 // readDeltaBundle fully parses and verifies one delta bundle against its
@@ -43973,6 +44269,13 @@ type deltaSink struct {
 // the base holds must be a base reference. A delta cannot be verified
 // without its base, so there is no resolver-less mode.
 func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, error), sink deltaSink) (BundleStats, error) {
+	return readDeltaBundleWithBase(r, func(h deltaHeader) (bundleSnapshotPlan, error) {
+		base, err := resolve(h)
+		return bundleSnapshotPlan{plan: base}, err
+	}, sink)
+}
+
+func readDeltaBundleWithBase(r io.Reader, resolve func(deltaHeader) (bundleSnapshotPlan, error), sink deltaSink) (BundleStats, error) {
 	hr := &bundleHashReader{r: bufio.NewReaderSize(r, 1<<20), h: sha256.New()}
 	hdrBytes := make([]byte, deltaHeaderSize)
 	if err := bundleReadFull(hr, hdrBytes, "delta header"); err != nil {
@@ -43982,7 +44285,7 @@ func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, 
 	if err != nil {
 		return BundleStats{}, err
 	}
-	base, err := resolve(hdr)
+	bp, err := resolve(hdr)
 	if err != nil {
 		return BundleStats{}, err
 	}
@@ -43990,7 +44293,19 @@ func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, 
 	if err != nil {
 		return BundleStats{}, err
 	}
-	d, err := decodeSnapshotDescriptor(frame)
+	var d snapshotDescriptorV1
+	var patch snapshotDelta
+	if hdr.version == deltaChangesVersion {
+		if len(bp.frame) == 0 || sha256.Sum256(bp.frame) != hdr.baseSHA || sink.baseManifest == nil {
+			return BundleStats{}, bundleErr("changes-only delta verification requires the exact stored base descriptor and manifests")
+		}
+		patch, err = decodeSnapshotDelta(frame)
+		if err == nil {
+			d, frame, err = applySnapshotDelta(patch, bp.d)
+		}
+	} else {
+		d, err = decodeSnapshotDescriptor(frame)
+	}
 	if err != nil {
 		return BundleStats{}, bundleErr("snapshot descriptor: %v", err)
 	}
@@ -43998,20 +44313,44 @@ func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, 
 	if err != nil {
 		return BundleStats{}, err
 	}
-	if uint64(len(refs)) != uint64(hdr.manifests) {
-		return BundleStats{}, bundleErr("header declares %d manifests but the snapshot references %d", hdr.manifests, len(refs))
+	st := bundleDescriptorStats(d, len(refs))
+	transferred := refs
+	var shared []bundleManifestRef
+	if hdr.version == deltaChangesVersion {
+		if len(refs) != patch.Manifests || st.SnapshotLogicalBytes != patch.Bytes {
+			return BundleStats{}, bundleErr("snapshot edit summary disagrees with the reconstructed descriptor")
+		}
+		transferred, shared, err = deltaManifestDiff(refs, bp.refs)
+		if err != nil {
+			return BundleStats{}, err
+		}
+		st.ChangedKeys, st.TransferredManifests = len(patch.Edits), len(transferred)
+	}
+	if uint64(len(transferred)) != uint64(hdr.manifests) {
+		if hdr.version == deltaFormatVersion {
+			return BundleStats{}, bundleErr("header declares %d manifests but the snapshot references %d", hdr.manifests, len(refs))
+		}
+		return BundleStats{}, bundleErr("header declares %d transferred manifests but the delta requires %d", hdr.manifests, len(transferred))
 	}
 	if sink.descriptor != nil {
 		if err := sink.descriptor(d, frame); err != nil {
 			return BundleStats{}, err
 		}
 	}
-	st := bundleDescriptorStats(d, len(refs))
 	st.BaseSnapshotID, st.BaseDescriptorSHA256 = hdr.baseID, hex.EncodeToString(hdr.baseSHA[:])
 
-	plan, err := readBundleManifests(hr, refs, sink.manifest)
+	plan, err := readBundleManifests(hr, transferred, sink.manifest)
 	if err != nil {
 		return BundleStats{}, err
+	}
+	for _, r := range shared {
+		_, m, err := sink.baseManifest(r)
+		if err != nil {
+			return BundleStats{}, err
+		}
+		if plan, err = appendManifestChunks(plan, m); err != nil {
+			return BundleStats{}, err
+		}
 	}
 	st.ChunkOccurrences = int64(len(plan))
 	if plan, err = planBundleChunks(plan); err != nil {
@@ -44032,8 +44371,30 @@ func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, 
 	crec := make([]byte, bundleChunkHdr)
 	payload := make([]byte, cdcMaxChunkSize)
 	decoded := make([]byte, cdcMaxChunkSize)
+	base := bp.plan
+	reuse := func(sum [32]byte, logical uint32) error {
+		st.BaseReusedChunks++
+		st.BaseReusedLogicalBytes += int64(logical)
+		if sink.baseRef != nil {
+			return sink.baseRef(sum, logical)
+		}
+		return nil
+	}
 	j := 0
 	for i, want := range plan {
+		for j < len(base) && bytes.Compare(base[j].sha[:], want.sha[:]) < 0 {
+			j++
+		}
+		inBase := j < len(base) && base[j].sha == want.sha
+		if inBase && base[j].length != want.length {
+			return BundleStats{}, bundleErr("chunk %x has length %d in the delta but %d in the base snapshot", want.sha, want.length, base[j].length)
+		}
+		if inBase && hdr.version == deltaChangesVersion {
+			if err := reuse(want.sha, want.length); err != nil {
+				return BundleStats{}, err
+			}
+			continue
+		}
 		if err := bundleReadFull(hr, crec, "chunk record"); err != nil {
 			return BundleStats{}, err
 		}
@@ -44056,23 +44417,12 @@ func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, 
 		if err := checkDeltaLengths(codec, stored, logical); err != nil {
 			return BundleStats{}, bundleErr("chunk %x: %v", sum, err)
 		}
-		for j < len(base) && bytes.Compare(base[j].sha[:], sum[:]) < 0 {
-			j++
-		}
-		inBase := j < len(base) && base[j].sha == sum
-		if inBase && base[j].length != logical {
-			return BundleStats{}, bundleErr("chunk %x has length %d in the delta but %d in the base snapshot", sum, logical, base[j].length)
-		}
 		if codec == deltaCodecBaseRef {
 			if !inBase {
 				return BundleStats{}, bundleErr("chunk %x is a base reference but the base snapshot does not hold it", sum)
 			}
-			st.BaseReusedChunks++
-			st.BaseReusedLogicalBytes += int64(logical)
-			if sink.baseRef != nil {
-				if err := sink.baseRef(sum, logical); err != nil {
-					return BundleStats{}, err
-				}
+			if err := reuse(sum, logical); err != nil {
+				return BundleStats{}, err
 			}
 			continue
 		}
@@ -44132,6 +44482,7 @@ func readDeltaBundle(r io.Reader, resolve func(deltaHeader) ([]bundleChunkDesc, 
 	st.BundleBytes = hr.n + sha256.Size
 	st.Status = "verified"
 	st.finishDelta()
+	st.FormatVersion = int(hdr.version)
 	return st, nil
 }
 
@@ -44165,9 +44516,21 @@ func inspectDeltaHeader(path string) (BundleStats, error) {
 	if err != nil {
 		return BundleStats{}, err
 	}
-	d, err := decodeSnapshotDescriptor(frame)
-	if err != nil {
-		return BundleStats{}, bundleErr("snapshot descriptor: %v", err)
+	var st BundleStats
+	if hdr.version == deltaChangesVersion {
+		p, err := decodeSnapshotDelta(frame)
+		if err != nil {
+			return BundleStats{}, err
+		}
+		st = bundleDescriptorStats(p.Head, p.Manifests)
+		st.Objects, st.SnapshotLogicalBytes = p.Rows, p.Bytes
+		st.ChangedKeys, st.TransferredManifests = len(p.Edits), int(hdr.manifests)
+	} else {
+		d, err := decodeSnapshotDescriptor(frame)
+		if err != nil {
+			return BundleStats{}, bundleErr("snapshot descriptor: %v", err)
+		}
+		st = bundleDescriptorStats(d, int(hdr.manifests))
 	}
 	foot := make([]byte, deltaFooterSize)
 	if _, err := f.ReadAt(foot, fi.Size()-sha256.Size-deltaFooterSize); err != nil {
@@ -44176,7 +44539,6 @@ func inspectDeltaHeader(path string) (BundleStats, error) {
 	if string(foot[:8]) != deltaFooterMagic {
 		return BundleStats{}, bundleErr("bad delta footer magic")
 	}
-	st := bundleDescriptorStats(d, int(hdr.manifests))
 	st.Status, st.BundleBytes = "parsed", fi.Size()
 	st.BaseSnapshotID, st.BaseDescriptorSHA256 = hdr.baseID, hex.EncodeToString(hdr.baseSHA[:])
 	st.UniqueChunks, st.UniqueLogicalBytes = int64(hdr.chunks), int64(hdr.uniqueBytes)
@@ -44189,6 +44551,7 @@ func inspectDeltaHeader(path string) (BundleStats, error) {
 		return BundleStats{}, bundleErr("footer record counts disagree with the header")
 	}
 	st.finishDelta()
+	st.FormatVersion = int(hdr.version)
 	return st, nil
 }
 
@@ -44212,7 +44575,7 @@ func verifyDeltaFile(path, baseStoreDir string) (BundleStats, error) {
 		return BundleStats{}, err
 	}
 	defer store.Close()
-	return readDeltaBundle(f, store.resolveDeltaBase, deltaSink{baseRef: store.checkBaseRef})
+	return readDeltaBundleWithBase(f, store.resolveDeltaBase, deltaSink{baseRef: store.checkBaseRef, baseManifest: store.readBundleManifest})
 }
 
 // ---- import -------------------------------------------------------------------
@@ -44223,14 +44586,15 @@ func verifyDeltaFile(path, baseStoreDir string) (BundleStats, error) {
 func (s *Store) importDeltaBundle(r io.Reader) (BundleImportResult, error) {
 	im := s.newBundleImporter()
 	defer im.close()
-	resolve := func(h deltaHeader) ([]bundleChunkDesc, error) {
+	resolve := func(h deltaHeader) (bundleSnapshotPlan, error) {
 		im.res.BaseSnapshotID = h.baseID
 		return s.resolveDeltaBase(h)
 	}
-	st, err := readDeltaBundle(r, resolve, deltaSink{
-		descriptor: im.descriptor,
-		manifest:   im.manifest,
-		chunk:      im.chunk,
+	st, err := readDeltaBundleWithBase(r, resolve, deltaSink{
+		descriptor:   im.descriptor,
+		manifest:     im.manifest,
+		chunk:        im.chunk,
+		baseManifest: s.readBundleManifest,
 		baseRef: func(sum [32]byte, n uint32) error {
 			if err := s.checkBaseRef(sum, n); err != nil {
 				return err
@@ -44262,11 +44626,15 @@ func bundleKind(path string) string {
 }
 
 func printDeltaStats(w io.Writer, st BundleStats) {
-	fmt.Fprintf(w, "bundle %s (delta format v%d)\n", st.Status, deltaFormatVersion)
+	fmt.Fprintf(w, "bundle %s (delta format v%d)\n", st.Status, st.FormatVersion)
 	fmt.Fprintf(w, "target snapshot %s created %s\n", st.SnapshotID, st.CreatedAt)
 	fmt.Fprintf(w, "base snapshot   %s (descriptor sha256 %s)\n", st.BaseSnapshotID, st.BaseDescriptorSHA256)
 	fmt.Fprintf(w, "source          bucket %q prefix %q\n", st.SourceBucket, st.SourcePrefix)
-	fmt.Fprintf(w, "objects         %d   manifests %d (all target manifests carried)\n", st.Objects, st.Manifests)
+	if st.FormatVersion == deltaChangesVersion {
+		fmt.Fprintf(w, "objects         %d (%d changed)   manifests %d (%d transferred)\n", st.Objects, st.ChangedKeys, st.Manifests, st.TransferredManifests)
+	} else {
+		fmt.Fprintf(w, "objects         %d   manifests %d (all target manifests carried)\n", st.Objects, st.Manifests)
+	}
 	fmt.Fprintf(w, "target chunks   %d unique, %s logical\n", st.TargetUniqueChunks, mib(st.TargetUniqueLogicalBytes))
 	fmt.Fprintf(w, "base-ref chunks %d, %s logical (base reuse %.1f%%)\n", st.BaseReusedChunks, mib(st.BaseReusedLogicalBytes), 100*st.BaseReuseRatio)
 	fmt.Fprintf(w, "payload chunks  %d, %s logical (%.1f%% of target): %d raw, %d compressed\n",
@@ -96687,6 +97055,8 @@ func main() {
 		runNamespaceCheckpoint(args)
 	case "namespace-pages":
 		runNamespacePages(args)
+	case "snapshot-pages-gc":
+		runSnapshotPagesGC(args)
 	case "legacy-copy":
 		runLegacyCopy(args)
 	case "journal":
