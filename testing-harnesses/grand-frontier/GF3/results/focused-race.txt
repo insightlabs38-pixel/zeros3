@@ -1,0 +1,36 @@
+=== RUN   TestGF1PhysicalCompiledSelection
+=== RUN   TestGF1PhysicalCompiledSelection/urllib3-gzip
+=== RUN   TestGF1PhysicalCompiledSelection/urllib3-gzip/1
+=== RUN   TestGF1PhysicalCompiledSelection/urllib3-gzip/8
+--- PASS: TestGF1PhysicalCompiledSelection (1.22s)
+    --- PASS: TestGF1PhysicalCompiledSelection/urllib3-gzip (1.22s)
+        --- PASS: TestGF1PhysicalCompiledSelection/urllib3-gzip/1 (0.47s)
+        --- PASS: TestGF1PhysicalCompiledSelection/urllib3-gzip/8 (0.75s)
+=== RUN   TestGF1SharedClosureOracle
+--- PASS: TestGF1SharedClosureOracle (0.00s)
+=== RUN   TestGF3NativeDiscoveryOracle
+=== RUN   TestGF3NativeDiscoveryOracle/complementary-regions
+=== RUN   TestGF3NativeDiscoveryOracle/short-containment
+=== RUN   TestGF3NativeDiscoveryOracle/unrelated-entropy
+--- PASS: TestGF3NativeDiscoveryOracle (15.47s)
+    --- PASS: TestGF3NativeDiscoveryOracle/complementary-regions (4.90s)
+    --- PASS: TestGF3NativeDiscoveryOracle/short-containment (5.33s)
+    --- PASS: TestGF3NativeDiscoveryOracle/unrelated-entropy (5.09s)
+=== RUN   TestGF3NativePhrasePanel
+=== RUN   TestGF3NativePhrasePanel/controlled-cohort
+=== RUN   TestGF3NativePhrasePanel/controlled-cohort/cdc
+=== RUN   TestGF3NativePhrasePanel/controlled-cohort/single-xd
+=== RUN   TestGF3NativePhrasePanel/controlled-cohort/multi-xd
+=== RUN   TestGF3NativePhrasePanel/controlled-cohort/archive
+=== RUN   TestGF3NativePhrasePanel/controlled-cohort/phrase-digest
+=== RUN   TestGF3NativePhrasePanel/controlled-cohort/phrase-locality
+--- PASS: TestGF3NativePhrasePanel (9.32s)
+    --- PASS: TestGF3NativePhrasePanel/controlled-cohort (9.32s)
+        --- PASS: TestGF3NativePhrasePanel/controlled-cohort/cdc (0.11s)
+        --- PASS: TestGF3NativePhrasePanel/controlled-cohort/single-xd (2.57s)
+        --- PASS: TestGF3NativePhrasePanel/controlled-cohort/multi-xd (2.77s)
+        --- PASS: TestGF3NativePhrasePanel/controlled-cohort/archive (2.75s)
+        --- PASS: TestGF3NativePhrasePanel/controlled-cohort/phrase-digest (0.41s)
+        --- PASS: TestGF3NativePhrasePanel/controlled-cohort/phrase-locality (0.46s)
+PASS
+ok  	zeros3	27.051s

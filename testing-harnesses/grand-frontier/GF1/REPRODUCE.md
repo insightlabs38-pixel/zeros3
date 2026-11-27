@@ -13,3 +13,7 @@ with sparse files and XD, then restricts alternate exact programs to the
 oldest direct parent. The harness omits structural/canonical alternatives in
 this catalog. Use GF0 rows for their fully materialized comparison. Release
 fixtures are checked by SHA before ingestion.
+
+For the native materialization with two work caps and signed read probes,
+use `-run '^TestGF1PhysicalCompiledSelection$'`. Capture `GF1PHYSICAL`
+rows. The compile phase uses GF2's frozen stride-4 relative program.

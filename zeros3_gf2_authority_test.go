@@ -23,8 +23,7 @@ import (
 // the original immutable manifest, so HEAD/list metadata is untouched.
 func gf2PublishNative(t *testing.T, s *Store, baseMan, targetMan manifestV1, base, target []byte) (*authRecord, error) {
 	t.Helper()
-	rep := repObject{Kind: repKindBitPatch, Size: int64(len(target))}
-	rep.Recipe = binary.AppendUvarint(nil, uint64(len(baseMan.Chunks)))
+	var members []repMember
 	var at int64
 	for _, src := range baseMan.Chunks {
 		id, err := decodeHexSHA256(src.SHA256)
@@ -32,44 +31,78 @@ func gf2PublishNative(t *testing.T, s *Store, baseMan, targetMan manifestV1, bas
 			sha256.Sum256(base[at:at+src.Length]) != id {
 			t.Fatal("wrong independently provided original base")
 		}
-		rep.Members = append(rep.Members, repMember{Role: repStored, SHA: id, Size: src.Length})
+		members = append(members, repMember{Role: repStored, SHA: id, Size: src.Length})
 		at += src.Length
 	}
 	if at != int64(len(base)) {
 		t.Fatal("base manifest does not cover original")
 	}
 	cfg := gf2MatchConfig{"relative-4", 8, 4, 8, true, true}
+	_, encoded, err := gf2PrepareNativePatch(members, base, target, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return gf2CommitNativePatch(s, targetMan, target, encoded)
+}
+
+type gf2NativePatch struct {
+	programs [][]byte
+	record   []byte
+}
+
+func (p gf2NativePatch) ownBytes() int64 {
+	total := packPriceLen(p.record) + packRecordBytes
+	for _, prog := range p.programs {
+		total += packPriceLen(prog) + packRecordBytes
+	}
+	return total
+}
+
+func gf2PrepareNativePatch(sources []repMember, base, target []byte, cfg gf2MatchConfig) (int64, gf2NativePatch, error) {
+	var out gf2NativePatch
+	rep := repObject{Kind: repKindBitPatch, Size: int64(len(target)), Members: slices.Clone(sources)}
+	rep.Recipe = binary.AppendUvarint(nil, uint64(len(sources)))
 	index := gf2IndexSource(base, cfg)
-	b := s.newCASBatch()
-	defer b.Abort()
+	var copied int64
 	for off := 0; off < len(target); off += gf2FrameSize {
 		raw := target[off:min(off+gf2FrameSize, len(target))]
-		compiled, _ := gf2FrameProgram(base, raw, index, cfg)
-		id, err := b.Add(compiled)
-		if err != nil {
-			return nil, err
-		}
+		compiled, stats := gf2FrameProgram(base, raw, index, cfg)
+		copied += stats.copied
+		out.programs = append(out.programs, compiled)
+		id := sha256.Sum256(compiled)
 		rep.Members = append(rep.Members, repMember{Role: repStored, SHA: id, Size: int64(len(compiled))})
 		sum := sha256.Sum256(raw)
 		rep.Recipe = append(rep.Recipe, sum[:]...)
 	}
-	wire, err := rep.marshal()
-	if err != nil {
-		return nil, err
+	if _, err := parseBitPatchLayout(&rep); err != nil {
+		return 0, gf2NativePatch{}, err
 	}
-	id, err := b.Add(wire)
+	var err error
+	out.record, err = rep.marshal()
+	return copied, out, err
+}
+
+func gf2CommitNativePatch(s *Store, targetMan manifestV1, target []byte, patch gf2NativePatch) (*authRecord, error) {
+	sum := sha256.Sum256(target)
+	if targetMan.ObjectSHA256 != fmt.Sprintf("%x", sum[:]) || targetMan.TotalLength != int64(len(target)) {
+		return nil, errors.New("target manifest differs")
+	}
+	b := s.newCASBatch()
+	defer b.Abort()
+	for _, prog := range patch.programs {
+		if _, err := b.Add(prog); err != nil {
+			return nil, err
+		}
+	}
+	id, err := b.Add(patch.record)
 	if err != nil {
 		return nil, err
 	}
 	if err := b.Flush(); err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256(target)
 	rec := &authRecord{SHA: sum, Size: int64(len(target)), Gen: 1, Form: authFormRep,
 		Root: &repRoot{Rep: id, ObjSHA: sum, ObjSize: int64(len(target)), ManifestUUID: targetMan.ManifestUUID}}
-	if targetMan.ObjectSHA256 != fmt.Sprintf("%x", sum[:]) || targetMan.TotalLength != rec.Size {
-		t.Fatal("target manifest differs")
-	}
 	if _, _, err := s.authProve(rec, 8); err != nil {
 		return nil, err
 	}

@@ -58,9 +58,33 @@ archive planner. It does establish the cost of obtaining stricter
 guarantees in this catalog. For TypeScript tar under the 1×, 2× and 8×
 work limits the oracle gives 4,964,352, 4,714,496 and 4,698,112 bytes.
 
-Next expand the catalog with a candidate that changes read costs
-materially. Reconcile predicted and allocated bytes after apply, prune,
-GC and repack. Measure retained copies, pack co-residence, read tails,
-shared dependency release and exact recovery under an interrupted apply.
+## Native physical revision
+
+Add compiled compressed programs as options over independently verified
+CDC records. Form the union even when the anchor changes its own
+representation. Two adjacent output frames upper-bound every 4 KiB
+request for this codec, including authenticated source chunks, programs
+and recipe. The planner independently replays every frame before solving.
+Native deep verification and signed range replay follow publication.
+
+| TypeScript gzip v0–v1 | Maximum decoded record bytes, target | Modeled bytes | Actual allocated bytes |
+| --- | ---: | ---: | ---: |
+| Strict 1× CDC cap | 284,398 | 8,364,032 | 8,392,704 |
+| Loose 8× cap, compiled target | 677,488 | 5,382,144 | 5,414,912 |
+
+The modeled savings were 2,981,888 bytes. Actual savings were 2,977,792,
+within one 4 KiB allocation block. Signed range p95 was 0.30 ms for CDC and
+0.96 ms for the compiled plan over the same roots. A real closed plan can
+meet a hard work cap while leaving latency sensitive to contention and
+placement. The canonical archive is still the minimum-space lane.
+[Signed native comparison](../GF2/README.md#signed-native-authority)
+
+The held-out urllib3 loose cap selected a marginal patch, saving only
+4,096 bytes while sparse p95 grew from 0.30 to 1.91 ms. Hard decoded work
+alone admits undesirable tail behavior. Keep this as a negative decision
+control for workload-aware admission. Plan size is modeled on two pack
+classes, so this does not establish dynamic layout optimality. Native
+prune/recovery for the selected codec and the shared phrase closure are
+exercised in GF2 and GF3. Mixed-load selection remains an integration gate.
 
 [Raw rows](results/native-catalog.jsonl) · [Design](PREREGISTRATION.md) · [Reproduction](REPRODUCE.md)
