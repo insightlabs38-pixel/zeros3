@@ -22,7 +22,7 @@ import json, sys
 print(json.dumps({"Replace": {sys.argv[1]: sys.argv[2]}}))
 PY
     "$go_bin" test -overlay "$scratch/$arm.overlay.json" -c -o "$scratch/$arm.test" .
-    "$scratch/$arm.test" -test.run '^$' -test.bench '^BenchmarkDF1(CanonicalVarint|BitWriter)$' \
+    "$scratch/$arm.test" -test.run '^$' -test.bench '^BenchmarkDF1(CanonicalVarint|BitWriter|HuffmanDecode)$' \
         -test.benchtime 200ms -test.count 5 > "$scratch/$arm.micro.txt"
 done
 for round in 0 1; do

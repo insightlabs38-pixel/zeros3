@@ -1,0 +1,44 @@
+
+# parent
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkDF1BitWriter-2         	 4693771	        50.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4767843	        49.83 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4995546	        50.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4656433	        52.13 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4814940	        51.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   10000	     23351 ns/op	 175.41 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   10000	     21827 ns/op	 187.66 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   10000	     22141 ns/op	 185.00 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   10000	     21918 ns/op	 186.88 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   10000	     21831 ns/op	 187.62 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7716057	        31.76 ns/op	 377.80 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7700478	        32.05 ns/op	 374.37 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7217128	        37.83 ns/op	 317.21 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7153086	        32.66 ns/op	 367.38 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7424630	        33.58 ns/op	 357.33 MB/s	       0 B/op	       0 allocs/op
+PASS
+
+# candidate
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkDF1BitWriter-2         	 4319256	        54.10 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4581620	        51.86 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4556974	        53.35 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4728637	        51.26 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4609722	        52.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   12688	     19039 ns/op	 215.14 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   12584	     19313 ns/op	 212.08 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   12673	     18831 ns/op	 217.51 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   10502	     21975 ns/op	 186.40 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1HuffmanDecode-2     	   12483	     19400 ns/op	 211.14 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7451965	        32.93 ns/op	 364.36 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7423855	        32.33 ns/op	 371.21 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7055204	        34.32 ns/op	 349.63 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7419118	        31.96 ns/op	 375.52 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7565743	        32.02 ns/op	 374.79 MB/s	       0 B/op	       0 allocs/op
+PASS

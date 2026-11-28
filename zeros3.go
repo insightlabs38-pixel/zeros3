@@ -53854,7 +53854,11 @@ func repDFbuildDecoder(lens []uint8) (*repDFdecoder, bool) {
 // decode reads one symbol. ok=false with truncated=true means the input ended;
 // ok=false otherwise means an invalid code (empty or unreachable).
 func (d *repDFdecoder) decode(br *repDFbitReader) (sym int, err error) {
-	br.fill()
+	// An in-memory reader with a complete maximum-width prefix can
+	// decode either table path without pulling in more bytes.
+	if br.nacc < repDFmaxCodeLen || br.src != nil {
+		br.fill()
+	}
 	if e := d.fast[br.acc&(1<<repDFfastBits-1)]; e != 0 {
 		l := uint(e & 15)
 		if l > br.nacc {

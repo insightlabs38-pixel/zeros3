@@ -14,14 +14,13 @@ func TestDF1SignedReplay(t *testing.T) {
 		t.Skip("set ZEROS3_DF1_FAMILY to run the signed research probe")
 	}
 	probe := os.Getenv("ZEROS3_DF1_PROBE")
-	var clients, count, round int
 	clients, err := strconv.Atoi(os.Getenv("ZEROS3_DF1_CLIENTS"))
 	mustOK(t, err)
-	count, err = strconv.Atoi(os.Getenv("ZEROS3_DF1_COUNT"))
+	count, err := strconv.Atoi(os.Getenv("ZEROS3_DF1_COUNT"))
 	mustOK(t, err)
-	round, err = strconv.Atoi(os.Getenv("ZEROS3_DF1_ROUND"))
+	round, err := strconv.Atoi(os.Getenv("ZEROS3_DF1_ROUND"))
 	mustOK(t, err)
-	if clients < 1 || count < clients || (probe != "" && probe != "whole" && probe != "range4") {
+	if clients < 1 || count < clients || (probe != "" && probe != "whole" && probe != "range4" && probe != "range64") {
 		t.Fatal("invalid DF1 workload bounds")
 	}
 	selected := os.Getenv("ZEROS3_DF1_FAMILY")
@@ -41,11 +40,20 @@ func TestDF1SignedReplay(t *testing.T) {
 		l := &authLab{t: t, dir: t.TempDir()}
 		mustOK(t, os.CopyFS(l.dir, os.DirFS(seed.dir)))
 		cold := os.Getenv("ZEROS3_DF1_COLD") == "1"
+		maintenance := os.Getenv("ZEROS3_DF1_MAINT") == "1"
 		pages := df0CachePages{}
 		if cold {
 			pages = df0DropPages(t, l.dir)
 		}
-		l.open()
+		if maintenance {
+			if cold {
+				t.Fatal("maintenance run requires a warm starting store")
+			}
+			l.s = b4OpenMaint(t, l.dir)
+			df0MaintenanceSeed(t, l)
+		} else {
+			l.open()
+		}
 		defer l.close()
 		if !cold {
 			// Whole priming also verifies the reconstructed object.
@@ -58,9 +66,15 @@ func TestDF1SignedReplay(t *testing.T) {
 		if probe != "" {
 			for i := range queries {
 				queries[i].kind = probe
-				if probe == "range4" {
+				switch probe {
+				case "range4":
 					queries[i].n = 4096
-					queries[i].off = (i * 17381) % (len(target.raw) - 4096)
+				case "range64":
+					queries[i].n = 64 << 10
+				}
+				if probe != "whole" {
+					n := queries[i].n
+					queries[i].off = (112219 + i*17381 + round*13007) % (len(target.raw) - n)
 				}
 			}
 		}
@@ -71,13 +85,11 @@ func TestDF1SignedReplay(t *testing.T) {
 			mustOK(t, err)
 			defer profile.Close()
 			mustOK(t, pprof.StartCPUProfile(profile))
+			defer pprof.StopCPUProfile()
 		}
 		runtime.ReadMemStats(&before)
-		row := df0SignedRun(t, l, target, queries, clients, false)
+		row := df0SignedRun(t, l, target, queries, clients, maintenance)
 		runtime.ReadMemStats(&after)
-		if profile != nil {
-			pprof.StopCPUProfile()
-		}
 		row["family"], row["round"], row["probe"], row["cold"] = selected, round, probe, cold
 		row["cache_pages"], row["operations"] = pages, count
 		row["gc_cycles"], row["gc_pause_ns"] = after.NumGC-before.NumGC, after.PauseTotalNs-before.PauseTotalNs

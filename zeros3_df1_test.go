@@ -113,3 +113,15 @@ func BenchmarkDF1CanonicalVarint(b *testing.B) {
 		}
 	}
 }
+
+func FuzzDF1CanonicalVarintCompatibility(f *testing.F) {
+	f.Add([]byte{0}, uint64(0), uint8(0))
+	f.Add([]byte{128, 0}, ^uint64(0), uint8(0))
+	f.Add([]byte{255, 255, 255, 255, 255, 255, 255, 255, 255, 2}, ^uint64(0), uint8(0))
+	f.Fuzz(func(t *testing.T, wire []byte, max uint64, offset uint8) {
+		if len(wire) > 128 {
+			t.Skip()
+		}
+		df1CheckUV(t, wire, int(offset)%(len(wire)+1), max, nil)
+	})
+}
