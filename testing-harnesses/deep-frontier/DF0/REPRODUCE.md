@@ -57,3 +57,16 @@ quantiles. The interval is descriptive for this sampled workload.
 A p99 interval requires 300 samples in an individual trial and class.
 The IID tail-hit calculation is explanatory and does not assume that
 concurrent measurements are independent.
+
+To reproduce the Lua order-isolation test or attribute sampled
+allocations to instruction parsing, run the existing frozen test
+selectively. The profiler arm is diagnostic and has separate timings.
+
+```bash
+go test -v -count=1 -timeout=55s -run '^TestDF0TailSamples$/^round-[01]-translate$' .
+go test -v -count=1 -timeout=1m -run '^TestDF0TailSamples$/^round-0-translate$' \
+  -memprofile "$ZEROS3_DF0_PROFILE/lua-alloc.pprof" -memprofilerate 16384 \
+  -o "$ZEROS3_DF0_PROFILE/df0-heap.test" .
+go tool pprof -alloc_objects -list 'repWireReader.*uv' \
+  "$ZEROS3_DF0_PROFILE/df0-heap.test" "$ZEROS3_DF0_PROFILE/lua-alloc.pprof"
+```

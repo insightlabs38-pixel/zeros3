@@ -14,8 +14,8 @@ The four-release case also holds an exact four-entry snapshot.
 On the first pair, comprehensive post-ingest write calls totaled 7.27 MB
 in GF7 and 174.03 MB in the archive. Preparation CPU was 0.86 and
 22.95 seconds. The matched whole-read p95 of archive was 2,345–2,381 ms.
-GF2 still served whole reads in 26–28 ms, including its smaller native
-programs and exact source checks.
+GF2 still served whole reads in 26–28 ms, under the same exact reads and
+retained-source contract.
 
 The 8.10.1 to 8.11.0 transition had about 291,429 distance corrections,
 versus about 45,784 on the first pair. The corrected lane retained more

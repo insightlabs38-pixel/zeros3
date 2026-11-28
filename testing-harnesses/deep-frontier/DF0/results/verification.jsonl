@@ -1,0 +1,15 @@
+{"check": "original", "group_seconds": [141.127], "result": "pass", "skips": 0}
+{"check": "original-adjacent", "group_seconds": [34.909], "result": "pass", "skips": 0}
+{"check": "smoke-final", "group_seconds": [2.054], "result": "pass", "skips": 0}
+{"check": "curl-adjacent-3", "group_seconds": [149.871], "result": "pass", "skips": 0}
+{"check": "curl-retained-series", "group_seconds": [183.754], "result": "pass", "skips": 0}
+{"check": "validation-lua", "group_seconds": [32.221], "result": "pass", "skips": 0}
+{"check": "scope", "group_seconds": [37.204], "result": "pass", "skips": 0}
+{"check": "load-final", "group_seconds": [283.202], "result": "pass", "skips": 0}
+{"check": "tails", "group_seconds": [113.207], "result": "pass", "skips": 0}
+{"check": "blind", "group_seconds": [134.917], "result": "pass", "skips": 0}
+{"check": "safety", "fuzz_executions": {"FuzzGF2FrameProgram": 6000, "FuzzGF7TranslatedFrame": 6000, "FuzzGF8TranslateIndex": 6000}, "group_seconds": [17.351, 1.226, 1.202, 1.092], "race_tests": ["TestDF0Diagnostics", "TestDF0LiveReadCostProbe", "TestDF0GenericRepairDiscovery", "TestGF7TranslatedAuthority", "TestGF7PublicationCuts", "TestGF8CompiledSnapshotRepair", "TestGF8BitPatchBoundaries"], "result": "pass", "skips": 0}
+{"check": "tail-isolated", "group_seconds": [14.788], "result": "pass", "skips": 0}
+{"check": "alloc-profile", "group_seconds": [8.172], "result": "pass", "skips": 0}
+{"check": "curl-first-attempt", "complete_before_timeout": ["adjacent-1", "adjacent-2"], "completed_by_focused_retry": ["adjacent-3", "retained-series"], "result": "time-budget", "seconds": 420}
+{"allocation_unit_bytes": 4096, "check": "environment", "cpu_model": "AMD EPYC 9V74", "cpu_quota": 2, "filesystem": "overlay", "frozen_harness": "4f4b1ec9844d61441ed504075b2108dca954bdea", "go": "go1.27.0 linux/amd64", "gomaxprocs": 2, "kernel": "6.18.57", "memory_limit_bytes": 8589934592, "pre_gf2_reader": "1d4f36a210a0bd543762073d249deae848604592"}

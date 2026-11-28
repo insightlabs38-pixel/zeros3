@@ -1,0 +1,244 @@
+
+# sparse.flat
+File: zeros3.test
+Build ID: 2cced2c2f07cfacbb2566a0ef0b30e3cf5d29660
+Type: cpu
+Time: 2026-11-27 22:55:25 EST
+Duration: 2.38s, Total samples = 4.62s (194.32%)
+Showing nodes accounting for 3.82s, 82.68% of 4.62s total
+Dropped 204 nodes (cum <= 0.02s)
+Showing top 23 nodes out of 136
+      flat  flat%   sum%        cum   cum%
+     0.61s 13.20% 13.20%      0.67s 14.50%  zeros3.(*repDFbitWriter).put
+     0.59s 12.77% 25.97%      0.59s 12.77%  crypto/internal/fips140/sha256.blockSHANI
+     0.35s  7.58% 33.55%      0.35s  7.58%  zeros3.(*repDFbitReader).fill
+     0.26s  5.63% 39.18%      0.61s 13.20%  zeros3.(*repDFdecoder).decode
+     0.22s  4.76% 43.94%      0.42s  9.09%  runtime.mallocgcTinySC2
+     0.19s  4.11% 48.05%      0.19s  4.11%  runtime.memmove
+     0.19s  4.11% 52.16%      0.86s 18.61%  zeros3.(*repDFStreamWriter).Token
+     0.18s  3.90% 56.06%      0.89s 19.26%  zeros3.translateNext
+     0.16s  3.46% 59.52%      0.16s  3.46%  runtime.memclrNoHeapPointers
+     0.12s  2.60% 62.12%      0.12s  2.60%  internal/runtime/syscall/linux.Syscall6
+     0.12s  2.60% 64.72%      0.86s 18.61%  runtime.growslice
+     0.12s  2.60% 67.32%      0.99s 21.43%  zeros3.(*repWireReader).uv
+     0.10s  2.16% 69.48%      0.10s  2.16%  zeros3.(*repDFbitReader).bits
+     0.09s  1.95% 71.43%      0.09s  1.95%  encoding/binary.Uvarint (inline)
+     0.08s  1.73% 73.16%      0.96s 20.78%  zeros3.translateReplayFrame.func1
+     0.07s  1.52% 74.68%      0.07s  1.52%  runtime.madvise
+     0.07s  1.52% 76.19%      0.07s  1.52%  runtime.roundupsize (inline)
+     0.06s  1.30% 77.49%      0.06s  1.30%  runtime.acquirem (inline)
+     0.06s  1.30% 78.79%      0.67s 14.50%  runtime.mallocgc
+     0.05s  1.08% 79.87%      0.05s  1.08%  compress/flate.(*decompressor).huffSym
+     0.05s  1.08% 80.95%      0.79s 17.10%  encoding/binary.AppendUvarint (inline)
+     0.04s  0.87% 81.82%      0.04s  0.87%  runtime.getMCache (inline)
+     0.04s  0.87% 82.68%      0.05s  1.08%  runtime.tryDeferToSpanScan
+
+# sparse.cum
+File: zeros3.test
+Build ID: 2cced2c2f07cfacbb2566a0ef0b30e3cf5d29660
+Type: cpu
+Time: 2026-11-27 22:55:25 EST
+Duration: 2.38s, Total samples = 4.62s (194.32%)
+Showing nodes accounting for 1.45s, 31.39% of 4.62s total
+Dropped 204 nodes (cum <= 0.02s)
+Showing top 24 nodes out of 136
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      4.03s 87.23%  zeros3.(*Store).repOpenEnvReader.func4
+         0     0%     0%      4.03s 87.23%  zeros3.deflateTranslateRead
+         0     0%     0%      4.03s 87.23%  zeros3.repRangeReader.func11
+         0     0%     0%      4.03s 87.23%  zeros3.startRepStream.func1
+         0     0%     0%      4.02s 87.01%  zeros3.(*deflateTranslatePlan).read
+     0.04s  0.87%  0.87%      3.77s 81.60%  zeros3.translateReplayFrame
+         0     0%  0.87%      1.01s 21.86%  zeros3.(*repCall).getExact
+         0     0%  0.87%      1.01s 21.86%  zeros3.deflateTranslateRead.func1
+         0     0%  0.87%      1.01s 21.86%  zeros3.repReadObject
+     0.12s  2.60%  3.46%      0.99s 21.43%  zeros3.(*repWireReader).uv
+     0.08s  1.73%  5.19%      0.96s 20.78%  zeros3.translateReplayFrame.func1
+         0     0%  5.19%      0.89s 19.26%  zeros3.(*storeRepSource).ReadAt
+         0     0%  5.19%      0.89s 19.26%  zeros3.repReadFull
+     0.18s  3.90%  9.09%      0.89s 19.26%  zeros3.translateNext
+     0.12s  2.60% 11.69%      0.86s 18.61%  runtime.growslice
+     0.19s  4.11% 15.80%      0.86s 18.61%  zeros3.(*repDFStreamWriter).Token
+         0     0% 15.80%      0.84s 18.18%  zeros3.(*storeRepSource).chunk
+         0     0% 15.80%      0.83s 17.97%  zeros3.(*deflateTranslatePlan).read.func2
+         0     0% 15.80%      0.83s 17.97%  zeros3.(*deflateTranslatePlan).read.func2.1 (inline)
+     0.05s  1.08% 16.88%      0.79s 17.10%  encoding/binary.AppendUvarint (inline)
+         0     0% 16.88%      0.70s 15.15%  zeros3.(*packRunReader).read
+     0.06s  1.30% 18.18%      0.67s 14.50%  runtime.mallocgc
+     0.61s 13.20% 31.39%      0.67s 14.50%  zeros3.(*repDFbitWriter).put
+         0     0% 31.39%      0.65s 14.07%  zeros3.decodePackPayloadD
+
+# whole.flat
+File: zeros3.test
+Build ID: 2cced2c2f07cfacbb2566a0ef0b30e3cf5d29660
+Type: cpu
+Time: 2026-11-27 22:55:27 EST
+Duration: 6.25s, Total samples = 12250ms (196.00%)
+Showing nodes accounting for 10580ms, 86.37% of 12250ms total
+Dropped 187 nodes (cum <= 61.25ms)
+Showing top 23 nodes out of 90
+      flat  flat%   sum%        cum   cum%
+    1830ms 14.94% 14.94%     1980ms 16.16%  zeros3.(*repDFbitWriter).put
+    1040ms  8.49% 23.43%     1050ms  8.57%  zeros3.(*repDFbitReader).fill
+     800ms  6.53% 29.96%     1840ms 15.02%  zeros3.(*repDFdecoder).decode
+     760ms  6.20% 36.16%     2840ms 23.18%  zeros3.(*repDFStreamWriter).Token
+     620ms  5.06% 41.22%      620ms  5.06%  crypto/internal/fips140/sha256.blockSHANI
+     610ms  4.98% 46.20%     1420ms 11.59%  runtime.mallocgcTinySC2
+     590ms  4.82% 51.02%      590ms  4.82%  zeros3.(*deflateTranslatePlan).read.func1
+     570ms  4.65% 55.67%     2840ms 23.18%  zeros3.translateNext
+     560ms  4.57% 60.24%      560ms  4.57%  runtime.memclrNoHeapPointers
+     410ms  3.35% 63.59%      420ms  3.43%  zeros3.(*repDFbitReader).bits
+     340ms  2.78% 66.37%      340ms  2.78%  runtime.roundupsize (inline)
+     340ms  2.78% 69.14%     3080ms 25.14%  zeros3.(*repWireReader).uv
+     300ms  2.45% 71.59%     3400ms 27.76%  zeros3.translateReplayFrame.func1
+     270ms  2.20% 73.80%     2510ms 20.49%  runtime.growslice
+     250ms  2.04% 75.84%      250ms  2.04%  encoding/binary.Uvarint (inline)
+     200ms  1.63% 77.47%      200ms  1.63%  runtime.memmove
+     190ms  1.55% 79.02%      190ms  1.55%  runtime.acquirem (inline)
+     180ms  1.47% 80.49%      180ms  1.47%  zeros3.(*repDFStreamWriter).BitPos (inline)
+     160ms  1.31% 81.80%    10020ms 81.80%  zeros3.translateReplayFrame
+     150ms  1.22% 83.02%      150ms  1.22%  runtime.getMCache (inline)
+     140ms  1.14% 84.16%     2480ms 20.24%  encoding/binary.AppendUvarint (inline)
+     140ms  1.14% 85.31%      140ms  1.14%  internal/runtime/syscall/linux.Syscall6
+     130ms  1.06% 86.37%     1830ms 14.94%  runtime.mallocgc
+
+# whole.cum
+File: zeros3.test
+Build ID: 2cced2c2f07cfacbb2566a0ef0b30e3cf5d29660
+Type: cpu
+Time: 2026-11-27 22:55:27 EST
+Duration: 6.25s, Total samples = 12250ms (196.00%)
+Showing nodes accounting for 6950ms, 56.73% of 12250ms total
+Dropped 187 nodes (cum <= 61.25ms)
+Showing top 24 nodes out of 90
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%    11520ms 94.04%  zeros3.(*Store).repOpenEnvReader.func2
+         0     0%     0%    11520ms 94.04%  zeros3.(*Store).repOpenEnvReader.func4
+         0     0%     0%    11520ms 94.04%  zeros3.(*repEnv).reconstruct
+         0     0%     0%    11520ms 94.04%  zeros3.(*repEnv).run
+         0     0%     0%    11520ms 94.04%  zeros3.(*repEnv).runWork
+         0     0%     0%    11520ms 94.04%  zeros3.deflateTranslateDecoder.Decode
+         0     0%     0%    11520ms 94.04%  zeros3.deflateTranslateRead
+         0     0%     0%    11520ms 94.04%  zeros3.startRepStream.func1
+         0     0%     0%    11320ms 92.41%  zeros3.(*deflateTranslatePlan).read
+     160ms  1.31%  1.31%    10020ms 81.80%  zeros3.translateReplayFrame
+     300ms  2.45%  3.76%     3400ms 27.76%  zeros3.translateReplayFrame.func1
+     340ms  2.78%  6.53%     3080ms 25.14%  zeros3.(*repWireReader).uv
+     760ms  6.20% 12.73%     2840ms 23.18%  zeros3.(*repDFStreamWriter).Token
+     570ms  4.65% 17.39%     2840ms 23.18%  zeros3.translateNext
+     270ms  2.20% 19.59%     2510ms 20.49%  runtime.growslice
+     140ms  1.14% 20.73%     2480ms 20.24%  encoding/binary.AppendUvarint (inline)
+    1830ms 14.94% 35.67%     1980ms 16.16%  zeros3.(*repDFbitWriter).put
+     800ms  6.53% 42.20%     1840ms 15.02%  zeros3.(*repDFdecoder).decode
+     130ms  1.06% 43.27%     1830ms 14.94%  runtime.mallocgc
+     610ms  4.98% 48.24%     1420ms 11.59%  runtime.mallocgcTinySC2
+    1040ms  8.49% 56.73%     1050ms  8.57%  zeros3.(*repDFbitReader).fill
+         0     0% 56.73%      720ms  5.88%  zeros3.(*repCall).getExact
+         0     0% 56.73%      720ms  5.88%  zeros3.deflateTranslateRead.func1
+         0     0% 56.73%      720ms  5.88%  zeros3.repReadObject
+
+# syscall.wait
+Type: delay
+Showing nodes accounting for 76.25ms, 98.37% of 77.51ms total
+Dropped 134 nodes (cum <= 0.39ms)
+Showing top 12 nodes out of 94
+      flat  flat%   sum%        cum   cum%
+   29.04ms 37.46% 37.46%    29.04ms 37.46%  syscall.write
+   23.63ms 30.49% 67.95%    23.63ms 30.49%  syscall.pread
+   16.04ms 20.69% 88.64%    16.04ms 20.69%  syscall.read
+    7.54ms  9.73% 98.37%     7.54ms  9.73%  syscall.Fsync
+         0     0% 98.37%     4.03ms  5.20%  bufio.(*Reader).Peek
+         0     0% 98.37%    11.88ms 15.32%  bufio.(*Reader).Read
+         0     0% 98.37%     4.03ms  5.21%  bufio.(*Reader).fill
+         0     0% 98.37%     4.11ms  5.30%  bufio.(*Writer).Flush
+         0     0% 98.37%    26.03ms 33.59%  bufio.(*Writer).Write
+         0     0% 98.37%     7.54ms  9.73%  internal/poll.(*FD).Fsync
+         0     0% 98.37%     7.54ms  9.73%  internal/poll.(*FD).Fsync.func1
+         0     0% 98.37%    23.63ms 30.49%  internal/poll.(*FD).Pread
+
+# sync.wait
+Type: delay
+Showing nodes accounting for 27.69s, 100% of 27.70s total
+Dropped 104 nodes (cum <= 0.14s)
+Showing top 12 nodes out of 30
+      flat  flat%   sum%        cum   cum%
+    12.50s 45.13% 45.13%     12.50s 45.13%  runtime.selectgo
+     6.22s 22.46% 67.59%      6.22s 22.46%  runtime.chanrecv1
+     5.66s 20.43% 88.03%      5.66s 20.43%  runtime.chanrecv2
+     3.31s 11.95%   100%      3.31s 11.95%  sync.(*WaitGroup).Wait
+         0     0%   100%      5.80s 20.95%  net/http.(*Client).Do
+         0     0%   100%      5.80s 20.95%  net/http.(*Client).do
+         0     0%   100%      5.80s 20.95%  net/http.(*Client).send
+         0     0%   100%      5.80s 20.95%  net/http.(*Transport).RoundTrip
+         0     0%   100%      5.80s 20.95%  net/http.(*Transport).roundTrip
+         0     0%   100%      5.66s 20.44%  net/http.(*conn).serve
+         0     0%   100%      5.80s 20.95%  net/http.(*persistConn).roundTrip
+         0     0%   100%      6.62s 23.89%  net/http.(*persistConn).writeLoop
+
+# sched.wait
+Type: delay
+Showing nodes accounting for 2187.53ms, 82.59% of 2648.74ms total
+Dropped 180 nodes (cum <= 13.24ms)
+Showing top 12 nodes out of 74
+      flat  flat%   sum%        cum   cum%
+ 1485.73ms 56.09% 56.09%  1485.73ms 56.09%  runtime.goschedIfBusy
+  341.94ms 12.91% 69.00%   341.94ms 12.91%  runtime.systemstack_switch
+  140.71ms  5.31% 74.31%   140.71ms  5.31%  runtime.(*scavengerState).init.func2
+   88.55ms  3.34% 77.66%    88.55ms  3.34%  runtime.selectgo
+   27.62ms  1.04% 78.70%    69.72ms  2.63%  zeros3.translateReplayFrame.func1
+   21.70ms  0.82% 79.52%   259.26ms  9.79%  runtime.gcStart
+   17.52ms  0.66% 80.18%    17.52ms  0.66%  runtime.chanrecv2
+   14.83ms  0.56% 80.74%    14.92ms  0.56%  zeros3.(*repDFbitReader).bits
+   14.48ms  0.55% 81.29%    80.17ms  3.03%  runtime.gcMarkDone
+   13.36ms   0.5% 81.79%    13.36ms   0.5%  runtime.gcTrigger.test
+   13.14ms   0.5% 82.29%    13.14ms   0.5%  runtime.asyncPreempt2
+    7.94ms   0.3% 82.59%    17.84ms  0.67%  runtime.mallocgcTinySlowPath
+
+# Local raw profile digests
+0f964f19849346e1add2678ef61de592b9b4a9bb2ec2d399da421f65a4efea32  sparse.cpu
+7af55097ee7940bdc6c3c2f0ffda8ed0969086cad0ed1425fc7f03c39b8ed932  whole.cpu
+dd72b9e373da58ba5a85d842bb10f485f1d9bdebfe1fd7ee5f40f27ea935a06d  mixed.trace
+
+# Lua allocation-object profile
+File: df0-heap.test
+Build ID: 01fc26618c391298deeb7f693765d2afd97a7759
+Type: alloc_objects
+Time: 2026-11-28 02:06:32 EST
+Showing nodes accounting for 53175867, 98.08% of 54214076 total
+Dropped 955 nodes (cum <= 271070)
+      flat  flat%   sum%        cum   cum%
+  53137943 98.02% 98.02%   53137943 98.02%  encoding/binary.AppendUvarint (inline)
+     19668 0.036% 98.05%     274029  0.51%  zeros3.repReadObject
+     10525 0.019% 98.07%   53425860 98.55%  zeros3.translateReplayFrame
+      4987 0.0092% 98.08%   53566135 98.80%  zeros3.deflateTranslateRead
+      1302 0.0024% 98.08%   53559297 98.79%  zeros3.(*deflateTranslatePlan).read
+       683 0.0013% 98.08%   35719493 65.89%  zeros3.(*repEnv).runWork
+       512 0.00094% 98.08%   53287447 98.29%  zeros3.startRepStream.func1
+       205 0.00038% 98.08%     292275  0.54%  zeros3.(*authRepBody).ReadAt
+        42 7.7e-05% 98.08%     473050  0.87%  zeros3.df0Prepare
+         0     0% 98.08%     484175  0.89%  testing.tRunner
+         0     0% 98.08%   35535697 65.55%  zeros3.(*Store).repOpenEnvReader.func2
+         0     0% 98.08%   53286935 98.29%  zeros3.(*Store).repOpenEnvReader.func4
+         0     0% 98.08%     273140   0.5%  zeros3.(*repCall).getExact
+         0     0% 98.08%   35720865 65.89%  zeros3.(*repEnv).reconstruct
+         0     0% 98.08%   35719427 65.89%  zeros3.(*repEnv).run
+         0     0% 98.08%   53137734 98.01%  zeros3.(*repWireReader).uv
+         0     0% 98.08%     474360  0.87%  zeros3.TestDF0TailSamples
+         0     0% 98.08%   35704732 65.86%  zeros3.deflateTranslateDecoder.Decode
+         0     0% 98.08%     308508  0.57%  zeros3.gf7Publish
+         0     0% 98.08%   17861403 32.95%  zeros3.repRangeReader.func11
+Total: 54214076
+ROUTINE ======================== zeros3.(*repWireReader).uv in zeros3.go
+         0   53137734 (flat, cum) 98.01% of Total
+         .          .  46190:func (r *repWireReader) uv(max uint64) uint64 {
+         .          .  46191:	if r.err != nil {
+         .          .  46192:		return 0
+         .          .  46193:	}
+         .          .  46194:	v, n := binary.Uvarint(r.b[r.pos:])
+         .   53137734  46195:	if n <= 0 || n != len(binary.AppendUvarint(nil, v)) {
+         .          .  46196:		r.fail("varint at %d", r.pos)
+         .          .  46197:		return 0
+         .          .  46198:	}
+         .          .  46199:	if v > max {
+         .          .  46200:		r.fail("value %d above %d at %d", v, max, r.pos)
+d37646e3000f2edf716987afcac516d9ab66d58ea4061c3d2d7fd60d75b3356d  lua-alloc.pprof
