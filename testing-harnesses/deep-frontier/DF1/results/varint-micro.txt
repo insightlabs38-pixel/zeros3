@@ -1,0 +1,24 @@
+
+# parent
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkDF1CanonicalVarint-2   	 2137407	       111.7 ns/op	 107.45 MB/s	      40 B/op	       5 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 2154859	       110.7 ns/op	 108.38 MB/s	      40 B/op	       5 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 1400991	       154.3 ns/op	  77.76 MB/s	      40 B/op	       5 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 1958462	       116.2 ns/op	 103.24 MB/s	      40 B/op	       5 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 2177146	       109.1 ns/op	 109.98 MB/s	      40 B/op	       5 allocs/op
+PASS
+
+# candidate
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkDF1CanonicalVarint-2   	 7619601	        34.03 ns/op	 352.68 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7354950	        32.22 ns/op	 372.40 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7455142	        32.30 ns/op	 371.57 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7298660	        31.62 ns/op	 379.51 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7408832	        32.28 ns/op	 371.77 MB/s	       0 B/op	       0 allocs/op
+PASS

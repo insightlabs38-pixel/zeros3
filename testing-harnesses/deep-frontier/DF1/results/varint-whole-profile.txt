@@ -1,0 +1,27 @@
+File: candidate.test
+Build ID: c3d9b9cb2e0f51ee042f725f83ba06bb0d5d4e00
+Type: cpu
+Time: 2026-11-28 12:44:38 EST
+Duration: 6.04s, Total samples = 11.88s (196.59%)
+Showing nodes accounting for 10.49s, 88.30% of 11.88s total
+Dropped 146 nodes (cum <= 0.06s)
+Showing top 18 nodes out of 126
+      flat  flat%   sum%        cum   cum%
+     2.36s 19.87% 19.87%      2.55s 21.46%  zeros3.(*repDFbitWriter).put
+     1.27s 10.69% 30.56%      1.29s 10.86%  zeros3.(*repDFbitReader).fill
+     0.84s  7.07% 37.63%      3.45s 29.04%  zeros3.(*repDFStreamWriter).Token
+     0.78s  6.57% 44.19%      0.78s  6.57%  crypto/internal/fips140/sha256.blockSHANI
+     0.72s  6.06% 50.25%      1.98s 16.67%  zeros3.(*repDFdecoder).decode
+     0.67s  5.64% 55.89%      3.18s 26.77%  zeros3.translateNext
+     0.66s  5.56% 61.45%      1.02s  8.59%  zeros3.(*repWireReader).uv
+     0.61s  5.13% 66.58%      0.61s  5.13%  zeros3.(*deflateTranslatePlan).read.func1
+     0.45s  3.79% 70.37%      0.49s  4.12%  zeros3.(*repDFbitReader).bits
+     0.36s  3.03% 73.40%      0.36s  3.03%  encoding/binary.Uvarint (inline)
+     0.36s  3.03% 76.43%      0.36s  3.03%  runtime.memclrNoHeapPointers
+     0.35s  2.95% 79.38%      9.18s 77.27%  zeros3.translateReplayFrame
+     0.33s  2.78% 82.15%      4.04s 34.01%  zeros3.translateReplayFrame.func1
+     0.21s  1.77% 83.92%      0.21s  1.77%  internal/runtime/syscall/linux.Syscall6
+     0.20s  1.68% 85.61%      0.20s  1.68%  runtime.memmove
+     0.12s  1.01% 86.62%      0.12s  1.01%  zeros3.(*repDFStreamWriter).BitPos (inline)
+     0.11s  0.93% 87.54%      0.11s  0.93%  runtime.madvise
+     0.09s  0.76% 88.30%      0.36s  3.03%  compress/flate.(*decompressor).huffmanBlock
