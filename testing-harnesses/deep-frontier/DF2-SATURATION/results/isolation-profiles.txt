@@ -1,0 +1,266 @@
+
+# 2 clients, cpu
+File: diagnostic.test
+Build ID: f7bdff4bf8b244cc7fa8dff6eb786d5c5b046963
+Type: cpu
+Time: 2026-11-28 14:10:03 EST
+Duration: 6.17s, Total samples = 12160ms (196.97%)
+Showing nodes accounting for 10630ms, 87.42% of 12160ms total
+Dropped 177 nodes (cum <= 60.80ms)
+Showing top 15 nodes out of 107
+      flat  flat%   sum%        cum   cum%
+    1380ms 11.35% 11.35%     1600ms 13.16%  zeros3.(*repDFbitWriter).putWord
+    1370ms 11.27% 22.62%     1370ms 11.27%  crypto/internal/fips140/sha256.blockSHANI
+    1330ms 10.94% 33.55%     2080ms 17.11%  zeros3.(*repDFdecoder).decode
+     890ms  7.32% 40.87%     3740ms 30.76%  zeros3.translateNext
+     820ms  6.74% 47.62%      820ms  6.74%  zeros3.(*repDFbitReader).fill
+     810ms  6.66% 54.28%     1170ms  9.62%  zeros3.(*repWireReader).uv
+     780ms  6.41% 60.69%      780ms  6.41%  zeros3.(*deflateTranslatePlan).read.func1
+     780ms  6.41% 67.11%     2400ms 19.74%  zeros3.translateWriteToken
+     680ms  5.59% 72.70%      760ms  6.25%  zeros3.(*repDFbitReader).bits
+     470ms  3.87% 76.56%     3200ms 26.32%  zeros3.translateReplayFrame.func1
+     360ms  2.96% 79.52%      360ms  2.96%  encoding/binary.Uvarint (inline)
+     260ms  2.14% 81.66%      260ms  2.14%  zeros3.(*repDFStreamWriter).BitPos (inline)
+     250ms  2.06% 83.72%     9160ms 75.33%  zeros3.translateReplayFrame
+     230ms  1.89% 85.61%      230ms  1.89%  runtime.memmove
+     220ms  1.81% 87.42%      240ms  1.97%  compress/flate.(*decompressor).huffSym
+
+# 2 clients, mutex
+File: diagnostic.test
+Build ID: f7bdff4bf8b244cc7fa8dff6eb786d5c5b046963
+Type: delay
+Time: 2026-11-28 14:10:09 EST
+Showing nodes accounting for 992.32us, 100% of 992.32us total
+Dropped 42 nodes (cum <= 4.96us)
+Showing top 15 nodes out of 104
+      flat  flat%   sum%        cum   cum%
+  931.76us 93.90% 93.90%   931.76us 93.90%  runtime.unlock
+   33.49us  3.38% 97.27%    33.49us  3.38%  sync.(*Mutex).Unlock
+   27.07us  2.73%   100%    27.07us  2.73%  sync.(*RWMutex).Unlock
+         0     0%   100%    74.51us  7.51%  bytes.(*Buffer).Write
+         0     0%   100%    74.51us  7.51%  bytes.(*Buffer).grow
+         0     0%   100%    74.51us  7.51%  bytes.growSlice
+         0     0%   100%    27.84us  2.81%  io.(*multiWriter).Write
+         0     0%   100%    45.79us  4.61%  net/http.(*Server).Serve.gowrap3
+         0     0%   100%    14.77us  1.49%  net/http.(*Server).SetKeepAlivesEnabled
+         0     0%   100%    14.77us  1.49%  net/http.(*Server).closeIdleConns
+         0     0%   100%    18.73us  1.89%  net/http.(*Server).trackConn
+         0     0%   100%    45.79us  4.61%  net/http.(*conn).serve
+         0     0%   100%    18.73us  1.89%  net/http.(*conn).serve.func1
+         0     0%   100%    18.73us  1.89%  net/http.(*conn).setState
+         0     0%   100%    27.07us  2.73%  net/http.serverHandler.ServeHTTP
+
+# 2 clients, block
+File: diagnostic.test
+Build ID: f7bdff4bf8b244cc7fa8dff6eb786d5c5b046963
+Type: delay
+Time: 2026-11-28 14:10:09 EST
+Showing nodes accounting for 60.39s, 100% of 60.39s total
+Dropped 25 nodes (cum <= 0.30s)
+Showing top 15 nodes out of 35
+      flat  flat%   sum%        cum   cum%
+    30.53s 50.56% 50.56%     30.53s 50.56%  runtime.selectgo
+    12.17s 20.15% 70.71%     12.17s 20.15%  runtime.chanrecv1
+    11.53s 19.09% 89.80%     11.53s 19.09%  runtime.chanrecv2
+     6.16s 10.20%   100%      6.16s 10.20%  sync.(*WaitGroup).Wait
+         0     0%   100%     11.90s 19.70%  net/http.(*Client).Do
+         0     0%   100%     11.90s 19.70%  net/http.(*Client).do
+         0     0%   100%     11.90s 19.70%  net/http.(*Client).send
+         0     0%   100%     11.53s 19.09%  net/http.(*Server).Serve.gowrap3
+         0     0%   100%     11.90s 19.70%  net/http.(*Transport).RoundTrip
+         0     0%   100%      0.38s  0.63%  net/http.(*Transport).dialConn.gowrap2
+         0     0%   100%     12.32s 20.40%  net/http.(*Transport).dialConn.gowrap3
+         0     0%   100%     11.90s 19.70%  net/http.(*Transport).roundTrip
+         0     0%   100%     11.53s 19.09%  net/http.(*conn).serve
+         0     0%   100%      0.38s  0.63%  net/http.(*persistConn).readLoop
+         0     0%   100%     11.89s 19.70%  net/http.(*persistConn).roundTrip
+
+# 2 clients, sched
+Type: delay
+Showing nodes accounting for 4744.13ms, 81.09% of 5850.78ms total
+Dropped 211 nodes (cum <= 29.25ms)
+Showing top 12 nodes out of 66
+      flat  flat%   sum%        cum   cum%
+ 3262.49ms 55.76% 55.76%  3262.49ms 55.76%  runtime.goschedIfBusy
+  862.10ms 14.73% 70.50%   862.10ms 14.73%  runtime.systemstack_switch
+  315.92ms  5.40% 75.90%   316.89ms  5.42%  runtime.selectgo
+   88.38ms  1.51% 77.41%    88.38ms  1.51%  runtime.(*scavengerState).init.func2
+   39.94ms  0.68% 78.09%    40.02ms  0.68%  runtime.chanrecv2
+   34.94ms   0.6% 78.69%    34.94ms   0.6%  runtime.asyncPreempt2
+   31.35ms  0.54% 79.22%   170.05ms  2.91%  runtime.gcMarkDone
+   29.11ms   0.5% 79.72%    76.68ms  1.31%  zeros3.translateNext
+   27.88ms  0.48% 80.20%    31.60ms  0.54%  zeros3.(*repDFbitReader).bits
+   22.49ms  0.38% 80.58%    26.84ms  0.46%  zeros3.(*repWireReader).uv
+   19.82ms  0.34% 80.92%   306.12ms  5.23%  zeros3.translateReplayFrame.func1
+    9.70ms  0.17% 81.09%   277.30ms  4.74%  zeros3.(*repDFbitWriter).putWord
+
+# 2 clients, sync
+Type: delay
+Showing nodes accounting for 60.39s, 100% of 60.41s total
+Dropped 97 nodes (cum <= 0.30s)
+Showing top 12 nodes out of 31
+      flat  flat%   sum%        cum   cum%
+    30.53s 50.55% 50.55%     30.53s 50.55%  runtime.selectgo
+    12.16s 20.14% 70.68%     12.16s 20.14%  runtime.chanrecv1
+    11.53s 19.09% 89.77%     11.53s 19.09%  runtime.chanrecv2
+     6.16s 10.20%   100%      6.16s 10.20%  sync.(*WaitGroup).Wait
+         0     0%   100%     11.90s 19.69%  net/http.(*Client).Do
+         0     0%   100%     11.90s 19.69%  net/http.(*Client).do
+         0     0%   100%     11.90s 19.69%  net/http.(*Client).send
+         0     0%   100%     11.90s 19.69%  net/http.(*Transport).RoundTrip
+         0     0%   100%     11.90s 19.69%  net/http.(*Transport).roundTrip
+         0     0%   100%     11.53s 19.09%  net/http.(*conn).serve
+         0     0%   100%      0.38s  0.63%  net/http.(*persistConn).readLoop
+         0     0%   100%     11.90s 19.69%  net/http.(*persistConn).roundTrip
+
+# 2 clients, syscall
+Type: delay
+Showing nodes accounting for 217.01ms, 99.12% of 218.94ms total
+Dropped 135 nodes (cum <= 1.09ms)
+Showing top 12 nodes out of 79
+      flat  flat%   sum%        cum   cum%
+   77.64ms 35.46% 35.46%    77.64ms 35.46%  syscall.read
+   71.05ms 32.45% 67.91%    71.05ms 32.45%  syscall.write
+   64.17ms 29.31% 97.22%    64.17ms 29.31%  syscall.pread
+    4.16ms  1.90% 99.12%     4.16ms  1.90%  syscall.openat
+         0     0% 99.12%     2.24ms  1.02%  bufio.(*Reader).Peek
+         0     0% 99.12%    71.83ms 32.81%  bufio.(*Reader).Read
+         0     0% 99.12%     2.25ms  1.03%  bufio.(*Reader).fill
+         0     0% 99.12%     4.54ms  2.08%  bufio.(*Writer).Flush
+         0     0% 99.12%       67ms 30.60%  bufio.(*Writer).Write
+         0     0% 99.12%    64.17ms 29.31%  internal/poll.(*FD).Pread
+         0     0% 99.12%    64.17ms 29.31%  internal/poll.(*FD).Pread.func1
+         0     0% 99.12%    77.66ms 35.47%  internal/poll.(*FD).Read
+
+# 32 clients, cpu
+File: diagnostic.test
+Build ID: f7bdff4bf8b244cc7fa8dff6eb786d5c5b046963
+Type: cpu
+Time: 2026-11-28 14:10:11 EST
+Duration: 6.71s, Total samples = 13190ms (196.53%)
+Showing nodes accounting for 11600ms, 87.95% of 13190ms total
+Dropped 188 nodes (cum <= 65.95ms)
+Showing top 15 nodes out of 113
+      flat  flat%   sum%        cum   cum%
+    1590ms 12.05% 12.05%     2190ms 16.60%  zeros3.(*repDFbitWriter).putWord
+    1310ms  9.93% 21.99%     1310ms  9.93%  crypto/internal/fips140/sha256.blockSHANI
+    1190ms  9.02% 31.01%     2110ms 16.00%  zeros3.(*repDFdecoder).decode
+    1040ms  7.88% 38.89%     3900ms 29.57%  zeros3.translateNext
+    1030ms  7.81% 46.70%     1030ms  7.81%  zeros3.(*deflateTranslatePlan).read.func1
+     980ms  7.43% 54.13%      980ms  7.43%  zeros3.(*repDFbitReader).fill
+     850ms  6.44% 60.58%     1280ms  9.70%  zeros3.(*repWireReader).uv
+     660ms  5.00% 65.58%      730ms  5.53%  zeros3.(*repDFbitReader).bits
+     620ms  4.70% 70.28%     2840ms 21.53%  zeros3.translateWriteToken
+     550ms  4.17% 74.45%      550ms  4.17%  runtime.memmove
+     470ms  3.56% 78.01%      470ms  3.56%  runtime.memclrNoHeapPointers
+     420ms  3.18% 81.20%      420ms  3.18%  encoding/binary.Uvarint (inline)
+     310ms  2.35% 83.55%     3480ms 26.38%  zeros3.translateReplayFrame.func1
+     300ms  2.27% 85.82%      300ms  2.27%  internal/runtime/syscall/linux.Syscall6
+     280ms  2.12% 87.95%     9870ms 74.83%  zeros3.translateReplayFrame
+
+# 32 clients, mutex
+File: diagnostic.test
+Build ID: f7bdff4bf8b244cc7fa8dff6eb786d5c5b046963
+Type: delay
+Time: 2026-11-28 14:10:18 EST
+Showing nodes accounting for 14.26ms, 100% of 14.26ms total
+Dropped 59 nodes (cum <= 0.07ms)
+Showing top 15 nodes out of 61
+      flat  flat%   sum%        cum   cum%
+   11.48ms 80.49% 80.49%    11.48ms 80.49%  sync.(*Mutex).Unlock
+    2.78ms 19.51%   100%     2.78ms 19.51%  runtime.unlock
+         0     0%   100%     0.14ms     1%  io.(*multiWriter).Write
+         0     0%   100%     2.11ms 14.79%  net/http.(*Server).Serve.gowrap3
+         0     0%   100%     9.36ms 65.65%  net/http.(*Server).SetKeepAlivesEnabled
+         0     0%   100%     9.36ms 65.65%  net/http.(*Server).closeIdleConns
+         0     0%   100%     2.10ms 14.76%  net/http.(*Server).trackConn
+         0     0%   100%     2.11ms 14.79%  net/http.(*conn).serve
+         0     0%   100%     2.10ms 14.76%  net/http.(*conn).serve.func1
+         0     0%   100%     2.11ms 14.77%  net/http.(*conn).setState
+         0     0%   100%     9.36ms 65.65%  net/http/httptest.(*Server).Close
+         0     0%   100%     2.51ms 17.62%  runtime.(*mcache).allocLarge
+         0     0%   100%     0.23ms  1.60%  runtime.(*mcache).nextFree
+         0     0%   100%     0.23ms  1.60%  runtime.(*mcache).refill
+         0     0%   100%     0.23ms  1.60%  runtime.(*mcentral).cacheSpan
+
+# 32 clients, block
+File: diagnostic.test
+Build ID: f7bdff4bf8b244cc7fa8dff6eb786d5c5b046963
+Type: delay
+Time: 2026-11-28 14:10:18 EST
+Showing nodes accounting for 609.61s, 100% of 609.72s total
+Dropped 36 nodes (cum <= 3.05s)
+Showing top 15 nodes out of 35
+      flat  flat%   sum%        cum   cum%
+   428.12s 70.22% 70.22%    428.12s 70.22%  runtime.selectgo
+   161.82s 26.54% 96.76%    161.82s 26.54%  runtime.chanrecv2
+    12.97s  2.13% 98.88%     12.97s  2.13%  runtime.chanrecv1
+     6.70s  1.10%   100%      6.70s  1.10%  sync.(*WaitGroup).Wait
+         0     0%   100%    195.41s 32.05%  net/http.(*Client).Do
+         0     0%   100%    195.41s 32.05%  net/http.(*Client).do
+         0     0%   100%    195.41s 32.05%  net/http.(*Client).send
+         0     0%   100%    161.93s 26.56%  net/http.(*Server).Serve.gowrap3
+         0     0%   100%    195.41s 32.05%  net/http.(*Transport).RoundTrip
+         0     0%   100%     12.20s  2.00%  net/http.(*Transport).dialConn.gowrap2
+         0     0%   100%    214.05s 35.11%  net/http.(*Transport).dialConn.gowrap3
+         0     0%   100%    195.41s 32.05%  net/http.(*Transport).roundTrip
+         0     0%   100%    161.93s 26.56%  net/http.(*conn).serve
+         0     0%   100%     12.20s  2.00%  net/http.(*persistConn).readLoop
+         0     0%   100%    195.36s 32.04%  net/http.(*persistConn).roundTrip
+
+# 32 clients, sched
+Type: delay
+Showing nodes accounting for 141.18s, 67.65% of 208.70s total
+Dropped 203 nodes (cum <= 1.04s)
+Showing top 12 nodes out of 78
+      flat  flat%   sum%        cum   cum%
+    59.42s 28.47% 28.47%     59.42s 28.47%  runtime.asyncPreempt2
+    21.77s 10.43% 38.90%     57.06s 27.34%  zeros3.translateNext
+    13.78s  6.60% 45.50%     20.09s  9.63%  zeros3.(*repDFbitReader).bits
+     9.67s  4.64% 50.14%     14.18s  6.79%  zeros3.(*repWireReader).uv
+     6.66s  3.19% 53.33%      6.66s  3.19%  runtime.goschedIfBusy
+     5.23s  2.51% 55.83%     13.16s  6.30%  zeros3.(*repDFbitWriter).putWord
+     5.01s  2.40% 58.23%      5.01s  2.40%  runtime.selectgo
+     4.36s  2.09% 60.32%     21.80s 10.45%  zeros3.translateWriteToken
+     4.32s  2.07% 62.39%      4.32s  2.07%  crypto/internal/fips140/sha256.block
+     4.17s  2.00% 64.39%     28.56s 13.68%  zeros3.translateReplayFrame.func1
+     4.03s  1.93% 66.32%      4.03s  1.93%  crypto/internal/fips140/sha256.(*Digest).Sum
+     2.77s  1.33% 67.65%      2.77s  1.33%  bytes.growSlice.func1
+
+# 32 clients, sync
+Type: delay
+Showing nodes accounting for 609.61s, 99.84% of 610.60s total
+Dropped 94 nodes (cum <= 3.05s)
+Showing top 12 nodes out of 31
+      flat  flat%   sum%        cum   cum%
+   428.12s 70.12% 70.12%    428.12s 70.12%  runtime.selectgo
+   161.82s 26.50% 96.62%    161.82s 26.50%  runtime.chanrecv2
+    12.98s  2.13% 98.74%     12.98s  2.13%  runtime.chanrecv1
+     6.70s  1.10% 99.84%      6.70s  1.10%  sync.(*WaitGroup).Wait
+         0     0% 99.84%    195.41s 32.00%  net/http.(*Client).Do
+         0     0% 99.84%    195.41s 32.00%  net/http.(*Client).do
+         0     0% 99.84%    195.41s 32.00%  net/http.(*Client).send
+         0     0% 99.84%    195.41s 32.00%  net/http.(*Transport).RoundTrip
+         0     0% 99.84%    195.41s 32.00%  net/http.(*Transport).roundTrip
+         0     0% 99.84%    161.93s 26.52%  net/http.(*conn).serve
+         0     0% 99.84%     12.20s  2.00%  net/http.(*persistConn).readLoop
+         0     0% 99.84%    195.36s 31.99%  net/http.(*persistConn).roundTrip
+
+# 32 clients, syscall
+Type: delay
+Showing nodes accounting for 359.62ms, 99.54% of 361.29ms total
+Dropped 101 nodes (cum <= 1.81ms)
+Showing top 12 nodes out of 115
+      flat  flat%   sum%        cum   cum%
+  155.52ms 43.05% 43.05%   155.52ms 43.05%  syscall.write
+  102.48ms 28.37% 71.41%   102.48ms 28.37%  syscall.read
+   74.55ms 20.63% 92.05%    74.55ms 20.63%  syscall.pread
+   12.84ms  3.55% 95.60%    12.84ms  3.55%  syscall.openat
+    9.81ms  2.72% 98.31%     9.81ms  2.72%  syscall.accept4
+    4.42ms  1.22% 99.54%     4.42ms  1.22%  syscall.connect
+         0     0% 99.54%     3.45ms  0.95%  bufio.(*Reader).Peek
+         0     0% 99.54%    96.44ms 26.69%  bufio.(*Reader).Read
+         0     0% 99.54%     3.69ms  1.02%  bufio.(*Reader).fill
+         0     0% 99.54%     3.69ms  1.02%  bufio.(*Writer).Flush
+         0     0% 99.54%   151.05ms 41.81%  bufio.(*Writer).Write
+         0     0% 99.54%     9.84ms  2.72%  internal/poll.(*FD).Accept
