@@ -46192,7 +46192,9 @@ func (r *repWireReader) uv(max uint64) uint64 {
 		return 0
 	}
 	v, n := binary.Uvarint(r.b[r.pos:])
-	if n <= 0 || n != len(binary.AppendUvarint(nil, v)) {
+	// A canonical base-128 encoding uses one byte per seven significant
+	// bits, including one byte for zero.
+	if n <= 0 || n != (bits.Len64(v|1)+6)/7 {
 		r.fail("varint at %d", r.pos)
 		return 0
 	}
