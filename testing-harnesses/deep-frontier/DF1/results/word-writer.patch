@@ -1,0 +1,16 @@
+--- a/zeros3.go
++++ b/zeros3.go
+@@ -53542 +53542,2 @@
+-	for w.nacc >= 8 {
++	nbytes := w.nacc / 8
++	if nbytes == 1 {
+@@ -53544,2 +53545,4 @@
+-		w.acc >>= 8
+-		w.nacc -= 8
++	} else if nbytes > 1 {
++		var encoded [8]byte
++		binary.LittleEndian.PutUint64(encoded[:], w.acc)
++		w.buf = append(w.buf, encoded[:nbytes]...)
+@@ -53546,0 +53550,2 @@
++	w.acc >>= nbytes * 8
++	w.nacc %= 8

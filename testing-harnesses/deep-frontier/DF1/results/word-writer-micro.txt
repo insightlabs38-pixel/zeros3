@@ -1,0 +1,34 @@
+
+# parent
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkDF1BitWriter-2         	 4305382	        54.80 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4804801	        52.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4276570	        62.23 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4442409	        53.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4859649	        51.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7096225	        34.02 ns/op	 352.72 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7410986	        37.12 ns/op	 323.28 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 6632972	        32.55 ns/op	 368.66 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7071963	        33.21 ns/op	 361.34 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7585376	        32.33 ns/op	 371.18 MB/s	       0 B/op	       0 allocs/op
+PASS
+
+# candidate
+goos: linux
+goarch: amd64
+pkg: zeros3
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkDF1BitWriter-2         	 4005670	        60.34 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4180629	        56.07 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4555444	        53.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4238806	        56.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1BitWriter-2         	 4549910	        52.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7158232	        34.62 ns/op	 346.59 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7697316	        31.21 ns/op	 384.44 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 7672099	        31.23 ns/op	 384.24 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 6709047	        35.18 ns/op	 341.11 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDF1CanonicalVarint-2   	 6919831	        31.57 ns/op	 380.07 MB/s	       0 B/op	       0 allocs/op
+PASS
