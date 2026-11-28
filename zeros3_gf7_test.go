@@ -555,6 +555,8 @@ func TestGF7PublicationCuts(t *testing.T) {
 }
 
 func FuzzGF7TranslatedFrame(f *testing.F) {
+	// A fixed block containing five eight-bit literals is exactly 50 bits.
+	f.Add([]byte{10, 1, 1, 1, 1, 1}, uint16(49), false)
 	f.Add([]byte{2, 12}, uint16(15), false)
 	f.Add([]byte{3, 0, 0, 7}, uint16(15), true)
 	f.Fuzz(func(t *testing.T, wire []byte, bitLength uint16, corrected bool) {

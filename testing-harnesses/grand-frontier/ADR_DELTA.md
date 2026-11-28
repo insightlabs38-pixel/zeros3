@@ -23,3 +23,11 @@ object. Native closure transfer carries its feature requirement. Legacy
 export uses exact ordinary bytes. The research compiler publishes through
 authority proof and the standard store format fence. Keep this mechanism
 opt-in while measuring whole and sparse costs on each history.
+
+## GF8 · Admission and repair qualification
+
+Keep the read paths independently opt-in. Test physical closure costs and
+whole and sparse service budgets on held-out histories before selecting
+a compiled body. The signed object-scoped recovery path can supply a
+missing frame or basis. Treat generic digest repair of compacted
+authority objects as an open deployment gate.

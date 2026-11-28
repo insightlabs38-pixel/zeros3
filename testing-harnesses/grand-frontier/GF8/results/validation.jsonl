@@ -1,0 +1,8 @@
+{"check": "toolchain", "go": "go1.27.0 linux/amd64", "gomaxprocs": 2, "legacy_reader_vcs": "1d4f36a210a0bd543762073d249deae848604592"}
+{"check": "native-recovery-race", "result": "pass", "tests": ["TestAuthorityCorruptComponentFailsClosedNeverWrongBytes", "TestAuthorityCycleRejected", "TestAuthorityMigrationCancellationBeforePublication", "TestFB03_PackFDCacheUnit", "TestFB03_PackFDCacheConcurrent", "TestFB03_PackFDCacheRetirement", "TestFB03_PackFDCacheSealAndMove", "TestFB16SignedProjectionReplication", "TestFBJ2GroupedReplay", "TestFBJ2GroupedSyncFailure", "TestGF6SignedNegotiation", "TestGF7TranslatedAuthority", "TestGF7PublicationCuts", "TestGF8CompiledSnapshotRepair", "TestGF8BitPatchBoundaries"]}
+{"check": "mixed-signed-decoder-race", "result": "pass", "tests": ["TestGF8SignedMixed"]}
+{"check": "resource-bounds", "result": "pass", "tests": ["TestAuthorityGraphLimits", "TestFB03_PackFDCacheUnit", "TestRepOversizedRootReadBounded"]}
+{"check": "FuzzGF2FrameProgram", "executions": 6002, "result": "pass"}
+{"check": "FuzzGF7TranslatedFrame", "executions": 6003, "result": "pass"}
+{"check": "FuzzGF8TranslateIndex", "executions": 6000, "result": "pass"}
+{"check": "bounded-wrapper", "group_seconds": [1.755, 142.665, 130.58, 101.282, 34.767, 4.533], "result": "pass", "skips": 0, "top_level_passes": 48}

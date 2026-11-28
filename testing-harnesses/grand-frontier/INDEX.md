@@ -5,6 +5,10 @@ All experiments use disposable stores. Planned production changes require
 separate physical, byte-exact, retention, compatibility and recovery evidence.
 
 - [Program ledger](LEDGER.md)
+- [Final verdict](FINAL_VERDICT.md)
+- [Technical research report](RESEARCH_REPORT.md)
+- [Bounded integrated replay](GF8/REPRODUCE.md)
+- [Implementation decisions](ADR_DELTA.md)
 - [Prior art and experiments](PRIOR_ART.md)
 - [GF0 native baseline and engine map](GF0/README.md)
 - [GF1 constrained planner and first exact oracle](GF1/README.md)
@@ -14,6 +18,7 @@ separate physical, byte-exact, retention, compatibility and recovery evidence.
 - [GF5 exact generational checkpoint windows](GF5/README.md)
 - [GF6 receiver-aware exact transfer](GF6/README.md)
 - [GF7 compressed-domain token translation](GF7/README.md)
+- [GF8 integrated qualification](GF8/README.md)
 
 The baseline corpus manifest pins exact input sizes, digests, order and splits.
 The archive minimum-space lane and CDC fast lane both remain relevant
