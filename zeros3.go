@@ -19504,6 +19504,10 @@ type Server struct {
 	projections      *projectionCache
 	projectionMirror bool
 
+	// Experimental whole-read scheduling is installed only by research
+	// harnesses before serving. Authorization and object selection precede it.
+	researchReplay func(context.Context, string, string, *servedManifest) (objectReader, error)
+
 	store  *Store
 	creds  Credentials
 	region string
@@ -20280,7 +20284,7 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 			rng, partial = parsed, true
 		}
 	}
-	srv.streamObject(w, bucket, key, entry, man, rng, partial)
+	srv.streamObject(r.Context(), w, bucket, key, entry, man, rng, partial)
 }
 
 // streamObject answers a GET with the chunks of rng. The first chunk is
@@ -20288,8 +20292,19 @@ func (srv *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucke
 // that cannot be served at all gets an S3 error. A failure after that
 // aborts the response short of its Content-Length, which clients observe
 // as a truncated body rather than a complete one.
-func (srv *Server) streamObject(w http.ResponseWriter, bucket, key string, entry *objectEntry, man *servedManifest, rng byteRange, partial bool) {
-	rd := srv.store.openServedReader(man, rng)
+func (srv *Server) streamObject(ctx context.Context, w http.ResponseWriter, bucket, key string, entry *objectEntry, man *servedManifest, rng byteRange, partial bool) {
+	var rd objectReader
+	if !partial && srv.researchReplay != nil {
+		var err error
+		rd, err = srv.researchReplay(ctx, bucket, key, man)
+		if err != nil {
+			writeGetObjectError(w, bucket, key, err)
+			return
+		}
+	}
+	if rd == nil {
+		rd = srv.store.openServedReader(man, rng)
+	}
 	defer rd.close()
 	data, err := rd.next()
 	if err != nil && err != io.EOF {
@@ -46536,6 +46551,7 @@ type repEnv struct {
 	Cache *repReadCache
 
 	gzipReplay *repIRStreamDecodeOptions // optional scheduling policy during an import proof
+	replayCtx  context.Context           // optional cancellation between translated replay frames
 }
 
 // repCall is one decoder invocation.
@@ -81988,6 +82004,10 @@ func parseDeflateTranslate(raw []byte) (*deflateTranslatePlan, error) {
 }
 
 func (p *deflateTranslatePlan) read(start, length, wireSize int, fetch func([32]byte) ([]byte, error)) ([]byte, int64, error) {
+	return p.readContext(nil, start, length, wireSize, fetch)
+}
+
+func (p *deflateTranslatePlan) readContext(ctx context.Context, start, length, wireSize int, fetch func([32]byte) ([]byte, error)) ([]byte, int64, error) {
 	m, baseOffset, corrected := &p.index, p.baseOffset, p.corrected
 	if start < 0 || length < 0 || start > m.Size || length > m.Size-start {
 		return nil, 0, errDeflateTranslate
@@ -82061,6 +82081,9 @@ func (p *deflateTranslatePlan) read(start, length, wireSize int, fetch func([32]
 		from, to := m.HeaderLen+f.Start/8, m.HeaderLen+(f.End+7)/8
 		if from >= start+length || to <= start {
 			continue
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return nil, work, ctx.Err()
 		}
 		program, err := fetch(f.Program)
 		if err != nil {
@@ -82150,7 +82173,7 @@ func deflateTranslateRead(c *repCall, off, n int64, w io.Writer) error {
 		}
 		sizes[m.SHA] = m.Size
 	}
-	out, _, err := p.read(int(off), int(n), len(c.Rep.Recipe), func(id [32]byte) ([]byte, error) {
+	out, _, err := p.readContext(c.env.replayCtx, int(off), int(n), len(c.Rep.Recipe), func(id [32]byte) ([]byte, error) {
 		size, ok := sizes[id]
 		if !ok {
 			return nil, errDeflateTranslate
