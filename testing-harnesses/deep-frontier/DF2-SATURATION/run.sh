@@ -9,7 +9,9 @@ mkdir -p "$scratch"
 scratch=$(cd "$scratch" && pwd)
 export GOMAXPROCS=${GOMAXPROCS:-2}
 export ZEROS3_SAT_FAMILY=curl
-"$go_bin" test -c -o "$scratch/replay.test" .
+if [[ $phase != qualify ]]; then
+    "$go_bin" test -c -o "$scratch/replay.test" .
+fi
 run() {
     local label=$1
     shift
@@ -57,6 +59,14 @@ case "$phase" in
     done
     for clients in 2 8 32; do
         run "fifo-$clients" ZEROS3_SAT_MODE=fifo ZEROS3_SAT_CLIENTS="$clients" ZEROS3_SAT_COUNT=320
+    done
+    for round in 0 1; do
+        arms=(baseline merge)
+        if [[ $round == 1 ]]; then arms=(merge baseline); fi
+        for mode in "${arms[@]}"; do
+            run "low-alias-$mode-$round" ZEROS3_SAT_MODE="$mode" ZEROS3_SAT_CLIENTS=2 \
+                ZEROS3_SAT_COUNT=96 ZEROS3_SAT_ROUND="$round" ZEROS3_SAT_ALIASES=1
+        done
     done
     ;;
   confirm)
