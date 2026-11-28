@@ -45980,7 +45980,7 @@ const (
 
 // supported reports whether this build can decode the kind.
 func (k repKind) supported() bool {
-	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip || k == repKindExe || k == repKindSplice || k == repKindBitPatch
+	return k == repKindConcat || k == repKindCAR || k == repKindSQLite || k == repKindGit || k == repKindMerkle || k == repKindGzip || k == repKindZstd || k == repKindModel || k == repKindSST || k == repKindParquet || k == repKindDEX || k == repKindCLR || k == repKindZip || k == repKindExe || k == repKindSplice || k == repKindBitPatch || k == repKindDeflateTranslate
 }
 
 type repRole uint8
@@ -46511,6 +46511,8 @@ func repDecoderFor(k repKind) (repDecoder, bool) {
 		return repSpliceDecoder{}, true
 	case repKindBitPatch:
 		return bitPatchDecoder{}, true
+	case repKindDeflateTranslate:
+		return deflateTranslateDecoder{}, true
 	}
 	return nil, false
 }
@@ -62199,6 +62201,8 @@ func repRangeReader(c *repCall, off, n int64) (func(w io.Writer) error, error) {
 		return func(w io.Writer) error { return spliceReadRange(c, off, n, w) }, nil
 	case repKindBitPatch:
 		return func(w io.Writer) error { return bitPatchRead(c, off, n, w) }, nil
+	case repKindDeflateTranslate:
+		return func(w io.Writer) error { return deflateTranslateRead(c, off, n, w) }, nil
 	}
 	return nil, nil
 }
@@ -66438,7 +66442,7 @@ func (b *authRepBody) readSeek(p []byte, off int64) (n int, ok bool, err error) 
 		if err := sk.readRange(call, off, want, repAppendWriter{&buf}); err != nil {
 			return 0, true, err
 		}
-	case repKindParquet, repKindSST, repKindSplice, repKindBitPatch:
+	case repKindParquet, repKindSST, repKindSplice, repKindBitPatch, repKindDeflateTranslate:
 		if (call.Rep.Kind == repKindParquet || call.Rep.Kind == repKindSST) && !b.c.structuredRange {
 			b.noSeek = true
 			return 0, false, nil
@@ -70690,7 +70694,7 @@ func (s *Store) AuthorityCaps() AuthCaps {
 	return AuthCaps{
 		Version: authXferVersion, StoreFormat: storeFormatVersionSupported, MaxDepth: authHardDepth,
 		Forms:    []string{"pin", "rep", "delta"},
-		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature, authExeFeature, spliceFeature, bitPatchFeature},
+		Features: []string{authHardFeature, authStreamFeature, authZN7Feature, authIQ3Feature, authZW2Feature, authSeekFeature, authReachFeature, authCanonFeature, authExeFeature, spliceFeature, bitPatchFeature, deflateTranslateFeature},
 	}
 }
 
@@ -70865,6 +70869,9 @@ func (s *Store) authorityClosureFor(sha [32]byte, dst AuthCaps, destHas func([32
 			}
 			if need.bitPatch {
 				addFeature(bitPatchFeature)
+			}
+			if need.translate {
+				addFeature(deflateTranslateFeature)
 			}
 		}
 	}
@@ -81657,6 +81664,477 @@ func bitPatchApplyFrame(program []byte, size, baseSize int, load func(int, int) 
 		return nil, errBitPatch
 	}
 	return out, nil
+}
+
+type translateSourceBlock struct {
+	Lit, Dist []uint8
+}
+type translateFrame struct {
+	Start, End   int
+	Header       repIRBlockMeta
+	Program, Sum [32]byte
+	Raw          bool
+}
+type translateIndex struct {
+	BaseSize, Size, HeaderLen, DeflateLen int
+	Sources                               [][32]byte
+	SourceSizes                           []int
+	SourceTables                          []translateSourceBlock
+	Frames                                []translateFrame
+	Header, Trailer                       []byte
+	Tail, Pad                             uint8
+	Root                                  [32]byte
+	sourceEnds                            []int
+}
+
+func translateNext(r *repDFbitReader, l, d *repDFdecoder) (repDFToken, error) {
+	sym, err := l.decode(r)
+	if err != nil || sym == 256 || sym > 285 {
+		return 0, errDeflateTranslate
+	}
+	if sym < 256 {
+		return repDFLiteral(byte(sym)), nil
+	}
+	extra, err := r.bits(uint(repDFlenExtra[sym-257]))
+	if err != nil {
+		return 0, err
+	}
+	dist, err := d.decode(r)
+	if err != nil || dist > 29 {
+		return 0, errDeflateTranslate
+	}
+	dextra, err := r.bits(uint(repDFdistExtr[dist]))
+	if err != nil {
+		return 0, err
+	}
+	return repDFMatch(sym, extra, dist, dextra), nil
+}
+
+func translateReplayFrame(data []byte, f translateFrame, tables []translateSourceBlock, load func(int, int) ([]byte, error), corrected bool) ([]byte, error) {
+	if f.Start < 0 || f.End <= f.Start || f.End-f.Start > 4<<20 || len(data) > 256<<10 {
+		return nil, errDeflateTranslate
+	}
+	if f.Raw {
+		if len(data) != (f.End+7)/8-f.Start/8 || data[0]&byte((1<<(f.Start%8))-1) != 0 ||
+			f.End%8 != 0 && data[len(data)-1]&^byte((1<<(f.End%8))-1) != 0 {
+			return nil, errDeflateTranslate
+		}
+		return data, nil
+	}
+	var out bytes.Buffer
+	start := f.Start % 8
+	w := repDFNewStreamWriterAt(&out, int64(start))
+	b, metaErr := translateHeader(f.Header)
+	if metaErr != nil {
+		return nil, metaErr
+	}
+	if err := w.Begin(&b); err != nil {
+		return nil, err
+	}
+	c := repWireReader{b: data}
+	tokens := f.Header.NTokens
+	if tokens < 1 || tokens > 1<<20 {
+		return nil, errDeflateTranslate
+	}
+	type tablePair struct{ l, d *repDFdecoder }
+	cached := map[int]tablePair{}
+	emit := func(t repDFToken) error {
+		sym := t.Sym()
+		if sym == 256 || sym > 285 || sym < 256 && uint32(t) != uint32(sym) {
+			return errDeflateTranslate
+		}
+		if sym >= 257 {
+			dc := t.DistCode()
+			if dc > 29 || t.LenExtra() >= 1<<repDFlenExtra[sym-257] || t.DistExtra() >= 1<<repDFdistExtr[dc] {
+				return errDeflateTranslate
+			}
+		}
+		if err := w.Token(t); err != nil {
+			return err
+		}
+		if w.BitPos() > int64(start+f.End-f.Start) {
+			return errDeflateTranslate
+		}
+		return nil
+	}
+	for tokens > 0 {
+		val := int(c.uv(uint64(tokens*2 + 1)))
+		count := val >> 1
+		if c.err != nil || count < 1 || count > tokens {
+			return nil, errDeflateTranslate
+		}
+		tokens -= count
+		if val&1 == 0 {
+			for range count {
+				token := c.uv(math.MaxUint32)
+				if c.err != nil {
+					return nil, errDeflateTranslate
+				}
+				if err := emit(repDFToken(token)); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+		if len(tables) == 0 {
+			return nil, errDeflateTranslate
+		}
+		index := int(c.uv(uint64(len(tables) - 1)))
+		offset := int(c.uv(bitPatchMaxObject * 8))
+		bits := int(c.uv(4 << 20))
+		if c.err != nil || bits < 1 {
+			return nil, errDeflateTranslate
+		}
+		pair, ok := cached[index]
+		if !ok {
+			table := tables[index]
+			l, litOK := repDFbuildDecoder(table.Lit)
+			d, distOK := repDFbuildDecoder(table.Dist)
+			if !litOK || !distOK {
+				return nil, errDeflateTranslate
+			}
+			pair = tablePair{l, d}
+			cached[index] = pair
+		}
+		lo, hi := offset/8, (offset+bits+7)/8
+		raw, err := load(lo, hi-lo)
+		if err != nil {
+			return nil, err
+		}
+		r := repDFbitReader{data: raw}
+		if _, err := r.bits(uint(offset % 8)); err != nil {
+			return nil, err
+		}
+		for range count {
+			token, err := translateNext(&r, pair.l, pair.d)
+			if err != nil {
+				return nil, err
+			}
+			if corrected {
+				delta := c.uv((1 << 18) - 1)
+				if c.err != nil {
+					return nil, errDeflateTranslate
+				}
+				token ^= repDFToken(delta << 14)
+			}
+			if err := emit(token); err != nil {
+				return nil, err
+			}
+		}
+		if r.bitPos() != int64(offset%8+bits) {
+			return nil, errDeflateTranslate
+		}
+	}
+	if c.pos != len(c.b) {
+		return nil, errDeflateTranslate
+	}
+	if err := w.End(); err != nil {
+		return nil, err
+	}
+	if w.BitPos() != int64(start+f.End-f.Start) {
+		return nil, errDeflateTranslate
+	}
+	if err := w.Finish(0, uint8((8-(f.End%8))%8)); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+const repKindDeflateTranslate repKind = 18
+const deflateTranslateFeature = "deflate-translate-v1"
+
+var errDeflateTranslate = fmt.Errorf("%w: invalid DEFLATE translation", errRepCorrupt)
+
+type deflateTranslatePlan struct {
+	index      translateIndex
+	baseOffset int
+	corrected  bool
+}
+
+func translateHeader(m repIRBlockMeta) (repDFBlock, error) {
+	b := repDFBlock{Final: m.Final, Kind: m.Kind, HLIT: m.HLIT, HDIST: m.HDIST, HCLEN: m.HCLEN, CLLens: m.CLLens, CLSyms: m.CLSyms}
+	if m.Pred || m.AutoPad || m.Kind != repDFFixed && m.Kind != repDFDynamic {
+		return b, errDeflateTranslate
+	}
+	if m.Kind == repDFDynamic {
+		if m.HLIT > 29 || m.HDIST > 31 || m.HCLEN > 15 || len(m.CLSyms) > 320 {
+			return b, errDeflateTranslate
+		}
+		for _, l := range m.CLLens {
+			if l > 7 {
+				return b, errDeflateTranslate
+			}
+		}
+		for _, sym := range m.CLSyms {
+			maxExtra := uint8(0)
+			switch sym.Sym {
+			case 16:
+				maxExtra = 3
+			case 17:
+				maxExtra = 7
+			case 18:
+				maxExtra = 127
+			default:
+				if sym.Sym > 18 {
+					return b, errDeflateTranslate
+				}
+			}
+			if sym.Extra > maxExtra {
+				return b, errDeflateTranslate
+			}
+		}
+		b.LitLens, b.DistLens = repIRExpandLengths(&m)
+		if len(b.LitLens) != 257+int(m.HLIT) || len(b.DistLens) != 1+int(m.HDIST) ||
+			!repDFValidLengths(b.LitLens, false) || !repDFValidLengths(b.DistLens, true) {
+			return b, errDeflateTranslate
+		}
+	}
+	return b, nil
+}
+
+func parseDeflateTranslate(raw []byte) (*deflateTranslatePlan, error) {
+	if len(raw) < 5 || len(raw) > repDirectMax || raw[4] > 1 {
+		return nil, errDeflateTranslate
+	}
+	p := &deflateTranslatePlan{baseOffset: int(binary.LittleEndian.Uint32(raw)), corrected: raw[4] != 0}
+	plain, err := xdInflate(raw[5:], 4<<20)
+	if err != nil {
+		return nil, err
+	}
+	m := &p.index
+	if err := json.Unmarshal(plain, m); err != nil {
+		return nil, err
+	}
+	if m.BaseSize < 18 || m.BaseSize > bitPatchMaxObject || p.baseOffset < 10 || p.baseOffset > m.BaseSize-8 ||
+		len(m.Sources) < 1 || len(m.Sources) > bitPatchMaxSourceRecords || len(m.Sources) != len(m.SourceSizes) ||
+		m.Size < 18 || m.Size > bitPatchMaxObject || m.HeaderLen < 10 || m.HeaderLen != len(m.Header) ||
+		m.DeflateLen < 1 || m.DeflateLen > m.Size || m.HeaderLen+m.DeflateLen+8 != m.Size || len(m.Trailer) != 8 ||
+		m.Pad > 7 || m.Tail >= 1<<m.Pad || len(m.Frames) < 1 || len(m.Frames) > 4096 || len(m.SourceTables) > 4096 {
+		return nil, errDeflateTranslate
+	}
+	if off, err := gzipHeaderLen(m.Header); err != nil || off != len(m.Header) {
+		return nil, errDeflateTranslate
+	}
+	total := 0
+	for _, n := range m.SourceSizes {
+		if n < 1 || n > repDirectMax || n > m.BaseSize-total {
+			return nil, errDeflateTranslate
+		}
+		total += n
+		m.sourceEnds = append(m.sourceEnds, total)
+	}
+	if total != m.BaseSize {
+		return nil, errDeflateTranslate
+	}
+	last := 0
+	for _, f := range m.Frames {
+		if f.Start != last || f.End <= f.Start || f.End > m.DeflateLen*8 || f.End-f.Start > 4<<20 {
+			return nil, errDeflateTranslate
+		}
+		last = f.End
+	}
+	if last+int(m.Pad) != m.DeflateLen*8 {
+		return nil, errDeflateTranslate
+	}
+	for _, table := range m.SourceTables {
+		if len(table.Lit) > 288 || len(table.Dist) > 32 {
+			return nil, errDeflateTranslate
+		}
+		for _, lengths := range [][]uint8{table.Lit, table.Dist} {
+			for _, l := range lengths {
+				if l > 15 {
+					return nil, errDeflateTranslate
+				}
+			}
+		}
+	}
+	return p, nil
+}
+
+func (p *deflateTranslatePlan) read(start, length, wireSize int, fetch func([32]byte) ([]byte, error)) ([]byte, int64, error) {
+	m, baseOffset, corrected := &p.index, p.baseOffset, p.corrected
+	if start < 0 || length < 0 || start > m.Size || length > m.Size-start {
+		return nil, 0, errDeflateTranslate
+	}
+	out := make([]byte, length)
+	offsetBytes := func(pos int, bs []byte, combine bool) {
+		lo, hi := max(pos, start), min(pos+len(bs), start+length)
+		if lo >= hi {
+			return
+		}
+		if combine {
+			for i := lo; i < hi; i++ {
+				out[i-start] |= bs[i-pos]
+			}
+		} else {
+			copy(out[lo-start:hi-start], bs[lo-pos:hi-pos])
+		}
+	}
+	offsetBytes(0, m.Header, false)
+	offsetBytes(m.HeaderLen+m.DeflateLen, m.Trailer, false)
+	cache := map[int][]byte{}
+	work := int64(wireSize)
+	load := func(off, n int) ([]byte, error) {
+		if off < 0 || n < 1 || off > m.BaseSize-baseOffset-8 || n > m.BaseSize-baseOffset-8-off {
+			return nil, errDeflateTranslate
+		}
+		open := func(k int) ([]byte, error) {
+			if p := cache[k]; p != nil {
+				return p, nil
+			}
+			p, err := fetch(m.Sources[k])
+			if err != nil {
+				return nil, err
+			}
+			if len(p) != m.SourceSizes[k] {
+				return nil, errDeflateTranslate
+			}
+			work += int64(len(p))
+			cache[k] = p
+			return p, nil
+		}
+		at := off + baseOffset
+		first := sort.SearchInts(m.sourceEnds, at+1)
+		last := sort.SearchInts(m.sourceEnds, at+n)
+		if first == last {
+			p, err := open(first)
+			if err != nil {
+				return nil, err
+			}
+			x := at - (m.sourceEnds[first] - m.SourceSizes[first])
+			return p[x : x+n], nil
+		}
+		result := make([]byte, 0, n)
+		for k := first; k <= last; k++ {
+			p, err := open(k)
+			if err != nil {
+				return nil, err
+			}
+			origin := m.sourceEnds[k] - m.SourceSizes[k]
+			x, y := max(0, at-origin), min(len(p), at+n-origin)
+			result = append(result, p[x:y]...)
+		}
+		return result, nil
+	}
+	prior := 0
+	for _, f := range m.Frames {
+		if f.Start != prior || f.End <= f.Start || f.End > m.DeflateLen*8 {
+			return nil, work, errDeflateTranslate
+		}
+		prior = f.End
+		from, to := m.HeaderLen+f.Start/8, m.HeaderLen+(f.End+7)/8
+		if from >= start+length || to <= start {
+			continue
+		}
+		program, err := fetch(f.Program)
+		if err != nil {
+			return nil, work, err
+		}
+		work += int64(len(program))
+		output, err := translateReplayFrame(program, f, m.SourceTables, load, corrected)
+		if err != nil {
+			return nil, work, err
+		}
+		if sha256.Sum256(output) != f.Sum {
+			return nil, work, errDeflateTranslate
+		}
+		offsetBytes(from, output, true)
+	}
+	if prior+int(m.Pad) != m.DeflateLen*8 {
+		return nil, work, errDeflateTranslate
+	}
+	if m.Pad > 0 {
+		offsetBytes(m.HeaderLen+m.DeflateLen-1, []byte{m.Tail << uint(prior%8)}, true)
+	}
+	if start == 0 && length == m.Size && sha256.Sum256(out) != m.Root {
+		return nil, work, errDeflateTranslate
+	}
+	return out, work, nil
+}
+
+type deflateTranslateDecoder struct{}
+
+func (deflateTranslateDecoder) Expand(c *repCall, _ func([32]byte)) error {
+	p, err := parseDeflateTranslate(c.Rep.Recipe)
+	if err != nil {
+		return err
+	}
+	m := &p.index
+	if c.Rep.Size != int64(m.Size) || len(c.Rep.Indexes) != 0 ||
+		len(c.Rep.Members) != len(m.Sources)+len(m.Frames) {
+		return errDeflateTranslate
+	}
+	for i, v := range c.Rep.Members {
+		if v.Role != repStored || v.Size < 1 || v.Size > repDirectMax {
+			return errDeflateTranslate
+		}
+		if i < len(m.Sources) {
+			if v.SHA != m.Sources[i] || v.Size != int64(m.SourceSizes[i]) {
+				return errDeflateTranslate
+			}
+		} else if v.SHA != m.Frames[i-len(m.Sources)].Program {
+			return errDeflateTranslate
+		}
+	}
+	return nil
+}
+
+func (deflateTranslateDecoder) Decode(c *repCall) error {
+	return deflateTranslateRead(c, 0, c.Rep.Size, c.W)
+}
+
+func deflateTranslateRead(c *repCall, off, n int64, w io.Writer) error {
+	if off < 0 || n < 0 || off > c.Rep.Size || n > c.Rep.Size-off || c.Rep.Size > bitPatchMaxObject {
+		return errDeflateTranslate
+	}
+	var p *deflateTranslatePlan
+	if c.env.Cache != nil {
+		p, _ = c.env.Cache.getDerived(c.ID).(*deflateTranslatePlan)
+	}
+	if p == nil {
+		var err error
+		p, err = parseDeflateTranslate(c.Rep.Recipe)
+		if err != nil {
+			return err
+		}
+		if c.env.Cache != nil {
+			c.env.Cache.putDerived(c.ID, p, int64(1024*len(p.index.Frames)+512*len(p.index.SourceTables)+len(c.Rep.Recipe)))
+		}
+	}
+	if int64(p.index.Size) != c.Rep.Size {
+		return errDeflateTranslate
+	}
+	sizes := make(map[[32]byte]int64, len(c.Rep.Members))
+	for _, m := range c.Rep.Members {
+		if m.Role != repStored || m.Size < 1 || m.Size > repDirectMax {
+			return errDeflateTranslate
+		}
+		if prior, ok := sizes[m.SHA]; ok && prior != m.Size {
+			return errDeflateTranslate
+		}
+		sizes[m.SHA] = m.Size
+	}
+	out, _, err := p.read(int(off), int(n), len(c.Rep.Recipe), func(id [32]byte) ([]byte, error) {
+		size, ok := sizes[id]
+		if !ok {
+			return nil, errDeflateTranslate
+		}
+		if err := c.decodeWork().step(1); err != nil {
+			return nil, err
+		}
+		if err := c.decodeWork().reserveBytes(size); err != nil {
+			return nil, err
+		}
+		return c.getExact(id, size)
+	})
+	if err != nil {
+		return err
+	}
+	written, err := w.Write(out)
+	if err == nil && written != len(out) {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 // =============================================================================
@@ -92524,7 +93002,7 @@ func pieceTotal(ps []authPiece) (n int64) {
 // unknownFeature names a recorded store feature this build does not know ("" when it knows all of them).
 func (f storeFormat) unknownFeature() string {
 	for _, x := range f.Features {
-		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != bitPatchFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature && x != multipartAdoptFeature && x != snapshotPagesFeature {
+		if x != authZN7Feature && x != authHardFeature && x != authIQ3Feature && x != authStreamFeature && x != authZW2Feature && x != authSeekFeature && x != authReachFeature && x != authCanonFeature && x != packBlockedFeature && x != packPresetFeature && x != journalGroupFeature && x != agFeature && x != authExeFeature && x != spliceFeature && x != bitPatchFeature && x != deflateTranslateFeature && x != manifestBinFeature && x != journalBinFeature && x != journalPartPagesFeature && x != multipartAdoptFeature && x != snapshotPagesFeature {
 			return x
 		}
 	}
@@ -92556,7 +93034,7 @@ func (s *Store) authRecordFeatures(rec *authRecord) ([]string, error) {
 		for _, f := range []struct {
 			on   bool
 			name string
-		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}, {need.exe, authExeFeature}, {need.splice, spliceFeature}, {need.bitPatch, bitPatchFeature}} {
+		}{{need.hard, authHardFeature}, {need.stream, authStreamFeature}, {need.seek, authSeekFeature}, {need.reach, authReachFeature}, {need.canon || len(rec.Bases) > 0, authCanonFeature}, {need.exe, authExeFeature}, {need.splice, spliceFeature}, {need.bitPatch, bitPatchFeature}, {need.translate, deflateTranslateFeature}} {
 			if f.on {
 				out = append(out, f.name)
 			}
@@ -101051,6 +101529,7 @@ type repReplayNeeds struct {
 	exe          bool // B9: normalized executable representations
 	splice       bool // B10: deep canonical streams (kind 16)
 	bitPatch     bool // GF2: exact compressed output frames
+	translate    bool // GF7: exact translated DEFLATE blocks
 }
 
 func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
@@ -101081,6 +101560,7 @@ func (s *Store) repRootReplay(r *repRoot) (need repReplayNeeds, err error) {
 		need.exe = need.exe || obj.Kind == repKindExe
 		need.splice = need.splice || obj.Kind == repKindSplice
 		need.bitPatch = need.bitPatch || obj.Kind == repKindBitPatch
+		need.translate = need.translate || obj.Kind == repKindDeflateTranslate
 		need.hard = need.hard || obj.Kind == repKindSplice && splNeedsHard(env, id, obj)
 		switch obj.Kind {
 		case repKindGzip:

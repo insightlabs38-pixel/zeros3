@@ -433,6 +433,8 @@ func TestAuthHelperProcess(t *testing.T) {
 	switch scenario {
 	case "gf2-bitpatch":
 		gf2CrashChild(t, dir)
+	case "gf7-translate":
+		gf7CrashChild(t, dir)
 	case "groupmigrate": // B9: grouped publication (ZEROS3_RECORD_GROUPS=1)
 		lock, err := acquireStoreLock(dir, true)
 		if err != nil {
