@@ -7,8 +7,8 @@
 | GF2 | In progress | Specialized signed frontier on one gzip pair with exact crash and downgrade evidence. Admit via GF1 and revisit mixed-load tails in GF8. |
 | GF3 | Research only | Shared pages save space on the controlled cohort and reclaim exactly. Fixed programs lose on real histories across budgets. |
 | GF4 | Research only | Exact offline comparator and signed concurrent hot-copy trials. The controller missed the tail gate and did not consistently beat LRU. |
-| GF5 | In progress | Bit-exact checkpoints with true lineage and dtype-aware residuals. |
-| GF6 | Pending | Joint verified source/receiver choice and transfer. |
+| GF5 | Research only | True checkpoint lineage, reversible artifacts and physical pruning. Native ZN7 remains the space and whole-read incumbent. |
+| GF6 | In progress | Joint verified source/receiver choice and transfer. |
 | GF7 | Pending | One substantial original compression research direction. |
 | GF8 | Pending | Integrated verification and final scientific assessment. |
 

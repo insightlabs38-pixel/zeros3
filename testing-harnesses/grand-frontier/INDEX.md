@@ -11,6 +11,7 @@ separate physical, byte-exact, retention, compatibility and recovery evidence.
 - [GF2 compressed query compilation](GF2/README.md)
 - [GF3 multi-source discovery and phrase banks](GF3/README.md)
 - [GF4 workload and maintenance policy](GF4/README.md)
+- [GF5 exact generational checkpoint windows](GF5/README.md)
 
 The baseline corpus manifest pins exact input sizes, digests, order and splits.
 The archive minimum-space lane and CDC fast lane both remain relevant
