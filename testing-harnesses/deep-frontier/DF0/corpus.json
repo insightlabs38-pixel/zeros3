@@ -1,0 +1,158 @@
+[
+  {
+    "name": "curl",
+    "split": "validation",
+    "files": [
+      {
+        "file": "curl-8.10.0.tar.gz",
+        "url": "https://curl.se/download/curl-8.10.0.tar.gz",
+        "bytes": 4133099,
+        "sha256": "58c9dcf73493ae9d181fd334b3b3987ff73124621565187ade237bff1064a716",
+        "tar_bytes": 24023040,
+        "tar_sha256": "4aae9551c1238906d1e6a641afbbe267ffc1bb69a36ef29f640c74a9c4f0feeb",
+        "gzip_flags": 0,
+        "gzip_xfl": 2,
+        "gzip_os": 3
+      },
+      {
+        "file": "curl-8.10.1.tar.gz",
+        "url": "https://curl.se/download/curl-8.10.1.tar.gz",
+        "bytes": 4129962,
+        "sha256": "d15ebab765d793e2e96db090f0e172d127859d78ca6f6391d7eafecfd894bbc0",
+        "tar_bytes": 24023040,
+        "tar_sha256": "1535c61b66811c025ab8f9fc5a815672aa200a60d11614a83e502bb72662a412",
+        "gzip_flags": 0,
+        "gzip_xfl": 2,
+        "gzip_os": 3
+      },
+      {
+        "file": "curl-8.11.0.tar.gz",
+        "url": "https://curl.se/download/curl-8.11.0.tar.gz",
+        "bytes": 4167839,
+        "sha256": "264537d90e58d2b09dddc50944baf3c38e7089151c8986715e2aaeaaf2b8118f",
+        "tar_bytes": 24176640,
+        "tar_sha256": "493eae4fff257f19a7d0d29bee3b647d6eeb6df55bda8967f40358a23039448e",
+        "gzip_flags": 0,
+        "gzip_xfl": 2,
+        "gzip_os": 3
+      },
+      {
+        "file": "curl-8.11.1.tar.gz",
+        "url": "https://curl.se/download/curl-8.11.1.tar.gz",
+        "bytes": 4169067,
+        "sha256": "a889ac9dbba3644271bd9d1302b5c22a088893719b72be3487bc3d401e5c4e80",
+        "tar_bytes": 24207360,
+        "tar_sha256": "65478bd95a688c51a0a1d40b9f1f71a9aa46a3ce09a979096a433b4726c2fbdf",
+        "gzip_flags": 0,
+        "gzip_xfl": 2,
+        "gzip_os": 3
+      }
+    ]
+  },
+  {
+    "name": "lua",
+    "split": "validation",
+    "files": [
+      {
+        "file": "lua-5.4.6.tar.gz",
+        "url": "https://www.lua.org/ftp/lua-5.4.6.tar.gz",
+        "bytes": 363329,
+        "sha256": "7d5ea1b9cb6aa0b59ca3dde1c6adcb57ef83a1ba8e5432c0ecd06bf439b3ad88",
+        "tar_bytes": 1372160,
+        "tar_sha256": "616dd2266bc9bee3ba93d6c640e1b3fa4e5f7f44093dab6c72b8730f516a2ff0",
+        "gzip_flags": 0,
+        "gzip_xfl": 0,
+        "gzip_os": 3
+      },
+      {
+        "file": "lua-5.4.7.tar.gz",
+        "url": "https://www.lua.org/ftp/lua-5.4.7.tar.gz",
+        "bytes": 374097,
+        "sha256": "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30",
+        "tar_bytes": 1392640,
+        "tar_sha256": "1a8b517ca175395e17808babc8cdd00c303f0eeb4ac888f642489cba6a7e2371",
+        "gzip_flags": 0,
+        "gzip_xfl": 0,
+        "gzip_os": 3
+      },
+      {
+        "file": "lua-5.4.8.tar.gz",
+        "url": "https://www.lua.org/ftp/lua-5.4.8.tar.gz",
+        "bytes": 374332,
+        "sha256": "4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae",
+        "tar_bytes": 1392640,
+        "tar_sha256": "c2c96271001be2a4e039782421b42b6a249538e1b1770b446fca6c882441951c",
+        "gzip_flags": 0,
+        "gzip_xfl": 0,
+        "gzip_os": 3
+      }
+    ]
+  },
+  {
+    "name": "python",
+    "split": "scope",
+    "files": [
+      {
+        "file": "Python-3.13.0.tgz",
+        "url": "https://www.python.org/ftp/python/3.13.0/Python-3.13.0.tgz",
+        "bytes": 29186321,
+        "sha256": "12445c7b3db3126c41190bfdc1c8239c39c719404e844babbd015a1bc3fafcd4",
+        "tar_bytes": 109086720,
+        "tar_sha256": "a7fc968038683990d21fb40cf8b36686ed78779d26d7a029b669291b893d802a",
+        "gzip_flags": 0,
+        "gzip_xfl": 2,
+        "gzip_os": 3
+      },
+      {
+        "file": "Python-3.13.1.tgz",
+        "url": "https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tgz",
+        "bytes": 29275877,
+        "sha256": "1513925a9f255ef0793dbf2f78bb4533c9f184bdd0ad19763fd7f47a400a7c55",
+        "tar_bytes": 109588480,
+        "tar_sha256": "b12b5c9d5e02e33d7166efe3bfe19f4f5ee91babda40721007c96b06e9e39fa1",
+        "gzip_flags": 0,
+        "gzip_xfl": 2,
+        "gzip_os": 3
+      }
+    ]
+  },
+  {
+    "name": "nginx",
+    "split": "blind",
+    "files": [
+      {
+        "file": "nginx-1.27.2.tar.gz",
+        "url": "https://nginx.org/download/nginx-1.27.2.tar.gz",
+        "bytes": 1258098,
+        "sha256": "a91ecfc3a0b3a2c1413afca627bd886d76e0414b81cad0fb7872a9655a1b25fa",
+        "tar_bytes": 7815680,
+        "tar_sha256": "53ba1962d73a5311bb97f571bfb3ef05ed887638cbf57abff86a65d5a3838117",
+        "gzip_flags": 0,
+        "gzip_xfl": 0,
+        "gzip_os": 3
+      },
+      {
+        "file": "nginx-1.27.3.tar.gz",
+        "url": "https://nginx.org/download/nginx-1.27.3.tar.gz",
+        "bytes": 1271526,
+        "sha256": "ba23a9568f442036b61cd0e29bd66a47b90634efa91e0b2cf2d719057a9b7903",
+        "tar_bytes": 7896576,
+        "tar_sha256": "7b4135c9db2579131cddc4f3868d7bf53a16df0d41c1dee610cc346745f86176",
+        "gzip_flags": 0,
+        "gzip_xfl": 0,
+        "gzip_os": 3
+      },
+      {
+        "file": "nginx-1.27.4.tar.gz",
+        "url": "https://nginx.org/download/nginx-1.27.4.tar.gz",
+        "bytes": 1277177,
+        "sha256": "294816f879b300e621fa4edd5353dd1ec00badb056399eceb30de7db64b753b2",
+        "tar_bytes": 7930368,
+        "tar_sha256": "0cae95dd319dcf63db3c72a2e02884661d902852cd78a7897ed9dbf0e3eb2993",
+        "gzip_flags": 0,
+        "gzip_xfl": 0,
+        "gzip_os": 3
+      }
+    ]
+  }
+]
