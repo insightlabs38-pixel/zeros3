@@ -1,0 +1,5 @@
+{"check": "focused-native-race", "passed": true, "seconds": 5.43, "tests": ["TestDF0GenericRepairDiscovery", "TestDFSatFlightCancellationAndCapacity", "TestDFSatReplayContextBeforeFetch", "TestDFSatSignedScopeAndCorruption", "TestDFSatChannelAdmissionCancellation", "TestFBJ2GroupedReplay", "TestFBJ2GroupedSyncFailure", "TestGF7TranslatedControl", "TestGF7TranslatedAuthority", "TestGF7PublicationCuts", "TestGF8CompiledSnapshotRepair"]}
+{"check": "eight-client-signed-race", "passed": true, "seconds": 21.964, "tests": ["TestDFSatSigned"]}
+{"cases": 6000, "check": "FuzzGF7TranslatedFrame", "passed": true, "seconds": 1.293}
+{"cases": 6000, "check": "FuzzGF8TranslateIndex", "passed": true, "seconds": 1.729}
+{"check": "frozen nginx confirmation", "completed_signed_gets": 7680, "freeze": "8a89688ae4490858765e6aaae08f7501b99b03e6", "passed": true, "runs": 24}
