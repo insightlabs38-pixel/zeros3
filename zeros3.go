@@ -53537,7 +53537,11 @@ const repDFflushAt = 32 << 10
 
 // Port source: zeros3-z3/deflate/bits.go
 func (w *repDFbitWriter) put(v uint32, n uint) {
-	w.acc |= uint64(v) << w.nacc
+	w.putWord(uint64(v), n)
+}
+
+func (w *repDFbitWriter) putWord(v uint64, n uint) {
+	w.acc |= v << w.nacc
 	w.nacc += n
 	for w.nacc >= 8 {
 		w.buf = append(w.buf, byte(w.acc))
@@ -81712,6 +81716,32 @@ func translateNext(r *repDFbitReader, l, d *repDFdecoder) (repDFToken, error) {
 	return repDFMatch(sym, extra, dist, dextra), nil
 }
 
+// translateWriteToken receives a token whose fields have already been
+// range checked. A match contributes at most 48 bits, which fit in the
+// writer's accumulator together with at most seven pending bits.
+func translateWriteToken(w *repDFStreamWriter, token repDFToken) error {
+	sym := token.Sym()
+	if sym >= len(w.le.len) || w.le.len[sym] == 0 {
+		return fmt.Errorf("%w: token symbol %d has no code", repDFErrInvalidIR, sym)
+	}
+	width := uint(w.le.len[sym])
+	word := uint64(w.le.code[sym])
+	if sym >= 257 {
+		dist := token.DistCode()
+		if dist >= len(w.de.len) || w.de.len[dist] == 0 {
+			return fmt.Errorf("%w: distance code %d has no code", repDFErrInvalidIR, dist)
+		}
+		word |= uint64(token.LenExtra()) << width
+		width += uint(repDFlenExtra[sym-257])
+		word |= uint64(w.de.code[dist]) << width
+		width += uint(w.de.len[dist])
+		word |= uint64(token.DistExtra()) << width
+		width += uint(repDFdistExtr[dist])
+	}
+	w.bw.putWord(word, width)
+	return w.bw.err
+}
+
 func translateReplayFrame(data []byte, f translateFrame, tables []translateSourceBlock, load func(int, int) ([]byte, error), corrected bool) ([]byte, error) {
 	if f.Start < 0 || f.End <= f.Start || f.End-f.Start > 4<<20 || len(data) > 256<<10 {
 		return nil, errDeflateTranslate
@@ -81751,7 +81781,7 @@ func translateReplayFrame(data []byte, f translateFrame, tables []translateSourc
 				return errDeflateTranslate
 			}
 		}
-		if err := w.Token(t); err != nil {
+		if err := translateWriteToken(w, t); err != nil {
 			return err
 		}
 		if w.BitPos() > int64(start+f.End-f.Start) {
